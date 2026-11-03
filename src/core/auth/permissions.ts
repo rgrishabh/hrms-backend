@@ -40,6 +40,9 @@ export const PERMISSIONS = {
   'expenses.approve': 'Approve expense claims at finance level',
   'expenses.pay': 'Prepare, approve and record reimbursement payment batches',
   'expenses.manage': 'Configure expense categories and limits',
+  'lifecycle.self': 'See my onboarding tasks and resign',
+  'lifecycle.read': 'View onboarding, probation and separation records',
+  'lifecycle.manage': 'Manage onboarding/exit checklists, probation decisions and separations',
   'recruitment.requisition': 'Request new positions (job requisitions)',
   'recruitment.read': 'View all requisitions, candidates and the hiring pipeline',
   'recruitment.manage': 'Manage candidates, applications, interviews and offers',
@@ -67,7 +70,7 @@ export type Permission = keyof typeof PERMISSIONS;
 export const ALL_PERMISSIONS = Object.keys(PERMISSIONS) as Permission[];
 
 const P = (...p: Permission[]) => p;
-const SELF = P('attendance.self', 'employees.directory', 'leave.self', 'documents.self', 'expenses.self', 'competency.self', 'policies.self');
+const SELF = P('attendance.self', 'employees.directory', 'leave.self', 'documents.self', 'expenses.self', 'competency.self', 'policies.self', 'lifecycle.self');
 
 export interface RoleDefinition { key: string; name: string; scope: 'tenant'; permissions: readonly Permission[] }
 
@@ -79,10 +82,11 @@ export const SYSTEM_ROLES: readonly RoleDefinition[] = [
     'employees.read', 'employees.manage', 'employees.bank.read', 'employees.bank.manage', 'attendance.read',
     'attendance.recalculate', 'attendance.approve', 'attendance.configure', 'audit.read', 'leave.read', 'leave.approve', 'leave.manage', 'documents.read', 'documents.restricted', 'documents.manage', 'training.manage', 'competency.read',
     'policies.read', 'policies.manage', 'policies.publish',
-    'recruitment.requisition', 'recruitment.read', 'recruitment.manage', 'recruitment.approve', 'recruitment.compensation') },
+    'recruitment.requisition', 'recruitment.read', 'recruitment.manage', 'recruitment.approve', 'recruitment.compensation',
+    'lifecycle.read', 'lifecycle.manage') },
   { key: 'hr_executive', name: 'HR Executive', scope: 'tenant', permissions: P(...SELF, 'org.read', 'employees.read', 'employees.manage',
     'attendance.read', 'attendance.recalculate', 'attendance.approve', 'leave.read', 'leave.approve', 'documents.read', 'documents.manage', 'training.manage', 'policies.read', 'policies.manage',
-    'recruitment.requisition', 'recruitment.read', 'recruitment.manage') },
+    'recruitment.requisition', 'recruitment.read', 'recruitment.manage', 'lifecycle.read', 'lifecycle.manage') },
   { key: 'payroll_manager', name: 'Payroll Manager', scope: 'tenant', permissions: P(...SELF, 'org.read', 'employees.read', 'employees.bank.read',
     'attendance.read', 'attendance.lock', 'leave.read', 'documents.read', 'expenses.read', 'expenses.pay') },
   { key: 'finance_manager', name: 'Finance Manager', scope: 'tenant', permissions: P(...SELF, 'org.read', 'recruitment.compensation', 'expenses.read', 'expenses.approve', 'expenses.pay', 'expenses.manage') },
@@ -95,7 +99,7 @@ export const SYSTEM_ROLES: readonly RoleDefinition[] = [
   { key: 'it_admin', name: 'IT Administrator', scope: 'tenant', permissions: P(...SELF, 'settings.read', 'users.manage', 'attendance.devices.manage', 'org.read') },
   { key: 'employee', name: 'Employee', scope: 'tenant', permissions: SELF },
   { key: 'auditor', name: 'Auditor / Read-only Reviewer', scope: 'tenant', permissions: P(...SELF, 'settings.read', 'audit.read', 'org.read',
-    'employees.read', 'attendance.read', 'leave.read', 'documents.read', 'expenses.read', 'competency.read', 'policies.read', 'recruitment.read') },
+    'employees.read', 'attendance.read', 'leave.read', 'documents.read', 'expenses.read', 'competency.read', 'policies.read', 'recruitment.read', 'lifecycle.read') },
 ];
 
 export const SYSTEM_ROLE_MAP: ReadonlyMap<string, RoleDefinition> = new Map(SYSTEM_ROLES.map((r) => [r.key, r]));

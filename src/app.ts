@@ -28,6 +28,7 @@ import { expenseRoutes } from './modules/expenses/routes.js';
 import { competencyRoutes } from './modules/competency/routes.js';
 import { policyRoutes } from './modules/policies/routes.js';
 import { recruitmentRoutes } from './modules/recruitment/routes.js';
+import { lifecycleRoutes } from './modules/lifecycle/routes.js';
 import { createStore, setStore, getStore } from './core/storage/index.js';
 import { setStorageConfigured } from './core/features/state.js';
 import { setEmailBrand } from './core/notify/service.js';
@@ -166,6 +167,7 @@ export async function buildApp(deps: AppDeps): Promise<FastifyInstance> {
   await app.register(competencyRoutes, { prefix: '/api/v1/competency' });
   await app.register(policyRoutes, { prefix: '/api/v1/policies' });
   await app.register(recruitmentRoutes, { prefix: '/api/v1/recruitment' });
+  await app.register(lifecycleRoutes, { prefix: '/api/v1/lifecycle' });
   await app.register(deviceIngestRoutes, { prefix: '/api/v1/devices' });
   const branding = env.BRANDING_DIR ? registerBrandingAssets(env.BRANDING_DIR, [env.BRAND_LOGO_URL, env.BRAND_FAVICON_URL]) : null;
   registerWeb(app, env.WEB_DIST_DIR ?? null, publicConfig, branding);
