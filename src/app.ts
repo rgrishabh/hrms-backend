@@ -81,12 +81,16 @@ export async function buildApp(deps: AppDeps): Promise<FastifyInstance> {
   // Liveness/readiness are host-agnostic and unauthenticated; they reveal no internals.
   // `/health` and `/ready` are aliases for orchestrators and the deployment smoke tests.
   const live = async () => ({ status: 'ok' });
+  let warnedNewerSchema = false;
   app.get('/health/live', live);
   app.get('/health', live);
   const ready = async (_req: unknown, reply: import('fastify').FastifyReply) => {
     try {
       const m = await migrationStatus(deps.pool);
-      if (m.pending.length || m.unknown.length) return reply.code(503).send({ status: 'unavailable' });
+      // Pending migrations: this build needs a newer schema -> not ready. Unknown (newer) migrations are
+      // expected after a rollback to the previous release; migrations are expand/contract, so serve.
+      if (m.pending.length) return reply.code(503).send({ status: 'unavailable' });
+      if (m.unknown.length && !warnedNewerSchema) { warnedNewerSchema = true; app.log.warn({ unknown: m.unknown }, 'database schema is newer than this build (rollback?)'); }
       const org = await deps.pool.query<{ ok: boolean }>('SELECT EXISTS (SELECT 1 FROM tenants) AS ok');
       if (!org.rows[0]!.ok) return reply.code(503).send({ status: 'unavailable' });
       return { status: 'ready' };

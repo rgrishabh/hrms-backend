@@ -211,4 +211,14 @@ describe('migrations and readiness', () => {
     await q(B.owner, 'INSERT INTO schema_migrations (name, checksum) VALUES ($1,$2)', [last!.name, last!.checksum]);
     expect((await appB.inject({ url: '/health/ready' })).statusCode).toBe(200);
   });
+
+  it('stays ready on a NEWER schema (rollback to the previous release); migrate leaves it alone', async () => {
+    await q(B.owner, `INSERT INTO schema_migrations (name, checksum) VALUES ('999_from_a_newer_release.sql', 'x')`);
+    try {
+      expect((await withOwner(B.owner, (c) => migrationStatus(c))).unknown).toEqual(['999_from_a_newer_release.sql']);
+      expect((await appB.inject({ url: '/ready' })).statusCode).toBe(200);
+    } finally {
+      await q(B.owner, `DELETE FROM schema_migrations WHERE name='999_from_a_newer_release.sql'`);
+    }
+  });
 });
