@@ -8,6 +8,7 @@ import { notifyUsers, usersWithPermission } from '../notify/service.js';
 import { trainingExpiry, authorizationReview } from '../../modules/competency/jobs.js';
 import { policyAckReminders } from '../../modules/policies/jobs.js';
 import { recruitmentRetention } from '../../modules/recruitment/routes.js';
+import { lifecycleDaily } from '../../modules/lifecycle/routes.js';
 
 /**
  * Background jobs. Schedules are in the organization's timezone (general.timezone).
@@ -29,8 +30,8 @@ export interface JobDefinition {
   name: string;
   description: string;
   schedule: Schedule;
-  /** Module that must be usable for the job to run. */
-  feature?: string;
+  /** Module that must be usable for the job to run; with a list, any one of them. */
+  feature?: string | readonly string[];
   /** Permission needed to trigger a manual run. */
   runPermission: string;
   run(db: Db, tenantId: string, ctx: JobContext): Promise<Record<string, unknown>>;
@@ -156,6 +157,15 @@ export const JOBS: readonly JobDefinition[] = [
     run: (db, tenantId, ctx) => recruitmentRetention(db, tenantId, ctx.localDate),
   },
   {
+    key: 'lifecycle.daily',
+    name: 'Onboarding, probation and exit',
+    feature: ['core.onboarding', 'core.offboarding'],
+    description: 'Reminds checklist task owners (due/overdue, weekly), opens probation reviews ahead of the end date, and ends system access after the last working day.',
+    schedule: { kind: 'daily', at: '06:30' },
+    runPermission: 'lifecycle.manage',
+    run: (db, tenantId, ctx) => lifecycleDaily(db, tenantId, ctx.localDate),
+  },
+  {
     key: 'sessions.cleanup',
     name: 'Session cleanup',
     description: 'Deletes sessions that expired or were revoked more than 7 days ago.',
@@ -167,6 +177,12 @@ export const JOBS: readonly JobDefinition[] = [
     },
   },
 ];
+
+/** Whether a job may run, given which modules are usable. */
+export function jobActive(job: JobDefinition, isUsable: (key: string) => boolean) {
+  if (!job.feature) return true;
+  return (typeof job.feature === 'string' ? [job.feature] : job.feature).some(isUsable);
+}
 
 export const JOB_MAP: ReadonlyMap<string, JobDefinition> = new Map(JOBS.map((j) => [j.key, j]));
 

@@ -12,6 +12,7 @@ import { notifyUsers } from '../../core/notify/service.js';
 import { getSettingValue } from '../../core/settings/service.js';
 import { insertEmployee, EmployeeInput, EMPLOYMENT_TYPES } from '../employees/service.js';
 import { orgToday } from '../competency/service.js';
+import { createChecklist, featureOn } from '../lifecycle/service.js';
 import type { Db } from '../../db/tx.js';
 
 const FEATURE = 'recruitment';
@@ -658,8 +659,11 @@ export async function recruitmentRoutes(app: FastifyInstance) {
       const filled = req0.filled + 1;
       await db.query(`UPDATE job_requisitions SET filled=$3, status=CASE WHEN $3 >= positions THEN 'closed' ELSE status END,
           closed_at=CASE WHEN $3 >= positions THEN now() ELSE closed_at END, version=version+1 WHERE tenant_id=$1 AND id=$2`, [a.tenantId, ap.requisition_id, filled]);
-      await audit(db, { ...a.auditBase, action: 'recruitment.hired', targetType: 'employee', targetId: employeeId, metadata: { offerId: id, applicationId: ap.id, employeeCode: b.employeeCode } });
-      reply.code(201); return { employeeId, requisitionClosed: filled >= req0.positions };
+      // Onboarding checklist from the default template, when that module is on.
+      const onboardingId = (await featureOn(db, a.tenantId, 'core.onboarding'))
+        ? await createChecklist(db, a.tenantId, { kind: 'onboarding', employeeId, anchorDate: off.joining_date, actorId: null }) : null;
+      await audit(db, { ...a.auditBase, action: 'recruitment.hired', targetType: 'employee', targetId: employeeId, metadata: { offerId: id, applicationId: ap.id, employeeCode: b.employeeCode, onboardingId } });
+      reply.code(201); return { employeeId, requisitionClosed: filled >= req0.positions, onboardingChecklistId: onboardingId };
     });
   });
 }

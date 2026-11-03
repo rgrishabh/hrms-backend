@@ -3,7 +3,7 @@ import type { Pool } from '../../db/pool.js';
 import { withPlatformBypass, withTenant } from '../../db/tx.js';
 import { getSettingValue } from '../settings/service.js';
 import { evaluateFeatures } from '../features/state.js';
-import { JOBS, JOB_MAP, duePeriod, type JobDefinition } from './registry.js';
+import { JOBS, JOB_MAP, duePeriod, jobActive, type JobDefinition } from './registry.js';
 import { deliverOutbox } from '../notify/service.js';
 
 /**
@@ -58,7 +58,7 @@ export async function tick(pool: Pool, log: Log, now = new Date()) {
           next_retry_at = CASE WHEN attempts < ${MAX_ATTEMPTS} THEN now() END
         WHERE tenant_id=$1 AND status='running' AND started_at < now() - make_interval(mins => ${RUNNING_TIMEOUT_MIN})`, [tenantId]);
       for (const job of JOBS) {
-        if (job.feature && !usable.get(job.feature)) continue;
+        if (!jobActive(job, (k) => !!usable.get(k))) continue;
         const period = duePeriod(job.schedule, date, time);
         if (!period) continue;
         const claimed = await db.query<{ id: string }>(`INSERT INTO job_runs (tenant_id, job_key, period_key, trigger, status)
@@ -71,7 +71,7 @@ export async function tick(pool: Pool, log: Log, now = new Date()) {
         RETURNING id, job_key, period_key`, [tenantId]);
       for (const r of retries.rows) {
         const job = JOB_MAP.get(r.job_key);
-        if (job && (!job.feature || usable.get(job.feature))) due.push({ runId: r.id, job, period: r.period_key });
+        if (job && jobActive(job, (k) => !!usable.get(k))) due.push({ runId: r.id, job, period: r.period_key });
       }
     });
     for (const d of due) {

@@ -19,7 +19,7 @@ scripts/smoke.sh                                  # end-to-end against a running
 | Check | Result |
 |---|---|
 | `npm run typecheck` (API + web) | exit 0 |
-| `npm test` | **189 passed, 0 failed** (18 files) |
+| `npm test` | **199 passed, 0 failed** (20 files) |
 | `npm run build` (API + web) | exit 0 |
 | `npm audit --omit=dev` | 0 vulnerabilities |
 | `scripts/smoke.sh` (dev installation via Vite proxy) | **16 passed** (incl. leave balances and preview) |
@@ -51,6 +51,8 @@ scripts/smoke.sh                                  # end-to-end against a running
 | `policies.test.ts` | 7 | Drafts need text or PDF, non-PDF refused, one draft at a time, drafts hidden from staff; author cannot publish, another publisher can, audience notified; acknowledgement bound to the content hash, idempotent, reported and exported (audited); acknowledgements immutable for the app role; new version supersedes and needs a fresh acknowledgement, stale page refused, old version readable only by those who acknowledged it; branch/department audience; weekly overdue reminder once; retire removes from staff lists; module off → 403 |
 | `health.test.ts` | 1 | `/health` and `/ready` aliases: unauthenticated, host-agnostic, strict CSP, same result as `/health/live` / `/health/ready` |
 | `recruitment.test.ts` | 8 | Requisition by manager, budget only with compensation access and redacted otherwise, HR approval, visibility; candidate needs consent and a contact, content-checked resume, duplicate email refused / shared phone confirmable, expected CTC restricted, retention date; stage rules incl. no direct hire, reason for rejection, optimistic locking, history; interview panel notified, feedback only after start, blind until own submission, once only, completion; panel sees resume (audited) but not history/offers; offer needs compensation access, above-budget flag, one live offer, second approver, no CTC in approval summary; sent → accepted → hire creates pre-joining employee with manager and probation, closes the full requisition, once only; retention anonymizes and deletes the resume file, keeps hired; erasure on request; module off |
+| `lifecycle.test.ts` | 9 | Onboarding template required; tasks dated from joining and routed by owner (my tasks per group, notifications); only the owner group completes, skip needs HR + note, checklist closes and reopens; joining confirmed only on/after the date; probation review opened by the job, manager recommends, HR approves (confirm → confirmation date + permanent; extend → new end date; no self-approval); resignation with notice shortfall, manager → HR, LWD change before approval, clearance checklist on approval; exit interview HR-only; completion needs LWD + all clearance, then exited + login disabled + sessions revoked; HR-initiated separations need a second HR; job ends access after LWD; module off |
+| `response-after-commit.test.ts` | 1 | No handler sends a response inside a transaction |
 | `jobs.test.ts` | 8 | Due-period and next-run calculation; each job runs once per period and does its work (close day, accrual, session cleanup); **two simultaneous scheduler passes run each job exactly once**; nothing before the scheduled time; failure → backoff → retry → success; recovery of runs abandoned by a crashed process; module-gated jobs skipped; Run now permission, history and audit |
 
 ## Defects found by testing in this phase (all fixed)
