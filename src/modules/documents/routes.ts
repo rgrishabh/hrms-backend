@@ -64,7 +64,7 @@ export async function documentRoutes(app: FastifyInstance) {
       const r = await db.query<{ id: string }>(`INSERT INTO document_categories (tenant_id, code, name, scope, employee_visible, employee_upload, restricted, requires_expiry, status)
         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9) RETURNING id`, [a.tenantId, ...catCols(b)]);
       await audit(db, { ...a.auditBase, action: 'documents.category_created', category: 'configuration', targetType: 'document_category', targetId: r.rows[0]!.id, metadata: b });
-      return reply.code(201).send({ id: r.rows[0]!.id });
+      reply.code(201); return { id: r.rows[0]!.id };
     });
   });
 
@@ -149,7 +149,7 @@ export async function documentRoutes(app: FastifyInstance) {
         detected.contentType, file!.buf.length, sha, key, body.expiresOn ?? null, a.user.userId]);
       await audit(db, { ...a.auditBase, action: 'documents.uploaded', targetType: 'document', targetId: r.rows[0]!.id,
         metadata: { category: c.code, employeeId: body.employeeId ?? null, sizeBytes: file!.buf.length, contentType: detected.contentType, sha256: sha } });
-      return reply.code(201).send({ id: r.rows[0]!.id });
+      reply.code(201); return { id: r.rows[0]!.id };
     });
   });
 

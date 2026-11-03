@@ -81,7 +81,7 @@ export async function expenseRoutes(app: FastifyInstance) {
       const r = await db.query<{ id: string }>(`INSERT INTO expense_categories (tenant_id, code, name, description, requires_receipt, max_amount, gst_applicable, status)
         VALUES ($1,$2,$3,$4,$5,$6,$7,$8) RETURNING id`, [a.tenantId, ...catCols(b)]);
       await audit(db, { ...a.auditBase, action: 'expenses.category_created', category: 'configuration', targetType: 'expense_category', targetId: r.rows[0]!.id, metadata: b });
-      return reply.code(201).send({ id: r.rows[0]!.id });
+      reply.code(201); return { id: r.rows[0]!.id };
     });
   });
   app.put('/categories/:id', async (req) => {
@@ -106,7 +106,7 @@ export async function expenseRoutes(app: FastifyInstance) {
       await requireFeature(db, a.tenantId, 'expenses');
       const r = await db.query<{ id: string }>(`INSERT INTO expense_claims (tenant_id, employee_id, title, purpose, project, created_by) VALUES ($1,$2,$3,$4,$5,$6) RETURNING id`,
         [a.tenantId, a.user.employeeId, b.title, b.purpose, b.project ?? null, a.user.userId]);
-      return reply.code(201).send({ id: r.rows[0]!.id });
+      reply.code(201); return { id: r.rows[0]!.id };
     });
   });
 
@@ -217,7 +217,7 @@ export async function expenseRoutes(app: FastifyInstance) {
          key, file && detected && !('error' in detected) ? safeFileName(file.name, detected.ext) : null, detected && !('error' in detected) ? detected.contentType : null,
          file ? createHash('sha256').update(file.buf).digest('hex') : null, similar.rows[0]?.id ?? null]);
       await recomputeTotal(db, a.tenantId, id);
-      return reply.code(201).send({ id: ins.rows[0]!.id, possibleDuplicate: !!similar.rowCount });
+      reply.code(201); return { id: ins.rows[0]!.id, possibleDuplicate: !!similar.rowCount };
     });
   });
 
@@ -313,7 +313,7 @@ export async function expenseRoutes(app: FastifyInstance) {
         [a.tenantId, total.toFixed(2), claims.rowCount, a.user.userId])).rows[0]!.id;
       await db.query(`UPDATE expense_claims SET batch_id=$3 WHERE tenant_id=$1 AND id = ANY($2)`, [a.tenantId, b.claimIds, batch]);
       await audit(db, { ...a.auditBase, action: 'expenses.batch_prepared', targetType: 'reimbursement_batch', targetId: batch, metadata: { claims: claims.rowCount, total: total.toFixed(2) } });
-      return reply.code(201).send({ id: batch, total: total.toFixed(2) });
+      reply.code(201); return { id: batch, total: total.toFixed(2) };
     });
   });
 

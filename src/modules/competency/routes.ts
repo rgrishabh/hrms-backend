@@ -93,7 +93,7 @@ export async function competencyRoutes(app: FastifyInstance) {
       const id = (await db.query<{ id: string }>(`INSERT INTO training_courses (tenant_id, code, name, kind, description, validity_months, status)
         VALUES ($1,$2,$3,$4,$5,$6,$7) RETURNING id`, [a.tenantId, ...courseCols(b)])).rows[0]!.id;
       await audit(db, { ...a.auditBase, action: 'training.course_created', category: 'configuration', targetType: 'training_course', targetId: id, metadata: b });
-      return reply.code(201).send({ id });
+      reply.code(201); return { id };
     });
   });
   app.put('/courses/:id', async (req) => {
@@ -151,7 +151,7 @@ export async function competencyRoutes(app: FastifyInstance) {
           RETURNING id, expires_on::text`,
         [a.tenantId, b.employeeId, b.courseId, b.completedOn, c.validity_months, b.result, b.trainer, b.provider, b.hours, b.notes, a.user.userId])).rows[0]!;
       await audit(db, { ...a.auditBase, action: 'training.recorded', category: 'data', targetType: 'training_record', targetId: r.id, metadata: { ...b, expiresOn: r.expires_on } });
-      return reply.code(201).send({ id: r.id, expiresOn: r.expires_on });
+      reply.code(201); return { id: r.id, expiresOn: r.expires_on };
     });
   });
 
@@ -205,7 +205,7 @@ export async function competencyRoutes(app: FastifyInstance) {
       await requireFeature(db, a.tenantId, 'lab.competency');
       const id = await saveMethod(db, a, b);
       await audit(db, { ...a.auditBase, action: 'competency.method_created', category: 'configuration', targetType: 'lab_method', targetId: id, metadata: b });
-      return reply.code(201).send({ id });
+      reply.code(201); return { id };
     });
   });
   app.put('/methods/:id', async (req) => {
@@ -258,7 +258,7 @@ export async function competencyRoutes(app: FastifyInstance) {
       const id = (await db.query<{ id: string }>(`INSERT INTO competency_assessments (tenant_id, employee_id, method_id, activity, approach, assessed_on, result, evidence, assessor_id)
         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9) RETURNING id`, [a.tenantId, b.employeeId, b.methodId, b.activity, b.approach, b.assessedOn, b.result, b.evidence, a.user.userId])).rows[0]!.id;
       await audit(db, { ...a.auditBase, action: 'competency.assessed', category: 'data', targetType: 'competency_assessment', targetId: id, metadata: b });
-      return reply.code(201).send({ id });
+      reply.code(201); return { id };
     });
   });
 
@@ -292,7 +292,7 @@ export async function competencyRoutes(app: FastifyInstance) {
         summary: `${emp.name}: ${ACTIVITY_LABEL[s.activity]} — ${s.method_code} ${s.method_name}`, steps: [{ kind: 'permission', permission: 'competency.authorize' }],
       });
       await audit(db, { ...a.auditBase, action: 'competency.authorization_requested', category: 'data', targetType: 'lab_authorization', targetId: id, metadata: { assessmentId, approvalId } });
-      return reply.code(201).send({ id, approvalRequestId: approvalId });
+      reply.code(201); return { id, approvalRequestId: approvalId };
     });
   });
 
