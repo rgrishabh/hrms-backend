@@ -35,6 +35,9 @@ const schema = z.object({
   // ---- security
   LOG_LEVEL: z.enum(['fatal', 'error', 'warn', 'info', 'debug', 'trace', 'silent']).default('info'),
   /** Login/password attempts per client IP per minute (account lockout is enforced separately). */
+  // Per client IP across the whole API. A lab's staff often share one office NAT address, so keep this generous;
+  // sign-in and password endpoints have their own strict limits (AUTH_RATE_LIMIT_PER_MINUTE).
+  RATE_LIMIT_PER_MINUTE: z.coerce.number().int().min(60).max(100000).default(3000),
   AUTH_RATE_LIMIT_PER_MINUTE: z.coerce.number().int().min(1).max(10000).default(20),
   SESSION_TTL_HOURS: z.coerce.number().int().min(1).max(24 * 30).default(12),
   COOKIE_SECURE: bool('true'),
