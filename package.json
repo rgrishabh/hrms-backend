@@ -12,6 +12,7 @@
     "test": "vitest run",
     "migrate": "tsx --env-file-if-exists=.env src/db/migrate.ts",
     "seed": "tsx --env-file-if-exists=.env src/db/seed.ts",
+    "demo": "tsx --env-file-if-exists=.env src/db/demo.ts",
     "bootstrap": "tsx --env-file-if-exists=.env src/db/bootstrap.ts",
     "lint": "tsc -p tsconfig.json --noEmit",
     "migrate:status": "tsx --env-file-if-exists=.env src/db/migrate.ts --status"
