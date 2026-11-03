@@ -25,7 +25,6 @@ jobs:
       contents: read
       packages: write
       id-token: write
-      attestations: write
     uses: rgrishabh/hrms-deployment/.github/workflows/_app-publish.yml@main
     with:
       app: backend
