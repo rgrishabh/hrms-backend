@@ -40,4 +40,4 @@ Commit messages and PR titles follow [Conventional Commits](https://www.conventi
 ## Documentation
 
 [ARCHITECTURE](ARCHITECTURE.md) · [SECURITY](SECURITY.md) · [DECISIONS](DECISIONS.md) · [TESTING](TESTING.md) ·
-[IMPLEMENTATION_PLAN](IMPLEMENTATION_PLAN.md) · [INDIAN_PAYROLL_COMPLIANCE](INDIAN_PAYROLL_COMPLIANCE.md) · [docs/](docs/) (API and per-module guides)
+[IMPLEMENTATION_PLAN](IMPLEMENTATION_PLAN.md) · [INDIAN_PAYROLL_COMPLIANCE](INDIAN_PAYROLL_COMPLIANCE.md) · [docs/](docs/) (API and per-module guides, incl. RECRUITMENT)
