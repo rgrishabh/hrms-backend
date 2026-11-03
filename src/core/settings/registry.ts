@@ -73,6 +73,8 @@ export const SETTINGS: readonly SettingDefinition[] = [
     control: 'text', schema: z.string().trim().regex(/^((pf|esi|pt|lwf|tds)(\s*,\s*(pf|esi|pt|lwf|tds))*)?$/, 'Use pf, esi, pt, lwf, tds separated by commas'), default: 'pf,esi,pt,tds', scopes: ['tenant'], editPermission: 'payroll.statutory' }),
   def({ key: 'payroll.missing_punch_is_lop', group: 'general', feature: 'payroll', label: 'Count unresolved missing punches as loss of pay', description: 'When off, missing-punch days are paid but flagged as warnings on the run.',
     control: 'boolean', schema: z.boolean(), default: true, scopes: ['tenant'], editPermission: 'payroll.manage' }),
+  def({ key: 'grievance.response_days', group: 'general', feature: 'grievance', label: 'Grievance response target (days)', description: 'Handlers are reminded when a grievance is open longer than this.',
+    control: 'number', schema: z.number().int().min(1).max(90), default: 15, scopes: ['tenant'], editPermission: 'grievance.manage' }),
   def({ key: 'security.session_ttl_hours', group: 'security', label: 'Session lifetime (hours)', description: 'Users are signed out after this long. Cannot exceed the deployment maximum.',
     control: 'number', schema: z.number().int().min(1).max(720), default: 12, scopes: ['tenant'], editPermission: 'security.manage',
     deploymentCeiling: (e) => e.sessionTtlHours }),
