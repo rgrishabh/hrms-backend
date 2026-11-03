@@ -19,7 +19,7 @@ scripts/smoke.sh                                  # end-to-end against a running
 | Check | Result |
 |---|---|
 | `npm run typecheck` (API + web) | exit 0 |
-| `npm test` | **218 passed, 0 failed** (23 files) |
+| `npm test` | **222 passed, 0 failed** (24 files) |
 | `npm run build` (API + web) | exit 0 |
 | `npm audit --omit=dev` | 0 vulnerabilities |
 | `scripts/smoke.sh` (dev installation via Vite proxy) | **16 passed** (incl. leave balances and preview) |
@@ -56,6 +56,7 @@ scripts/smoke.sh                                  # end-to-end against a running
 | `payroll-calc.test.ts` | 6 | Fixed/percent components, deductions, PF with ceilings and EPS split, employer cost; proration with half-up rounding; ESI threshold and round-up, PT month override, TDS projection with slabs/rebate/cess; missing rules are never guessed (warnings), PF exclusion, no PT state; adjustments and negative net; progressive slabs |
 | `payroll.test.ts` | 8 | Components (percent only of fixed); salary maker-checker without figures in approvals; statutory params validated, scope rules, verification by a second person, active rules locked; PAN encrypted/masked; run from attendance LOP (absent, half day), only salaried employees, one regular run per month, warnings block submission until acknowledged; adjustments force recompute and correct LOP; different approver; finalize needs locked attendance; finalized items immutable (trigger), no backdated salary into a closed month; own payslip only; bank export full vs masked, PF file with UAN, register; exports audited; paid; F&F needs a separation; module off |
 | `cases.test.ts` | 5 | POSH needs an IC with one presiding officer; admins maintain it but cannot read complaints; no anonymous POSH; late filing needs a reason; notifications/audit carry no narrative; description encrypted at rest; HR/admin/respondent get 404; IC workflow with allowed moves, report due 10 days after inquiry, outcome required to close; complainant sees shared updates only, attributed to the IC; annual counts; party to a case excluded; anonymous grievance with SLA, assignment rules, complainant comment/reopen/withdraw, version conflicts; deadline reminders; module off |
+| `performance-assets.test.ts` | 4 | Cycle activation creates reviews, drafts hidden; weighted goals ≤ 100%, employee proposes / manager agrees; self → manager → HR final with ratings hidden from the employee until final, acknowledgement, close blocked while open; asset register, unique tags, calibration-expired instruments cannot be issued, one holder at a time, employee acknowledgement, calibration reminders; unreturned assets block exit completion until received |
 | `jobs.test.ts` | 8 | Due-period and next-run calculation; each job runs once per period and does its work (close day, accrual, session cleanup); **two simultaneous scheduler passes run each job exactly once**; nothing before the scheduled time; failure → backoff → retry → success; recovery of runs abandoned by a crashed process; module-gated jobs skipped; Run now permission, history and audit |
 
 ## Defects found by testing in this phase (all fixed)

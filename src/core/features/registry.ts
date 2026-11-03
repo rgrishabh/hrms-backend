@@ -71,12 +71,12 @@ export const FEATURES: readonly FeatureDefinition[] = [
 
   // ---- Talent & lab
   f({ key: 'recruitment', name: 'Recruitment', description: 'Approved requisitions, candidates with consent and retention, interview pipeline with panel feedback, approved offers, hire into employee records.', category: 'talent', availability: 'available', dependencies: ['core.employees'] }),
-  f({ key: 'performance', name: 'Performance management', description: 'Goals, reviews and rating scales.', category: 'talent', availability: 'planned', dependencies: ['core.employees'] }),
+  f({ key: 'performance', name: 'Performance reviews', description: 'Review cycles, weighted goals agreed with the manager, self and manager reviews, HR-finalized ratings acknowledged by the employee.', category: 'talent', availability: 'available', dependencies: ['core.employees'] }),
   f({ key: 'training', name: 'Training records', description: 'Training courses with validity, employee training records, expiry reminders.', category: 'talent', availability: 'available', dependencies: ['core.employees'] }),
   f({ key: 'lab.competency', name: 'Laboratory competency & technical authorization', description: 'Methods with training prerequisites, competency assessments, quality-approved technical authorizations with periodic review, competence matrix.', category: 'talent', availability: 'available', dependencies: ['training'] }),
 
   // ---- Operations & compliance
-  f({ key: 'assets', name: 'Asset management', description: 'Equipment and PPE assignment and return.', category: 'operations', availability: 'planned', dependencies: ['core.employees'] }),
+  f({ key: 'assets', name: 'Assets', description: 'Asset register (lab instruments, IT, PPE…), issue and return with acknowledgement, calibration due reminders, exit clearance check.', category: 'operations', availability: 'available', dependencies: ['core.employees'] }),
   f({ key: 'grievance', name: 'Grievances', description: 'Confidential grievances (optionally anonymous) with handler assignment, response target and complainant-visible updates.', category: 'operations', availability: 'available', dependencies: ['core.employees'] }),
   f({ key: 'posh', name: 'POSH complaints', description: 'Complaints to the Internal Committee only (not visible to administrators), statutory timelines, encrypted narrative, annual report counts.', category: 'operations', availability: 'available', dependencies: ['core.employees'] }),
   f({ key: 'notifications.email', name: 'Email notifications', description: 'Approval alerts, reminders and security notices by email (SMTP configured by the deployment).', category: 'operations', availability: 'available' }),

@@ -11,6 +11,7 @@ import { revokeAllSessionsForUser } from '../../core/auth/session.js';
 import { orgToday } from '../competency/service.js';
 import { daysBetween } from '../attendance/time.js';
 import type { Db } from '../../db/tx.js';
+import { openAssets } from '../assets/routes.js';
 import { OWNERS, OWNER_PERMISSION, type Owner, canActOnTask, createChecklist, featureOn, loadEmp, maybeCompleteChecklist, taskAssignees } from './service.js';
 
 const ON = 'core.onboarding';
@@ -440,6 +441,10 @@ export async function lifecycleRoutes(app: FastifyInstance) {
       const open = (await db.query<{ n: string }>(`SELECT count(*) AS n FROM checklist_tasks t JOIN checklists c ON c.tenant_id=t.tenant_id AND c.id=t.checklist_id
         WHERE t.tenant_id=$1 AND c.separation_id=$2 AND c.status <> 'cancelled' AND t.status='pending'`, [a.tenantId, id])).rows[0]!.n;
       if (Number(open) > 0) throw conflict(`${open} clearance task(s) are still pending`);
+      if (await featureOn(db, a.tenantId, 'assets')) {
+        const held = await openAssets(db, a.tenantId, s.employee_id);
+        if (held.length) throw conflict(`Assets not returned: ${held.map((h) => `${h.tag} ${h.name}`).join(', ')}. Receive them (or record them as lost) first.`);
+      }
       await db.query(`UPDATE separations SET status='completed', rehire_eligible=$3, completed_at=now() WHERE tenant_id=$1 AND id=$2`, [a.tenantId, id, b.rehireEligible]);
       await db.query(`UPDATE employees SET status='exited', exit_date=$3, version=version+1, updated_at=now() WHERE tenant_id=$1 AND id=$2`, [a.tenantId, s.employee_id, lwd]);
       await endAccess(db, a.tenantId, s.employee_id);

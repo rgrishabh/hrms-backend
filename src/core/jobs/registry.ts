@@ -10,6 +10,7 @@ import { policyAckReminders } from '../../modules/policies/jobs.js';
 import { recruitmentRetention } from '../../modules/recruitment/routes.js';
 import { lifecycleDaily } from '../../modules/lifecycle/routes.js';
 import { caseDeadlines } from '../../modules/cases/routes.js';
+import { assetsDaily } from '../../modules/assets/routes.js';
 
 /**
  * Background jobs. Schedules are in the organization's timezone (general.timezone).
@@ -174,6 +175,15 @@ export const JOBS: readonly JobDefinition[] = [
     feature: ['posh', 'grievance'],
     runPermission: 'grievance.manage',
     run: (db, tenantId, ctx) => caseDeadlines(db, tenantId, ctx.localDate),
+  },
+  {
+    key: 'assets.daily',
+    name: 'Asset calibration and returns',
+    description: 'Reminds asset managers 30 and 7 days before an instrument calibration is due and on the day; reminds employees weekly about assets past their return date.',
+    schedule: { kind: 'daily', at: '08:15' },
+    feature: 'assets',
+    runPermission: 'assets.manage',
+    run: (db, tenantId, ctx) => assetsDaily(db, tenantId, ctx.localDate),
   },
   {
     key: 'sessions.cleanup',
