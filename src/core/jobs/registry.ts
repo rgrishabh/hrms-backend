@@ -9,6 +9,7 @@ import { trainingExpiry, authorizationReview } from '../../modules/competency/jo
 import { policyAckReminders } from '../../modules/policies/jobs.js';
 import { recruitmentRetention } from '../../modules/recruitment/routes.js';
 import { lifecycleDaily } from '../../modules/lifecycle/routes.js';
+import { caseDeadlines } from '../../modules/cases/routes.js';
 
 /**
  * Background jobs. Schedules are in the organization's timezone (general.timezone).
@@ -164,6 +165,15 @@ export const JOBS: readonly JobDefinition[] = [
     schedule: { kind: 'daily', at: '06:30' },
     runPermission: 'lifecycle.manage',
     run: (db, tenantId, ctx) => lifecycleDaily(db, tenantId, ctx.localDate),
+  },
+  {
+    key: 'cases.deadlines',
+    name: 'POSH and grievance timelines',
+    description: 'Reminds the Internal Committee 7 days before POSH inquiry/report deadlines, on the day and weekly after; reminds handlers of grievances past their response target.',
+    schedule: { kind: 'daily', at: '09:00' },
+    feature: ['posh', 'grievance'],
+    runPermission: 'grievance.manage',
+    run: (db, tenantId, ctx) => caseDeadlines(db, tenantId, ctx.localDate),
   },
   {
     key: 'sessions.cleanup',

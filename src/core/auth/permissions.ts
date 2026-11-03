@@ -40,6 +40,9 @@ export const PERMISSIONS = {
   'expenses.approve': 'Approve expense claims at finance level',
   'expenses.pay': 'Prepare, approve and record reimbursement payment batches',
   'expenses.manage': 'Configure expense categories and limits',
+  'cases.self': 'Raise a grievance or POSH complaint and follow my own cases',
+  'grievance.manage': 'Handle employee grievances',
+  'posh.admin': 'Maintain the Internal Committee membership (does not give access to complaints)',
   'payslips.self': 'View my payslips',
   'payroll.read': 'View payroll runs, salaries and registers',
   'payroll.manage': 'Set up components and salaries, prepare and compute payroll runs',
@@ -75,20 +78,20 @@ export type Permission = keyof typeof PERMISSIONS;
 export const ALL_PERMISSIONS = Object.keys(PERMISSIONS) as Permission[];
 
 const P = (...p: Permission[]) => p;
-const SELF = P('attendance.self', 'employees.directory', 'leave.self', 'documents.self', 'expenses.self', 'competency.self', 'policies.self', 'lifecycle.self', 'payslips.self');
+const SELF = P('attendance.self', 'employees.directory', 'leave.self', 'documents.self', 'expenses.self', 'competency.self', 'policies.self', 'lifecycle.self', 'payslips.self', 'cases.self');
 
 export interface RoleDefinition { key: string; name: string; scope: 'tenant'; permissions: readonly Permission[] }
 
 export const SYSTEM_ROLES: readonly RoleDefinition[] = [
   { key: 'tenant_admin', name: 'Administrator', scope: 'tenant', permissions: P(...SELF,
     'settings.read', 'settings.manage', 'security.manage',
-    'users.manage', 'audit.read', 'org.read', 'org.manage', 'attendance.configure', 'policies.read', 'policies.publish') },
+    'users.manage', 'audit.read', 'org.read', 'org.manage', 'attendance.configure', 'policies.read', 'policies.publish', 'posh.admin') },
   { key: 'hr_admin', name: 'HR Administrator', scope: 'tenant', permissions: P(...SELF, 'settings.read', 'org.read', 'org.manage',
     'employees.read', 'employees.manage', 'employees.bank.read', 'employees.bank.manage', 'attendance.read',
     'attendance.recalculate', 'attendance.approve', 'attendance.configure', 'audit.read', 'leave.read', 'leave.approve', 'leave.manage', 'documents.read', 'documents.restricted', 'documents.manage', 'training.manage', 'competency.read',
     'policies.read', 'policies.manage', 'policies.publish',
     'recruitment.requisition', 'recruitment.read', 'recruitment.manage', 'recruitment.approve', 'recruitment.compensation',
-    'lifecycle.read', 'lifecycle.manage', 'payroll.read') },
+    'lifecycle.read', 'lifecycle.manage', 'payroll.read', 'grievance.manage', 'posh.admin') },
   { key: 'hr_executive', name: 'HR Executive', scope: 'tenant', permissions: P(...SELF, 'org.read', 'employees.read', 'employees.manage',
     'attendance.read', 'attendance.recalculate', 'attendance.approve', 'leave.read', 'leave.approve', 'documents.read', 'documents.manage', 'training.manage', 'policies.read', 'policies.manage',
     'recruitment.requisition', 'recruitment.read', 'recruitment.manage', 'lifecycle.read', 'lifecycle.manage') },
