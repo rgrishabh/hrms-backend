@@ -110,6 +110,10 @@ describe('pipeline and interviews', () => {
   });
 
   it('panel members see only their interviews; feedback is blind until submitted and once only', async () => {
+    const pu = (await hr.get('/api/v1/recruitment/panel-users?search=other')).json().items;
+    expect(pu.some((u: { id: string }) => u.id === T.users.other!.id)).toBe(true);
+    expect(Object.keys(pu[0]).sort()).toEqual(['designation', 'display_name', 'id']);
+    expect((await emp.get('/api/v1/recruitment/panel-users')).statusCode).toBe(403);
     const started = new Date(Date.now() - 3600e3).toISOString();
     const iv = await hr.post(`/api/v1/recruitment/applications/${appId}/interviews`, { round: 1, kind: 'practical_lab', scheduledAt: started, location: 'Lab 2',
       panelUserIds: [T.users.manager!.id, T.users.other!.id] });

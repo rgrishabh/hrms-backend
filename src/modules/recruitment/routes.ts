@@ -485,6 +485,18 @@ export async function recruitmentRoutes(app: FastifyInstance) {
     });
   });
 
+  /** Active users to pick an interview panel from (name only; no roles or contact details). */
+  app.get('/panel-users', async (req) => {
+    const a = tenantActor(req, 'recruitment.manage');
+    const q = z.object({ search: z.string().trim().max(100).optional() }).parse(req.query);
+    return a.tx(async (db) => {
+      await requireFeature(db, a.tenantId, FEATURE);
+      return { items: (await db.query(`SELECT u.id, u.display_name, e.designation FROM users u LEFT JOIN employees e ON e.tenant_id=u.tenant_id AND e.user_id=u.id
+        WHERE u.tenant_id=$1 AND u.status='active' AND ($2::text IS NULL OR lower(u.display_name) LIKE '%'||lower($2)||'%')
+        ORDER BY u.display_name LIMIT 25`, [a.tenantId, q.search || null])).rows };
+    });
+  });
+
   app.get('/interviews/mine', async (req) => {
     const a = tenantActor(req);
     return a.tx(async (db) => {
