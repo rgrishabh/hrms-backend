@@ -1,0 +1,33 @@
+name: Publish (develop)
+# Push to develop: re-run CI, then push ghcr.io/<owner>/hrms-backend:sha-<short> and :develop
+# (SBOM + provenance + cosign signature) and ask hrms-deployment to deploy it to dev.
+on:
+  push:
+    branches: [develop]
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: publish-develop
+  cancel-in-progress: false
+jobs:
+  ci:
+    permissions:
+      contents: read
+      pull-requests: write
+    uses: rgrishabh/hrms-deployment/.github/workflows/_app-ci.yml@main
+    with:
+      app: backend
+      postgres: true
+  publish:
+    needs: ci
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
+      attestations: write
+    uses: rgrishabh/hrms-deployment/.github/workflows/_app-publish.yml@main
+    with:
+      app: backend
+      mode: develop
+    secrets: inherit

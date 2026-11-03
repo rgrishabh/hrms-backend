@@ -1,0 +1,45 @@
+name: Release
+# Push to main: release-please opens/updates the release PR (Conventional Commits).
+# Merging it tags vX.Y.Z; this workflow then publishes :vX.Y.Z and :latest (signed) and
+# asks hrms-deployment to open the production version PR. A manually pushed v* tag does the same.
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+jobs:
+  release-please:
+    if: github.ref_type == 'branch'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+      pull-requests: write
+    outputs:
+      created: ${{ steps.rp.outputs.release_created }}
+      tag: ${{ steps.rp.outputs.tag_name }}
+    steps:
+      - id: rp
+        uses: googleapis/release-please-action@5c625bfb5d1ff62eadeeb3772007f7f66fdcf071 # v4.4.1
+        with:
+          config-file: release-please-config.json
+          manifest-file: .release-please-manifest.json
+  publish:
+    needs: release-please
+    if: always() && (github.ref_type == 'tag' || needs.release-please.outputs.created == 'true')
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
+      attestations: write
+    uses: rgrishabh/hrms-deployment/.github/workflows/_app-publish.yml@main
+    with:
+      app: backend
+      mode: release
+      version: ${{ github.ref_type == 'tag' && github.ref_name || needs.release-please.outputs.tag }}
+    secrets: inherit

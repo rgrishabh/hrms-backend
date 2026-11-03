@@ -1,0 +1,19 @@
+name: CI
+# Pull requests: lint, tests (PostgreSQL), image build (no push), Trivy, gitleaks, PR comment.
+on:
+  pull_request:
+    branches: [develop, main]
+permissions:
+  contents: read
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  ci:
+    permissions:
+      contents: read
+      pull-requests: write
+    uses: rgrishabh/hrms-deployment/.github/workflows/_app-ci.yml@main
+    with:
+      app: backend
+      postgres: true
