@@ -70,7 +70,7 @@ export const FEATURES: readonly FeatureDefinition[] = [
   f({ key: 'accounting_exports', name: 'Accounting exports', description: 'Ledger exports for payroll and reimbursements.', category: 'payroll_finance', availability: 'planned', dependencies: ['payroll'] }),
 
   // ---- Talent & lab
-  f({ key: 'recruitment', name: 'Recruitment', description: 'Requisitions, candidates, interviews and offers.', category: 'talent', availability: 'planned', dependencies: ['core.employees'] }),
+  f({ key: 'recruitment', name: 'Recruitment', description: 'Approved requisitions, candidates with consent and retention, interview pipeline with panel feedback, approved offers, hire into employee records.', category: 'talent', availability: 'available', dependencies: ['core.employees'] }),
   f({ key: 'performance', name: 'Performance management', description: 'Goals, reviews and rating scales.', category: 'talent', availability: 'planned', dependencies: ['core.employees'] }),
   f({ key: 'training', name: 'Training records', description: 'Training courses with validity, employee training records, expiry reminders.', category: 'talent', availability: 'available', dependencies: ['core.employees'] }),
   f({ key: 'lab.competency', name: 'Laboratory competency & technical authorization', description: 'Methods with training prerequisites, competency assessments, quality-approved technical authorizations with periodic review, competence matrix.', category: 'talent', availability: 'available', dependencies: ['training'] }),

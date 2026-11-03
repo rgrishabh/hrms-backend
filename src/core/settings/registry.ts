@@ -63,6 +63,8 @@ export const SETTINGS: readonly SettingDefinition[] = [
     control: 'number', schema: z.number().int().min(7).max(365), default: 60, scopes: ['tenant'], editPermission: 'expenses.manage' }),
   def({ key: 'competency.assessment_validity_days', group: 'general', feature: 'lab.competency', label: 'Competency assessment validity (days)', description: 'An authorization can only be requested on an assessment at most this old.',
     control: 'number', schema: z.number().int().min(30).max(730), default: 180, scopes: ['tenant'], editPermission: 'competency.manage' }),
+  def({ key: 'recruitment.retention_months', group: 'general', feature: 'recruitment', label: 'Keep candidate data for (months)', description: 'Candidates who are not hired are anonymized and their resumes deleted this long after they were added (unless still in an open process).',
+    control: 'number', schema: z.number().int().min(1).max(60), default: 12, scopes: ['tenant'], editPermission: 'recruitment.manage' }),
   def({ key: 'security.session_ttl_hours', group: 'security', label: 'Session lifetime (hours)', description: 'Users are signed out after this long. Cannot exceed the deployment maximum.',
     control: 'number', schema: z.number().int().min(1).max(720), default: 12, scopes: ['tenant'], editPermission: 'security.manage',
     deploymentCeiling: (e) => e.sessionTtlHours }),

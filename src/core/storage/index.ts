@@ -1,7 +1,7 @@
-import { mkdir, readFile, rename, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
-import { S3Client, PutObjectCommand, GetObjectCommand } from '@aws-sdk/client-s3';
+import { S3Client, PutObjectCommand, GetObjectCommand, DeleteObjectCommand } from '@aws-sdk/client-s3';
 import type { Env } from '../../config/env.js';
 
 /**
@@ -13,13 +13,15 @@ export interface BlobStore {
   driver: 'local' | 's3';
   put(key: string, data: Buffer, contentType: string): Promise<void>;
   get(key: string): Promise<Buffer>;
+  /** Permanently remove an object (data-retention erasure). Missing objects are not an error. */
+  delete(key: string): Promise<void>;
 }
 
 const UUID = '[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}';
-const KEY_RE = new RegExp(`^${UUID}/(employees/${UUID}|company|expenses/${UUID}|policies)/${UUID}$`);
+const KEY_RE = new RegExp(`^${UUID}/(employees/${UUID}|company|expenses/${UUID}|policies|recruitment)/${UUID}$`);
 export function assertKey(key: string) { if (!KEY_RE.test(key)) throw new Error('invalid storage key'); }
-export function newKey(tenantId: string, employeeId: string | null, area: 'documents' | 'expenses' | 'policies' = 'documents') {
-  const key = area === 'policies' ? `${tenantId}/policies/${randomUUID()}` : area === 'expenses' ? `${tenantId}/expenses/${employeeId}/${randomUUID()}` : `${tenantId}/${employeeId ? `employees/${employeeId}` : 'company'}/${randomUUID()}`;
+export function newKey(tenantId: string, employeeId: string | null, area: 'documents' | 'expenses' | 'policies' | 'recruitment' = 'documents') {
+  const key = area === 'policies' || area === 'recruitment' ? `${tenantId}/${area}/${randomUUID()}` : area === 'expenses' ? `${tenantId}/expenses/${employeeId}/${randomUUID()}` : `${tenantId}/${employeeId ? `employees/${employeeId}` : 'company'}/${randomUUID()}`;
   assertKey(key);
   return key;
 }
@@ -42,6 +44,7 @@ export class LocalStore implements BlobStore {
     await rename(tmp, p); // atomic: readers never see a partial file
   }
   async get(key: string) { return readFile(this.file(key)); }
+  async delete(key: string) { await rm(this.file(key), { force: true }); }
 }
 
 export class S3Store implements BlobStore {
@@ -57,6 +60,10 @@ export class S3Store implements BlobStore {
     assertKey(key);
     const r = await this.client.send(new GetObjectCommand({ Bucket: this.bucket, Key: key }));
     return Buffer.from(await r.Body!.transformToByteArray());
+  }
+  async delete(key: string) {
+    assertKey(key);
+    await this.client.send(new DeleteObjectCommand({ Bucket: this.bucket, Key: key }));
   }
 }
 
