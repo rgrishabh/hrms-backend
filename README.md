@@ -14,6 +14,19 @@ npm run dev                     # http://127.0.0.1:4000 — run hrms-frontend's 
 npm run lint && npm test        # tests need the hrms_test* databases (see TESTING.md)
 ```
 
+## Demo data for dev installations
+
+`demo` (image command) / `npm run demo` fills a **freshly bootstrapped, empty** installation with a synthetic
+60-person testing laboratory: 3 branches, 11 departments, a manager hierarchy, 30 days of punches (calculated),
+leave balances, expense claims, training records and technical authorizations, published policies,
+recruitment pipeline, salaries, assets with calibration dates, an active review cycle and a POSH committee.
+It creates 10 persona logins (`director@`, `hr.head@`, `hr.exec@`, `payroll@`, `finance@`, `lab.manager@`,
+`quality@`, `it@`, `analyst@`, `sampler@` the organization's domain) sharing one random password, printed to
+STDOUT only — redirect it to a protected file.
+
+Guards: requires `DEMO_DATA_ALLOWED=true`; refuses if any employee exists whose code is not `DM-…` (so it can
+never mix into real data); idempotent. It never creates statutory payroll rules.
+
 ## Image
 
 One image for every environment and customer; configuration comes from the environment at runtime.

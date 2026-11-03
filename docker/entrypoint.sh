@@ -10,5 +10,6 @@ case "$cmd" in
   migrate-status) exec node dist/src/db/migrate.js --status "$@" ;;
   provision)      exec node dist/src/db/provision.js "$@" ;;
   bootstrap)      exec node dist/src/db/bootstrap.js "$@" ;;
+  demo)           exec node dist/src/db/demo.js "$@" ;;   # dev/demo only: needs DEMO_DATA_ALLOWED=true
   *)              exec "$cmd" "$@" ;;
 esac
