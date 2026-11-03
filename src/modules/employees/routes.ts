@@ -68,7 +68,7 @@ export async function employeeRoutes(app: FastifyInstance) {
       const id = await insertEmployee(db, a.tenantId, body.employee, body.confirmDuplicate);
       await audit(db, { ...a.auditBase, action: 'employee.created', targetType: 'employee', targetId: id,
         metadata: { employeeCode: body.employee.employeeCode, confirmedDuplicate: body.confirmDuplicate } });
-      return reply.code(201).send({ id });
+      reply.code(201); return { id };
     });
   });
 

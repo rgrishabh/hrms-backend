@@ -178,7 +178,7 @@ export async function recruitmentRoutes(app: FastifyInstance) {
           positions, justification, budget_ctc_max, hiring_manager_id, target_date, created_by) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14) RETURNING id`,
         [a.tenantId, n, ...reqCols(b), a.user.userId])).rows[0]!.id;
       await audit(db, { ...a.auditBase, action: 'recruitment.requisition_created', targetType: 'job_requisition', targetId: id, metadata: { number: n, title: b.title, positions: b.positions } });
-      return reply.code(201).send({ id, code: reqNo(n) });
+      reply.code(201); return { id, code: reqNo(n) };
     });
   });
 
@@ -332,7 +332,7 @@ export async function recruitmentRoutes(app: FastifyInstance) {
           b.expectedCtc, b.location, b.qualification, key, file ? safeFileName(file.name, detected!.ext) : null, detected?.contentType ?? null, sha, b.consentNote, today, months, a.user.userId])).rows[0]!.id;
       await audit(db, { ...a.auditBase, action: 'recruitment.candidate_created', category: 'data', targetType: 'candidate', targetId: id,
         metadata: { source: b.source, hasResume: !!file, consentNote: b.consentNote, confirmedDuplicate: dup.length > 0 } });
-      return reply.code(201).send({ id });
+      reply.code(201); return { id };
     });
   });
 
@@ -405,7 +405,7 @@ export async function recruitmentRoutes(app: FastifyInstance) {
       if (!id) throw conflict('This candidate is already in this requisition');
       await db.query(`INSERT INTO job_application_events (tenant_id, application_id, from_stage, to_stage, note, actor_id) VALUES ($1,$2,NULL,'applied',$3,$4)`, [a.tenantId, id, b.note, a.user.userId]);
       await audit(db, { ...a.auditBase, action: 'recruitment.application_created', targetType: 'job_application', targetId: id, metadata: b });
-      return reply.code(201).send({ id });
+      reply.code(201); return { id };
     });
   });
 
@@ -481,7 +481,7 @@ export async function recruitmentRoutes(app: FastifyInstance) {
         body: `Round ${b.round} (${b.kind.replace('_', ' ')}) on ${new Date(b.scheduledAt).toISOString().slice(0, 16).replace('T', ' ')} UTC${b.location ? ` — ${b.location}` : ''}. Submit your feedback in HRMS afterwards.`,
         link: '/recruitment?tab=interviews', actionLabel: 'Open' });
       await audit(db, { ...a.auditBase, action: 'recruitment.interview_scheduled', targetType: 'interview', targetId: iid, metadata: { applicationId: id, round: b.round, panel: users.length } });
-      return reply.code(201).send({ id: iid });
+      reply.code(201); return { id: iid };
     });
   });
 
@@ -564,7 +564,7 @@ export async function recruitmentRoutes(app: FastifyInstance) {
           joining_date, probation_months, contract_end_date, above_budget, notes, created_by) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14) RETURNING id`,
         [a.tenantId, id, b.designation, b.legalEntityId, b.branchId, b.departmentId, b.employmentType, b.annualCtc, b.joiningDate, b.probationMonths, b.contractEndDate, above, b.notes, a.user.userId])).rows[0]!.id;
       await audit(db, { ...a.auditBase, action: 'recruitment.offer_drafted', targetType: 'job_offer', targetId: oid, metadata: { applicationId: id, aboveBudget: above } });
-      return reply.code(201).send({ id: oid, aboveBudget: above });
+      reply.code(201); return { id: oid, aboveBudget: above };
     });
   });
 
@@ -659,7 +659,7 @@ export async function recruitmentRoutes(app: FastifyInstance) {
       await db.query(`UPDATE job_requisitions SET filled=$3, status=CASE WHEN $3 >= positions THEN 'closed' ELSE status END,
           closed_at=CASE WHEN $3 >= positions THEN now() ELSE closed_at END, version=version+1 WHERE tenant_id=$1 AND id=$2`, [a.tenantId, ap.requisition_id, filled]);
       await audit(db, { ...a.auditBase, action: 'recruitment.hired', targetType: 'employee', targetId: employeeId, metadata: { offerId: id, applicationId: ap.id, employeeCode: b.employeeCode } });
-      return reply.code(201).send({ employeeId, requisitionClosed: filled >= req0.positions });
+      reply.code(201); return { employeeId, requisitionClosed: filled >= req0.positions };
     });
   });
 }

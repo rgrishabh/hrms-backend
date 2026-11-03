@@ -95,7 +95,7 @@ export async function policyRoutes(app: FastifyInstance) {
       const id = (await db.query<{ id: string }>(`INSERT INTO policies (tenant_id, code, title, category, owner, created_by) VALUES ($1,$2,$3,$4,$5,$6) RETURNING id`,
         [a.tenantId, b.code, b.title, b.category, b.owner, a.user.userId])).rows[0]!.id;
       await audit(db, { ...a.auditBase, action: 'policies.created', category: 'configuration', targetType: 'policy', targetId: id, metadata: b });
-      return reply.code(201).send({ id });
+      reply.code(201); return { id };
     });
   });
 
@@ -190,7 +190,7 @@ export async function policyRoutes(app: FastifyInstance) {
           b.effectiveFrom, b.requiresAck, b.ackDueDays, b.audienceBranchIds, b.audienceDepartmentIds, a.user.userId])).rows[0]!.id;
       await audit(db, { ...a.auditBase, action: 'policies.version_drafted', category: 'configuration', targetType: 'policy_version', targetId: vid,
         metadata: { policyId: id, versionNo: no, fileSha256: fileSha, hasBody: !!b.body, audienceBranches: b.audienceBranchIds.length, audienceDepartments: b.audienceDepartmentIds.length } });
-      return reply.code(201).send({ id: vid, versionNo: no });
+      reply.code(201); return { id: vid, versionNo: no };
     });
   });
 

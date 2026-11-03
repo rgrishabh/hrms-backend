@@ -145,7 +145,7 @@ export async function leaveRoutes(app: FastifyInstance) {
       const r = await db.query<{ id: string }>(`INSERT INTO leave_types (tenant_id, ${TYPE_FIELDS}) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17) RETURNING id`,
         [a.tenantId, ...typeCols(b)]);
       await audit(db, { ...a.auditBase, action: 'leave.type_created', category: 'configuration', targetType: 'leave_type', targetId: r.rows[0]!.id, metadata: b });
-      return reply.code(201).send({ id: r.rows[0]!.id });
+      reply.code(201); return { id: r.rows[0]!.id };
     });
   });
 
@@ -236,7 +236,7 @@ export async function leaveRoutes(app: FastifyInstance) {
         summary: `${r.type.name}: ${r.days.toFixed(1)} day(s), ${body.startDate}${body.endDate !== body.startDate ? ' to ' + body.endDate : ''}`, steps });
       await audit(db, { ...a.auditBase, action: 'leave.requested', targetType: 'leave_request', targetId: id,
         metadata: { employeeId: r.employee.id, type: r.type.code, startDate: body.startDate, endDate: body.endDate, days: r.days.toFixed(2), onBehalf: !!body.employeeId && body.employeeId !== a.user.employeeId } });
-      return reply.code(201).send({ id, approvalRequestId: reqId, days: r.days.toFixed(2) });
+      reply.code(201); return { id, approvalRequestId: reqId, days: r.days.toFixed(2) };
     });
   });
 
@@ -348,7 +348,7 @@ export async function leaveRoutes(app: FastifyInstance) {
       await insertLedgerEntry(db, a.tenantId, { empId: body.employeeId, typeId: body.leaveTypeId, year: body.leaveYear, entryType: body.entryType,
         days: new Decimal(body.days), reference: ref, note: body.note, actorId: a.user.userId });
       await audit(db, { ...a.auditBase, action: 'leave.balance_adjusted', targetType: 'employee', targetId: body.employeeId, metadata: body });
-      return reply.code(201).send({ ok: true });
+      reply.code(201); return { ok: true };
     });
   });
 }

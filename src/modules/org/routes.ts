@@ -35,7 +35,7 @@ export async function orgRoutes(app: FastifyInstance) {
         const r = await db.query<{ id: string }>(`INSERT INTO ${table} (tenant_id, ${keys.join(',')}) VALUES ($1, ${keys.map((_, i) => `$${i + 2}`).join(',')}) RETURNING id`,
           [a.tenantId, ...Object.values(c)]);
         await audit(db, { ...a.auditBase, action: `org.${entity}_created`, targetType: entity, targetId: r.rows[0]!.id, metadata: c });
-        return reply.code(201).send({ id: r.rows[0]!.id });
+        reply.code(201); return { id: r.rows[0]!.id };
       });
     });
     app.put(`/${entity}/:id`, async (req) => {

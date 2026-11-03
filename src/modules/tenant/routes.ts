@@ -175,7 +175,7 @@ export async function tenantAdminRoutes(app: FastifyInstance, opts: { publicConf
       }
       await audit(db, { ...a.auditBase, action: 'user.created', category: 'security', targetType: 'user', targetId: userId,
         metadata: { email: body.email, roles: body.roles, employeeId: body.employeeId } });
-      return reply.code(201).send({ id: userId });
+      reply.code(201); return { id: userId };
     });
   });
 
