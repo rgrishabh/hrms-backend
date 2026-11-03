@@ -7,6 +7,7 @@ import { getSettingValue } from '../settings/service.js';
 import { notifyUsers, usersWithPermission } from '../notify/service.js';
 import { trainingExpiry, authorizationReview } from '../../modules/competency/jobs.js';
 import { policyAckReminders } from '../../modules/policies/jobs.js';
+import { recruitmentRetention } from '../../modules/recruitment/routes.js';
 
 /**
  * Background jobs. Schedules are in the organization's timezone (general.timezone).
@@ -144,6 +145,15 @@ export const JOBS: readonly JobDefinition[] = [
     feature: 'core.policies',
     runPermission: 'policies.publish',
     run: (db, tenantId, ctx) => policyAckReminders(db, tenantId, ctx.localDate),
+  },
+  {
+    key: 'recruitment.retention',
+    name: 'Candidate data retention',
+    description: 'Anonymizes candidates (and deletes resumes) after the retention period, unless hired or still in an open process.',
+    schedule: { kind: 'daily', at: '04:00' },
+    feature: 'recruitment',
+    runPermission: 'recruitment.manage',
+    run: (db, tenantId, ctx) => recruitmentRetention(db, tenantId, ctx.localDate),
   },
   {
     key: 'sessions.cleanup',
