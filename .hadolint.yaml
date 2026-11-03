@@ -1,0 +1,3 @@
+failure-threshold: warning
+ignored:
+  - DL3018 # apk version pinning: base images are pinned and rebuilt by Dependabot
