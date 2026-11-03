@@ -77,6 +77,15 @@ export async function caseRoutes(app: FastifyInstance) {
     });
   });
 
+  /** Active users (name only) for picking IC members or grievance handlers. */
+  app.get('/people', async (req) => {
+    const a = tenantActor(req);
+    if (!a.has('posh.admin') && !a.has('grievance.manage')) throw forbidden();
+    const q = z.object({ search: z.string().trim().max(100).optional() }).parse(req.query);
+    return a.tx(async (db) => ({ items: (await db.query(`SELECT id, display_name FROM users WHERE tenant_id=$1 AND status='active'
+      AND ($2::text IS NULL OR lower(display_name) LIKE '%'||lower($2)||'%') ORDER BY display_name LIMIT 25`, [a.tenantId, q.search || null])).rows }));
+  });
+
   // ------------------------------------------------------------ file a case
   app.post('/', async (req, reply) => {
     const a = tenantActor(req, 'cases.self');

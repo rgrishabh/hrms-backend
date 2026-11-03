@@ -31,7 +31,9 @@ describe('POSH', () => {
     expect((await admin.put('/api/v1/cases/committee', { members: [{ userId: T.users.it!.id, role: 'member' }], external: [] })).statusCode).toBe(400); // presiding officer required
     expect((await admin.put('/api/v1/cases/committee', { members: [{ userId: T.users.it!.id, role: 'presiding_officer' }, { userId: T.users.manager!.id, role: 'member' }],
       external: [{ name: 'A. Sharma', organization: 'Women Rights NGO, Pune', since: '2026-01-01' }] })).statusCode).toBe(200);
-    expect((await emp.get('/api/v1/cases/committee')).json().members).toHaveLength(2); // composition is public within the organization
+    expect((await emp.get('/api/v1/cases/committee')).json().members).toHaveLength(2);
+    expect((await admin.get('/api/v1/cases/people?search=it')).json().items.some((u: { id: string }) => u.id === T.users.it!.id)).toBe(true);
+    expect((await emp.get('/api/v1/cases/people')).statusCode).toBe(403); // composition is public within the organization
     expect((await emp.post('/api/v1/cases', { ...body, anonymous: true })).statusCode).toBe(400);
     expect((await emp.post('/api/v1/cases', { ...body, incidentDate: addDays(today, -120) })).json().error.message).toMatch(/three months/);
     const r = await emp.post('/api/v1/cases', body);
