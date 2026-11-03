@@ -19,11 +19,11 @@ describe('ENABLED_MODULES validation (startup)', () => {
   });
   it('rejects unknown, unimplemented and dependency-missing modules with clear messages', () => {
     expect(() => resolveEnabledModules('default,nope')).toThrow(/unknown module 'nope'/);
-    expect(() => resolveEnabledModules('default,payroll')).toThrow(/'payroll' is not available in this release/);
+    expect(() => resolveEnabledModules('default,notifications.sms')).toThrow(/'notifications.sms' is not available in this release/);
     expect(() => resolveEnabledModules('attendance.web')).toThrow(/'attendance.web' requires 'attendance'/);
   });
   it('the app refuses to build with an invalid module list', async () => {
-    await expect(makeApp({ ENABLED_MODULES: 'default,payroll' })).rejects.toThrow(/not available in this release/);
+    await expect(makeApp({ ENABLED_MODULES: 'default,notifications.sms' })).rejects.toThrow(/not available in this release/);
   });
 });
 
@@ -39,7 +39,7 @@ describe('deployment-controlled modules', () => {
 
   it('reports supported / enabled / configured / usable separately', async () => {
     expect(await mod(admin, 'attendance.web')).toMatchObject({ supported: true, enabled: false, usable: false, blockers: ['Not enabled for this installation'] });
-    expect(await mod(admin, 'payroll')).toMatchObject({ supported: false, enabled: false });
+    expect(await mod(admin, 'notifications.sms')).toMatchObject({ supported: false, enabled: false });
     expect(await mod(admin, 'attendance.biometric')).toMatchObject({ enabled: true, configured: false, usable: false });
     expect(await mod(admin, 'core.employees')).toMatchObject({ core: true, usable: true });
   });

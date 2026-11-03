@@ -61,9 +61,9 @@ export const FEATURES: readonly FeatureDefinition[] = [
   f({ key: 'field_duty', name: 'Field duty', description: 'Field sampling and client-site duty records.', category: 'workforce', availability: 'planned', dependencies: ['attendance'] }),
 
   // ---- Payroll & finance
-  f({ key: 'payroll', name: 'Payroll calculation', description: 'Deterministic, versioned payroll engine.', category: 'payroll_finance', availability: 'planned', dependencies: ['core.employees', 'attendance'] }),
-  f({ key: 'payroll.payslips', name: 'Payslips', description: 'Payslip generation and publication.', category: 'payroll_finance', availability: 'planned', dependencies: ['payroll'] }),
-  f({ key: 'payroll.statutory', name: 'Statutory payroll configuration', description: 'EPF, ESI, PT, LWF and TDS rule registry.', category: 'payroll_finance', availability: 'planned', dependencies: ['payroll'] }),
+  f({ key: 'payroll', name: 'Payroll', description: 'Components, approved effective-dated salaries, payroll runs from attendance (LOP), approval and locking, payslips, bank/PF/ESI/register exports, F&F runs.', category: 'payroll_finance', availability: 'available', dependencies: ['core.employees', 'attendance'] }),
+  f({ key: 'payroll.payslips', name: 'Payslips (self-service)', description: 'Employees see their payslips once a run is finalized.', category: 'payroll_finance', availability: 'available', dependencies: ['payroll'] }),
+  f({ key: 'payroll.statutory', name: 'Statutory deductions', description: 'PF, ESI, PT, LWF and TDS from a rule register whose values the organization enters and verifies (maker-checker).', category: 'payroll_finance', availability: 'available', dependencies: ['payroll'] }),
   f({ key: 'expenses', name: 'Expenses & reimbursements', description: 'Claims with receipts, manager + finance approval, duplicate checks, payment batches with maker-checker.', category: 'payroll_finance', availability: 'available', dependencies: ['core.employees'] }),
   f({ key: 'travel', name: 'Travel management', description: 'Travel requests and advances.', category: 'payroll_finance', availability: 'planned', dependencies: ['expenses'] }),
   f({ key: 'advances_loans', name: 'Advances and loans', description: 'Salary/travel advances and repayment schedules.', category: 'payroll_finance', availability: 'planned', dependencies: ['payroll'] }),
