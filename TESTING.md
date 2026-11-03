@@ -19,7 +19,7 @@ scripts/smoke.sh                                  # end-to-end against a running
 | Check | Result |
 |---|---|
 | `npm run typecheck` (API + web) | exit 0 |
-| `npm test` | **180 passed, 0 failed** (17 files) |
+| `npm test` | **181 passed, 0 failed** (17 files) |
 | `npm run build` (API + web) | exit 0 |
 | `npm audit --omit=dev` | 0 vulnerabilities |
 | `scripts/smoke.sh` (dev installation via Vite proxy) | **16 passed** (incl. leave balances and preview) |
@@ -35,7 +35,7 @@ scripts/smoke.sh                                  # end-to-end against a running
 | Suite | Tests | Covers |
 |---|---|---|
 | `config.test.ts` | 8 | Safe defaults for non-sensitive settings only; missing DB URL / weak key fail; every invalid field listed without echoing secrets; asset references (https or `/branding/`, needs `BRANDING_DIR`, no traversal or `javascript:`); production rules (https, Secure cookies, explicit DB TLS); domain derivation; public config without secrets; Compose empty values treated as unset |
-| `installation.test.ts` | 17 | Not ready before bootstrap. Setup link: hashed storage, single use, weak password rejected, reuse and expiry rejected, rejection audited (survives rollback). Idempotent re-run; never a second admin or organization. `--reset-admin` recovery. Password mode forces a change and blocks other APIs. CLI refuses password flags. Runtime config contents; only configured hosts. `index.html` title/theme rendered and escaped. Branding files sandboxed, images only. External logo origin in CSP; missing branding file fails startup. **Two installations: separate branding, users, sessions and domains.** Pending migration → not ready |
+| `installation.test.ts` | 18 | Not ready before bootstrap. Setup link: hashed storage, single use, weak password rejected, reuse and expiry rejected, rejection audited (survives rollback). Idempotent re-run; never a second admin or organization. `--reset-admin` recovery. Password mode forces a change and blocks other APIs. CLI refuses password flags. Runtime config contents; only configured hosts. `index.html` title/theme rendered and escaped. Branding files sandboxed, images only. External logo origin in CSP; missing branding file fails startup. **Two installations: separate branding, users, sessions and domains.** Pending migration → not ready; a newer schema (after rollback) stays ready |
 | `features-settings.test.ts` | 17 | `ENABLED_MODULES` expansion and validation (unknown, unbuilt, missing dependency); app refuses invalid sets. Supported/enabled/configured/usable; disabled module rejected by API and hidden via capabilities, data kept; biometric becomes usable once configured; no admin override; disabled module rejects valid device keys. Settings: defaults and sources, deployment default layer, persistence and audit, branch precedence and reset, validation, deployment ceiling, optimistic concurrency, per-setting permissions |
 | `tenancy-security.test.ts` | 17 | Unknown, unverified and malformed hosts; cross-organization isolation inside one DB (defence in depth); no endpoints for domains, branding or modules; suspended organization; CSRF; lockout and audit; logout and disable revoke sessions; unknown roles and last-admin protection; no secrets in listings; security headers |
 | `employees.test.ts` | 10 | Validation, duplicates, optimistic locking, history, circular managers, directory vs full views, encrypted and masked bank details with segregation of duties, all-or-nothing import |
