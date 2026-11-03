@@ -190,7 +190,7 @@ export async function attendanceRoutes(app: FastifyInstance) {
         [a.tenantId, body.periodStart, body.periodEnd, a.user.userId]);
       const locked = await db.query(`UPDATE attendance_daily SET locked=true WHERE tenant_id=$1 AND work_date BETWEEN $2 AND $3`, [a.tenantId, body.periodStart, body.periodEnd]);
       await audit(db, { ...a.auditBase, action: 'attendance.period_locked', targetType: 'attendance_lock', targetId: r.rows[0]!.id, metadata: { ...body, rows: locked.rowCount } });
-      return reply.code(201).send({ id: r.rows[0]!.id, rowsLocked: locked.rowCount });
+      reply.code(201); return { id: r.rows[0]!.id, rowsLocked: locked.rowCount };
     });
   });
 
@@ -224,7 +224,7 @@ export async function attendanceRoutes(app: FastifyInstance) {
         summary: `Attendance correction for ${body.workDate}: ${body.reason.slice(0, 80)}`, steps });
       await audit(db, { ...a.auditBase, action: 'attendance.regularization_requested', targetType: 'attendance_regularization', targetId: reg.rows[0]!.id,
         metadata: { workDate: body.workDate, approvalRequestId: reqId } });
-      return reply.code(201).send({ id: reg.rows[0]!.id, approvalRequestId: reqId });
+      reply.code(201); return { id: reg.rows[0]!.id, approvalRequestId: reqId };
     });
   });
 
@@ -262,7 +262,7 @@ export async function attendanceRoutes(app: FastifyInstance) {
       const r = await db.query<{ id: string }>(`INSERT INTO shifts (tenant_id, code, name, start_time, end_time, break_minutes, grace_minutes, early_exit_grace_minutes,
         half_day_min_minutes, full_day_min_minutes, overtime_after_minutes, status) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12) RETURNING id`, [a.tenantId, ...shiftCols(body)]);
       await audit(db, { ...a.auditBase, action: 'attendance.shift_created', category: 'configuration', targetType: 'shift', targetId: r.rows[0]!.id, metadata: body });
-      return reply.code(201).send({ id: r.rows[0]!.id });
+      reply.code(201); return { id: r.rows[0]!.id };
     });
   });
 
@@ -322,7 +322,7 @@ export async function attendanceRoutes(app: FastifyInstance) {
       const r = await db.query<{ id: string }>(`INSERT INTO holidays (tenant_id, branch_id, holiday_date, name, optional) VALUES ($1,$2,$3,$4,$5) RETURNING id`,
         [a.tenantId, body.branchId ?? null, body.holidayDate, body.name, body.optional]);
       await audit(db, { ...a.auditBase, action: 'attendance.holiday_created', category: 'configuration', targetType: 'holiday', targetId: r.rows[0]!.id, metadata: body });
-      return reply.code(201).send({ id: r.rows[0]!.id });
+      reply.code(201); return { id: r.rows[0]!.id };
     });
   });
 
@@ -362,7 +362,7 @@ export async function attendanceRoutes(app: FastifyInstance) {
         VALUES ($1,$2,$3,$4,$5,$6,$7) RETURNING id`, [a.tenantId, body.branchId, body.serialNumber, body.name, body.adapterKey, sha256(secret), prefix]);
       await audit(db, { ...a.auditBase, action: 'attendance.device_registered', category: 'security', targetType: 'device', targetId: r.rows[0]!.id, metadata: { ...body, keyPrefix: prefix } });
       // The full key is shown exactly once.
-      return reply.code(201).send({ id: r.rows[0]!.id, apiKey: key });
+      reply.code(201); return { id: r.rows[0]!.id, apiKey: key };
     });
   });
 
