@@ -38,6 +38,9 @@ COPY --chown=root:root package.json ./
 COPY --chown=root:root migrations ./migrations
 COPY --from=certs /rds-global-bundle.pem ./certs/rds-global-bundle.pem
 COPY --chmod=0755 docker/entrypoint.sh /usr/local/bin/hrms
+# Security fixes published after the base image was built.
+# hadolint ignore=DL3018
+RUN apk upgrade --no-cache
 # Local document storage mount point (Compose volume); S3 is used on AWS.
 RUN mkdir -p /app/storage && chown 1000:1000 /app/storage && chmod 700 /app/storage
 # uid 1000 = "node" in the base image
