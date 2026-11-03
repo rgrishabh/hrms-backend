@@ -73,14 +73,17 @@ export async function buildApp(deps: AppDeps): Promise<FastifyInstance> {
   await app.register(helmet, { contentSecurityPolicy: false, crossOriginResourcePolicy: { policy: 'same-origin' } });
   app.addHook('onSend', async (req, reply) => {
     const u = req.url;
-    reply.header('content-security-policy', u.startsWith('/api/') || u.startsWith('/health/') ? API_CSP : u.startsWith('/branding/') ? ASSET_CSP : SPA_CSP);
+    reply.header('content-security-policy', u.startsWith('/api/') || u.startsWith('/health') || u === '/ready' ? API_CSP : u.startsWith('/branding/') ? ASSET_CSP : SPA_CSP);
   });
   await app.register(rateLimit, { global: true, max: 600, timeWindow: '1 minute' });
   await app.register(multipart, { limits: { fileSize: env.STORAGE_MAX_FILE_MB * 1024 * 1024, files: 1, fields: 10, parts: 12, fieldSize: 10_000 } });
 
   // Liveness/readiness are host-agnostic and unauthenticated; they reveal no internals.
-  app.get('/health/live', async () => ({ status: 'ok' }));
-  app.get('/health/ready', async (_req, reply) => {
+  // `/health` and `/ready` are aliases for orchestrators and the deployment smoke tests.
+  const live = async () => ({ status: 'ok' });
+  app.get('/health/live', live);
+  app.get('/health', live);
+  const ready = async (_req: unknown, reply: import('fastify').FastifyReply) => {
     try {
       const m = await migrationStatus(deps.pool);
       if (m.pending.length || m.unknown.length) return reply.code(503).send({ status: 'unavailable' });
@@ -88,10 +91,12 @@ export async function buildApp(deps: AppDeps): Promise<FastifyInstance> {
       if (!org.rows[0]!.ok) return reply.code(503).send({ status: 'unavailable' });
       return { status: 'ready' };
     } catch { return reply.code(503).send({ status: 'unavailable' }); }
-  });
+  };
+  app.get('/health/ready', ready);
+  app.get('/ready', ready);
 
   app.addHook('onRequest', async (req) => {
-    if (req.url.startsWith('/health/')) return;
+    if (req.url.startsWith('/health') || req.url === '/ready') return;
     if (!req.url.startsWith('/api/')) { req.ctx = { requestId: req.id, ip: req.ip, host: { kind: 'unknown', host: '' }, user: null }; return; }
     const host = await resolveHost(deps.pool, req.headers.host);
     req.ctx = { requestId: req.id, ip: req.ip, host, user: null };

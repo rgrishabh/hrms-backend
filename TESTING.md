@@ -19,7 +19,7 @@ scripts/smoke.sh                                  # end-to-end against a running
 | Check | Result |
 |---|---|
 | `npm run typecheck` (API + web) | exit 0 |
-| `npm test` | **179 passed, 0 failed** (16 files) |
+| `npm test` | **180 passed, 0 failed** (17 files) |
 | `npm run build` (API + web) | exit 0 |
 | `npm audit --omit=dev` | 0 vulnerabilities |
 | `scripts/smoke.sh` (dev installation via Vite proxy) | **16 passed** (incl. leave balances and preview) |
@@ -49,6 +49,7 @@ scripts/smoke.sh                                  # end-to-end against a running
 | `expenses.test.ts` | 7 | Receipts required per category, per-item limit, claim window, GST pairing, decimal totals; same GST invoice refused twice, likely duplicates flagged; manager → finance approval, colleagues get 404; payment batch needs a second approver (maker-checker), paid once; bank export full vs masked account numbers by permission, audited; returned claim editable and resubmittable, cancelling closes its approval; ageing report |
 | `competency.test.ts` | 8 | Course validity sets record expiry; future dates rejected; employees read only their own records; prerequisites block a request; one pending per person/method/activity; requester never approves; quality approval sets review date and history; `/check` in force and scoped; nobody assesses, requests or grants their own competence (rolled back); not-competent, stale and contradicted assessments refused; revoked training takes an authorization out of force (matrix + check); suspend/reinstate with prerequisite check and audit; renewal stays pending without interrupting, then supersedes; overdue review expires via the job; training reminders sent once; module off → 403 |
 | `policies.test.ts` | 7 | Drafts need text or PDF, non-PDF refused, one draft at a time, drafts hidden from staff; author cannot publish, another publisher can, audience notified; acknowledgement bound to the content hash, idempotent, reported and exported (audited); acknowledgements immutable for the app role; new version supersedes and needs a fresh acknowledgement, stale page refused, old version readable only by those who acknowledged it; branch/department audience; weekly overdue reminder once; retire removes from staff lists; module off → 403 |
+| `health.test.ts` | 1 | `/health` and `/ready` aliases: unauthenticated, host-agnostic, strict CSP, same result as `/health/live` / `/health/ready` |
 | `jobs.test.ts` | 8 | Due-period and next-run calculation; each job runs once per period and does its work (close day, accrual, session cleanup); **two simultaneous scheduler passes run each job exactly once**; nothing before the scheduled time; failure → backoff → retry → success; recovery of runs abandoned by a crashed process; module-gated jobs skipped; Run now permission, history and audit |
 
 ## Defects found by testing in this phase (all fixed)
