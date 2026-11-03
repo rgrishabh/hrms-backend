@@ -1,0 +1,175 @@
+import { zonedToInstant, addDays, minutesBetween } from './time.js';
+
+/**
+ * Pure daily attendance calculation. Deterministic: same inputs → same output.
+ * Bump CALC_VERSION whenever the rules below change; stored rows record the
+ * version used so historical results remain explainable.
+ *
+ * Rules (documented in docs/ATTENDANCE.md):
+ *  - Punch window for a work date = [shift start − 4h, shift start + 20h). Without
+ *    a shift, the local calendar day. Overnight shifts therefore own the
+ *    early-morning punches of the next calendar day.
+ *  - Punches closer than `minGapSeconds` to the previous kept punch are ignored.
+ *  - Punches are paired in→out. Explicit directions are honoured; 'unknown'
+ *    alternates. An unmatched punch makes the day `missing_punch`.
+ *  - Break minutes are deducted only when the day has a single in/out pair
+ *    (multi-pair days already exclude breaks between pairs).
+ *  - Late = first in − shift start, counted only if beyond grace. Early exit
+ *    likewise against shift end and early-exit grace.
+ *  - Status on a working day: worked ≥ full-day minimum → present; ≥ half-day
+ *    minimum → half_day; otherwise absent.
+ *  - Weekly off / holiday keep their status; any work is flagged and, when
+ *    overtime is enabled, counted fully as overtime.
+ *  - (v2) Approved leave on a working day: full-day leave → `on_leave` (punches
+ *    flag `worked_on_leave`). Half-day leave → the other half must be worked:
+ *    worked ≥ half-day minimum → `present`, otherwise `half_day`. Leave on a
+ *    weekly off / holiday does not change the day status.
+ */
+export const CALC_VERSION = 2;
+
+export interface ShiftPolicy {
+  id: string;
+  code: string;
+  startTime: string;   // 'HH:MM[:SS]'
+  endTime: string;
+  breakMinutes: number;
+  graceMinutes: number;
+  earlyExitGraceMinutes: number;
+  halfDayMinMinutes: number;
+  fullDayMinMinutes: number;
+  overtimeAfterMinutes: number | null;
+}
+
+export interface Punch { id: string; time: Date; direction: 'in' | 'out' | 'unknown' }
+
+export interface DayInput {
+  workDate: string;
+  timezone: string;
+  shift: ShiftPolicy | null;
+  dayType: 'working' | 'weekly_off' | 'holiday';
+  employment: { joiningDate: string; exitDate: string | null };
+  punches: Punch[];            // may include punches outside the window; filtered here
+  minGapSeconds: number;
+  overtimeEnabled: boolean;
+  /** Approved leave covering this date (fraction 0.5 or 1). */
+  leave?: { fraction: number; code: string } | null;
+}
+
+export type DayStatus = 'present' | 'half_day' | 'absent' | 'missing_punch' | 'weekly_off' | 'holiday' | 'not_joined' | 'on_leave';
+
+export interface DayResult {
+  workDate: string;
+  shiftId: string | null;
+  dayType: DayInput['dayType'];
+  status: DayStatus;
+  firstIn: Date | null;
+  lastOut: Date | null;
+  punchCount: number;
+  workedMinutes: number;
+  lateMinutes: number;
+  earlyExitMinutes: number;
+  overtimeMinutes: number;
+  exceptions: string[];
+  usedPunchIds: string[];
+  leaveFraction: number;
+  leaveTypeCode: string | null;
+}
+
+export function shiftWindow(workDate: string, tz: string, shift: ShiftPolicy | null) {
+  if (!shift) return { start: zonedToInstant(workDate, '00:00', tz), end: zonedToInstant(addDays(workDate, 1), '00:00', tz), shiftStart: null, shiftEnd: null };
+  const shiftStart = zonedToInstant(workDate, shift.startTime, tz);
+  const overnight = shift.endTime <= shift.startTime;
+  const shiftEnd = zonedToInstant(overnight ? addDays(workDate, 1) : workDate, shift.endTime, tz);
+  return { start: new Date(shiftStart.getTime() - 4 * 3600e3), end: new Date(shiftStart.getTime() + 20 * 3600e3), shiftStart, shiftEnd };
+}
+
+export function calculateDay(input: DayInput): DayResult {
+  const { workDate, shift, dayType } = input;
+  const base: DayResult = {
+    workDate, shiftId: shift?.id ?? null, dayType, status: 'absent', firstIn: null, lastOut: null, punchCount: 0,
+    workedMinutes: 0, lateMinutes: 0, earlyExitMinutes: 0, overtimeMinutes: 0, exceptions: [], usedPunchIds: [],
+    leaveFraction: 0, leaveTypeCode: null,
+  };
+  if (workDate < input.employment.joiningDate || (input.employment.exitDate && workDate > input.employment.exitDate)) {
+    return { ...base, status: 'not_joined' };
+  }
+  const win = shiftWindow(workDate, input.timezone, shift);
+  const inWindow = input.punches
+    .filter((p) => p.time >= win.start && p.time < win.end)
+    .sort((a, b) => a.time.getTime() - b.time.getTime() || a.id.localeCompare(b.id));
+
+  // Drop accidental repeats.
+  const kept: Punch[] = [];
+  for (const p of inWindow) {
+    const last = kept[kept.length - 1];
+    if (last && (p.time.getTime() - last.time.getTime()) / 1000 < input.minGapSeconds) continue;
+    kept.push(p);
+  }
+  const exceptions: string[] = [];
+  if (kept.length < inWindow.length) exceptions.push('repeat_punches_ignored');
+
+  // Pair into sessions.
+  const sessions: { in: Date; out: Date }[] = [];
+  let open: Date | null = null;
+  let unmatched = false;
+  for (const p of kept) {
+    const dir = p.direction === 'unknown' ? (open ? 'out' : 'in') : p.direction;
+    if (dir === 'in') {
+      if (open) { unmatched = true; exceptions.push('consecutive_in_punches'); }
+      open = p.time;
+    } else {
+      if (!open) { unmatched = true; exceptions.push('out_without_in'); continue; }
+      sessions.push({ in: open, out: p.time });
+      open = null;
+    }
+  }
+  if (open) { unmatched = true; exceptions.push('missing_out_punch'); }
+
+  const firstIn = sessions[0]?.in ?? (kept[0] && kept[0].direction !== 'out' ? kept[0].time : null);
+  const lastOut = sessions.length ? sessions[sessions.length - 1]!.out : null;
+  let worked = sessions.reduce((sum, s) => sum + minutesBetween(s.in, s.out), 0);
+  if (shift && sessions.length === 1 && worked > shift.breakMinutes) worked -= shift.breakMinutes;
+
+  const result: DayResult = { ...base, firstIn, lastOut, punchCount: kept.length, workedMinutes: worked, usedPunchIds: kept.map((p) => p.id), exceptions };
+
+  if (dayType !== 'working') {
+    result.status = dayType;
+    // Leave over a weekly off / holiday does not change the day (counted by the leave type's rules).
+    if (kept.length) {
+      exceptions.push('worked_on_' + dayType);
+      if (input.overtimeEnabled) result.overtimeMinutes = worked;
+    }
+    return result;
+  }
+  const leave = input.leave && input.leave.fraction > 0 ? input.leave : null;
+  if (leave) { result.leaveFraction = leave.fraction >= 1 ? 1 : 0.5; result.leaveTypeCode = leave.code; }
+  if (leave && result.leaveFraction === 1) {
+    result.status = 'on_leave';
+    if (kept.length) exceptions.push('worked_on_leave');
+    return result;
+  }
+  if (!kept.length) { result.status = leave ? 'half_day' : 'absent'; return result; }
+
+  if (shift && win.shiftStart && win.shiftEnd) {
+    if (firstIn) {
+      const late = minutesBetween(win.shiftStart, firstIn);
+      if (late > shift.graceMinutes) { result.lateMinutes = late; exceptions.push('late_arrival'); }
+    }
+    if (lastOut) {
+      const early = minutesBetween(lastOut, win.shiftEnd);
+      if (early > shift.earlyExitGraceMinutes) { result.earlyExitMinutes = early; exceptions.push('early_exit'); }
+    }
+    if (input.overtimeEnabled && shift.overtimeAfterMinutes !== null && !unmatched) {
+      result.overtimeMinutes = Math.max(0, worked - shift.overtimeAfterMinutes);
+    }
+  }
+  if (unmatched) { result.status = 'missing_punch'; return result; }
+  const half = shift?.halfDayMinMinutes ?? 240;
+  // With half-day leave, working the other half (≥ half-day minimum) completes the day.
+  const full = leave ? half : shift?.fullDayMinMinutes ?? 480;
+  if (worked >= full) result.status = 'present';
+  else if (worked >= half) { result.status = 'half_day'; exceptions.push('short_hours'); }
+  else if (leave) { result.status = 'half_day'; exceptions.push('insufficient_hours'); }
+  else { result.status = 'absent'; exceptions.push('insufficient_hours'); }
+  return result;
+}

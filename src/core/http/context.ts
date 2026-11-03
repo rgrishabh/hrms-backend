@@ -1,0 +1,65 @@
+import type { FastifyRequest } from 'fastify';
+import type { HostResolution } from '../tenancy/resolve.js';
+import type { SessionUser } from '../auth/session.js';
+import { forbidden, unauthorized, AppError } from './errors.js';
+import type { Pool } from '../../db/pool.js';
+import { withTenant, type Db } from '../../db/tx.js';
+import { assertFeatureUsable } from '../features/state.js';
+import type { FieldCipher } from '../crypto/index.js';
+import type { Env } from '../../config/env.js';
+
+export interface RequestContext {
+  requestId: string;
+  ip: string;
+  host: HostResolution;
+  user: SessionUser | null;
+}
+
+declare module 'fastify' {
+  interface FastifyRequest { ctx: RequestContext }
+  interface FastifyInstance { deps: AppDeps }
+}
+
+export interface AppDeps { env: Env; pool: Pool; cipher: FieldCipher; /** Tests: keep an injected mailer instead of building one from env. */ mailerOverride?: boolean; storeOverride?: boolean }
+
+export interface TenantActor {
+  tenantId: string;
+  user: SessionUser;
+  /** Run in a tenant-scoped transaction (RLS-bound). */
+  tx: <T>(fn: (db: Db) => Promise<T>) => Promise<T>;
+  has: (p: string) => boolean;
+  /** Audit-entry defaults for this request. */
+  auditBase: { tenantId: string; actorId: string; requestId: string; ip: string };
+}
+
+export function requireTenantHost(req: FastifyRequest) {
+  if (req.ctx.host.kind !== 'tenant') throw new AppError(404, 'unknown_tenant', 'This address is not linked to an active organization');
+  if (req.ctx.host.tenant.status !== 'active') throw new AppError(403, 'tenant_suspended', 'This organization is currently suspended');
+  return req.ctx.host.tenant;
+}
+
+/** Authenticated user of the tenant resolved from the verified host, optionally with permissions (all required). */
+export function tenantActor(req: FastifyRequest, ...perms: string[]): TenantActor {
+  const tenant = requireTenantHost(req);
+  const user = req.ctx.user;
+  if (!user || user.tenantId !== tenant.id) throw unauthorized();
+  for (const p of perms) if (!user.permissions.has(p)) throw forbidden();
+  const pool = req.server.deps.pool;
+  return {
+    tenantId: tenant.id, user,
+    tx: (fn) => withTenant(pool, tenant.id, fn),
+    has: (p) => user.permissions.has(p),
+    auditBase: { tenantId: tenant.id, actorId: user.userId, requestId: req.id, ip: req.ctx.ip },
+  };
+}
+
+/** Like tenantActor but needs any one of the given permissions. */
+export function tenantActorAny(req: FastifyRequest, ...perms: string[]): TenantActor {
+  const a = tenantActor(req);
+  if (!perms.some((p) => a.has(p))) throw forbidden();
+  return a;
+}
+
+export async function requireFeature(db: Db, tenantId: string, key: string) {
+  await assertFeatureUsable(db, tenantId, key);
+}
