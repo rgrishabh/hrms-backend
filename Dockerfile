@@ -38,9 +38,12 @@ COPY --chown=root:root package.json ./
 COPY --chown=root:root migrations ./migrations
 COPY --from=certs /rds-global-bundle.pem ./certs/rds-global-bundle.pem
 COPY --chmod=0755 docker/entrypoint.sh /usr/local/bin/hrms
-# Security fixes published after the base image was built.
+# Security fixes published after the base image was built. The runtime only needs `node`:
+# npm/npx/corepack/yarn (and their bundled dependencies) are removed from the final image.
 # hadolint ignore=DL3018
-RUN apk upgrade --no-cache
+RUN apk upgrade --no-cache \
+ && rm -rf /usr/local/lib/node_modules/npm /usr/local/lib/node_modules/corepack /opt/yarn-* \
+           /usr/local/bin/npm /usr/local/bin/npx /usr/local/bin/corepack /usr/local/bin/yarn /usr/local/bin/yarnpkg /root/.npm
 # Local document storage mount point (Compose volume); S3 is used on AWS.
 RUN mkdir -p /app/storage && chown 1000:1000 /app/storage && chmod 700 /app/storage
 # uid 1000 = "node" in the base image
