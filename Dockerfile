@@ -5,7 +5,7 @@
 #   docker run IMAGE migrate    -> apply pending migrations, then exit
 #   docker run IMAGE migrate-status | provision | bootstrap [--reset-admin --admin-email ...]
 
-FROM node:22-alpine AS build
+FROM node:26-alpine AS build
 WORKDIR /src
 COPY package.json package-lock.json ./
 RUN --mount=type=cache,target=/root/.npm npm ci --no-audit --no-fund
@@ -19,7 +19,7 @@ FROM alpine:3.22 AS certs
 RUN apk add --no-cache curl \
  && curl -fsSL -o /rds-global-bundle.pem https://truststore.pki.rds.amazonaws.com/global/global-bundle.pem
 
-FROM node:22-alpine
+FROM node:26-alpine
 ARG VERSION=dev
 ARG REVISION=unknown
 LABEL org.opencontainers.image.title="hrms-backend" \
