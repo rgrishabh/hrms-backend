@@ -14,7 +14,7 @@ COPY src ./src
 RUN npm run build && npm prune --omit=dev
 
 # Amazon RDS CA bundle, for DATABASE_SSL=verify-full on AWS.
-FROM alpine:3.22 AS certs
+FROM alpine:3.24 AS certs
 # hadolint ignore=DL3018
 RUN apk add --no-cache curl \
  && curl -fsSL -o /rds-global-bundle.pem https://truststore.pki.rds.amazonaws.com/global/global-bundle.pem
