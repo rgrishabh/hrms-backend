@@ -81,7 +81,7 @@ export async function buildApp(deps: AppDeps): Promise<FastifyInstance> {
     const u = req.url;
     reply.header('content-security-policy', u.startsWith('/api/') || u.startsWith('/health') || u === '/ready' ? API_CSP : u.startsWith('/branding/') ? ASSET_CSP : SPA_CSP);
   });
-  await app.register(rateLimit, { global: true, max: 600, timeWindow: '1 minute' });
+  await app.register(rateLimit, { global: true, max: env.RATE_LIMIT_PER_MINUTE, timeWindow: '1 minute' });
   await app.register(multipart, { limits: { fileSize: env.STORAGE_MAX_FILE_MB * 1024 * 1024, files: 1, fields: 10, parts: 12, fieldSize: 10_000 } });
 
   // Liveness/readiness are host-agnostic and unauthenticated; they reveal no internals.
