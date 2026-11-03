@@ -44,8 +44,8 @@ export const FEATURES: readonly FeatureDefinition[] = [
   f({ key: 'core.org_structure', name: 'Organization structure', description: 'Legal entities, branches and departments.', category: 'core_hr', availability: 'available', core: true, defaultEnabled: true }),
   f({ key: 'core.self_service', name: 'Employee self-service', description: 'Employees view their own records, attendance and requests.', category: 'core_hr', availability: 'available', defaultEnabled: true, dependencies: ['core.employees'] }),
   f({ key: 'core.documents', name: 'Employee documents', description: 'Employee and company documents with categories, restricted access, expiry reminders and audited downloads.', category: 'core_hr', availability: 'available', defaultEnabled: true, dependencies: ['core.employees'] }),
-  f({ key: 'core.onboarding', name: 'Onboarding', description: 'Pre-joining documents and onboarding checklists.', category: 'core_hr', availability: 'planned', dependencies: ['core.employees'] }),
-  f({ key: 'core.offboarding', name: 'Offboarding', description: 'Resignation, notice, clearance and exit.', category: 'core_hr', availability: 'planned', dependencies: ['core.employees'] }),
+  f({ key: 'core.onboarding', name: 'Onboarding & probation', description: 'Onboarding checklists (HR, IT, manager, new joiner), joining confirmation, probation reviews with approval.', category: 'core_hr', availability: 'available', dependencies: ['core.employees'] }),
+  f({ key: 'core.offboarding', name: 'Separation & exit', description: 'Resignation and HR-initiated separations with approval, notice shortfall, exit clearance checklist, exit interview, access ended on the last working day.', category: 'core_hr', availability: 'available', dependencies: ['core.employees'] }),
   f({ key: 'core.policies', name: 'Policy management', description: 'Versioned policies with maker-checker publication, audiences, and employee acknowledgements tied to the exact content.', category: 'core_hr', availability: 'available', dependencies: ['core.employees'] }),
 
   // ---- Workforce

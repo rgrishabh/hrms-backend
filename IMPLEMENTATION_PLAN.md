@@ -16,7 +16,7 @@ Baseline (start of work): the repository held only `README.md` and `LICENSE`. Th
 | 7 | Admin settings | 🟡 | General, attendance, security, org, users, audit ✅; read-only Installation view (branding, organization, domains, modules) ✅. Sections for unbuilt modules ⬜ |
 | 8 | Roles & permissions | 🟡 | 12 system roles, segregation of duties, server-side checks ✅. Custom roles: schema + enforcement ✅, management UI/API ⬜. Delegation ⬜. MFA ⬜ (see SECURITY.md) |
 | 9 | Employee information | 🟡 | Master, history, import, duplicates, bank details ✅. Contracts, documents, education, certifications, nominees, statutory IDs, transfers workflow, correction workflow ⬜ |
-| 10 | Recruitment & lifecycle | 🟡 | **Recruitment ✅**: approved requisitions, candidates with consent + retention/erasure, pipeline with history, interviews with blind panel feedback, approved offers (restricted CTC, budget flag), hire → pre-joining employee (docs/RECRUITMENT.md). Onboarding checklists, offer letters, careers page, exit/F&F ⬜ |
+| 10 | Recruitment & lifecycle | 🟡 | **Recruitment ✅**: approved requisitions, candidates with consent + retention/erasure, pipeline with history, interviews with blind panel feedback, approved offers (restricted CTC, budget flag), hire → pre-joining employee (docs/RECRUITMENT.md). **Lifecycle ✅**: onboarding/exit checklists with owner groups, joining confirmation, probation reviews with approval, separations (resignation and HR-initiated) with notice shortfall, exit interview, access ended after LWD (docs/LIFECYCLE.md). Offer letters, careers page, F&F amounts (payroll) ⬜ |
 | 11 | Attendance, shifts, rosters | 🟡 | Engine, overnight shifts, grace, half-day, weekly off, holidays, regularization, locking ✅. Rotating rosters, comp-off, field duty, break tracking policy beyond pairing, offline mobile queue ⬜ |
 | 12 | Biometric integration | 🟡 | Vendor-neutral push contract, device keys, drift, dedupe, unmapped queue, reprocessing, health ✅. Vendor-specific adapters 🔒 (need the actual hardware/API) |
 | 13 | Mobile attendance | 🟡 | Responsive web + policy-driven location ✅. Offline queueing, native apps ⬜ |
@@ -53,7 +53,7 @@ Baseline (start of work): the repository held only `README.md` and `LICENSE`. Th
 6. **Statutory rule register.** Payroll design starts only after the register in INDIAN_PAYROLL_COMPLIANCE.md has been reviewed by a qualified Indian payroll/legal reviewer.
 7. **Payroll engine.** decimal.js arithmetic (already a dependency), versioned rule snapshots, preview → maker-checker → lock → payslips.
 8. **AWS go-live.** Set up Organizations/Control Tower + Shared Services, onboard the staging account, run the first real `plan`/`apply` and release, rehearse an RDS restore (infra/README.md).
-9. ~~Expenses~~ → ~~Lab competency/training~~ → ~~Policies~~ → ~~Recruitment~~ → Onboarding → POSH/grievance → Performance/assets/exit.
+9. ~~Expenses~~ → ~~Lab competency/training~~ → ~~Policies~~ → ~~Recruitment~~ → ~~Onboarding/exit~~ → Payroll → POSH/grievance → Performance/assets/exit.
 
 ## Known limitations of what exists
 

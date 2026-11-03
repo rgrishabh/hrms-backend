@@ -1,7 +1,7 @@
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import { tenantActor, tenantActorAny, requireFeature } from '../../core/http/context.js';
-import { JOBS, JOB_MAP, nextRun } from '../../core/jobs/registry.js';
+import { JOBS, JOB_MAP, nextRun, jobActive } from '../../core/jobs/registry.js';
 import { runNow, localNow, MAX_ATTEMPTS } from '../../core/jobs/scheduler.js';
 import { SETTINGS } from '../../core/settings/registry.js';
 import { resolveSetting, writeSetting, clearSetting } from '../../core/settings/service.js';
@@ -104,7 +104,7 @@ export async function tenantAdminRoutes(app: FastifyInstance, opts: { publicConf
         timezone: tz, maxAttempts: MAX_ATTEMPTS,
         items: JOBS.map((j) => ({
           key: j.key, name: j.name, description: j.description, schedule: j.schedule, feature: j.feature ?? null,
-          active: !j.feature || !!states.get(j.feature)?.usable, nextRun: nextRun(j.schedule, date, time),
+          active: jobActive(j, (k) => !!states.get(k)?.usable), nextRun: nextRun(j.schedule, date, time),
           canRun: a.has(j.runPermission), recentRuns: runs.filter((r) => r.job_key === j.key).slice(0, 10),
         })),
       };
@@ -116,7 +116,11 @@ export async function tenantAdminRoutes(app: FastifyInstance, opts: { publicConf
     const job = JOB_MAP.get(key);
     if (!job) throw notFound('Unknown job');
     const a = tenantActor(req, job.runPermission);
-    if (job.feature) await a.tx((db) => requireFeature(db, a.tenantId, job.feature!));
+    if (job.feature) await a.tx(async (db) => {
+      const keys = typeof job.feature === 'string' ? [job.feature] : job.feature!;
+      const states = await evaluateFeatures(db, a.tenantId);
+      if (!jobActive(job, (k) => !!states.get(k)?.usable)) await requireFeature(db, a.tenantId, keys[0]!); // throws feature_unavailable
+    });
     await a.tx((db) => audit(db, { ...a.auditBase, action: 'job.run_requested', category: 'data', targetType: 'job', targetId: key }));
     return runNow(app.deps.pool, req.log, a.tenantId, key, a.user.userId);
   });
