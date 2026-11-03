@@ -1,0 +1,68 @@
+# Testing
+
+All test data is synthetic. API tests run against real PostgreSQL databases:
+
+- `hrms_test`: defence-in-depth suites that deliberately put several organizations in one database.
+- `hrms_test_single` and `hrms_test_single_b`: **two independent installations side by side**, as two customers would be deployed.
+
+The global setup drops and re-creates all three schemas and applies every migration on each run.
+
+```bash
+npm test                                          # API unit + integration (Vitest)
+npm run typecheck && npm run build                # API + web
+terraform -chdir=infra/modules/hrms-stack test    # Terraform, offline (mock providers)
+scripts/smoke.sh                                  # end-to-end against a running installation
+```
+
+## Latest results (2026-11-03, local: macOS, Node 26.5, PostgreSQL 17.11, Terraform 1.16.6, Docker Compose CLI 5.7.0)
+
+| Check | Result |
+|---|---|
+| `npm run typecheck` (API + web) | exit 0 |
+| `npm test` | **179 passed, 0 failed** (16 files) |
+| `npm run build` (API + web) | exit 0 |
+| `npm audit --omit=dev` | 0 vulnerabilities |
+| `scripts/smoke.sh` (dev installation via Vite proxy) | **16 passed** (incl. leave balances and preview) |
+| `terraform fmt -check` + `validate` (4 modules, 3 roots) | pass |
+| `terraform test` (hrms-stack, mock providers) | **6 passed** (incl. SMTP password only via Secrets Manager; incomplete SMTP rejected): container config equals the Compose semantics, secrets only via Secrets Manager, master credentials only in the dbadmin task, ALB forwards only configured hosts, invalid colour / non-https logo / unknown date format rejected |
+| `docker compose config` (default, `tools`, `https` profiles) with a full customer `.env` | valid. Resolved-config checks: DB has no published port; app on 127.0.0.1; `internal` network; superuser and owner secrets absent from the app; start order provision → migrate → app; read-only root, caps dropped; quoted colour parsed |
+| CI `.env` simulation → app's real config loader on the Compose-resolved environment | valid (this check found and fixed an invalid placeholder email in the CI job) |
+| **Compose sequence rehearsal** (Compose-resolved env, DB re-pointed to a throwaway PostgreSQL, compiled build, `NODE_ENV=production`) | provision → migrate → bootstrap (setup link) → app ready; runtime config, `<title>`, theme colour and logo served; setup link sets the password once, reuse rejected; admin login OK; bootstrap re-run is a no-op; the token never appears in app logs |
+| Earlier: AWS sequence rehearsal over **verified TLS**; local backup → restore drill | pass (see BACKUP_AND_RESTORE.md, OPERATIONS_RUNBOOK.md) |
+| `docker compose up` on a Docker engine | **not run**: no Docker engine available. CI job `compose` builds the image and runs the stack end to end |
+| `terraform plan/apply` against AWS · GitHub Actions | **not run**: no target accounts; workflows not yet pushed |
+
+| Suite | Tests | Covers |
+|---|---|---|
+| `config.test.ts` | 8 | Safe defaults for non-sensitive settings only; missing DB URL / weak key fail; every invalid field listed without echoing secrets; asset references (https or `/branding/`, needs `BRANDING_DIR`, no traversal or `javascript:`); production rules (https, Secure cookies, explicit DB TLS); domain derivation; public config without secrets; Compose empty values treated as unset |
+| `installation.test.ts` | 17 | Not ready before bootstrap. Setup link: hashed storage, single use, weak password rejected, reuse and expiry rejected, rejection audited (survives rollback). Idempotent re-run; never a second admin or organization. `--reset-admin` recovery. Password mode forces a change and blocks other APIs. CLI refuses password flags. Runtime config contents; only configured hosts. `index.html` title/theme rendered and escaped. Branding files sandboxed, images only. External logo origin in CSP; missing branding file fails startup. **Two installations: separate branding, users, sessions and domains.** Pending migration → not ready |
+| `features-settings.test.ts` | 17 | `ENABLED_MODULES` expansion and validation (unknown, unbuilt, missing dependency); app refuses invalid sets. Supported/enabled/configured/usable; disabled module rejected by API and hidden via capabilities, data kept; biometric becomes usable once configured; no admin override; disabled module rejects valid device keys. Settings: defaults and sources, deployment default layer, persistence and audit, branch precedence and reset, validation, deployment ceiling, optimistic concurrency, per-setting permissions |
+| `tenancy-security.test.ts` | 17 | Unknown, unverified and malformed hosts; cross-organization isolation inside one DB (defence in depth); no endpoints for domains, branding or modules; suspended organization; CSRF; lockout and audit; logout and disable revoke sessions; unknown roles and last-admin protection; no secrets in listings; security headers |
+| `employees.test.ts` | 10 | Validation, duplicates, optimistic locking, history, circular managers, directory vs full views, encrypted and masked bank details with segregation of duties, all-or-nothing import |
+| `attendance-calc.test.ts` | 20 | Pure calculation rules (see docs/ATTENDANCE.md), incl. v2 leave rules: full-day `on_leave`, half-day thresholds, leave on off days, v1 unchanged without leave |
+| `leave.test.ts` | 18 | Type validation and permissions; annual/monthly accruals, idempotency, pro-rating for joiners; day counting (weekly off, holiday, sandwich, half days); no-working-day, balance, notice and overlap rules; unpaid leave without balance; no applying for colleagues; pending reservation, manager routing, self-approval blocked, ledger consumption, team calendar, visibility; cancellation with reversal and approval closure; attendance `on_leave` and half-day `present`; payroll-locked dates; year-end blocked by pending, carry/lapse, idempotent; adjustments audited; module disabled → 403 |
+| `attendance-flows.test.ts` | 12 | Punch idempotency, location policy, device ingestion (drift, dedupe, unmapped queue), regularization workflow, team visibility, payroll lock, shift assignment |
+| `rate-limit.test.ts` | 1 | Login 429 after the per-IP limit |
+| `notifications.test.ts` | 8 | Approver notified in-app and by branded email (correct link, sender, colour; requester excluded); decision notifies requester with comment; permission steps reach every holder; inbox read/read-all scoped to the user; opt-out respected while in-app kept; send failure → backoff → single delivery; no email when the module is off; reminders once per day even with manual re-runs |
+| `documents.test.ts` | 13 | Content-based type detection (renamed/executable/scripted PDF rejected); storage keys never from input; upload stored under generated key; own download as attachment, audited; colleagues and managers get 404; restricted vs read permissions, HR-only categories; employee upload rules; type/size/expiry/scope validation; company documents visible to all; tamper detection; archive (file retained); expiry reminders; module not configured → 403 |
+| `mfa.test.ts` | 8 | RFC 4226/6238 vectors and drift window; privileged users must enrol first, employees not forced; secret encrypted, recovery codes hashed; new sign-in needs a code and reveals nothing before it; replay rejected; recovery codes single-use with notice; 5 failures end the session; privileged cannot disable; admin reset revokes sessions and forces re-enrolment; employee enable/disable with password + code; organization can tighten but not relax the installation minimum |
+| `expenses.test.ts` | 7 | Receipts required per category, per-item limit, claim window, GST pairing, decimal totals; same GST invoice refused twice, likely duplicates flagged; manager → finance approval, colleagues get 404; payment batch needs a second approver (maker-checker), paid once; bank export full vs masked account numbers by permission, audited; returned claim editable and resubmittable, cancelling closes its approval; ageing report |
+| `competency.test.ts` | 8 | Course validity sets record expiry; future dates rejected; employees read only their own records; prerequisites block a request; one pending per person/method/activity; requester never approves; quality approval sets review date and history; `/check` in force and scoped; nobody assesses, requests or grants their own competence (rolled back); not-competent, stale and contradicted assessments refused; revoked training takes an authorization out of force (matrix + check); suspend/reinstate with prerequisite check and audit; renewal stays pending without interrupting, then supersedes; overdue review expires via the job; training reminders sent once; module off → 403 |
+| `policies.test.ts` | 7 | Drafts need text or PDF, non-PDF refused, one draft at a time, drafts hidden from staff; author cannot publish, another publisher can, audience notified; acknowledgement bound to the content hash, idempotent, reported and exported (audited); acknowledgements immutable for the app role; new version supersedes and needs a fresh acknowledgement, stale page refused, old version readable only by those who acknowledged it; branch/department audience; weekly overdue reminder once; retire removes from staff lists; module off → 403 |
+| `jobs.test.ts` | 8 | Due-period and next-run calculation; each job runs once per period and does its work (close day, accrual, session cleanup); **two simultaneous scheduler passes run each job exactly once**; nothing before the scheduled time; failure → backoff → retry → success; recovery of runs abandoned by a crashed process; module-gated jobs skipped; Run now permission, history and audit |
+
+## Defects found by testing in this phase (all fixed)
+
+1. A rejected setup-link attempt was **not audited**: the audit row rolled back with the failed transaction. It's now written separately.
+2. Node's `.env` parser reads an unquoted `#14532D` as a comment, so colours arrived empty. Startup validation caught it. The error message now says to quote colours, and all examples are quoted.
+3. Root `npm run seed`/`migrate` didn't forward arguments (`--reset`, `--status`).
+4. The CI Compose job would have failed: its placeholder replacement produced an invalid email, and `up --wait` would have waited for readiness, which correctly needs bootstrap first.
+5. Docker Compose passes unset optional variables as empty strings, which would have failed validation. Empty is now treated as unset.
+
+Earlier phases: see git history of this file (bootstrap uuid/text parameter, FORCE RLS breaking backups, compiled migrations path, drift milliseconds, cross-tenant 500).
+
+## Not yet covered
+
+- Browser E2E (Playwright). The UI is type-checked, built and exercised over HTTP, but not driven in a real browser.
+- Performance at 1,000+ employees; backup restore on RDS; running the Compose stack on a real Docker engine (CI job added).
+- Payroll, leave, document and email branding tests: those features don't exist yet.
