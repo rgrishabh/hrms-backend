@@ -10,6 +10,7 @@ import { orgToday } from '../competency/service.js';
 import type { Db } from '../../db/tx.js';
 import { RULE_PARAMS, type RuleKind } from './calc.js';
 import { attendanceLocked, computeRun, periodBounds } from './service.js';
+import { csv } from '../../core/http/csv.js';
 
 const F = 'payroll';
 const Period = z.string().regex(/^[0-9]{4}-(0[1-9]|1[0-2])$/, 'Use YYYY-MM');
@@ -20,8 +21,6 @@ const ComponentBody = z.object({
   taxable: z.boolean().default(true), pfWage: z.boolean().default(false), esiWage: z.boolean().default(true), position: z.number().int().min(0).max(999).default(0),
   status: z.enum(['active', 'inactive']).default('active'),
 }).refine((c) => c.calc !== 'percent' || c.baseCodes.length > 0, { message: 'Percent components need base components', path: ['baseCodes'] });
-const csvCell = (v: unknown) => { let s = v == null ? '' : String(v); if (/^[=+\-@\t\r]/.test(s)) s = `'${s}`; return /[",\r\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s; };
-const csv = (rows: unknown[][]) => rows.map((r) => r.map(csvCell).join(',')).join('\r\n') + '\r\n';
 
 async function loadRun(db: Db, a: TenantActor, id: string, lock = false) {
   const r = (await db.query<{ id: string; period: string; legal_entity_id: string; kind: string; employee_id: string | null; status: string; created_by: string; warnings: number; warnings_acknowledged: boolean }>(
