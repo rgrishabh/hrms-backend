@@ -101,7 +101,7 @@ describe('assets', () => {
     expect(mine).toHaveLength(1);
     expect((await other.post(`/api/v1/assets/assignments/${mine[0].id}/acknowledge`)).statusCode).toBe(404);
     expect((await emp.post(`/api/v1/assets/assignments/${mine[0].id}/acknowledge`)).statusCode).toBe(200);
-    expect((await itU.post('/api/v1/tenant/jobs/assets.daily/run')).json().status).toBe('succeeded');
+    expect((await itU.runJob('assets.daily')).json().status).toBe('succeeded');
     expect((await ownerQuery(`SELECT 1 FROM notifications WHERE tenant_id=$1 AND user_id=$2 AND kind='assets.calibration'`, [T.id, T.users.it!.id])).length).toBe(1);
   });
 

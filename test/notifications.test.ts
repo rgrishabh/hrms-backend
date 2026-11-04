@@ -135,9 +135,9 @@ describe('reminders', () => {
     expect(reminders.length).toBe(1);
     expect(reminders[0].title).toMatch(/Waiting 5 day\(s\) for your approval/);
     // A manual re-run the same day does not duplicate the reminder.
-    await hr.post('/api/v1/tenant/jobs/approvals.reminder/run').catch(() => undefined);
+    await hr.runJob('approvals.reminder').catch(() => undefined);
     const admin = await Client.login(app, T.host, T.users.admin!.email);
-    await admin.post('/api/v1/tenant/jobs/approvals.reminder/run');
+    await admin.runJob('approvals.reminder');
     expect((await inbox(hr)).items.filter((x: { kind: string }) => x.kind === 'approval.reminder').length).toBe(1);
   });
 });

@@ -107,3 +107,17 @@ A request is an approval request (`lab_authorization`) routed to holders of `com
 ## D28 — Half-day overlap and existing overlaps
 **Context:** leave overlap was date-only, and only checked in the application. A constraint added now must not fail a deployment on rows that already overlap, and cancelling approved leave in a migration is not ours to decide.
 **Decision:** an exclusion constraint on half-day slots, with `overlap_legacy` flagging rows that overlapped when the migration ran; flagged rows are outside the constraint and stay as they are for HR. A paid and an unpaid half on one date are refused, because attendance keeps one leave type per date and LOP could not tell them apart.
+
+## D29 — One runtime, two processes; "Run now" is queued
+**Context:** the scheduler ran inside the API, and `core/jobs/cli.ts` set up none of the process state a job needs. The contract says only the worker runs jobs and sends email.
+**Options:** keep `JOBS_ENABLED` and a CLI; extract `initRuntime(env)` and add a worker; a separate image.
+**Decision:** `initRuntime` is shared by `buildApp` and `src/worker.ts`, in one image, selected by `PROCESS_ROLE` and `hrms worker`. Each command refuses the other's role. Approval handlers are registered there, independent of routes. The API still builds the mailer, because whether to enqueue depends on it, but never calls delivery. "Run now" inserts a `queued` row and answers 202; the worker runs it on its next pass, within `JOBS_INTERVAL_SECONDS`.
+**Health:** the worker has no port, so it writes a heartbeat file every 15 s (`WORKER_HEARTBEAT_FILE`, default in the temp directory) and `hrms worker-health` reads it. Unhealthy means no heartbeat for 60 s, a pass running over 75 min, or no pass for three intervals. The image's `HEALTHCHECK` runs `hrms healthcheck`, which picks the right check by role. On SIGTERM it starts no new pass and awaits the running one.
+**Reason:** a job needs the same process state wherever it runs, and a queued run keeps long jobs out of the request path.
+
+## D30 — Node 24 in the image
+**Context:** batch D hashes passwords with the built-in `crypto.argon2`, added in Node 24.7.
+**Options:** the `argon2` npm package with its native build; Node >= 24.7.
+**Decision:** `node:24-alpine` for both stages, `engines.node >= 24.7`, and a build step that fails if `crypto.argon2` is missing, so a stale base image can't ship.
+**Reason:** no native dependency in an image that deliberately carries little.
+

@@ -207,7 +207,7 @@ describe('retention and erasure', () => {
     const file = path.join(storeDir, k!.resume_key);
     expect(existsSync(file)).toBe(true);
     await ownerQuery(`UPDATE candidates SET retain_until=$2::date - 1 WHERE id = ANY($1::uuid[])`, [[id, candId], today]);
-    expect((await hr.post('/api/v1/tenant/jobs/recruitment.retention/run')).json().status).toBe('succeeded');
+    expect((await hr.runJob('recruitment.retention')).json().status).toBe('succeeded');
     const [old] = await ownerQuery<{ status: string; email: string | null; first_name: string; resume_key: string | null }>(`SELECT status, email, first_name, resume_key FROM candidates WHERE id=$1`, [id]);
     expect(old).toMatchObject({ status: 'anonymized', email: null, first_name: 'Anonymized', resume_key: null });
     expect(existsSync(file)).toBe(false);

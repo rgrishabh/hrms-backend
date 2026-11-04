@@ -40,11 +40,8 @@ async function finalizedRunCovers(db: Db, tenantId: string, employeeId: string, 
 }
 const COVERED_BY_FINALIZED = 'A finalized payroll already covers that date; use an adjustment (arrears) in the next run instead';
 
-export async function payrollRoutes(app: FastifyInstance) {
-  gateFeatures(app, 'payroll');
-  const cipher = app.deps.cipher;
-
-  // ------------------------------------------------------------ approvals
+/** Approval effects. Registered once at startup (core/runtime), whether or not the module's routes are. */
+export function registerPayrollApprovals() {
   registerApprovalHandler('salary_change', {
     feature: F, label: 'Salary change', requesterLink: '/payroll?tab=salaries',
     async onApproved(db, tenantId, id) {
@@ -68,6 +65,11 @@ export async function payrollRoutes(app: FastifyInstance) {
       await db.query(`UPDATE payroll_runs SET status='computed' WHERE tenant_id=$1 AND id=$2 AND status='pending'`, [tenantId, id]);
     },
   });
+}
+
+export async function payrollRoutes(app: FastifyInstance) {
+  gateFeatures(app, 'payroll');
+  const cipher = app.deps.cipher;
 
   // ------------------------------------------------------------ components
   app.get('/components', async (req) => {

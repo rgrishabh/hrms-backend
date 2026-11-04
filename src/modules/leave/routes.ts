@@ -109,8 +109,8 @@ async function evaluateRequest(db: Db, a: TenantActor, body: z.infer<typeof Requ
   return { employee: e, type: t, year, days, perDate, balance: bal, sufficient };
 }
 
-export async function leaveRoutes(app: FastifyInstance) {
-  gateFeatures(app, 'leave');
+/** Approval effects. Registered once at startup (core/runtime), whether or not the module's routes are. */
+export function registerLeaveApprovals() {
   registerApprovalHandler('leave_request', {
     feature: 'leave', label: 'Leave request', requesterLink: '/leave',
     async onApproved(db, tenantId, requestId, actorId) {
@@ -135,6 +135,10 @@ export async function leaveRoutes(app: FastifyInstance) {
         cancelled_by=CASE WHEN $3='cancelled' THEN $4::uuid END WHERE tenant_id=$1 AND id=$2`, [tenantId, requestId, status, actorId]);
     },
   });
+}
+
+export async function leaveRoutes(app: FastifyInstance) {
+  gateFeatures(app, 'leave');
 
   // ------------------------------------------------------------ types
   app.get('/types', async (req) => {

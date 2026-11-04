@@ -131,7 +131,8 @@ function assertCanView(a: TenantActor, id: string) {
 
 const n = (k: number, one: string, many: string) => `${k} ${k === 1 ? one : many}`;
 
-export async function profileRoutes(app: FastifyInstance) {
+/** Approval effects. Registered once at startup (core/runtime), whether or not the module's routes are. */
+export function registerProfileApprovals() {
   registerApprovalHandler('employee_profile_change', {
     label: 'Personal details change', requesterLink: '/profile',
     async onApproved(db, tenantId, id) {
@@ -148,6 +149,9 @@ export async function profileRoutes(app: FastifyInstance) {
       await db.query(`UPDATE employee_profile_changes SET status=$3, decided_at=now() WHERE tenant_id=$1 AND id=$2 AND status='pending'`, [tenantId, id, status]);
     },
   });
+}
+
+export async function profileRoutes(app: FastifyInstance) {
 
   /** Everything in the personal record, what is awaiting approval, and what is still missing. */
   app.get('/:id/profile', async (req) => {

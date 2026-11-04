@@ -87,7 +87,7 @@ describe('onboarding checklists', () => {
 describe('probation', () => {
   it('the job opens a review; the manager recommends; HR approval confirms', async () => {
     await ownerQuery(`UPDATE employees SET employment_type='probation', probation_end_date=$2, confirmation_date=NULL WHERE id=$1`, [empId, addDays(today, 10)]);
-    expect((await hr.post('/api/v1/tenant/jobs/lifecycle.daily/run')).json().status).toBe('succeeded');
+    expect((await hr.runJob('lifecycle.daily')).json().status).toBe('succeeded');
     const r = (await mgr.get('/api/v1/lifecycle/probation')).json().items.find((x: { employee_id: string }) => x.employee_id === empId);
     expect(r).toMatchObject({ status: 'open', probation_end: addDays(today, 10) });
     expect((await ownerQuery(`SELECT 1 FROM notifications WHERE tenant_id=$1 AND user_id=$2 AND kind='lifecycle.probation'`, [T.id, T.users.manager!.id])).length).toBe(1);
@@ -102,7 +102,7 @@ describe('probation', () => {
 
   it('extension moves the end date; HR cannot approve its own submission', async () => {
     await ownerQuery(`UPDATE employees SET employment_type='probation', probation_end_date=$2, confirmation_date=NULL WHERE id=$1`, [otherId, addDays(today, 5)]);
-    await hr.post('/api/v1/tenant/jobs/lifecycle.daily/run');
+    await hr.runJob('lifecycle.daily');
     const r = (await hr.get('/api/v1/lifecycle/probation?status=open')).json().items.find((x: { employee_id: string }) => x.employee_id === otherId);
     expect((await hr.post(`/api/v1/lifecycle/probation/${r.id}/submit`, { recommendation: 'extend', extendMonths: 3, comments: 'Not yet authorized on two methods' })).statusCode).toBe(200);
     expect((await hr.get('/api/v1/approvals/inbox')).json().items.some((x: { entity_id: string }) => x.entity_id === r.id)).toBe(false);
@@ -162,7 +162,7 @@ describe('separations', () => {
     expect((await hr.get('/api/v1/approvals/inbox')).json().items.some((x: { entity_id: string }) => x.entity_id === s.id)).toBe(false);
     await approve(hrHead, s.id);
     await ownerQuery(`UPDATE separations SET approved_lwd=$2::date - 1, notice_date=$2::date - 2 WHERE id=$1`, [s.id, today]);
-    const r = (await hr.post('/api/v1/tenant/jobs/lifecycle.daily/run')).json();
+    const r = (await hr.runJob('lifecycle.daily')).json();
     expect(r.status).toBe('succeeded');
     expect((await ownerQuery<{ status: string }>(`SELECT status FROM users WHERE id=$1`, [T.users.other!.id]))[0]!.status).toBe('disabled');
     expect((await other.get('/api/v1/auth/me')).statusCode).toBe(401);

@@ -33,10 +33,8 @@ async function assertCanViewEmployee(db: Db, a: TenantActor, employeeId: string)
   throw forbidden();
 }
 
-export async function attendanceRoutes(app: FastifyInstance) {
-  gateFeatures(app, 'attendance');
-  await rosterRoutes(app);
-  // Regularization approval effects.
+/** Approval effects. Registered once at startup (core/runtime), whether or not the module's routes are. */
+export function registerAttendanceApprovals() {
   registerApprovalHandler('attendance_regularization', {
     feature: 'attendance.regularization', label: 'Attendance correction', requesterLink: '/attendance/me',
     async onApproved(db, tenantId, regId, actorId) {
@@ -55,6 +53,11 @@ export async function attendanceRoutes(app: FastifyInstance) {
       await db.query(`UPDATE attendance_regularizations SET status=$3, decided_at=now() WHERE tenant_id=$1 AND id=$2`, [tenantId, regId, status]);
     },
   });
+}
+
+export async function attendanceRoutes(app: FastifyInstance) {
+  gateFeatures(app, 'attendance');
+  await rosterRoutes(app);
 
   // ------------------------------------------------------------ punches (web / mobile)
   const PunchBody = z.object({

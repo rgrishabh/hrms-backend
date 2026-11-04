@@ -55,8 +55,8 @@ async function recomputeTotal(db: Db, tenantId: string, claimId: string) {
     WHERE tenant_id=$1 AND id=$2`, [tenantId, claimId]);
 }
 
-export async function expenseRoutes(app: FastifyInstance) {
-  gateFeatures(app, 'expenses');
+/** Approval effects. Registered once at startup (core/runtime), whether or not the module's routes are. */
+export function registerExpenseApprovals() {
   registerApprovalHandler('expense_claim', {
     feature: 'expenses', label: 'Expense claim', requesterLink: '/expenses',
     async onApproved(db, tenantId, id) {
@@ -69,6 +69,10 @@ export async function expenseRoutes(app: FastifyInstance) {
       await db.query(`UPDATE expense_claims SET status=$3, updated_at=now() WHERE tenant_id=$1 AND id=$2`, [tenantId, id, status === 'returned' ? 'returned' : status]);
     },
   });
+}
+
+export async function expenseRoutes(app: FastifyInstance) {
+  gateFeatures(app, 'expenses');
 
   await allowanceRoutes(app);
 

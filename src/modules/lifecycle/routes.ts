@@ -26,9 +26,8 @@ const TemplateBody = z.object({
 });
 const SEPARATION_KINDS = ['resignation', 'termination', 'retirement', 'contract_end', 'death', 'absconding', 'mutual'] as const;
 
-export async function lifecycleRoutes(app: FastifyInstance) {
-  gateFeatures(app, ON, OFF);
-  // ------------------------------------------------------------ approvals
+/** Approval effects. Registered once at startup (core/runtime), whether or not the module's routes are. */
+export function registerLifecycleApprovals() {
   registerApprovalHandler('separation', {
     feature: OFF, label: 'Separation', requesterLink: '/lifecycle?tab=separations',
     async onApproved(db, tenantId, id, actorId) {
@@ -64,7 +63,10 @@ export async function lifecycleRoutes(app: FastifyInstance) {
       await db.query(`UPDATE probation_reviews SET status=$3 WHERE tenant_id=$1 AND id=$2 AND status='pending'`, [tenantId, id, status === 'returned' ? 'open' : status === 'cancelled' ? 'open' : 'rejected']);
     },
   });
+}
 
+export async function lifecycleRoutes(app: FastifyInstance) {
+  gateFeatures(app, ON, OFF);
   // ------------------------------------------------------------ templates
   app.get('/templates', async (req) => {
     const a = tenantActorAny(req, 'lifecycle.manage', 'lifecycle.read');

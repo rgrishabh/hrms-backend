@@ -3,7 +3,7 @@ import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import { tenantActor, tenantActorAny, requireFeature } from '../../core/http/context.js';
 import { JOBS, JOB_MAP, nextRun, jobActive } from '../../core/jobs/registry.js';
-import { runNow, localNow, MAX_ATTEMPTS } from '../../core/jobs/scheduler.js';
+import { enqueueRun, localNow, MAX_ATTEMPTS } from '../../core/jobs/scheduler.js';
 import { SETTINGS } from '../../core/settings/registry.js';
 import { resolveSetting, writeSetting, clearSetting } from '../../core/settings/service.js';
 import { evaluateFeatures } from '../../core/features/state.js';
@@ -113,7 +113,7 @@ export async function tenantAdminRoutes(app: FastifyInstance, opts: { publicConf
     });
   });
 
-  app.post('/jobs/:key/run', { config: { rateLimit: { max: 10, timeWindow: '1 minute' } } }, async (req) => {
+  app.post('/jobs/:key/run', { config: { rateLimit: { max: 10, timeWindow: '1 minute' } } }, async (req, reply) => {
     const { key } = z.object({ key: z.string() }).parse(req.params);
     const job = JOB_MAP.get(key);
     if (!job) throw notFound('Unknown job');
@@ -124,7 +124,8 @@ export async function tenantAdminRoutes(app: FastifyInstance, opts: { publicConf
       if (!jobActive(job, (k) => !!states.get(k)?.usable)) await requireFeature(db, a.tenantId, keys[0]!); // throws feature_unavailable
     });
     await a.tx((db) => audit(db, { ...a.auditBase, action: 'job.run_requested', category: 'data', targetType: 'job', targetId: key }));
-    return runNow(app.deps.pool, req.log, a.tenantId, key, a.user.userId);
+    reply.code(202);
+    return enqueueRun(app.deps.pool, a.tenantId, key, a.user.userId);
   });
 
   // ------------------------------------------------------------ users & roles

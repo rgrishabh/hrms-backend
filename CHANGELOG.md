@@ -1,5 +1,15 @@
 # Changelog
 
+## Unreleased
+
+### Removed
+
+* `JOBS_ENABLED`: replaced by `PROCESS_ROLE=api|worker`. Only the worker runs the scheduler and sends email.
+
+### Changed
+
+* `POST /api/v1/tenant/jobs/:key/run` answers 202 with `{ runId, status: "queued" }`; the worker runs it.
+
 ## [1.1.0](https://github.com/rgrishabh/hrms-backend/compare/v1.0.0...v1.1.0) (2026-11-04)
 
 

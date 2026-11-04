@@ -68,8 +68,8 @@ async function payoutOptions(db: Db, tenantId: string) {
   };
 }
 
-export async function overtimeRoutes(app: FastifyInstance) {
-  gateFeatures(app, F);
+/** Approval effects. Registered once at startup (core/runtime), whether or not the module's routes are. */
+export function registerOvertimeApprovals() {
   registerApprovalHandler('overtime_claim', {
     feature: F, label: 'Overtime claim', requesterLink: '/overtime',
     async onApproved(db, tenantId, id, actorId) {
@@ -97,6 +97,10 @@ export async function overtimeRoutes(app: FastifyInstance) {
         WHERE tenant_id=$1 AND id=$2 AND status='pending'`, [tenantId, id, status, actorId]);
     },
   });
+}
+
+export async function overtimeRoutes(app: FastifyInstance) {
+  gateFeatures(app, F);
 
   /** Days with recorded overtime the signed-in employee can still claim, and how they may take it. */
   app.get('/eligible', async (req) => {

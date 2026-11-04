@@ -46,8 +46,8 @@ function notSelf(a: TenantActor, employeeId: string, what: string) {
   if (a.user.employeeId === employeeId) throw forbidden(`You cannot ${what} for yourself`);
 }
 
-export async function competencyRoutes(app: FastifyInstance) {
-  gateFeatures(app, 'training');
+/** Approval effects. Registered once at startup (core/runtime), whether or not the module's routes are. */
+export function registerCompetencyApprovals() {
   registerApprovalHandler('lab_authorization', {
     feature: 'lab.competency', label: 'Technical authorization', requesterLink: '/competency',
     async onApproved(db, tenantId, id, actorId) {
@@ -74,6 +74,10 @@ export async function competencyRoutes(app: FastifyInstance) {
       await addEvent(db, tenantId, id, status, actorId);
     },
   });
+}
+
+export async function competencyRoutes(app: FastifyInstance) {
+  gateFeatures(app, 'training');
 
   // ------------------------------------------------------------ courses (feature: training)
   app.get('/courses', async (req) => {

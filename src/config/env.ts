@@ -60,8 +60,9 @@ const schema = z.object({
   DATA_ENCRYPTION_KEY: z.string().refine((v) => Buffer.from(v, 'base64').length === 32,
     'DATA_ENCRYPTION_KEY must be base64 of exactly 32 bytes (generate: openssl rand -base64 32)'),
 
-  // ---- background jobs (core/jobs). Safe with several instances: each run is claimed once in the database.
-  JOBS_ENABLED: bool('true'),
+  // ---- processes. The API takes traffic and enqueues; the worker runs jobs and sends mail. Safe with several of each:
+  // each run is claimed once in the database.
+  PROCESS_ROLE: z.enum(['api', 'worker']).default('api'),
   JOBS_INTERVAL_SECONDS: z.coerce.number().int().min(10).max(3600).default(60),
 
   // ---- email (module notifications.email). Credentials from env / secret store only.

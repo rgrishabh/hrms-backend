@@ -117,8 +117,8 @@ describe('policies', () => {
 
   it('overdue reminders go out once a week; retiring removes the policy from staff lists', async () => {
     await ownerQuery(`UPDATE policy_versions SET published_at = now() - interval '20 days' WHERE id=$1`, [v2]);
-    await qm.post('/api/v1/tenant/jobs/policies.ack_reminder/run');
-    await qm.post('/api/v1/tenant/jobs/policies.ack_reminder/run');
+    await qm.runJob('policies.ack_reminder');
+    await qm.runJob('policies.ack_reminder');
     expect((await ownerQuery(`SELECT 1 FROM notifications WHERE tenant_id=$1 AND user_id=$2 AND kind='policies.ack_overdue'`, [T.id, T.users.employee!.id])).length).toBe(1);
     expect((await emp.get('/api/v1/policies/mine')).json().overdue).toBe(1);
     expect((await emp.post(`/api/v1/policies/${policyId}/retire`, { reason: 'Replaced' })).statusCode).toBe(403); // publishers only

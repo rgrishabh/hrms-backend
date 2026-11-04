@@ -27,10 +27,8 @@ const BankBody = z.object({
   bankName: z.string().trim().max(120).nullable().optional(),
 });
 
-export async function employeeRoutes(app: FastifyInstance) {
-  const { cipher } = app.deps;
-  await profileRoutes(app);
-
+/** Approval effects. Registered once at startup (core/runtime), whether or not the module's routes are. */
+export function registerEmployeeApprovals() {
   registerApprovalHandler('employee_bank_change', {
     label: 'Bank account change', requesterLink: '/employees',
     async onApproved(db, tenantId, changeId, actorId) {
@@ -52,6 +50,12 @@ export async function employeeRoutes(app: FastifyInstance) {
       await db.query(`UPDATE employee_bank_changes SET status=$3, decided_at=now() WHERE tenant_id=$1 AND id=$2 AND status='pending'`, [tenantId, changeId, status]);
     },
   });
+}
+
+export async function employeeRoutes(app: FastifyInstance) {
+  const { cipher } = app.deps;
+  await profileRoutes(app);
+
 
   app.get('/', async (req) => {
     const a = tenantActorAny(req, 'employees.read', 'employees.directory');

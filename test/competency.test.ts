@@ -158,7 +158,7 @@ describe('technical authorization', () => {
 
   it('scheduled review expires overdue authorizations and training reminders are sent once', async () => {
     await ownerQuery(`UPDATE lab_authorizations SET review_due=$2::date - 1 WHERE id=$1`, [authId, today]);
-    const r = await qm.post('/api/v1/tenant/jobs/competency.review/run');
+    const r = await qm.runJob('competency.review');
     expect(r.json().status).toBe('succeeded');
     expect((await qm.get(`/api/v1/competency/authorizations/${authId}`)).json().status).toBe('expired');
     expect((await check(qm, empId)).json().reasons[0]).toMatch(/No technical authorization/);
@@ -166,9 +166,9 @@ describe('technical authorization', () => {
 
     const [s] = await ownerQuery<{ id: string }>(`SELECT id FROM training_records WHERE employee_id=$1 AND course_id=$2 AND status='active'`, [otherId, course.SAFETY]);
     await ownerQuery(`UPDATE training_records SET expires_on=$2::date + 7 WHERE id=$1`, [s!.id, today]);
-    expect((await emp.post('/api/v1/tenant/jobs/training.expiry/run')).statusCode).toBe(403);
-    await hr.post('/api/v1/tenant/jobs/training.expiry/run');
-    await hr.post('/api/v1/tenant/jobs/training.expiry/run');
+    expect((await emp.runJob('training.expiry')).statusCode).toBe(403);
+    await hr.runJob('training.expiry');
+    await hr.runJob('training.expiry');
     const n = await ownerQuery(`SELECT 1 FROM notifications WHERE tenant_id=$1 AND user_id=$2 AND kind='training.expiring'`, [T.id, T.users.other!.id]);
     expect(n.length).toBe(1);
   });

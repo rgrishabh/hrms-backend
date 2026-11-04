@@ -54,8 +54,8 @@ async function recalc(db: Db, tenantId: string, d: { employee_id: string; start_
   if (d.start_date <= today) await recalculateRange(db, tenantId, d.employee_id, d.start_date, d.end_date < today ? d.end_date : today);
 }
 
-export async function fieldDutyRoutes(app: FastifyInstance) {
-  gateFeatures(app, F);
+/** Approval effects. Registered once at startup (core/runtime), whether or not the module's routes are. */
+export function registerFieldDutyApprovals() {
   registerApprovalHandler('field_duty', {
     feature: F, label: 'Field duty', requesterLink: '/field-duty',
     async onApproved(db, tenantId, id) {
@@ -71,6 +71,10 @@ export async function fieldDutyRoutes(app: FastifyInstance) {
         WHERE tenant_id=$1 AND id=$2 AND status='pending'`, [tenantId, id, status, actorId]);
     },
   });
+}
+
+export async function fieldDutyRoutes(app: FastifyInstance) {
+  gateFeatures(app, F);
 
   /** Request field duty for yourself, or (field_duty.manage) record it for an employee; either way the manager approves. */
   app.post('/requests', async (req, reply) => {

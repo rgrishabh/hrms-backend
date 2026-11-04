@@ -111,11 +111,8 @@ async function readMultipart(req: FastifyRequest, maxBytes: number) {
   return { file, fields };
 }
 
-export async function recruitmentRoutes(app: FastifyInstance) {
-  gateFeatures(app, 'recruitment');
-  const maxBytes = app.deps.env.STORAGE_MAX_FILE_MB * 1024 * 1024;
-
-  // ------------------------------------------------------------ approvals
+/** Approval effects. Registered once at startup (core/runtime), whether or not the module's routes are. */
+export function registerRecruitmentApprovals() {
   registerApprovalHandler('job_requisition', {
     feature: FEATURE, label: 'Job requisition', requesterLink: '/recruitment',
     async onApproved(db, tenantId, id) {
@@ -137,6 +134,11 @@ export async function recruitmentRoutes(app: FastifyInstance) {
       await db.query(`UPDATE job_offers SET status=$3 WHERE tenant_id=$1 AND id=$2 AND status='pending'`, [tenantId, id, status === 'rejected' ? 'rejected' : 'draft']);
     },
   });
+}
+
+export async function recruitmentRoutes(app: FastifyInstance) {
+  gateFeatures(app, 'recruitment');
+  const maxBytes = app.deps.env.STORAGE_MAX_FILE_MB * 1024 * 1024;
 
   // ------------------------------------------------------------ requisitions
   app.get('/requisitions', async (req) => {

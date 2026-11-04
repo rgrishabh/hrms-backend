@@ -135,7 +135,7 @@ describe('grievances', () => {
   it('timeline reminders; module off → 403', async () => {
     const c = await emp.post('/api/v1/cases', { kind: 'posh', category: 'physical', description: 'Unwanted physical contact while handing over samples at the reception desk.', incidentDate: today });
     await ownerQuery(`UPDATE cases SET inquiry_due=$2::date + 7 WHERE id=$1`, [c.json().id, today]);
-    expect((await hr.post('/api/v1/tenant/jobs/cases.deadlines/run')).json().status).toBe('succeeded');
+    expect((await hr.runJob('cases.deadlines')).json().status).toBe('succeeded');
     expect((await ownerQuery(`SELECT 1 FROM notifications WHERE tenant_id=$1 AND user_id=$2 AND kind='cases.deadline'`, [T.id, T.users.it!.id])).length).toBe(1);
     const off = await makeApp({ ENABLED_MODULES: 'default' });
     try { expect((await (await Client.login(off, T.host, T.users.employee!.email)).get('/api/v1/cases?kind=grievance')).json().error.code).toBe('feature_unavailable'); }

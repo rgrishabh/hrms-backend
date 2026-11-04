@@ -10,10 +10,9 @@ import { loadSession, SESSION_COOKIE } from './core/auth/session.js';
 import { sha256, safeEqualHex } from './core/crypto/index.js';
 import { AppError } from './core/http/errors.js';
 import type { AppDeps } from './core/http/context.js';
-import { setDeploymentDefaults, setDeploymentLimits } from './core/settings/service.js';
-import { resolveEnabledModules, setEnabledModules } from './core/features/state.js';
+import { initRuntime } from './core/runtime.js';
 import { authRoutes, PASSWORD_CHANGE_ALLOWED } from './modules/auth.js';
-import { setMfaFloor, MFA_PENDING_ALLOWED, MFA_ENROLL_ALLOWED } from './core/auth/mfa.js';
+import { MFA_PENDING_ALLOWED, MFA_ENROLL_ALLOWED } from './core/auth/mfa.js';
 import { tenantAdminRoutes } from './modules/tenant/routes.js';
 import { orgRoutes } from './modules/org/routes.js';
 import { employeeRoutes } from './modules/employees/routes.js';
@@ -41,31 +40,13 @@ import { smsRoutes } from './modules/sms/routes.js';
 import { assetRoutes } from './modules/assets/routes.js';
 import { reportRoutes } from './modules/reports/routes.js';
 import { dashboardRoutes } from './modules/dashboard/routes.js';
-import { createStore, setStore, getStore } from './core/storage/index.js';
-import { setStorageConfigured } from './core/features/state.js';
-import { setEmailBrand } from './core/notify/service.js';
-import { createMailer, setMailer, getMailer } from './core/notify/mailer.js';
-import { setEmailTransportConfigured, setSmsTransportConfigured } from './core/features/state.js';
-import { createSmsSender, setSmsSender, getSmsSender } from './core/notify/sms.js';
 import { registerWeb, registerBrandingAssets, spaCsp, API_CSP, ASSET_CSP } from './core/http/web.js';
-import { buildPublicConfig } from './config/installation.js';
 import { migrationStatus } from './db/migrate.js';
 
 const UNSAFE = new Set(['POST', 'PUT', 'PATCH', 'DELETE']);
 
 export async function buildApp(deps: AppDeps): Promise<FastifyInstance> {
   const { env } = deps;
-  // Deployment configuration is validated here; invalid module sets stop the process.
-  setEnabledModules(resolveEnabledModules(env.ENABLED_MODULES));
-  setDeploymentLimits({ sessionTtlHours: env.SESSION_TTL_HOURS });
-  setMfaFloor(env.MFA_ENFORCEMENT);
-  setDeploymentDefaults({ 'general.timezone': env.ORGANIZATION_TIMEZONE, 'general.date_format': env.ORGANIZATION_DATE_FORMAT });
-  const publicConfig = buildPublicConfig(env);
-  setEmailBrand({ brandName: publicConfig.brand.name, productName: publicConfig.product.name, primaryColor: publicConfig.brand.primaryColor,
-    supportEmail: publicConfig.brand.supportEmail, appUrl: env.APP_URL });
-
-  const SPA_CSP = spaCsp([publicConfig.brand.logoUrl, publicConfig.brand.faviconUrl]);
-
   const app = Fastify({
     logger: env.NODE_ENV === 'test' ? false : {
       level: env.LOG_LEVEL,
@@ -78,12 +59,9 @@ export async function buildApp(deps: AppDeps): Promise<FastifyInstance> {
     bodyLimit: 1024 * 1024,
   });
   app.decorate('deps', deps);
-  if (!deps.mailerOverride) setMailer(createMailer(env, app.log));
-  setEmailTransportConfigured(!!getMailer());
-  if (!deps.smsOverride) setSmsSender(createSmsSender(env, app.log));
-  setSmsTransportConfigured(!!getSmsSender());
-  if (!deps.storeOverride) setStore(createStore(env));
-  setStorageConfigured(!!getStore());
+  // Deployment configuration is validated here; an invalid module set stops the process.
+  const { publicConfig } = initRuntime(env, app.log, deps);
+  const SPA_CSP = spaCsp([publicConfig.brand.logoUrl, publicConfig.brand.faviconUrl]);
   app.decorateRequest('ctx', null as never);
 
   await app.register(cookie);

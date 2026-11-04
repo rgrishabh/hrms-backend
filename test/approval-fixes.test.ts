@@ -111,7 +111,7 @@ describe('F-14 approvals that would stick', () => {
     expect(await inInbox(hr, id)).toBe(false);
     await ownerQuery(`UPDATE users SET status='disabled' WHERE id=$1`, [T.users.other!.id]);
     expect((await admin.put('/api/v1/tenant/settings/approvals.escalate_after_days', { value: 0 })).statusCode).toBe(200);
-    const run = await admin.post('/api/v1/tenant/jobs/approvals.escalation/run');
+    const run = await admin.runJob('approvals.escalation');
     expect(run.statusCode, run.body).toBe(200);
     expect(await inInbox(hr, id)).toBe(true);
   });

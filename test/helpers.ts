@@ -6,8 +6,10 @@ import { buildApp } from '../src/app.js';
 import { createPool } from '../src/db/pool.js';
 import { FieldCipher, hashPassword } from '../src/core/crypto/index.js';
 import { loadEnv } from '../src/config/env.js';
+import { runQueued } from '../src/core/jobs/scheduler.js';
 import { TEST_APP_URL, TEST_OWNER_URL } from './env.js';
 
+const SILENT_LOG = { info: () => undefined, error: () => undefined };
 export const PASSWORD = 'Test-Password-123!';
 let pwHash: string | null = null;
 
@@ -113,6 +115,17 @@ export class Client {
     if (sc?.startsWith('hrms_sid=')) this.cookie = sc.split(';')[0]!;
     if (url === '/api/v1/auth/login' && r.statusCode === 200) { this.csrf = r.json().csrfToken; this.passwordChangeRequired = r.json().passwordChangeRequired; }
     return r;
+  }
+  /** "Run now": the API queues it, so this plays the worker's part and answers with the finished run. */
+  async runJob(key: string): Promise<Pick<LightMyRequestResponse, 'statusCode' | 'json' | 'body'>> {
+    const r = await this.post(`/api/v1/tenant/jobs/${key}/run`);
+    if (r.statusCode !== 202) return r;
+    const { runId } = r.json() as { runId: string };
+    const [run] = await ownerQuery<{ tenant_id: string }>('SELECT tenant_id FROM job_runs WHERE id=$1', [runId]);
+    await runQueued(this.app.deps.pool, SILENT_LOG, run!.tenant_id, new Date());
+    const [done] = await ownerQuery<{ status: string; result: unknown; error: string | null }>('SELECT status, result, error FROM job_runs WHERE id=$1', [runId]);
+    const out = { runId, status: done!.status, result: done!.result, error: done!.error };
+    return { statusCode: 200, body: JSON.stringify(out), json: (() => out) as LightMyRequestResponse['json'] };
   }
   get = (u: string) => this.req('GET', u);
   post = (u: string, b?: unknown) => this.req('POST', u, b ?? {});

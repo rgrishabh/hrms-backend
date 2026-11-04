@@ -110,7 +110,7 @@ describe('delegation', () => {
 });
 
 describe('escalation', () => {
-  const run = async () => (await admin.post('/api/v1/tenant/jobs/approvals.escalation/run')).json();
+  const run = async () => (await admin.runJob('approvals.escalation')).json();
   const age = (id: string, days: number) => ownerQuery(`UPDATE approval_steps SET activated_at = now() - make_interval(days => $2) WHERE request_id=$1 AND status='active'`, [id, days]);
 
   it('can be turned off', async () => {

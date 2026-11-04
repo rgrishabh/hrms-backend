@@ -104,8 +104,8 @@ describe('admin API', () => {
     const Z = await createTenant();
     const hr = await Client.login(app, Z.host, Z.users.hr!.email);
     const emp = await Client.login(app, Z.host, Z.users.employee!.email);
-    expect((await emp.post('/api/v1/tenant/jobs/leave.accrual/run')).statusCode).toBe(403);
-    const r = await hr.post('/api/v1/tenant/jobs/leave.accrual/run');
+    expect((await emp.runJob('leave.accrual')).statusCode).toBe(403);
+    const r = await hr.runJob('leave.accrual');
     expect(r.statusCode).toBe(200);
     expect(r.json().status).toBe('succeeded');
     const list = (await hr.get('/api/v1/tenant/jobs')).json();
@@ -114,6 +114,6 @@ describe('admin API', () => {
     expect(leave.recentRuns[0]).toMatchObject({ trigger: 'manual', status: 'succeeded', triggered_by_name: 'hr' });
     expect(list.items.find((j: { key: string }) => j.key === 'sessions.cleanup').canRun).toBe(false); // HR lacks security.manage
     expect((await ownerQuery(`SELECT 1 FROM audit_logs WHERE tenant_id=$1 AND action='job.run_requested'`, [Z.id])).length).toBe(1);
-    expect((await hr.post('/api/v1/tenant/jobs/nope/run')).statusCode).toBe(404);
+    expect((await hr.runJob('nope')).statusCode).toBe(404);
   });
 });

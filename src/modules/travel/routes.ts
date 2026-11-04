@@ -100,8 +100,8 @@ async function releaseOnDuty(db: Db, tenantId: string, tripId: string, actorId: 
   }
 }
 
-export async function travelRoutes(app: FastifyInstance) {
-  gateFeatures(app, F);
+/** Approval effects. Registered once at startup (core/runtime), whether or not the module's routes are. */
+export function registerTravelApprovals() {
   registerApprovalHandler('travel_request', {
     feature: F, label: 'Travel request', requesterLink: '/travel',
     async onApproved(db, tenantId, id) {
@@ -114,6 +114,10 @@ export async function travelRoutes(app: FastifyInstance) {
         WHERE tenant_id=$1 AND id=$2 AND status='pending'`, [tenantId, id, status, actorId]);
     },
   });
+}
+
+export async function travelRoutes(app: FastifyInstance) {
+  gateFeatures(app, F);
 
   app.post('/requests', async (req, reply) => {
     const a = tenantActor(req, 'travel.self');

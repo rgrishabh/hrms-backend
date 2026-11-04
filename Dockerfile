@@ -1,17 +1,20 @@
 # syntax=docker/dockerfile:1.7
-# HRMS backend: API + database tooling. One image for every environment and customer;
+# HRMS backend: API, worker + database tooling. One image for every environment and customer;
 # configuration is injected at runtime (Compose .env / ECS task definition).
 #   docker run IMAGE            -> API server (default)
+#   docker run IMAGE worker     -> jobs and email (PROCESS_ROLE=worker); `worker-health` is its probe
 #   docker run IMAGE migrate    -> apply pending migrations, then exit
 #   docker run IMAGE migrate-status | provision | bootstrap [--reset-admin --admin-email ...]
 
-FROM node:22-alpine AS build
+FROM node:24-alpine AS build
 WORKDIR /src
 COPY package.json package-lock.json ./
 RUN --mount=type=cache,target=/root/.npm npm ci --no-audit --no-fund
 COPY tsconfig.json tsconfig.build.json ./
 COPY src ./src
 RUN npm run build && npm prune --omit=dev
+# Password hashing needs the built-in crypto.argon2 (Node >= 24.7). Stop here rather than ship a base image without it.
+RUN node -e "process.exit(typeof require('node:crypto').argon2 === 'function' ? 0 : 1)"
 
 # Amazon RDS CA bundle, for DATABASE_SSL=verify-full on AWS.
 FROM alpine:3.22 AS certs
@@ -19,7 +22,7 @@ FROM alpine:3.22 AS certs
 RUN apk add --no-cache curl \
  && curl -fsSL -o /rds-global-bundle.pem https://truststore.pki.rds.amazonaws.com/global/global-bundle.pem
 
-FROM node:22-alpine
+FROM node:24-alpine
 ARG VERSION=dev
 ARG REVISION=unknown
 LABEL org.opencontainers.image.title="hrms-backend" \
@@ -49,6 +52,6 @@ RUN mkdir -p /app/storage && chown 1000:1000 /app/storage && chmod 700 /app/stor
 # uid 1000 = "node" in the base image
 USER 1000:1000
 EXPOSE 4000
-HEALTHCHECK --interval=30s --timeout=3s --start-period=20s CMD ["wget", "-qO", "/dev/null", "http://127.0.0.1:4000/health"]
+HEALTHCHECK --interval=30s --timeout=3s --start-period=20s CMD ["/usr/local/bin/hrms", "healthcheck"]
 ENTRYPOINT ["/usr/local/bin/hrms"]
 CMD ["serve"]

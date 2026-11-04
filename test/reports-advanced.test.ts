@@ -61,7 +61,7 @@ describe('advanced reporting', () => {
 
     // Due today: the job runs it as its owner and the recipients find it in HRMS.
     await ownerQuery(`UPDATE report_schedules SET next_run_on=$2 WHERE tenant_id=$1`, [T.id, today]);
-    const run = await admin.post('/api/v1/tenant/jobs/reports.scheduled/run');
+    const run = await admin.runJob('reports.scheduled');
     expect(run.statusCode, run.body).toBeLessThan(300);
     const mine = (await pay.get('/api/v1/reports/snapshots')).json().items;
     expect(mine).toEqual([expect.objectContaining({ name: 'Headcount by department', scope: 'all', owner: 'hr' })]);
@@ -79,7 +79,7 @@ describe('advanced reporting', () => {
     const pay2 = await Client.login(app, T.host, T.users.payroll!.email);
     expect((await pay2.get(`/api/v1/reports/snapshots/${mine[0].id}`)).statusCode).toBe(404);
     await ownerQuery(`UPDATE report_schedules SET next_run_on=$2 WHERE tenant_id=$1`, [T.id, today]);
-    await admin.post('/api/v1/tenant/jobs/reports.scheduled/run');
+    await admin.runJob('reports.scheduled');
     expect((await pay2.get('/api/v1/reports/snapshots')).json().items).toHaveLength(1);           // the new copy was not sent to them
   });
 

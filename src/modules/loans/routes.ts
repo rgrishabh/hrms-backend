@@ -52,8 +52,8 @@ export function schedule(l: { amount: string; installment_amount: string; first_
   return out;
 }
 
-export async function loanRoutes(app: FastifyInstance) {
-  gateFeatures(app, F);
+/** Approval effects. Registered once at startup (core/runtime), whether or not the module's routes are. */
+export function registerLoanApprovals() {
   registerApprovalHandler('employee_loan', {
     feature: F, label: 'Advance / loan', requesterLink: '/loans',
     async onApproved(db, tenantId, id) {
@@ -65,6 +65,10 @@ export async function loanRoutes(app: FastifyInstance) {
         WHERE tenant_id=$1 AND id=$2 AND status='pending'`, [tenantId, id, status, actorId]);
     },
   });
+}
+
+export async function loanRoutes(app: FastifyInstance) {
+  gateFeatures(app, F);
 
   /** Apply for a salary advance or loan, or (loans.manage) record one for an employee; the manager and finance approve. */
   app.post('/requests', async (req, reply) => {
