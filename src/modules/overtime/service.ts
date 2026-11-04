@@ -1,5 +1,6 @@
 import { Decimal } from 'decimal.js';
 import type { Db } from '../../db/tx.js';
+import { openAmounts } from '../payroll/sealed.js';
 import { getSettingValue } from '../../core/settings/service.js';
 import { calculate, type Adjustment, type Component } from '../payroll/calc.js';
 
@@ -48,11 +49,11 @@ export async function overtimeForRun(db: Db, tenantId: string, runId: string, em
   const warnings: string[] = [];
   let amount = new Decimal(0); let paidMinutes = 0; const included: string[] = [];
   for (const c of claims) {
-    const sal = (await db.query<{ amounts: Record<string, number> }>(`SELECT amounts FROM employee_salaries WHERE tenant_id=$1 AND employee_id=$2 AND status='active'
+    const sal = (await db.query<{ amounts_enc: string }>(`SELECT amounts_enc FROM employee_salaries WHERE tenant_id=$1 AND employee_id=$2 AND status='active'
       AND effective_from <= $3::date ORDER BY effective_from DESC LIMIT 1`, [tenantId, employeeId, c.work_date])).rows[0];
     if (!sal) { warnings.push(`overtime on ${c.work_date} not paid: no salary in force that day`); continue; }
     // Monthly (unprorated) component amounts, computed exactly as payroll does.
-    const monthly = calculate({ month: Number(c.work_date.slice(5, 7)), daysInPeriod: 1, paidDays: 1, components, amounts: sal.amounts, adjustments: [],
+    const monthly = calculate({ month: Number(c.work_date.slice(5, 7)), daysInPeriod: 1, paidDays: 1, components, amounts: openAmounts(sal.amounts_enc), adjustments: [],
       statutory: { pfExcluded: true, regime: 'new', ptState: null }, rules: {}, expect: [] }).lines;
     const ordinary = monthly.filter((l) => l.kind === 'earning' && s.basis.includes(l.code)).reduce((t, l) => t.plus(l.amount), new Decimal(0));
     if (ordinary.lte(0)) { warnings.push(`overtime on ${c.work_date} not paid: none of ${s.basis.join(', ')} in the salary`); continue; }

@@ -1,5 +1,6 @@
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
+import { l3RowFilter, policyViewer, subjectVisible } from '../../core/policy/salary.js';
 import type { Db } from '../../db/tx.js';
 import { tenantActor, tenantActorAny, type TenantActor } from '../../core/http/context.js';
 import { audit } from '../../core/audit/audit.js';
@@ -122,10 +123,10 @@ async function loadEmployee(db: Db, tenantId: string, id: string): Promise<Emp> 
   return e;
 }
 
-/** Who may see an employee's personal details: the employee, full employee readers. */
-function assertCanView(a: TenantActor, id: string) {
+/** Who may see an employee's personal details (L3): the employee, and HR above them in the salary hierarchy. */
+async function assertCanView(db: Db, a: TenantActor, id: string) {
   if (a.user.employeeId === id && a.has('profile.self')) return;
-  if (a.has('employees.read')) return;
+  if (a.has('employees.read') && await subjectVisible(db, a.tenantId, await policyViewer(db, a.tenantId, a.user), id, l3RowFilter)) return;
   throw notFound('Employee not found');
 }
 
@@ -157,8 +158,8 @@ export async function profileRoutes(app: FastifyInstance) {
   app.get('/:id/profile', async (req) => {
     const a = tenantActorAny(req, 'profile.self', 'employees.read');
     const { id } = z.object({ id: Uuid }).parse(req.params);
-    assertCanView(a, id);
     return a.tx(async (db) => {
+      await assertCanView(db, a, id);
       await loadEmployee(db, a.tenantId, id);
       const sections = await loadSections(db, a.tenantId, id);
       const pending = (await db.query(`SELECT c.id, c.section, c.items, c.note, c.created_at, u.display_name AS requested_by_name,
@@ -184,6 +185,7 @@ export async function profileRoutes(app: FastifyInstance) {
     const self = a.user.employeeId === id;
     if (self ? !a.has('profile.self') : !a.has('employees.manage')) throw self ? forbidden() : notFound('Employee not found');
     return a.tx(async (db) => {
+      if (!self) await assertCanView(db, a, id);
       const e = await loadEmployee(db, a.tenantId, id);
       const items = validateSection(section, b.items, e, await orgToday(db, a.tenantId));
       if (!self || !VERIFIED.includes(section)) {
@@ -211,7 +213,7 @@ export async function profileRoutes(app: FastifyInstance) {
       const c = (await db.query<{ employee_id: string; section: Section }>(`SELECT c.id, c.employee_id, c.section, c.items, c.note, c.status, c.created_at, c.decided_at,
           trim(e.first_name||' '||coalesce(e.last_name,'')) AS employee_name, e.employee_code
         FROM employee_profile_changes c JOIN employees e ON e.tenant_id=c.tenant_id AND e.id=c.employee_id WHERE c.tenant_id=$1 AND c.id=$2`, [a.tenantId, changeId])).rows[0];
-      if (!c || !(c.employee_id === a.user.employeeId || a.has('profile.approve') || a.has('employees.read'))) throw notFound('Change not found');
+      if (!c || !(c.employee_id === a.user.employeeId || ((a.has('profile.approve') || a.has('employees.read')) && await subjectVisible(db, a.tenantId, await policyViewer(db, a.tenantId, a.user), c.employee_id, l3RowFilter)))) throw notFound('Change not found');
       return { ...c, current: (await loadSections(db, a.tenantId, c.employee_id))[c.section] };
     });
   });

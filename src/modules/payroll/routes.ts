@@ -17,8 +17,17 @@ import { attendanceLocked, computeRun, periodBounds, staleReason } from './servi
 import { balancesAt } from '../leave/service.js';
 import { csv } from '../../core/http/csv.js';
 import { xlsx, XLSX_TYPE } from '../../core/http/xlsx.js';
+import { dataCipher } from '../../core/crypto/index.js';
+import { AppError } from '../../core/http/errors.js';
+import { getSettingValue } from '../../core/settings/service.js';
+import { isOwnerRole } from '../../core/auth/permissions.js';
+import { isCollapsedMode } from '../../core/policy/mode.js';
+import { assertMayChangeSubject, auditL4, l4RowFilter, maskFields, policyViewer, readContext, refuseHigherLevel, subjectVisible, wantsReveal } from '../../core/policy/salary.js';
+import { ITEM_FIELDS, itemFields, openAdjustment, openAmounts, openItem, openTotals, sealAdjustment, sealSalary, visibleRunTotals } from './sealed.js';
 
 const F = 'payroll';
+/** The owner of a single-person organization has nobody else to ask: the separation-of-duties refusals do not apply, the audit log does. */
+const soleOwner = (a: TenantActor) => isCollapsedMode() && a.user.roles.some(isOwnerRole);
 const Period = z.string().regex(/^[0-9]{4}-(0[1-9]|1[0-2])$/, 'Use YYYY-MM');
 const Text = (max: number) => z.string().trim().max(max).nullable().optional().transform((v) => v || null);
 const ComponentBody = z.object({
@@ -114,12 +123,21 @@ export async function payrollRoutes(app: FastifyInstance) {
 
   // ------------------------------------------------------------ salaries (maker-checker)
   app.get('/employees/:id/salaries', async (req) => {
-    const a = tenantActorAny(req, 'payroll.read', 'payroll.manage');
+    const a = tenantActor(req);
     const { id } = z.object({ id: Uuid }).parse(req.params);
     return a.tx(async (db) => {
       await requireFeature(db, a.tenantId, F);
-      return { items: (await db.query(`SELECT s.id, s.effective_from::text, s.amounts, s.annual_ctc, s.reason, s.status, s.created_at, s.approved_at, u.display_name AS created_by_name
-        FROM employee_salaries s JOIN users u ON u.id=s.created_by WHERE s.tenant_id=$1 AND s.employee_id=$2 ORDER BY s.effective_from DESC, s.created_at DESC`, [a.tenantId, id])).rows };
+      const v = await policyViewer(db, a.tenantId, a.user);
+      if (!a.has('payroll.read') && !a.has('payroll.manage') && a.user.employeeId !== id && !v.managedTeam?.includes(id)) throw forbidden();
+      if (!(await subjectVisible(db, a.tenantId, v, id))) throw notFound('Employee not found');
+      const reveal = wantsReveal(req);
+      const rows = (await db.query<{ amounts_enc: string; annual_ctc_enc: string | null } & Record<string, unknown>>(`SELECT s.id, s.effective_from::text, s.amounts_enc, s.annual_ctc_enc, s.reason, s.status, s.created_at, s.approved_at, u.display_name AS created_by_name
+        FROM employee_salaries s JOIN users u ON u.id=s.created_by WHERE s.tenant_id=$1 AND s.employee_id=$2 ORDER BY s.effective_from DESC, s.created_at DESC`, [a.tenantId, id])).rows;
+      if (reveal && rows.length) await auditL4(db, readContext(req, a), 'reveal', 'payroll.salaries', [{ employeeId: id, fields: ['amounts', 'annual_ctc'] }]);
+      return { items: rows.map(({ amounts_enc, annual_ctc_enc, ...r }) => {
+        const row = { ...r, amounts: openAmounts(amounts_enc) as Record<string, number> | null, annual_ctc: annual_ctc_enc ? Number(JSON.parse(dataCipher().decrypt(annual_ctc_enc))).toFixed(2) : null };
+        return reveal ? row : maskFields(row, ['amounts', 'annual_ctc']);
+      }) };
     });
   });
   app.post('/employees/:id/salaries', async (req, reply) => {
@@ -131,31 +149,43 @@ export async function payrollRoutes(app: FastifyInstance) {
       await requireFeature(db, a.tenantId, F);
       const e = (await db.query<{ name: string; user_id: string | null }>(`SELECT trim(first_name||' '||coalesce(last_name,'')) AS name, user_id FROM employees WHERE tenant_id=$1 AND id=$2`, [a.tenantId, id])).rows[0];
       if (!e) throw notFound('Employee not found');
-      if (e.user_id === a.user.userId) throw forbidden('You cannot change your own salary');
+      if (e.user_id === a.user.userId && !soleOwner(a)) throw forbidden('You cannot change your own salary');
+      await assertMayChangeSubject(db, a.tenantId, await policyViewer(db, a.tenantId, a.user), id);
       const comps = (await db.query<{ code: string; calc: string }>(`SELECT code, calc FROM pay_components WHERE tenant_id=$1 AND status='active' AND code = ANY($2::text[])`, [a.tenantId, Object.keys(b.amounts)])).rows;
       const unknown = Object.keys(b.amounts).filter((k) => !comps.some((c) => c.code === k));
       if (unknown.length) throw badRequest(`Unknown or inactive components: ${unknown.join(', ')}`);
       for (const c of comps) if (c.calc === 'percent' && b.amounts[c.code]! > 100) throw badRequest(`${c.code} is a percentage (0–100)`);
       if (await finalizedRunCovers(db, a.tenantId, id, b.effectiveFrom)) throw conflict(COVERED_BY_FINALIZED);
-      const sid = (await db.query<{ id: string }>(`INSERT INTO employee_salaries (tenant_id, employee_id, effective_from, amounts, annual_ctc, reason, created_by) VALUES ($1,$2,$3,$4,$5,$6,$7) RETURNING id`,
-        [a.tenantId, id, b.effectiveFrom, JSON.stringify(b.amounts), b.annualCtc, b.reason, a.user.userId])).rows[0]!.id;
+      const sealed = sealSalary(b.amounts, b.annualCtc);
+      const sid = (await db.query<{ id: string }>(`INSERT INTO employee_salaries (tenant_id, employee_id, effective_from, amounts_enc, annual_ctc_enc, reason, created_by) VALUES ($1,$2,$3,$4,$5,$6,$7) RETURNING id`,
+        [a.tenantId, id, b.effectiveFrom, sealed.amounts_enc, sealed.annual_ctc_enc, b.reason, a.user.userId])).rows[0]!.id;
       // No figures in the summary: it goes into notifications and email.
       await createApprovalRequest(db, a.tenantId, { entityType: 'salary_change', entityId: sid, requesterId: a.user.userId,
         summary: `${e.name}: salary effective ${b.effectiveFrom} — ${b.reason}`, steps: [{ kind: 'permission', permission: 'payroll.approve' }],
         excludeUserIds: [e.user_id] }); // nobody approves their own salary
-      await audit(db, { ...a.auditBase, action: 'payroll.salary_proposed', category: 'data', targetType: 'employee', targetId: id, metadata: { salaryId: sid, effectiveFrom: b.effectiveFrom, components: Object.keys(b.amounts) } });
+      await audit(db, { ...a.auditBase, action: 'payroll.salary_proposed', category: 'data', targetType: 'employee', targetId: id, metadata: { salaryId: sid, effectiveFrom: b.effectiveFrom, fields: ['amounts', ...(b.annualCtc === null ? [] : ['annual_ctc'])], components: Object.keys(b.amounts) } });
       reply.code(201); return { id: sid };
     });
   });
 
   // ------------------------------------------------------------ employee statutory details
   only(app, 'payroll.statutory').get('/employees/:id/statutory', async (req) => {
-    const a = tenantActorAny(req, 'payroll.read', 'payroll.manage');
+    const a = tenantActor(req);
     const { id } = z.object({ id: Uuid }).parse(req.params);
     return a.tx(async (db) => {
       await requireFeature(db, a.tenantId, F);
-      const s = (await db.query(`SELECT uan, pf_member_id, pf_excluded, esi_ip_number, pan_last4, tax_regime, pt_state, updated_at FROM employee_statutory WHERE tenant_id=$1 AND employee_id=$2`, [a.tenantId, id])).rows[0];
-      return s ? { ...s, pan: s.pan_last4 ? `XXXXXX${s.pan_last4}` : null } : { uan: null, pf_member_id: null, pf_excluded: false, esi_ip_number: null, pan: null, tax_regime: 'new', pt_state: null };
+      const v = await policyViewer(db, a.tenantId, a.user);
+      if (!a.has('payroll.read') && !a.has('payroll.manage') && a.user.employeeId !== id) throw forbidden();
+      if (!(await subjectVisible(db, a.tenantId, v, id))) throw notFound('Employee not found');
+      const s = (await db.query(`SELECT uan, pf_member_id, pf_excluded, esi_ip_number, pan_last4, aadhaar_last4, tax_regime, pt_state, updated_at FROM employee_statutory WHERE tenant_id=$1 AND employee_id=$2`, [a.tenantId, id])).rows[0];
+      if (!s) return { uan: null, pf_member_id: null, pf_excluded: false, esi_ip_number: null, pan: null, aadhaar: null, tax_regime: 'new', pt_state: null };
+      const { pan_last4, aadhaar_last4, ...rest } = s;
+      // PAN and Aadhaar never leave the server whole, not even on reveal: their last four digits are all anyone gets.
+      const row = { ...rest, pan: pan_last4 ? `XXXXXX${pan_last4}` : null, aadhaar: aadhaar_last4 ? `XXXXXXXX${aadhaar_last4}` : null };
+      const fields = ['uan', 'pf_member_id', 'esi_ip_number', 'pan', 'aadhaar'];
+      if (!wantsReveal(req)) return maskFields(row, fields);
+      await auditL4(db, readContext(req, a), 'reveal', 'payroll.statutory', [{ employeeId: id, fields }]);
+      return row;
     });
   });
   only(app, 'payroll.statutory').put('/employees/:id/statutory', async (req) => {
@@ -164,10 +194,13 @@ export async function payrollRoutes(app: FastifyInstance) {
     // Only what is sent changes: an omitted field keeps its value, null clears it.
     const b = z.object({ uan: z.string().regex(/^[0-9]{12}$/).nullable().optional(), pfMemberId: z.string().trim().max(40).nullable().optional(), pfExcluded: z.boolean().optional(),
       esiIpNumber: z.string().regex(/^[0-9]{10}$/).nullable().optional(), pan: z.string().trim().toUpperCase().regex(/^[A-Z]{5}[0-9]{4}[A-Z]$/, 'PAN format: AAAAA9999A').optional(),
+      aadhaar: z.string().trim().regex(/^[2-9][0-9]{11}$/, 'An Aadhaar number has 12 digits').optional(),
       taxRegime: z.enum(['new', 'old']).optional(), ptState: z.string().trim().max(60).nullable().optional() }).parse(req.body);
     return a.tx(async (db) => {
       await requireFeature(db, a.tenantId, F);
       if (!(await db.query('SELECT 1 FROM employees WHERE tenant_id=$1 AND id=$2', [a.tenantId, id])).rowCount) throw notFound('Employee not found');
+      await assertMayChangeSubject(db, a.tenantId, await policyViewer(db, a.tenantId, a.user), id);
+      if (b.aadhaar && !(await getSettingValue<boolean>(db, a.tenantId, 'security.aadhaar_collection'))) throw conflict('Aadhaar collection is turned off. An administrator can turn it on under Settings → Security, with legal advice.');
       const cur = (await db.query<{ uan: string | null; pf_member_id: string | null; pf_excluded: boolean; esi_ip_number: string | null; tax_regime: string; pt_state: string | null }>(
         'SELECT uan, pf_member_id, pf_excluded, esi_ip_number, tax_regime, pt_state FROM employee_statutory WHERE tenant_id=$1 AND employee_id=$2 FOR UPDATE', [a.tenantId, id])).rows[0];
       const uan = b.uan === undefined ? cur?.uan ?? null : b.uan; const pfExcluded = b.pfExcluded ?? cur?.pf_excluded ?? false;
@@ -175,14 +208,15 @@ export async function payrollRoutes(app: FastifyInstance) {
       const esiIpNumber = b.esiIpNumber === undefined ? cur?.esi_ip_number ?? null : b.esiIpNumber;
       const taxRegime = b.taxRegime ?? cur?.tax_regime ?? 'new';
       const ptState = b.ptState === undefined ? cur?.pt_state ?? null : b.ptState || null;
-      await db.query(`INSERT INTO employee_statutory (tenant_id, employee_id, uan, pf_member_id, pf_excluded, esi_ip_number, pan_enc, pan_last4, tax_regime, pt_state)
-        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
+      await db.query(`INSERT INTO employee_statutory (tenant_id, employee_id, uan, pf_member_id, pf_excluded, esi_ip_number, pan_enc, pan_last4, tax_regime, pt_state, aadhaar_enc, aadhaar_last4)
+        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)
         ON CONFLICT (tenant_id, employee_id) DO UPDATE SET uan=EXCLUDED.uan, pf_member_id=EXCLUDED.pf_member_id, pf_excluded=EXCLUDED.pf_excluded, esi_ip_number=EXCLUDED.esi_ip_number,
           pan_enc=coalesce(EXCLUDED.pan_enc, employee_statutory.pan_enc), pan_last4=coalesce(EXCLUDED.pan_last4, employee_statutory.pan_last4),
+          aadhaar_enc=coalesce(EXCLUDED.aadhaar_enc, employee_statutory.aadhaar_enc), aadhaar_last4=coalesce(EXCLUDED.aadhaar_last4, employee_statutory.aadhaar_last4),
           tax_regime=EXCLUDED.tax_regime, pt_state=EXCLUDED.pt_state, updated_at=now()`,
-        [a.tenantId, id, uan, pfMemberId, pfExcluded, esiIpNumber, b.pan ? cipher.encrypt(b.pan) : null, b.pan ? b.pan.slice(-5, -1) : null, taxRegime, ptState]);
+        [a.tenantId, id, uan, pfMemberId, pfExcluded, esiIpNumber, b.pan ? cipher.encrypt(b.pan) : null, b.pan ? b.pan.slice(-5, -1) : null, taxRegime, ptState, b.aadhaar ? cipher.encrypt(b.aadhaar) : null, b.aadhaar ? b.aadhaar.slice(-4) : null]);
       await audit(db, { ...a.auditBase, action: 'payroll.statutory_details_updated', category: 'data', targetType: 'employee', targetId: id,
-        metadata: { uanSet: !!uan, panChanged: !!b.pan, pfExcluded, taxRegime, ptState } });
+        metadata: { fields: Object.keys(b), uanSet: !!uan, panChanged: !!b.pan, aadhaarChanged: !!b.aadhaar, pfExcluded, taxRegime, ptState } });
       return { ok: true };
     });
   });
@@ -267,10 +301,21 @@ export async function payrollRoutes(app: FastifyInstance) {
     const a = tenantActorAny(req, 'payroll.read', 'payroll.manage', 'payroll.approve');
     return a.tx(async (db) => {
       await requireFeature(db, a.tenantId, F);
-      return { items: (await db.query(`SELECT r.id, r.period, r.kind, r.status, r.totals, r.warnings, r.warnings_acknowledged, r.computed_at, r.finalized_at, r.paid_at, r.payment_reference,
+      const reveal = wantsReveal(req);
+      const v = await policyViewer(db, a.tenantId, a.user);
+      const rows = (await db.query<{ id: string; totals_enc: string | null } & Record<string, unknown>>(`SELECT r.id, r.period, r.kind, r.status, r.totals_enc, r.warnings, r.warnings_acknowledged, r.computed_at, r.finalized_at, r.paid_at, r.payment_reference,
           le.name AS legal_entity_name, trim(e.first_name||' '||coalesce(e.last_name,'')) AS employee_name, u.display_name AS created_by_name
         FROM payroll_runs r JOIN legal_entities le ON le.tenant_id=r.tenant_id AND le.id=r.legal_entity_id LEFT JOIN employees e ON e.tenant_id=r.tenant_id AND e.id=r.employee_id
-        JOIN users u ON u.id=r.created_by WHERE r.tenant_id=$1 ORDER BY r.period DESC, r.created_at DESC LIMIT 100`, [a.tenantId])).rows };
+        JOIN users u ON u.id=r.created_by WHERE r.tenant_id=$1 ORDER BY r.period DESC, r.created_at DESC LIMIT 100`, [a.tenantId])).rows;
+      const items = [];
+      for (const { totals_enc, ...r } of rows) {
+        if (!totals_enc) { items.push({ ...r, totals: null }); continue; }
+        if (!reveal) { items.push({ ...r, totals: null, masked: true as const, maskedFields: ['totals'] }); continue; }
+        const { excluded, ...totals } = await visibleRunTotals(db, a.tenantId, v, r.id);
+        items.push({ ...r, totals, excluded });
+      }
+      if (reveal) await audit(db, { ...a.auditBase, userAgent: readContext(req, a).userAgent, action: 'l4.reveal', category: 'access', targetType: 'payroll_run', metadata: { path: 'payroll.runs', fields: ['totals'], runs: rows.length } });
+      return { items };
     });
   });
   app.post('/runs', async (req, reply) => {
@@ -305,8 +350,11 @@ export async function payrollRoutes(app: FastifyInstance) {
       if (!['draft', 'computed'].includes(r.status)) throw conflict(`A ${r.status} run cannot be recomputed`);
       const res = await computeRun(db, a.tenantId, id);
       await db.query('UPDATE payroll_runs SET computed_by=$3 WHERE tenant_id=$1 AND id=$2', [a.tenantId, id, a.user.userId]);
-      await audit(db, { ...a.auditBase, action: 'payroll.run_computed', targetType: 'payroll_run', targetId: id, metadata: { ...res.totals, warnings: res.warnings } });
-      return res;
+      await audit(db, { ...a.auditBase, action: 'payroll.run_computed', targetType: 'payroll_run', targetId: id, metadata: { warnings: res.warnings } });
+      if (!wantsReveal(req)) return { totals: null, warnings: res.warnings, masked: true, maskedFields: ['totals'] };
+      const { excluded, ...totals } = await visibleRunTotals(db, a.tenantId, await policyViewer(db, a.tenantId, a.user), id);
+      await audit(db, { ...a.auditBase, userAgent: readContext(req, a).userAgent, action: 'l4.reveal', category: 'access', targetType: 'payroll_run', targetId: id, metadata: { path: 'payroll.compute', fields: ['totals'] } });
+      return { totals, warnings: res.warnings, excluded };
     });
   });
 
@@ -315,15 +363,26 @@ export async function payrollRoutes(app: FastifyInstance) {
     const { id } = z.object({ id: Uuid }).parse(req.params);
     return a.tx(async (db) => {
       await requireFeature(db, a.tenantId, F);
-      const run = (await db.query(`SELECT r.*, le.name AS legal_entity_name FROM payroll_runs r JOIN legal_entities le ON le.tenant_id=r.tenant_id AND le.id=r.legal_entity_id WHERE r.tenant_id=$1 AND r.id=$2`, [a.tenantId, id])).rows[0];
-      if (!run) throw notFound('Payroll run not found');
-      const items = (await db.query(`SELECT i.id, i.employee_id, e.employee_code, trim(e.first_name||' '||coalesce(e.last_name,'')) AS employee_name, i.employed_days, i.lop_days, i.paid_days,
-          i.gross, i.deductions, i.net, i.employer_cost, i.warnings, i.hold, i.lines
+      const { totals_enc, ...run } = (await db.query(`SELECT r.*, le.name AS legal_entity_name FROM payroll_runs r JOIN legal_entities le ON le.tenant_id=r.tenant_id AND le.id=r.legal_entity_id WHERE r.tenant_id=$1 AND r.id=$2`, [a.tenantId, id])).rows[0] ?? {};
+      if (!run.id) throw notFound('Payroll run not found');
+      const reveal = wantsReveal(req);
+      const v = await policyViewer(db, a.tenantId, a.user);
+      // The row filter: people above this viewer are not in the answer at all, and `excluded` says how many there were.
+      const rows = (await db.query<{ data_enc: string; employee_id: string; visible: boolean } & Record<string, unknown>>(`SELECT i.id, i.employee_id, e.employee_code, trim(e.first_name||' '||coalesce(e.last_name,'')) AS employee_name, i.employed_days, i.lop_days, i.paid_days,
+          i.data_enc, i.hold, ${l4RowFilter(v, 'e')} AS visible
         FROM payroll_items i JOIN employees e ON e.tenant_id=i.tenant_id AND e.id=i.employee_id WHERE i.tenant_id=$1 AND i.run_id=$2 ORDER BY e.employee_code`, [a.tenantId, id])).rows;
-      const adjustments = (await db.query(`SELECT a.id, a.employee_id, a.kind, a.label, a.amount, a.taxable, a.note, u.display_name AS created_by_name FROM payroll_adjustments a JOIN users u ON u.id=a.created_by
-        WHERE a.tenant_id=$1 AND a.run_id=$2 ORDER BY a.created_at`, [a.tenantId, id])).rows;
+      const shown = rows.filter((r) => r.visible);
+      const excluded = rows.length - shown.length;
+      const items = shown.map(({ data_enc, visible: _v, ...r }) => (reveal ? { ...r, ...itemFields(openItem(data_enc)) } : maskFields({ ...r, ...itemFields(openItem(data_enc)) }, ITEM_FIELDS)));
+      const adj = (await db.query<{ data_enc: string; employee_id: string } & Record<string, unknown>>(`SELECT a.id, a.employee_id, a.kind, a.label, a.data_enc, a.taxable, u.display_name AS created_by_name FROM payroll_adjustments a JOIN users u ON u.id=a.created_by
+        JOIN employees e ON e.tenant_id=a.tenant_id AND e.id=a.employee_id WHERE a.tenant_id=$1 AND a.run_id=$2 AND ${l4RowFilter(v, 'e')} ORDER BY a.created_at`, [a.tenantId, id])).rows;
+      const adjustments = adj.map(({ data_enc, ...r }) => { const d = openAdjustment(data_enc); const row = { ...r, amount: d.amount.toFixed(2), note: d.note }; return reveal ? row : maskFields(row, ['amount', 'note']); });
       const locked = await attendanceLocked(db, a.tenantId, run.period);
-      return { ...run, items, adjustments, attendanceLocked: locked };
+      if (!reveal) return { ...maskFields({ ...run, totals: openTotals(totals_enc) }, ['totals']), items, adjustments, attendanceLocked: locked, excluded };
+      // Bulk reveal for the person working the run: one audit row for each person in it.
+      await auditL4(db, readContext(req, a), 'reveal', 'payroll.run', shown.map((r) => ({ employeeId: r.employee_id, fields: ITEM_FIELDS })));
+      const totals = totals_enc ? await visibleRunTotals(db, a.tenantId, v, id).then(({ excluded: _e, ...t }) => t) : null;
+      return { ...run, totals, items, adjustments, attendanceLocked: locked, excluded };
     });
   });
 
@@ -336,10 +395,11 @@ export async function payrollRoutes(app: FastifyInstance) {
       const r = await loadRun(db, a, id, true);
       if (!['draft', 'computed'].includes(r.status)) throw conflict(`A ${r.status} run cannot be adjusted`);
       if (r.kind === 'fnf' && b.employeeId !== r.employee_id) throw badRequest('This F&F run is for another employee');
-      const aid = (await db.query<{ id: string }>(`INSERT INTO payroll_adjustments (tenant_id, run_id, employee_id, kind, label, amount, taxable, note, created_by) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9) RETURNING id`,
-        [a.tenantId, id, b.employeeId, b.kind, b.label, b.amount, b.taxable, b.note, a.user.userId])).rows[0]!.id;
+      await assertMayChangeSubject(db, a.tenantId, await policyViewer(db, a.tenantId, a.user), b.employeeId);
+      const aid = (await db.query<{ id: string }>(`INSERT INTO payroll_adjustments (tenant_id, run_id, employee_id, kind, label, data_enc, taxable, created_by) VALUES ($1,$2,$3,$4,$5,$6,$7,$8) RETURNING id`,
+        [a.tenantId, id, b.employeeId, b.kind, b.label, sealAdjustment(b.kind, { amount: b.amount, note: b.note }), b.taxable, a.user.userId])).rows[0]!.id;
       await db.query(`UPDATE payroll_runs SET status='draft' WHERE tenant_id=$1 AND id=$2 AND status='computed'`, [a.tenantId, id]);  // must recompute
-      await audit(db, { ...a.auditBase, action: 'payroll.adjustment_added', targetType: 'payroll_run', targetId: id, metadata: b });
+      await audit(db, { ...a.auditBase, action: 'payroll.adjustment_added', targetType: 'payroll_run', targetId: id, metadata: { employeeId: b.employeeId, kind: b.kind, label: b.label, taxable: b.taxable, fields: ['amount', 'note'] } });
       reply.code(201); return { id: aid };
     });
   });
@@ -364,8 +424,10 @@ export async function payrollRoutes(app: FastifyInstance) {
     return a.tx(async (db) => {
       const r = await loadRun(db, a, id, true);
       if (r.status !== 'computed') throw conflict('Compute the run first');
-      const u = await db.query('UPDATE payroll_items SET hold=$4 WHERE tenant_id=$1 AND run_id=$2 AND employee_id=$3 AND (net >= 0 OR $4)', [a.tenantId, id, b.employeeId, b.hold]);
-      if (!u.rowCount) throw conflict('Item not found, or its net pay is negative (keep it on hold)');
+      await assertMayChangeSubject(db, a.tenantId, await policyViewer(db, a.tenantId, a.user), b.employeeId);
+      const item = (await db.query<{ data_enc: string }>('SELECT data_enc FROM payroll_items WHERE tenant_id=$1 AND run_id=$2 AND employee_id=$3 FOR UPDATE', [a.tenantId, id, b.employeeId])).rows[0];
+      if (!item || (!b.hold && openItem(item.data_enc).net < 0)) throw conflict('Item not found, or its net pay is negative (keep it on hold)');
+      await db.query('UPDATE payroll_items SET hold=$4 WHERE tenant_id=$1 AND run_id=$2 AND employee_id=$3', [a.tenantId, id, b.employeeId, b.hold]);
       await audit(db, { ...a.auditBase, action: 'payroll.item_hold', targetType: 'payroll_run', targetId: id, metadata: b });
       return { ok: true };
     });
@@ -382,11 +444,13 @@ export async function payrollRoutes(app: FastifyInstance) {
     return a.tx(async (db) => {
       const r = await loadRun(db, a, id, true);
       if (!['finalized', 'paid'].includes(r.status)) throw conflict('Only held pay in a finalized run is released here; before that, take it off hold');
-      if (employeeId === a.user.employeeId) throw forbidden('You cannot release your own held pay');
-      if (r.computed_by === a.user.userId) throw forbidden('Someone other than the person who computed this run must release it');
-      const u = await db.query(`UPDATE payroll_items SET hold=false, hold_released_at=now(), hold_released_by=$4, hold_release_reason=$5 WHERE tenant_id=$1 AND run_id=$2 AND employee_id=$3 AND hold AND net >= 0`,
+      if (employeeId === a.user.employeeId && !soleOwner(a)) throw forbidden('You cannot release your own held pay');
+      if (r.computed_by === a.user.userId && !soleOwner(a)) throw forbidden('Someone other than the person who computed this run must release it');
+      await assertMayChangeSubject(db, a.tenantId, await policyViewer(db, a.tenantId, a.user), employeeId);
+      const held = (await db.query<{ data_enc: string }>('SELECT data_enc FROM payroll_items WHERE tenant_id=$1 AND run_id=$2 AND employee_id=$3 AND hold FOR UPDATE', [a.tenantId, id, employeeId])).rows[0];
+      if (!held || openItem(held.data_enc).net < 0) throw conflict('No held pay to release for this employee (or its net pay is negative)');
+      await db.query(`UPDATE payroll_items SET hold=false, hold_released_at=now(), hold_released_by=$4, hold_release_reason=$5 WHERE tenant_id=$1 AND run_id=$2 AND employee_id=$3`,
         [a.tenantId, id, employeeId, a.user.userId, reason]);
-      if (!u.rowCount) throw conflict('No held pay to release for this employee (or its net pay is negative)');
       if (enabledLoanKinds().length) await closeRepaid(db, a.tenantId, [employeeId]);
       const user = (await db.query<{ user_id: string | null }>('SELECT user_id FROM employees WHERE tenant_id=$1 AND id=$2', [a.tenantId, employeeId])).rows[0]?.user_id;
       if (user) await notifyUsers(db, a.tenantId, [user], { kind: 'payroll.payslip', title: `Your payslip for ${r.period} is available`, body: 'Sign in to view or print it.', link: '/payslips', actionLabel: 'View payslip', dedupeKey: `payslip:${id}:${employeeId}` });
@@ -488,18 +552,26 @@ export async function payrollRoutes(app: FastifyInstance) {
 
   // ------------------------------------------------------------ exports (finalized runs)
   // Statutory and bank files keep their CSV layouts; the salary register is also offered as an Excel workbook.
-  const exportRun = (name: string, build: (db: Db, a: TenantActor, run: { id: string; period: string }) => Promise<unknown[][]>, perm = 'payroll.read', formats: readonly ('csv' | 'xlsx')[] = ['csv']) =>
+  type Exported = { rows: unknown[][]; subjects: string[]; fields: readonly string[]; excluded?: number };
+  const exportRun = (name: string, build: (db: Db, a: TenantActor, run: { id: string; period: string }) => Promise<Exported>, perm = 'payroll.read', formats: readonly ('csv' | 'xlsx')[] = ['csv']) =>
     formats.forEach((format) => app.get(`/runs/:id/${name}.${format}`, async (req, reply) => {
       const a = tenantActorAny(req, perm, 'payroll.manage');
       const { id } = z.object({ id: Uuid }).parse(req.params);
-      const { rows, period } = await a.tx(async (db) => {
+      const { rows, period, excluded } = await a.tx(async (db) => {
         await requireFeature(db, a.tenantId, F);
         const r = await loadRun(db, a, id);
         if (!['finalized', 'paid'].includes(r.status) && name !== 'register') throw conflict('Exports are available once the run is finalized');
-        const rows = await build(db, a, r);
-        await audit(db, { ...a.auditBase, action: `payroll.export_${name}`, category: 'access', targetType: 'payroll_run', targetId: id, metadata: { rows: rows.length - 1, format } });
-        return { rows, period: r.period };
+        const out = await build(db, a, r);
+        await audit(db, { ...a.auditBase, action: `payroll.export_${name}`, category: 'access', targetType: 'payroll_run', targetId: id, metadata: { rows: out.rows.length - 1, format, excluded: out.excluded ?? 0 } });
+        await auditL4(db, readContext(req, a), 'export', `payroll.${name}`, out.subjects.map((employeeId) => ({ employeeId, fields: out.fields })));
+        return { rows: out.rows, period: r.period, excluded: out.excluded ?? 0 };
+      }).catch(async (e: unknown) => {
+        // A refusal is worth a record of its own: its transaction has just rolled back.
+        if (e instanceof AppError && e.code === 'requires_higher_level') await a.tx((db) => audit(db, { ...a.auditBase, action: 'payroll.export_refused', category: 'security', targetType: 'payroll_run', targetId: id, metadata: { file: name, ...(e.details as object) } }));
+        throw e;
       });
+      // Metadata for what the file leaves out, so nobody takes a partial register for the whole.
+      reply.header('x-excluded-subjects', String(excluded));
       const file = `payroll-${period}-${name}.${format}`;
       if (format === 'xlsx') {
         // Employee codes and names stay text (leading zeros); amounts and days become numbers.
@@ -509,47 +581,60 @@ export async function payrollRoutes(app: FastifyInstance) {
       }
       return reply.header('content-type', 'text/csv; charset=utf-8').header('content-disposition', `attachment; filename="${file}"`).header('cache-control', 'private, no-store').send(csv(rows));
     }));
-  const itemsOf = (db: Db, tenantId: string, runId: string) => db.query<{ employee_code: string; name: string; employee_id: string; lines: { code: string; amount: number; kind: string }[]; gross: string; deductions: string; net: string; paid_days: string; lop_days: string; hold: boolean; hold_released_at: Date | null }>(
-    `SELECT e.employee_code, trim(e.first_name||' '||coalesce(e.last_name,'')) AS name, i.employee_id, i.lines, i.gross, i.deductions, i.net, i.paid_days, i.lop_days, i.hold, i.hold_released_at
-     FROM payroll_items i JOIN employees e ON e.tenant_id=i.tenant_id AND e.id=i.employee_id WHERE i.tenant_id=$1 AND i.run_id=$2 ORDER BY e.employee_code`, [tenantId, runId]);
+  /** Everyone in the run, opened, each marked with whether this viewer may see them. */
+  const itemsOf = async (db: Db, a: TenantActor, runId: string) => {
+    const v = await policyViewer(db, a.tenantId, a.user);
+    const rows = (await db.query<{ employee_code: string; name: string; employee_id: string; data_enc: string; paid_days: string; lop_days: string; hold: boolean; hold_released_at: Date | null; visible: boolean }>(
+      `SELECT e.employee_code, trim(e.first_name||' '||coalesce(e.last_name,'')) AS name, i.employee_id, i.data_enc, i.paid_days, i.lop_days, i.hold, i.hold_released_at, ${l4RowFilter(v, 'e')} AS visible
+       FROM payroll_items i JOIN employees e ON e.tenant_id=i.tenant_id AND e.id=i.employee_id WHERE i.tenant_id=$1 AND i.run_id=$2 ORDER BY e.employee_code`, [a.tenantId, runId])).rows;
+    return rows.map(({ data_enc, ...r }) => { const d = openItem(data_enc); return { ...r, lines: d.lines, gross: d.gross.toFixed(2), deductions: d.deductions.toFixed(2), net: d.net.toFixed(2) }; });
+  };
+  /** A file that pays or files for people must be whole. Decided in DECISIONS.md: refused, and someone higher produces it. */
+  const wholeFile = <T extends { visible: boolean }>(items: T[]) => {
+    const hidden = items.filter((i) => !i.visible).length;
+    if (hidden) throw refuseHigherLevel(hidden);
+    return items;
+  };
   const amt = (lines: { code: string; amount: number }[], code: string) => lines.find((l) => l.code === code)?.amount ?? 0;
 
   exportRun('register', async (db, a, run) => {
-    const items = (await itemsOf(db, a.tenantId, run.id)).rows;
+    const all = await itemsOf(db, a, run.id);
+    const items = all.filter((i) => i.visible);
     const codes = [...new Set(items.flatMap((i) => i.lines.map((l) => l.code)))];
-    return [['employee_code', 'name', 'paid_days', 'lop_days', ...codes, 'gross', 'deductions', 'net', 'hold'],
-      ...items.map((i) => [i.employee_code, i.name, i.paid_days, i.lop_days, ...codes.map((c) => amt(i.lines, c)), i.gross, i.deductions, i.net, i.hold ? 'yes' : ''])];
+    return { rows: [['employee_code', 'name', 'paid_days', 'lop_days', ...codes, 'gross', 'deductions', 'net', 'hold'],
+      ...items.map((i) => [i.employee_code, i.name, i.paid_days, i.lop_days, ...codes.map((c) => amt(i.lines, c)), i.gross, i.deductions, i.net, i.hold ? 'yes' : ''])],
+    subjects: items.map((i) => i.employee_id), fields: ['lines', 'gross', 'deductions', 'net'], excluded: all.length - items.length };
   }, 'payroll.read', ['csv', 'xlsx']);
   const bankFile = (include: (i: { hold: boolean; hold_released_at: Date | null; net: string }) => boolean) => async (db: Db, a: TenantActor, run: { id: string }) => {
     const full = a.has('employees.bank.read');
-    const items = (await itemsOf(db, a.tenantId, run.id)).rows.filter((i) => include(i) && Number(i.net) > 0);
+    const items = wholeFile((await itemsOf(db, a, run.id)).filter((i) => include(i) && Number(i.net) > 0));
     const out: unknown[][] = [['employee_code', 'name', 'amount', 'account_holder', 'ifsc', 'account_number']];
     for (const i of items) {
       const b = (await db.query<{ account_holder: string; ifsc: string; account_last4: string; account_number_enc: string }>(`SELECT account_holder, ifsc, account_last4, account_number_enc FROM employee_bank_accounts WHERE tenant_id=$1 AND employee_id=$2`, [a.tenantId, i.employee_id])).rows[0];
       out.push([i.employee_code, i.name, i.net, b?.account_holder ?? '', b?.ifsc ?? '', b ? (full ? cipher.decrypt(b.account_number_enc) : `XXXXXX${b.account_last4}`) : 'MISSING']);
     }
-    return out;
+    return { rows: out, subjects: items.map((i) => i.employee_id), fields: ['net', 'account_number', 'ifsc', 'account_holder'] };
   };
   // The run's file stays as it was at finalize; pay released later goes out in its own file.
   exportRun('bank', bankFile((i) => !i.hold && !i.hold_released_at));
   exportRun('bank-released', bankFile((i) => !i.hold && !!i.hold_released_at));
   exportRun('pf', async (db, a, run) => {
-    const items = (await itemsOf(db, a.tenantId, run.id)).rows.filter((i) => i.lines.some((l) => l.code === 'PF_EE'));
+    const items = wholeFile((await itemsOf(db, a, run.id)).filter((i) => i.lines.some((l) => l.code === 'PF_EE')));
     const out: unknown[][] = [['uan', 'employee_code', 'name', 'gross', 'pf_employee', 'eps_employer', 'epf_employer', 'lop_days']];
     for (const i of items) {
       const s = (await db.query<{ uan: string | null }>('SELECT uan FROM employee_statutory WHERE tenant_id=$1 AND employee_id=$2', [a.tenantId, i.employee_id])).rows[0];
       out.push([s?.uan ?? 'MISSING', i.employee_code, i.name, i.gross, amt(i.lines, 'PF_EE'), amt(i.lines, 'PF_EPS'), amt(i.lines, 'PF_EPF_ER'), i.lop_days]);
     }
-    return out;
+    return { rows: out, subjects: items.map((i) => i.employee_id), fields: ['uan', 'gross', 'lines'] };
   });
   exportRun('esi', async (db, a, run) => {
-    const items = (await itemsOf(db, a.tenantId, run.id)).rows.filter((i) => i.lines.some((l) => l.code === 'ESI_EE'));
+    const items = wholeFile((await itemsOf(db, a, run.id)).filter((i) => i.lines.some((l) => l.code === 'ESI_EE')));
     const out: unknown[][] = [['esi_ip_number', 'employee_code', 'name', 'paid_days', 'gross', 'esi_employee', 'esi_employer']];
     for (const i of items) {
       const s = (await db.query<{ esi_ip_number: string | null }>('SELECT esi_ip_number FROM employee_statutory WHERE tenant_id=$1 AND employee_id=$2', [a.tenantId, i.employee_id])).rows[0];
       out.push([s?.esi_ip_number ?? 'MISSING', i.employee_code, i.name, i.paid_days, i.gross, amt(i.lines, 'ESI_EE'), amt(i.lines, 'ESI_ER')]);
     }
-    return out;
+    return { rows: out, subjects: items.map((i) => i.employee_id), fields: ['esi_ip_number', 'gross', 'lines'] };
   });
 
   // ------------------------------------------------------------ payslips
@@ -558,8 +643,12 @@ export async function payrollRoutes(app: FastifyInstance) {
     if (!a.user.employeeId) return { items: [] };
     return a.tx(async (db) => {
       await requireFeature(db, a.tenantId, 'payroll.payslips');
-      return { items: (await db.query(`SELECT i.id, r.period, r.kind, i.gross, i.deductions, i.net, r.status FROM payroll_items i JOIN payroll_runs r ON r.tenant_id=i.tenant_id AND r.id=i.run_id
-        WHERE i.tenant_id=$1 AND i.employee_id=$2 AND r.status IN ('finalized','paid') AND NOT i.hold ORDER BY r.period DESC`, [a.tenantId, a.user.employeeId])).rows };
+      const reveal = wantsReveal(req);
+      const rows = (await db.query<{ data_enc: string } & Record<string, unknown>>(`SELECT i.id, r.period, r.kind, i.data_enc, r.status FROM payroll_items i JOIN payroll_runs r ON r.tenant_id=i.tenant_id AND r.id=i.run_id
+        WHERE i.tenant_id=$1 AND i.employee_id=$2 AND r.status IN ('finalized','paid') AND NOT i.hold ORDER BY r.period DESC`, [a.tenantId, a.user.employeeId])).rows;
+      const fields = ['gross', 'deductions', 'net'];
+      if (reveal && rows.length) await auditL4(db, readContext(req, a), 'reveal', 'payroll.payslips', [{ employeeId: a.user.employeeId!, fields }]);
+      return { items: rows.map(({ data_enc, ...r }) => { const d = itemFields(openItem(data_enc)); const row = { ...r, gross: d.gross, deductions: d.deductions, net: d.net }; return reveal ? row : maskFields(row, fields); }) };
     });
   });
   only(app, 'payroll.payslips').get('/payslips/:id', async (req) => {
@@ -568,19 +657,31 @@ export async function payrollRoutes(app: FastifyInstance) {
     return a.tx(async (db) => {
       const p = (await db.query<{ employee_id: string; status: string; hold: boolean }>(`SELECT i.employee_id, r.status, i.hold FROM payroll_items i JOIN payroll_runs r ON r.tenant_id=i.tenant_id AND r.id=i.run_id WHERE i.tenant_id=$1 AND i.id=$2`, [a.tenantId, id])).rows[0];
       const own = !!p && p.employee_id === a.user.employeeId && a.has('payslips.self') && ['finalized', 'paid'].includes(p.status) && !p.hold;
-      const admin = a.has('payroll.read') || a.has('payroll.manage');
-      if (!p || !(own || admin)) throw notFound('Payslip not found');
+      if (!p) throw notFound('Payslip not found');
+      const v = await policyViewer(db, a.tenantId, a.user);
+      // Someone else's payslip: the permission, or the manager setting, and always a level above them.
+      const admin = (a.has('payroll.read') || a.has('payroll.manage') || !!v.managedTeam?.includes(p.employee_id)) && p.employee_id !== a.user.employeeId && await subjectVisible(db, a.tenantId, v, p.employee_id);
+      const ownStaffRead = p.employee_id === a.user.employeeId && (a.has('payroll.read') || a.has('payroll.manage'));
+      if (!(own || admin || ownStaffRead)) throw notFound('Payslip not found');
       if (!admin) await requireFeature(db, a.tenantId, 'payroll.payslips');
-      const d = (await db.query(`SELECT r.period, r.kind, i.days_in_period, i.employed_days, i.lop_days, i.paid_days, i.lines, i.gross, i.deductions, i.net,
+      const { data_enc, ...d } = (await db.query(`SELECT r.period, r.kind, i.days_in_period, i.employed_days, i.lop_days, i.paid_days, i.data_enc,
           e.employee_code, trim(e.first_name||' '||coalesce(e.last_name,'')) AS name, e.designation, e.date_of_joining::text, d.name AS department, b.name AS branch, le.name AS legal_entity,
           s.uan, s.pan_last4, ba.account_last4, ba.ifsc
         FROM payroll_items i JOIN payroll_runs r ON r.tenant_id=i.tenant_id AND r.id=i.run_id JOIN employees e ON e.tenant_id=i.tenant_id AND e.id=i.employee_id
         JOIN legal_entities le ON le.tenant_id=r.tenant_id AND le.id=r.legal_entity_id JOIN branches b ON b.tenant_id=e.tenant_id AND b.id=e.branch_id
         LEFT JOIN departments d ON d.tenant_id=e.tenant_id AND d.id=e.department_id LEFT JOIN employee_statutory s ON s.tenant_id=e.tenant_id AND s.employee_id=e.id
         LEFT JOIN employee_bank_accounts ba ON ba.tenant_id=e.tenant_id AND ba.employee_id=e.id WHERE i.tenant_id=$1 AND i.id=$2`, [a.tenantId, id])).rows[0]!;
-      if (own) await audit(db, { ...a.auditBase, action: 'payroll.payslip_viewed', category: 'access', targetType: 'payroll_item', targetId: id });
+      const reveal = wantsReveal(req);
+      const fields = ['lines', 'gross', 'deductions', 'net', 'uan', 'pan', 'account', 'ifsc'];
+      if (reveal) {
+        if (own) await audit(db, { ...a.auditBase, action: 'payroll.payslip_viewed', category: 'access', targetType: 'payroll_item', targetId: id });
+        await auditL4(db, readContext(req, a), 'reveal', 'payroll.payslip', [{ employeeId: p.employee_id, fields }]);
+      }
       const { env } = app.deps;
-      return { ...d, pan: d.pan_last4 ? `XXXXXX${d.pan_last4}X` : null, account: d.account_last4 ? `XXXXXX${d.account_last4}` : null,
+      const opened = itemFields(openItem(data_enc));
+      const { pan_last4, account_last4, ...rest } = d;
+      const body = { ...rest, lines: opened.lines, gross: opened.gross, deductions: opened.deductions, net: opened.net, pan: pan_last4 ? `XXXXXX${pan_last4}X` : null, account: account_last4 ? `XXXXXX${account_last4}` : null };
+      return { ...(reveal ? body : maskFields(body, fields)),
         // What a printed payslip is headed with: the deployment's brand, as the employer's name and its formats.
         brand: { name: env.BRAND_NAME, legalName: organizationName(env), productName: env.BRAND_PRODUCT_NAME, logoUrl: env.BRAND_LOGO_URL ?? null, primaryColor: env.BRAND_PRIMARY_COLOR,
           currency: env.BRAND_CURRENCY, locale: env.BRAND_LOCALE, dateFormat: env.BRAND_DATE_FORMAT } };
@@ -593,12 +694,15 @@ export async function payrollRoutes(app: FastifyInstance) {
     const a = tenantActor(req, 'payroll.manage');
     const { employeeId } = z.object({ employeeId: Uuid }).parse(req.params);
     return a.tx(async (db) => {
+      if (!(await subjectVisible(db, a.tenantId, await policyViewer(db, a.tenantId, a.user), employeeId))) throw notFound('No approved separation');
       const s = (await db.query<{ shortfall_days: number; waive_shortfall: boolean; lwd: string; kind: string }>(`SELECT shortfall_days, waive_shortfall, coalesce(approved_lwd, requested_lwd)::text AS lwd, kind
         FROM separations WHERE tenant_id=$1 AND employee_id=$2 AND status IN ('approved','completed') ORDER BY created_at DESC LIMIT 1`, [a.tenantId, employeeId])).rows[0];
       if (!s) throw notFound('No approved separation');
       const leave = await balancesAt(db, a.tenantId, employeeId, s.lwd);
-      const sal = (await db.query<{ amounts: Record<string, number> }>(`SELECT amounts FROM employee_salaries WHERE tenant_id=$1 AND employee_id=$2 AND status='active' ORDER BY effective_from DESC LIMIT 1`, [a.tenantId, employeeId])).rows[0];
-      return { lastWorkingDay: s.lwd, kind: s.kind, noticeShortfallDays: s.waive_shortfall ? 0 : s.shortfall_days, shortfallWaived: s.waive_shortfall, leaveYear: leave.leaveYear, leaveBalances: leave.items, salary: sal?.amounts ?? null,
+      const sal = (await db.query<{ amounts_enc: string }>(`SELECT amounts_enc FROM employee_salaries WHERE tenant_id=$1 AND employee_id=$2 AND status='active' ORDER BY effective_from DESC LIMIT 1`, [a.tenantId, employeeId])).rows[0];
+      const reveal = wantsReveal(req);
+      if (reveal && sal) await auditL4(db, readContext(req, a), 'reveal', 'payroll.fnf', [{ employeeId, fields: ['salary'] }]);
+      return { ...(sal && !reveal ? { masked: true as const, maskedFields: ['salary'] } : {}), lastWorkingDay: s.lwd, kind: s.kind, noticeShortfallDays: s.waive_shortfall ? 0 : s.shortfall_days, shortfallWaived: s.waive_shortfall, leaveYear: leave.leaveYear, leaveBalances: leave.items, salary: sal && reveal ? openAmounts(sal.amounts_enc) : null,
         note: 'Leave encashment, notice recovery and gratuity depend on your policies, appointment terms and applicable law; enter confirmed amounts as adjustments.',
         period: periodBounds(s.lwd.slice(0, 7)).start.slice(0, 7), today: await orgToday(db, a.tenantId) };
     });

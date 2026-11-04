@@ -5,7 +5,7 @@ import { tenantActor, tenantActorAny, gateFeatures, type TenantActor } from '../
 import { audit } from '../../core/audit/audit.js';
 import { AppError, badRequest, conflict, forbidden, notFound } from '../../core/http/errors.js';
 import { IsoDate, PageQuery, offsetOf, paged, Uuid } from '../../core/http/pagination.js';
-import { createApprovalRequest, registerApprovalHandler, cancelRequest, type StepSpec } from '../../core/workflow/engine.js';
+import { buildSteps, createApprovalRequest, registerApprovalHandler, cancelRequest } from '../../core/workflow/engine.js';
 import { getSettingValue } from '../../core/settings/service.js';
 import { notifyUsers } from '../../core/notify/service.js';
 import { lockedDates, recalculateRange, teamEmployeeIds } from '../attendance/service.js';
@@ -151,14 +151,12 @@ export async function travelRoutes(app: FastifyInstance) {
         [a.tenantId, empId, b.purpose, b.tripType, b.origin, b.destination, b.startDate, b.endDate, b.travelMode, b.accommodation, b.project,
          est.travel.toFixed(2), est.stay.toFixed(2), est.local.toFixed(2), est.meals.toFixed(2), est.other.toFixed(2), b.advance.toFixed(2), b.markOnDuty, a.user.userId])).rows[0]!.id;
       // The manager approves the trip; finance too when money goes out before it (an advance), it goes abroad, or the estimate is large.
-      const steps: StepSpec[] = [];
       const mgr = e.mgr_user && e.mgr_user !== a.user.userId ? e.mgr_user : null;
-      if (mgr) steps.push({ kind: 'user', userId: mgr });
       const finance = !mgr || b.advance.gt(0) || b.tripType === 'international' || (threshold != null && total.gte(threshold));
-      if (finance) steps.push({ kind: 'permission', permission: 'travel.approve' });
+      const steps = buildSteps({ requesterId: a.user.userId, managerUserId: mgr, then: finance ? ['travel.approve'] : [] });
       const days = daysBetween(b.startDate, b.endDate) + 1;
       const approvalId = await createApprovalRequest(db, a.tenantId, { entityType: 'travel_request', entityId: id, requesterId: a.user.userId,
-        summary: `${e.name}: ${b.origin} → ${b.destination}, ${b.startDate}${days > 1 ? ` to ${b.endDate}` : ''} · estimate ${money(total)}${b.advance.gt(0) ? `, advance ${money(b.advance)}` : ''}`,
+        summary: `${e.name}: ${b.origin} → ${b.destination}, ${b.startDate}${days > 1 ? ` to ${b.endDate}` : ''}${b.advance.gt(0) ? ', with an advance' : ''}`,
         steps, excludeUserIds: [a.user.userId] });
       await audit(db, { ...a.auditBase, action: 'travel.requested', targetType: 'travel_request', targetId: id,
         metadata: { startDate: b.startDate, endDate: b.endDate, tripType: b.tripType, estimate: total.toFixed(2), advance: b.advance.toFixed(2), approvalId } });
@@ -245,7 +243,7 @@ export async function travelRoutes(app: FastifyInstance) {
       if (t.advance_paid_amount) throw conflict('The advance is already recorded as paid');
       await db.query(`UPDATE travel_requests SET advance_paid_amount=advance_requested, advance_paid_at=now(), advance_paid_by=$3, advance_reference=$4 WHERE tenant_id=$1 AND id=$2`,
         [a.tenantId, id, a.user.userId, b.reference]);
-      if (t.user_id) await notifyUsers(db, a.tenantId, [t.user_id], { kind: 'travel.advance_paid', title: `Travel advance paid: ${money(t.advance_requested)}`, body: `${t.origin} → ${t.destination} · reference ${b.reference}`, link: '/travel' });
+      if (t.user_id) await notifyUsers(db, a.tenantId, [t.user_id], { kind: 'travel.advance_paid', title: 'Travel advance paid', body: `${t.origin} → ${t.destination} · reference ${b.reference}`, link: '/travel' });
       await audit(db, { ...a.auditBase, action: 'travel.advance_paid', targetType: 'travel_request', targetId: id, metadata: { amount: t.advance_requested, reference: b.reference } });
       return { ok: true };
     });
@@ -295,7 +293,7 @@ export async function travelRoutes(app: FastifyInstance) {
       if (t.employee_id === a.user.employeeId) throw forbidden('You cannot record your own advance as returned');
       const s = await settlement(db, a.tenantId, id);
       if (!b.amount.isFinite() || b.amount.lte(0) || b.amount.decimalPlaces() > 2) throw badRequest('Enter the amount returned');
-      if (b.amount.gt(s.outstanding)) throw badRequest(`Only ${money(s.outstanding)} of the advance is outstanding`);
+      if (b.amount.gt(s.outstanding)) throw badRequest('That is more of the advance than is outstanding');
       await db.query(`UPDATE travel_requests SET recovered_amount=recovered_amount+$3, recovered_note=concat_ws('; ', recovered_note, $4::text) WHERE tenant_id=$1 AND id=$2`,
         [a.tenantId, id, b.amount.toFixed(2), `${money(b.amount)}: ${b.note}`]);
       await audit(db, { ...a.auditBase, action: 'travel.advance_returned', targetType: 'travel_request', targetId: id, metadata: { amount: b.amount.toFixed(2), note: b.note } });
@@ -311,7 +309,7 @@ export async function travelRoutes(app: FastifyInstance) {
       const t = await loadTrip(db, a, id, true);
       if (t.status !== 'completed') throw conflict('Close a trip once the traveller has marked it completed');
       const s = await settlement(db, a.tenantId, id);
-      if (new Decimal(s.outstanding).gt(0)) throw conflict(`${money(s.outstanding)} of the advance is still outstanding`);
+      if (new Decimal(s.outstanding).gt(0)) throw conflict('Part of the advance is still outstanding');
       if (s.openClaims) throw conflict('A claim for this trip is still in progress');
       await db.query(`UPDATE travel_requests SET status='closed', closed_at=now(), closed_by=$3 WHERE tenant_id=$1 AND id=$2`, [a.tenantId, id, a.user.userId]);
       await audit(db, { ...a.auditBase, action: 'travel.closed', targetType: 'travel_request', targetId: id, metadata: { advancePaid: s.advancePaid, claimed: s.claimed, advanceAdjusted: s.advanceAdjusted, recovered: s.recovered } });

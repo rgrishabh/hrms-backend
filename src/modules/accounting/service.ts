@@ -1,5 +1,6 @@
 import { Decimal } from 'decimal.js';
 import type { Db } from '../../db/tx.js';
+import { openItem } from '../payroll/sealed.js';
 import { notFound, conflict } from '../../core/http/errors.js';
 
 export interface Entry { ledger: string | null; key: string; label: string; debit: string; credit: string }
@@ -48,8 +49,7 @@ export async function payrollJournal(db: Db, tenantId: string, runId: string): P
     FROM payroll_runs r JOIN legal_entities le ON le.tenant_id=r.tenant_id AND le.id=r.legal_entity_id WHERE r.tenant_id=$1 AND r.id=$2`, [tenantId, runId])).rows[0];
   if (!run) throw notFound('Payroll run not found');
   if (!['finalized', 'paid'].includes(run.status)) throw conflict('Only a finalized or paid run can be exported');
-  const items = (await db.query<{ lines: { code: string; name: string; kind: 'earning' | 'deduction' | 'employer'; amount: number }[]; net: string }>(
-    `SELECT lines, net FROM payroll_items WHERE tenant_id=$1 AND run_id=$2`, [tenantId, runId])).rows;
+  const items = (await db.query<{ data_enc: string }>(`SELECT data_enc FROM payroll_items WHERE tenant_id=$1 AND run_id=$2`, [tenantId, runId])).rows.map((i) => openItem(i.data_enc));
   const rows: Parameters<typeof journal>[1] = [];
   for (const i of items) {
     for (const l of i.lines) {

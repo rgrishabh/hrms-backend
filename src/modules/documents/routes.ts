@@ -1,5 +1,6 @@
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
+import { subjectLevelSql } from '../../core/policy/salary.js';
 import { createHash } from 'node:crypto';
 import { tenantActor, requireFeature, type TenantActor, gateFeatures } from '../../core/http/context.js';
 import { audit } from '../../core/audit/audit.js';
@@ -28,8 +29,10 @@ const CategoryBody = z.object({
 function visibilitySql(a: TenantActor) {
   const hr = a.has('documents.read') || a.has('documents.manage');
   const restricted = a.has('documents.restricted');
+  // An employee's documents are L3: HR reads them only for people below them in the salary hierarchy.
   return {
-    sql: `(($2::boolean AND ($3::boolean OR NOT c.restricted))
+    sql: `(($2::boolean AND ($3::boolean OR NOT c.restricted)
+         AND (d.employee_id IS NULL OR d.employee_id = $4::uuid OR EXISTS (SELECT 1 FROM employees se WHERE se.tenant_id=d.tenant_id AND se.id=d.employee_id AND ${Number(a.user.salaryLevel)} > ${subjectLevelSql('se')})))
        OR (c.employee_visible AND (d.employee_id = $4::uuid OR d.employee_id IS NULL)))`,
     params: [hr, restricted, a.user.employeeId ?? '00000000-0000-0000-0000-000000000000'] as unknown[],
   };

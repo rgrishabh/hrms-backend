@@ -1,5 +1,6 @@
 import type { FastifyInstance, FastifyRequest } from 'fastify';
 import { z } from 'zod';
+import { maskFields } from '../../core/policy/salary.js';
 import { createHash } from 'node:crypto';
 import { tenantActor, tenantActorAny, requireFeature, type TenantActor, gateFeatures } from '../../core/http/context.js';
 import { audit } from '../../core/audit/audit.js';
@@ -46,12 +47,14 @@ const reqNo = (n: number) => `REQ-${String(n).padStart(4, '0')}`;
 const fullName = (c: { first_name: string; last_name: string | null }) => [c.first_name, c.last_name].filter(Boolean).join(' ');
 const isReader = (a: TenantActor) => a.has('recruitment.read') || a.has('recruitment.manage') || a.has('recruitment.approve');
 /** Remove restricted compensation fields unless the actor may see them. */
+/** Compensation: the permission to see it at all, then the same mask as all L4, lifted by `?reveal=1`. Candidates have no salary level. */
 function redact<T extends Record<string, unknown>>(a: TenantActor, row: T, fields: string[]): T {
-  if (a.has('recruitment.compensation')) return row;
-  const copy: Record<string, unknown> = { ...row };
-  for (const f of fields) if (f in copy) copy[f] = null;
-  return copy as T;
+  if (a.has('recruitment.compensation') && a.reveal) return row;
+  return maskFields(row, fields);
 }
+const auditCompensation = async (db: Db, a: TenantActor, path: string, targetId?: string) => {
+  if (a.has('recruitment.compensation') && a.reveal) await audit(db, { ...a.auditBase, userAgent: a.userAgent, action: 'l4.reveal', category: 'access', targetType: 'recruitment', targetId, metadata: { path } });
+};
 
 interface ReqRow { id: string; number: number; title: string; status: string; positions: number; filled: number; created_by: string; hiring_manager_id: string | null; budget_ctc_max: string | null; version: number }
 async function loadRequisition(db: Db, a: TenantActor, id: string, lock = false) {
@@ -156,6 +159,7 @@ export async function recruitmentRoutes(app: FastifyInstance) {
         FROM job_requisitions q JOIN branches b ON b.tenant_id=q.tenant_id AND b.id=q.branch_id
         LEFT JOIN departments d ON d.tenant_id=q.tenant_id AND d.id=q.department_id LEFT JOIN employees m ON m.tenant_id=q.tenant_id AND m.id=q.hiring_manager_id
         WHERE ${where} ORDER BY q.number DESC LIMIT ${q.pageSize} OFFSET ${offsetOf(q)}`, args)).rows;
+      await auditCompensation(db, a, 'recruitment.requisitions');
       return paged(rows.map((r) => ({ ...redact(a, r, ['budget_ctc_max']), code: reqNo(r.number as number) })), total, q);
     });
   });
@@ -264,6 +268,7 @@ export async function recruitmentRoutes(app: FastifyInstance) {
             WHERE i.tenant_id=ap.tenant_id AND i.application_id=ap.id AND p.submitted_at IS NOT NULL) AS avg_rating
         FROM job_applications ap JOIN candidates c ON c.tenant_id=ap.tenant_id AND c.id=ap.candidate_id
         WHERE ap.tenant_id=$1 AND ap.requisition_id=$2 ORDER BY array_position(ARRAY['offer','interview','screening','applied','hired','rejected','withdrawn'], ap.stage), ap.updated_at DESC`, [a.tenantId, id])).rows;
+      await auditCompensation(db, a, 'recruitment.requisition', r.id as string);
       return { ...redact(a, r, ['budget_ctc_max']), code: reqNo(r.number), applications };
     });
   });
@@ -356,6 +361,7 @@ export async function recruitmentRoutes(app: FastifyInstance) {
       const applications = (await db.query(`SELECT ap.id, ap.stage, ap.updated_at, q.id AS requisition_id, q.number, q.title FROM job_applications ap
         JOIN job_requisitions q ON q.tenant_id=ap.tenant_id AND q.id=ap.requisition_id WHERE ap.tenant_id=$1 AND ap.candidate_id=$2 ORDER BY ap.created_at DESC`, [a.tenantId, id])).rows
         .map((r) => ({ ...r, requisition_code: reqNo(r.number) }));
+      await auditCompensation(db, a, 'recruitment.candidate', c.id as string);
       return { ...redact(a, c, ['expected_ctc']), applications: isReader(a) ? applications : [] };
     });
   });
@@ -441,6 +447,7 @@ export async function recruitmentRoutes(app: FastifyInstance) {
           o.above_budget, o.notes, o.created_at, o.approved_at, o.sent_at, o.responded_at, o.employee_id, b.name AS branch_name
         FROM job_offers o JOIN branches b ON b.tenant_id=o.tenant_id AND b.id=o.branch_id WHERE o.tenant_id=$1 AND o.application_id=$2 ORDER BY o.created_at DESC`, [a.tenantId, id])).rows
         .map((o) => redact(a, o, ['annual_ctc']));
+      if (offers.length) await auditCompensation(db, a, 'recruitment.application', ap.id);
       return { id: ap.id, stage: ap.stage, version: ap.version, access: ap.access, requisition: { id: ap.requisition_id, code: reqNo(ap.req_number), title: ap.req_title, status: ap.req_status },
         candidate: c, events, interviews, offers, allowedMoves: ap.access === 'full' && a.has('recruitment.manage') ? MOVES[ap.stage] : [] };
     });

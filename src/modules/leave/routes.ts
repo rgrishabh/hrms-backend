@@ -1,11 +1,12 @@
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
+import { l3RowFilter, maskFields, policyViewer } from '../../core/policy/salary.js';
 import { Decimal } from 'decimal.js';
 import { tenantActor, tenantActorAny, requireFeature, type TenantActor, gateFeatures } from '../../core/http/context.js';
 import { audit } from '../../core/audit/audit.js';
 import { badRequest, conflict, forbidden, notFound } from '../../core/http/errors.js';
 import { IsoDate, PageQuery, offsetOf, paged, Uuid, QueryBool } from '../../core/http/pagination.js';
-import { createApprovalRequest, registerApprovalHandler, type StepSpec } from '../../core/workflow/engine.js';
+import { buildSteps, createApprovalRequest, registerApprovalHandler } from '../../core/workflow/engine.js';
 import { orgToday } from '../../core/workflow/engine.js';
 import type { Db } from '../../db/tx.js';
 import { EMPLOYMENT_TYPES } from '../employees/service.js';
@@ -250,8 +251,7 @@ export async function leaveRoutes(app: FastifyInstance) {
       // Routing: the employee's reporting manager (if they have a login), else HR (leave.approve).
       const mgr = await db.query<{ user_id: string | null }>(`SELECT m.user_id FROM employees e JOIN employees m ON m.tenant_id=e.tenant_id AND m.id=e.reporting_manager_id
         WHERE e.tenant_id=$1 AND e.id=$2 AND m.status IN ('active','on_notice')`, [a.tenantId, r.employee.id]);
-      const steps: StepSpec[] = mgr.rows[0]?.user_id && mgr.rows[0].user_id !== a.user.userId
-        ? [{ kind: 'user', userId: mgr.rows[0].user_id }] : [{ kind: 'permission', permission: 'leave.approve' }];
+      const steps = buildSteps({ requesterId: a.user.userId, subjectUserId: r.employee.user_id, managerUserId: mgr.rows[0]?.user_id, ifNoManager: ['leave.approve'] });
       const reqId = await createApprovalRequest(db, a.tenantId, { entityType: 'leave_request', entityId: id, requesterId: a.user.userId,
         summary: `${r.type.name}: ${r.days.toFixed(1)} day(s), ${body.startDate}${body.endDate !== body.startDate ? ' to ' + body.endDate : ''}`, steps,
         excludeUserIds: [r.employee.user_id] }); // leave applied on someone's behalf is never approved by that person
@@ -275,12 +275,15 @@ export async function leaveRoutes(app: FastifyInstance) {
       const params = [a.tenantId, ids, q.status ?? null];
       const where = `r.tenant_id=$1 AND ($2::uuid[] IS NULL OR r.employee_id = ANY($2)) AND ($3::text IS NULL OR r.status=$3)`;
       const total = Number((await db.query<{ n: string }>(`SELECT count(*) AS n FROM leave_requests r WHERE ${where}`, params)).rows[0]!.n);
+      const v = await policyViewer(db, a.tenantId, a.user);
+      // The reason is L3: the employee and HR above them. A manager reads it while a request of their team waits for a decision, because deciding needs it.
+      const reasonOk = `(${l3RowFilter(v, 'e')} OR (${a.has('leave.team.read') && q.scope === 'team' ? 'true' : 'false'} AND r.status='pending'))`;
       const rows = await db.query(`SELECT r.id, r.employee_id, e.employee_code, trim(e.first_name||' '||coalesce(e.last_name,'')) AS name, t.code AS type_code, t.name AS type_name,
-          r.start_date, r.end_date, r.start_half, r.end_half, r.days, r.reason, r.status, r.created_at, r.decided_at, ar.id AS approval_request_id
+          r.start_date, r.end_date, r.start_half, r.end_half, r.days, r.reason, ${reasonOk} AS reason_ok, r.status, r.created_at, r.decided_at, ar.id AS approval_request_id
         FROM leave_requests r JOIN employees e ON e.tenant_id=r.tenant_id AND e.id=r.employee_id JOIN leave_types t ON t.tenant_id=r.tenant_id AND t.id=r.leave_type_id
         LEFT JOIN approval_requests ar ON ar.tenant_id=r.tenant_id AND ar.entity_type='leave_request' AND ar.entity_id=r.id
         WHERE ${where} ORDER BY r.start_date DESC, r.created_at DESC LIMIT $4 OFFSET $5`, [...params, q.pageSize, offsetOf(q)]);
-      return paged(rows.rows, total, q);
+      return paged(rows.rows.map(({ reason_ok, ...r }) => (reason_ok ? r : maskFields(r, ['reason']))), total, q);
     });
   });
 

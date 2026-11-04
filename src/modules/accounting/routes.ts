@@ -6,6 +6,10 @@ import { conflict } from '../../core/http/errors.js';
 import { Uuid } from '../../core/http/pagination.js';
 import { getSettingValue } from '../../core/settings/service.js';
 import { featureOn } from '../lifecycle/service.js';
+import { sealJson } from '../../core/crypto/index.js';
+import { l4RowFilter, policyViewer, refuseHigherLevel, wantsReveal } from '../../core/policy/salary.js';
+import { visibleRunTotals } from '../payroll/sealed.js';
+import { readDevice } from '../../core/http/context.js';
 import { payrollJournal, reimbursementJournal, toCsv, toTallyXml, type Journal } from './service.js';
 
 const KEY = /^(earning|deduction|employer_expense|employer_payable|expense):([A-Z0-9_]{1,30}|\*)$|^(net_pay|reimbursement_payable|travel_advance)$/;
@@ -59,9 +63,19 @@ export async function accountingRoutes(app: FastifyInstance) {
     return a.tx(async (db) => {
       const last = `(SELECT json_build_object('at', x.created_at, 'format', x.format, 'by', u.display_name) FROM accounting_exports x JOIN users u ON u.id=x.exported_by
         WHERE x.tenant_id=$1 AND x.source_type=%s AND x.source_id=%s ORDER BY x.created_at DESC LIMIT 1) AS last_export`;
-      const runs = (await db.query(`SELECT r.id, r.period, r.kind, r.status, r.totals, le.name AS legal_entity, ${last.replace('%s', `'payroll_run'`).replace('%s', 'r.id')}
+      const v = await policyViewer(db, a.tenantId, a.user);
+      const reveal = wantsReveal(req);
+      const raw = (await db.query<{ id: string; totals_enc: string | null } & Record<string, unknown>>(`SELECT r.id, r.period, r.kind, r.status, r.totals_enc, le.name AS legal_entity, ${last.replace('%s', `'payroll_run'`).replace('%s', 'r.id')}
         FROM payroll_runs r JOIN legal_entities le ON le.tenant_id=r.tenant_id AND le.id=r.legal_entity_id
         WHERE r.tenant_id=$1 AND r.status IN ('finalized','paid') ORDER BY r.period DESC, r.created_at DESC LIMIT 60`, [a.tenantId])).rows;
+      const runs = [];
+      for (const { totals_enc, ...r } of raw) {
+        if (!totals_enc) { runs.push({ ...r, totals: null }); continue; }
+        if (!reveal) { runs.push({ ...r, totals: null, masked: true as const, maskedFields: ['totals'] }); continue; }
+        const { excluded, ...totals } = await visibleRunTotals(db, a.tenantId, v, r.id);
+        runs.push({ ...r, totals, excluded });
+      }
+      if (reveal && raw.length) await audit(db, { ...a.auditBase, ...readDevice(req), action: 'l4.reveal', category: 'access', targetType: 'payroll_run', metadata: { path: 'accounting.sources', fields: ['totals'], runs: raw.length } });
       const batches = await featureOn(db, a.tenantId, 'expenses') ? (await db.query(`SELECT b.id, b.status, b.total, b.claim_count, b.created_at, b.paid_at, b.payment_reference,
           ${last.replace('%s', `'reimbursement_batch'`).replace('%s', 'b.id')}
         FROM reimbursement_batches b WHERE b.tenant_id=$1 AND b.status IN ('approved','paid') ORDER BY b.created_at DESC LIMIT 60`, [a.tenantId])).rows : [];
@@ -73,6 +87,12 @@ export async function accountingRoutes(app: FastifyInstance) {
     const { id } = z.object({ id: Uuid }).parse(req.params);
     return a.tx(async (db) => {
       if (kind === 'reimbursement_batch' && !(await featureOn(db, a.tenantId, 'expenses'))) throw conflict('Expenses are not in use');
+      if (kind === 'payroll_run') {
+        // A journal has to balance, so it covers everyone or nobody: someone who cannot see the whole run does not get it.
+        const v = await policyViewer(db, a.tenantId, a.user);
+        const hidden = await db.query<{ employee_id: string }>(`SELECT i.employee_id FROM payroll_items i JOIN employees e ON e.tenant_id=i.tenant_id AND e.id=i.employee_id WHERE i.tenant_id=$1 AND i.run_id=$2 AND NOT ${l4RowFilter(v, 'e')}`, [a.tenantId, id]);
+        if (hidden.rowCount) throw refuseHigherLevel(hidden.rowCount!);
+      }
       return { id, j: kind === 'payroll_run' ? await payrollJournal(db, a.tenantId, id) : await reimbursementJournal(db, a.tenantId, id) };
     });
   };
@@ -83,9 +103,9 @@ export async function accountingRoutes(app: FastifyInstance) {
     const body = await a.tx(async (db) => {
       const company = await getSettingValue<string>(db, a.tenantId, 'accounting.tally_company');
       const voucherType = await getSettingValue<string>(db, a.tenantId, 'accounting.tally_voucher_type');
-      await db.query(`INSERT INTO accounting_exports (tenant_id, source_type, source_id, format, voucher_date, total, exported_by) VALUES ($1,$2,$3,$4,$5,$6,$7)`,
-        [a.tenantId, kind, id, format, j.date, j.total, a.user.userId]);
-      await audit(db, { ...a.auditBase, action: 'accounting.exported', category: 'access', targetType: kind, targetId: id, metadata: { format, voucher: j.number, total: j.total } });
+      await db.query(`INSERT INTO accounting_exports (tenant_id, source_type, source_id, format, voucher_date, total_enc, exported_by) VALUES ($1,$2,$3,$4,$5,$6,$7)`,
+        [a.tenantId, kind, id, format, j.date, sealJson(j.total), a.user.userId]);
+      await audit(db, { ...a.auditBase, action: 'accounting.exported', category: 'access', targetType: kind, targetId: id, metadata: { format, voucher: j.number } });
       return format === 'csv' ? toCsv(j) : toTallyXml(j, { company: company || null, voucherType: voucherType || 'Journal' });
     });
     const ext = format === 'csv' ? 'csv' : 'xml';

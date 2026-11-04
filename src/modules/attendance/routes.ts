@@ -2,12 +2,13 @@ import type { FastifyInstance } from 'fastify';
 import { only } from '../../core/features/routes.js';
 import { createHash } from 'node:crypto';
 import { z } from 'zod';
+import { l3RowFilter, maskFields, policyViewer } from '../../core/policy/salary.js';
 import { tenantActor, tenantActorAny, requireFeature, type TenantActor, gateFeatures } from '../../core/http/context.js';
 import { audit } from '../../core/audit/audit.js';
 import { AppError, badRequest, conflict, forbidden, notFound } from '../../core/http/errors.js';
 import { IsoDate, PageQuery, offsetOf, paged, Uuid, QueryBool } from '../../core/http/pagination.js';
 import { getSettingValue } from '../../core/settings/service.js';
-import { createApprovalRequest, registerApprovalHandler, type StepSpec } from '../../core/workflow/engine.js';
+import { buildSteps, createApprovalRequest, registerApprovalHandler } from '../../core/workflow/engine.js';
 import { randomToken, sha256 } from '../../core/crypto/index.js';
 import type { Db } from '../../db/tx.js';
 import { distanceMeters, employeeTimezone, lockedDates, recalcForEvent, recalculateRange, recordEvent, teamEmployeeIds } from './service.js';
@@ -336,9 +337,9 @@ export async function attendanceRoutes(app: FastifyInstance) {
       // Routing: reporting manager (if they have a login), otherwise HR (attendance.approve).
       const mgr = await db.query<{ user_id: string | null }>(`SELECT m.user_id FROM employees e JOIN employees m ON m.tenant_id=e.tenant_id AND m.id=e.reporting_manager_id
         WHERE e.tenant_id=$1 AND e.id=$2 AND m.status IN ('active','on_notice')`, [a.tenantId, employeeId]);
-      const steps: StepSpec[] = mgr.rows[0]?.user_id ? [{ kind: 'user', userId: mgr.rows[0].user_id }] : [{ kind: 'permission', permission: 'attendance.approve' }];
+      const steps = buildSteps({ requesterId: a.user.userId, managerUserId: mgr.rows[0]?.user_id, ifNoManager: ['attendance.approve'] });
       const reqId = await createApprovalRequest(db, a.tenantId, { entityType: 'attendance_regularization', entityId: reg.rows[0]!.id, requesterId: a.user.userId,
-        summary: `Attendance correction for ${body.workDate}: ${body.reason.slice(0, 80)}`, steps });
+        summary: `Attendance correction for ${body.workDate}`, steps });
       await audit(db, { ...a.auditBase, action: 'attendance.regularization_requested', targetType: 'attendance_regularization', targetId: reg.rows[0]!.id,
         metadata: { workDate: body.workDate, approvalRequestId: reqId } });
       reply.code(201); return { id: reg.rows[0]!.id, approvalRequestId: reqId };
@@ -353,12 +354,13 @@ export async function attendanceRoutes(app: FastifyInstance) {
       const params = [a.tenantId, q.scope === 'mine' ? a.user.employeeId ?? '00000000-0000-0000-0000-000000000000' : null, q.status ?? null];
       const where = `r.tenant_id=$1 AND ($2::uuid IS NULL OR r.employee_id=$2) AND ($3::text IS NULL OR r.status=$3)`;
       const total = Number((await db.query<{ n: string }>(`SELECT count(*) AS n FROM attendance_regularizations r WHERE ${where}`, params)).rows[0]!.n);
-      const rows = await db.query(`SELECT r.id, r.work_date, r.requested_in, r.requested_out, r.reason, r.status, r.created_at, r.decided_at, e.employee_code,
+      const v = await policyViewer(db, a.tenantId, a.user);
+      const rows = await db.query(`SELECT r.id, r.work_date, r.requested_in, r.requested_out, r.reason, ${l3RowFilter(v, 'e')} AS reason_ok, r.status, r.created_at, r.decided_at, e.employee_code,
           trim(e.first_name||' '||coalesce(e.last_name,'')) AS name, ar.id AS approval_request_id
         FROM attendance_regularizations r JOIN employees e ON e.tenant_id=r.tenant_id AND e.id=r.employee_id
         LEFT JOIN approval_requests ar ON ar.tenant_id=r.tenant_id AND ar.entity_type='attendance_regularization' AND ar.entity_id=r.id
         WHERE ${where} ORDER BY r.created_at DESC LIMIT $4 OFFSET $5`, [...params, q.pageSize, offsetOf(q)]);
-      return paged(rows.rows, total, q);
+      return paged(rows.rows.map(({ reason_ok, ...r }) => (reason_ok ? r : maskFields(r, ['reason']))), total, q);
     });
   });
 

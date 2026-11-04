@@ -5,11 +5,14 @@ import { allOff, evaluateFeatures } from '../../core/features/state.js';
 import { loadPermissions } from '../../core/auth/session.js';
 import { notifyUsers } from '../../core/notify/service.js';
 import { orgToday } from '../competency/service.js';
+import { sealJson } from '../../core/crypto/index.js';
+import { effectiveLevel } from '../../core/policy/levels.js';
+import type { PolicyViewer } from '../../core/policy/salary.js';
 import { teamEmployeeIds } from '../attendance/service.js';
 import { addDays } from '../attendance/time.js';
 import { MAX_ROWS, REPORT_MAP, resolveParams, type Column, type ReportDef, type ReportResult, type Params, type Row } from './registry.js';
 
-export interface Viewer { userId: string; employeeId: string | null; has: (p: string) => boolean }
+export type Viewer = PolicyViewer;
 
 /** 'all' (organization-wide), 'team' (the viewer's reporting chain) or null (no access). */
 export function scopeOf(r: ReportDef, v: Pick<Viewer, 'employeeId' | 'has'>): 'all' | 'team' | null {
@@ -19,7 +22,7 @@ export function scopeOf(r: ReportDef, v: Pick<Viewer, 'employeeId' | 'has'>): 'a
 }
 
 /** Run a report as `viewer`, with that person's access (organization or their team). */
-export async function runReport(db: Db, tenantId: string, key: string, rawParams: unknown, viewer: Viewer) {
+export async function runReport(db: Db, tenantId: string, key: string, rawParams: unknown, viewer: Viewer, opts: { reveal: boolean } = { reveal: false }) {
   const def = REPORT_MAP.get(key);
   if (!def) throw notFound('Report not found');
   const scope = scopeOf(def, viewer);
@@ -31,7 +34,7 @@ export async function runReport(db: Db, tenantId: string, key: string, rawParams
   const { params, error } = await resolveParams(def, rawParams, { db, tenantId, today });
   if (error) throw badRequest(error);
   const team = scope === 'team' ? await teamEmployeeIds(db, tenantId, viewer.employeeId!) : null;
-  const out: ReportResult = await def.run({ db, tenantId, today, team, has: viewer.has, usable }, params);
+  const out: ReportResult = await def.run({ db, tenantId, today, team, has: viewer.has, usable, viewer, reveal: opts.reveal }, params);
   const truncated = out.rows.length > MAX_ROWS;
   if (truncated) out.rows = out.rows.slice(0, MAX_ROWS);
   if (scope === 'team') out.notes.unshift('Your reporting team only.');
@@ -53,11 +56,11 @@ export function snapshotForReader<S extends { columns: Column[]; rows: Row[]; to
 
 /** The viewer as of now: active user, current roles (a schedule never outlives its owner's access). */
 export async function viewerOf(db: Db, tenantId: string, userId: string): Promise<Viewer | null> {
-  const u = (await db.query<{ status: string; employee_id: string | null }>(`SELECT u.status, (SELECT e.id FROM employees e WHERE e.tenant_id=u.tenant_id AND e.user_id=u.id LIMIT 1) AS employee_id
+  const u = (await db.query<{ status: string; salary_access_level: number; employee_id: string | null }>(`SELECT u.status, u.salary_access_level, (SELECT e.id FROM employees e WHERE e.tenant_id=u.tenant_id AND e.user_id=u.id LIMIT 1) AS employee_id
     FROM users u WHERE u.tenant_id=$1 AND u.id=$2`, [tenantId, userId])).rows[0];
   if (!u || u.status !== 'active') return null;
-  const { permissions } = await loadPermissions(db, userId, tenantId);
-  return { userId, employeeId: u.employee_id, has: (p) => permissions.has(p) };
+  const { permissions, roles } = await loadPermissions(db, userId, tenantId);
+  return { userId, employeeId: u.employee_id, level: effectiveLevel(u.salary_access_level, roles), has: (p) => permissions.has(p) };
 }
 
 const ym = (d: string) => d.slice(0, 7);
@@ -112,7 +115,8 @@ export async function runSchedules(db: Db, tenantId: string, today: string) {
     if (def && allOff(def.feature)) continue;
     if (!owner || !def || !scopeOf(def, owner)) { await advance('Stopped: the owner can no longer run this report', true); skipped++; continue; }
     try {
-      const r = await runReport(db, tenantId, s.report_key, { ...s.params, ...periodParams(def, s.period, today) }, owner);
+      const params = { ...s.params, ...periodParams(def, s.period, today) };
+      const r = await runReport(db, tenantId, s.report_key, params, owner, { reveal: true });
       const recipients = [owner.userId];
       if (r.scope === 'all') {
         for (const id of s.recipient_ids) {
@@ -121,12 +125,21 @@ export async function runSchedules(db: Db, tenantId: string, today: string) {
           if (v && scopeOf(def, v) === 'all') recipients.push(id);
         }
       }
-      const snap = (await db.query<{ id: string }>(`INSERT INTO report_snapshots (tenant_id, schedule_id, owner_id, report_key, name, params, scope, columns, rows, totals, notes, row_count, recipient_ids, expires_at)
-        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13, now() + make_interval(days => $14)) RETURNING id`,
-        [tenantId, s.id, owner.userId, s.report_key, s.name, JSON.stringify(r.params), r.scope, JSON.stringify(r.columns), JSON.stringify(r.rows), r.totals ? JSON.stringify(r.totals) : null,
-         JSON.stringify(r.notes), r.rows.length, recipients, RETAIN_DAYS])).rows[0]!.id;
-      await notifyUsers(db, tenantId, recipients, { kind: 'reports.ready', title: `Report ready: ${s.name}`, body: `${def.name} · ${r.rows.length} row(s). Sign in to open it.`,
-        link: `/reports?snapshot=${snap}`, actionLabel: 'Open report', dedupeKey: `report:${snap}` });
+      const store = async (result: typeof r, to: string[], level: number | null) => {
+        const snap = (await db.query<{ id: string }>(`INSERT INTO report_snapshots (tenant_id, schedule_id, owner_id, report_key, name, params, scope, columns, data_enc, notes, row_count, recipient_ids, viewer_level, expires_at)
+          VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13, now() + make_interval(days => $14)) RETURNING id`,
+          [tenantId, s.id, owner.userId, s.report_key, s.name, JSON.stringify(result.params), result.scope, JSON.stringify(result.columns), sealJson({ rows: result.rows, totals: result.totals }),
+           JSON.stringify(result.notes), result.rows.length, to, level, RETAIN_DAYS])).rows[0]!.id;
+        await notifyUsers(db, tenantId, to, { kind: 'reports.ready', title: `Report ready: ${s.name}`, body: `${def.name} · ${result.rows.length} row(s). Sign in to open it.`,
+          link: `/reports?snapshot=${snap}`, actionLabel: 'Open report', dedupeKey: `report:${snap}` });
+      };
+      // A report with pay is run again for each recipient, at their own level: what is stored for them is what they could have run.
+      if (def.l4) {
+        for (const id of recipients) {
+          const v = id === owner.userId ? owner : (await viewerOf(db, tenantId, id))!;
+          await store(id === owner.userId ? r : await runReport(db, tenantId, s.report_key, params, v, { reveal: true }), [id], v.level);
+        }
+      } else await store(r, recipients, null);
       await advance(`Sent to ${recipients.length} person(s)${recipients.length < s.recipient_ids.length + 1 ? '; recipients without organization-wide access were left out' : ''}`);
       ran++;
     } catch (e) {

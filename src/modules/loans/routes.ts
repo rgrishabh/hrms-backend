@@ -5,12 +5,15 @@ import { tenantActor, tenantActorAny, gateFeatures, requireFeature, type TenantA
 import { audit } from '../../core/audit/audit.js';
 import { badRequest, conflict, forbidden, notFound } from '../../core/http/errors.js';
 import { PageQuery, offsetOf, paged, Uuid } from '../../core/http/pagination.js';
-import { createApprovalRequest, registerApprovalHandler, cancelRequest, type ApprovalHandler, type StepSpec } from '../../core/workflow/engine.js';
+import { buildSteps, createApprovalRequest, registerApprovalHandler, cancelRequest, type ApprovalHandler } from '../../core/workflow/engine.js';
 import { getSettingValue } from '../../core/settings/service.js';
 import { notifyUsers } from '../../core/notify/service.js';
 import { teamEmployeeIds } from '../attendance/service.js';
 import { orgToday } from '../competency/service.js';
-import { KIND_LABEL, balanceOf, closeRepaid, installmentOf, KIND_FEATURE, enabledLoanKinds } from './service.js';
+import { l4RowFilter, auditL4, maskFields, policyViewer, readContext, subjectVisible, wantsReveal } from '../../core/policy/salary.js';
+import { isCollapsedMode } from '../../core/policy/mode.js';
+import { isOwnerRole } from '../../core/auth/permissions.js';
+import { KIND_LABEL, balanceOf, closeRepaid, outstandingOf, installmentOf, KIND_FEATURE, enabledLoanKinds } from './service.js';
 import { isModuleEnabled } from '../../core/features/state.js';
 import type { Db } from '../../db/tx.js';
 import { money } from '../../core/brand.js';
@@ -22,9 +25,10 @@ interface Loan { id: string; employee_id: string; kind: string; amount: string; 
 const COLS = `l.id, l.employee_id, l.kind, l.amount, l.installments, l.installment_amount, l.first_period, l.skip_periods, l.purpose, l.status, l.created_at, l.decided_at,
   l.disbursed_at, l.disbursement_reference, l.closed_at, l.cancel_reason, (l.created_by <> coalesce(e.user_id, '00000000-0000-0000-0000-000000000000'::uuid)) AS recorded_by_other,
   e.employee_code, trim(e.first_name||' '||coalesce(e.last_name,'')) AS name, dp.name AS department,
-  (SELECT ar.id FROM approval_requests ar WHERE ar.tenant_id=l.tenant_id AND ar.entity_type IN ('employee_loan','salary_advance') AND ar.entity_id=l.id ORDER BY ar.created_at DESC LIMIT 1) AS approval_request_id,
-  greatest(0, l.amount - coalesce((SELECT sum(x.amount) FROM loan_recoveries x LEFT JOIN payroll_runs r ON r.tenant_id=x.tenant_id AND r.id=x.payroll_run_id
-     WHERE x.tenant_id=l.tenant_id AND x.loan_id=l.id AND (x.source='repayment' OR r.status <> 'cancelled')), 0)) AS outstanding`;
+  (SELECT ar.id FROM approval_requests ar WHERE ar.tenant_id=l.tenant_id AND ar.entity_type IN ('employee_loan','salary_advance') AND ar.entity_id=l.id ORDER BY ar.created_at DESC LIMIT 1) AS approval_request_id`;
+
+/** Loans are L4 but stay plaintext, under access control. Purpose can say why someone needs the money, so it goes with the amounts. */
+const LOAN_FIELDS = ['amount', 'installment_amount', 'outstanding', 'purpose', 'balance', 'schedule', 'recoveries'] as const;
 const FROM = `employee_loans l JOIN employees e ON e.tenant_id=l.tenant_id AND e.id=l.employee_id LEFT JOIN departments dp ON dp.tenant_id=e.tenant_id AND dp.id=e.department_id`;
 
 async function loadLoan(db: Db, a: TenantActor, id: string, lock = false): Promise<Loan> {
@@ -32,7 +36,9 @@ async function loadLoan(db: Db, a: TenantActor, id: string, lock = false): Promi
       trim(e.first_name||' '||coalesce(e.last_name,'')) AS name FROM employee_loans l JOIN employees e ON e.tenant_id=l.tenant_id AND e.id=l.employee_id
      WHERE l.tenant_id=$1 AND l.id=$2${lock ? ' FOR UPDATE OF l' : ''}`, [a.tenantId, id])).rows[0];
   if (!l || !isModuleEnabled(KIND_FEATURE[l.kind]!)) throw notFound('Loan not found');
-  if (l.employee_id === a.user.employeeId || l.created_by === a.user.userId || READ_ALL.some((p) => a.has(p))) return l;
+  if (l.employee_id === a.user.employeeId || l.created_by === a.user.userId) return l;
+  const viewer = await policyViewer(db, a.tenantId, a.user);
+  if (READ_ALL.some((p) => a.has(p)) && await subjectVisible(db, a.tenantId, viewer, l.employee_id)) return l;
   if (a.has('loans.team.read') && a.user.employeeId && (await teamEmployeeIds(db, a.tenantId, a.user.employeeId)).includes(l.employee_id)) return l;
   const r = await db.query(`SELECT 1 FROM approval_requests r JOIN approval_steps s ON s.tenant_id=r.tenant_id AND s.request_id=r.id
     WHERE r.tenant_id=$1 AND r.entity_type IN ('employee_loan','salary_advance') AND r.entity_id=$2 AND (s.approver_user_id=$3 OR s.acted_by=$3)`, [a.tenantId, id, a.user.userId]);
@@ -107,13 +113,10 @@ export async function loanRoutes(app: FastifyInstance) {
       const inst = installmentOf(b.amount, b.installments);
       const id = (await db.query<{ id: string }>(`INSERT INTO employee_loans (tenant_id, employee_id, kind, amount, installments, installment_amount, first_period, purpose, created_by)
         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9) RETURNING id`, [a.tenantId, empId, b.kind, b.amount, b.installments, inst, b.firstPeriod, b.purpose, a.user.userId])).rows[0]!.id;
-      const steps: StepSpec[] = [];
-      const mgr = e.mgr_user && e.mgr_user !== a.user.userId && e.mgr_user !== e.user_id ? e.mgr_user : null;
-      if (mgr) steps.push({ kind: 'user', userId: mgr });
-      steps.push({ kind: 'permission', permission: 'loans.approve' });
+      const steps = buildSteps({ requesterId: a.user.userId, subjectUserId: e.user_id, managerUserId: e.mgr_user, then: ['loans.approve'] });
       const approvalId = await createApprovalRequest(db, a.tenantId, { entityType: adv ? 'salary_advance' : 'employee_loan', entityId: id, requesterId: a.user.userId,
-        summary: `${e.name}: ${KIND_LABEL[b.kind]!.toLowerCase()} ${money(b.amount)} in ${b.installments} instalment(s) from ${b.firstPeriod}`, steps, excludeUserIds: [a.user.userId, e.user_id] });
-      await audit(db, { ...a.auditBase, action: 'loans.requested', targetType: 'employee_loan', targetId: id, metadata: { employeeId: empId, kind: b.kind, amount: b.amount, installments: b.installments, onBehalf: forOther, approvalId } });
+        summary: `${e.name}: ${KIND_LABEL[b.kind]!.toLowerCase()} request`, steps, excludeUserIds: [a.user.userId, e.user_id] });
+      await audit(db, { ...a.auditBase, action: 'loans.requested', targetType: 'employee_loan', targetId: id, metadata: { employeeId: empId, kind: b.kind, fields: ['amount', 'installments', 'purpose'], onBehalf: forOther, approvalId } });
       reply.code(201); return { id, installmentAmount: inst };
     });
   });
@@ -127,11 +130,18 @@ export async function loanRoutes(app: FastifyInstance) {
       if (q.scope === 'all') { if (!READ_ALL.some((p) => a.has(p))) throw forbidden(); ids = null; }
       else if (q.scope === 'team') ids = a.user.employeeId && a.has('loans.team.read') ? await teamEmployeeIds(db, a.tenantId, a.user.employeeId) : [];
       else ids = a.user.employeeId ? [a.user.employeeId] : [];
-      const where = `l.tenant_id=$1 AND ($2::uuid[] IS NULL OR l.employee_id = ANY($2)) AND ($3::text IS NULL OR l.status=$3) AND ($4::text IS NULL OR l.kind=$4) AND l.kind = ANY($5)`;
+      const v = await policyViewer(db, a.tenantId, a.user);
+      // A manager's team list still shows that a request exists; its figures only with the setting, below their level. Anyone else's list is cut by level.
+      const where = `l.tenant_id=$1 AND ($2::uuid[] IS NULL OR l.employee_id = ANY($2)) AND ($3::text IS NULL OR l.status=$3) AND ($4::text IS NULL OR l.kind=$4) AND l.kind = ANY($5)${q.scope === 'all' ? ` AND ${l4RowFilter(v, 'e')}` : ''}`;
       const args = [a.tenantId, ids, q.status ?? null, q.kind ?? null, enabledLoanKinds()];
-      const total = Number((await db.query<{ n: string }>(`SELECT count(*) AS n FROM employee_loans l WHERE ${where}`, args)).rows[0]!.n);
-      const rows = (await db.query(`SELECT ${COLS} FROM ${FROM} WHERE ${where} ORDER BY l.created_at DESC LIMIT ${q.pageSize} OFFSET ${offsetOf(q)}`, args)).rows;
-      return paged(rows, total, q);
+      const total = Number((await db.query<{ n: string }>(`SELECT count(*) AS n FROM employee_loans l JOIN employees e ON e.tenant_id=l.tenant_id AND e.id=l.employee_id WHERE ${where}`, args)).rows[0]!.n);
+      const rows = (await db.query<{ id: string; amount: string; employee_id: string; visible: boolean } & Record<string, unknown>>(`SELECT ${COLS}, ${l4RowFilter(v, 'e')} AS visible FROM ${FROM} WHERE ${where} ORDER BY l.created_at DESC LIMIT ${q.pageSize} OFFSET ${offsetOf(q)}`, args)).rows;
+      const outstanding = await outstandingOf(db, a.tenantId, rows);
+      const reveal = wantsReveal(req);
+      const fields = LOAN_FIELDS.filter((f) => ['amount', 'installment_amount', 'outstanding', 'purpose'].includes(f));
+      const shown = rows.filter((r) => reveal && r.visible);
+      if (shown.length) await auditL4(db, readContext(req, a), 'reveal', 'loans.requests', [...new Set(shown.map((r) => r.employee_id))].map((employeeId) => ({ employeeId, fields })));
+      return paged(rows.map(({ visible, ...r }) => { const row = { ...r, outstanding: outstanding.get(r.id)! }; return reveal && visible ? row : maskFields(row, fields); }), total, q);
     });
   });
 
@@ -139,12 +149,18 @@ export async function loanRoutes(app: FastifyInstance) {
     const a = tenantActor(req);
     const { id } = z.object({ id: Uuid }).parse(req.params);
     return a.tx(async (db) => {
-      await loadLoan(db, a, id);
+      const loan = await loadLoan(db, a, id);
+      const v = await policyViewer(db, a.tenantId, a.user);
       const l = (await db.query(`SELECT ${COLS} FROM ${FROM} WHERE l.tenant_id=$1 AND l.id=$2`, [a.tenantId, id])).rows[0];
       const recoveries = (await db.query(`SELECT x.id, x.source, x.period, x.amount, x.reference, x.created_at, r.status AS run_status, r.kind AS run_kind
         FROM loan_recoveries x LEFT JOIN payroll_runs r ON r.tenant_id=x.tenant_id AND r.id=x.payroll_run_id
         WHERE x.tenant_id=$1 AND x.loan_id=$2 AND (x.source='repayment' OR r.status <> 'cancelled') ORDER BY coalesce(x.period, to_char(x.created_at,'YYYY-MM')), x.created_at`, [a.tenantId, id])).rows;
-      return { ...l, balance: await balanceOf(db, a.tenantId, id), schedule: schedule(l), recoveries };
+      const outstanding = (await outstandingOf(db, a.tenantId, [{ id, amount: loan.amount }])).get(id)!;
+      const body = { ...l, outstanding, balance: await balanceOf(db, a.tenantId, id), schedule: schedule(l), recoveries };
+      // Being on the approval chain lets a manager see that a request exists, not what it says: figures need the L4 rule.
+      if (!wantsReveal(req) || !(await subjectVisible(db, a.tenantId, v, loan.employee_id))) return maskFields(body, LOAN_FIELDS);
+      await auditL4(db, readContext(req, a), 'reveal', 'loans.request', [{ employeeId: loan.employee_id, fields: LOAN_FIELDS }]);
+      return body;
     });
   });
 
@@ -170,11 +186,11 @@ export async function loanRoutes(app: FastifyInstance) {
     const b = z.object({ reference: z.string().trim().min(3).max(100) }).parse(req.body);
     return a.tx(async (db) => {
       const l = await loadLoan(db, a, id, true);
-      if (l.employee_id === a.user.employeeId) throw forbidden('You cannot disburse your own advance or loan');
+      if (l.employee_id === a.user.employeeId && !(isCollapsedMode() && a.user.roles.some(isOwnerRole))) throw forbidden('You cannot disburse your own advance or loan');
       if (l.status !== 'approved') throw conflict(`Only an approved request can be disbursed (this one is ${l.status})`);
       await db.query(`UPDATE employee_loans SET status='disbursed', disbursed_at=now(), disbursed_by=$3, disbursement_reference=$4 WHERE tenant_id=$1 AND id=$2`, [a.tenantId, id, a.user.userId, b.reference]);
-      if (l.user_id) await notifyUsers(db, a.tenantId, [l.user_id], { kind: 'loans.disbursed', feature: KIND_FEATURE[l.kind], title: `${KIND_LABEL[l.kind]} paid: ${money(l.amount)}`, body: `Recovered through payroll from ${l.first_period}. Reference ${b.reference}`, link: '/loans' });
-      await audit(db, { ...a.auditBase, action: 'loans.disbursed', targetType: 'employee_loan', targetId: id, metadata: { amount: l.amount, reference: b.reference } });
+      if (l.user_id) await notifyUsers(db, a.tenantId, [l.user_id], { kind: 'loans.disbursed', feature: KIND_FEATURE[l.kind], title: `${KIND_LABEL[l.kind]} paid`, body: `Recovered through payroll from ${l.first_period}. Reference ${b.reference}`, link: '/loans' });
+      await audit(db, { ...a.auditBase, action: 'loans.disbursed', targetType: 'employee_loan', targetId: id, metadata: { reference: b.reference } });
       return { ok: true };
     });
   });
@@ -200,14 +216,14 @@ export async function loanRoutes(app: FastifyInstance) {
     const b = z.object({ amount: z.number().int('Whole rupees only').positive(), reference: z.string().trim().min(3).max(100) }).parse(req.body);
     return a.tx(async (db) => {
       const l = await loadLoan(db, a, id, true);
-      if (l.employee_id === a.user.employeeId) throw forbidden('You cannot record a repayment of your own loan');
+      if (l.employee_id === a.user.employeeId && !(isCollapsedMode() && a.user.roles.some(isOwnerRole))) throw forbidden('You cannot record a repayment of your own loan');
       if (l.status !== 'disbursed') throw conflict(`Repayments are recorded against a disbursed loan (this one is ${l.status})`);
       const bal = await balanceOf(db, a.tenantId, id);
-      if (new Decimal(b.amount).gt(bal.outstanding)) throw badRequest(`Only ${money(bal.outstanding)} is outstanding${new Decimal(bal.inProgress).gt(0) ? ` (${money(bal.inProgress)} more is in a payroll run being processed)` : ''}`);
+      if (new Decimal(b.amount).gt(bal.outstanding)) throw badRequest(`That is more than is outstanding on this ${KIND_LABEL[l.kind]!.toLowerCase()}${new Decimal(bal.inProgress).gt(0) ? ' (part of it is in a payroll run being processed)' : ''}`);
       await db.query(`INSERT INTO loan_recoveries (tenant_id, loan_id, source, amount, reference, recorded_by) VALUES ($1,$2,'repayment',$3,$4,$5)`, [a.tenantId, id, b.amount, b.reference, a.user.userId]);
       const closed = await closeRepaid(db, a.tenantId, [l.employee_id]);
-      await audit(db, { ...a.auditBase, action: 'loans.repaid', targetType: 'employee_loan', targetId: id, metadata: { amount: b.amount, reference: b.reference } });
-      return { ok: true, closed: closed > 0, outstanding: new Decimal(bal.outstanding).minus(b.amount).toFixed(2) };
+      await audit(db, { ...a.auditBase, action: 'loans.repaid', targetType: 'employee_loan', targetId: id, metadata: { reference: b.reference, fields: ['amount'] } });
+      return { ok: true, closed: closed > 0 };
     });
   });
 

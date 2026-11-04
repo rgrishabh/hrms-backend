@@ -18,16 +18,29 @@ export const installmentOf = (amount: number, n: number) => Math.ceil(amount / n
  * pay is released the employee has not had it, so the deduction stays in progress and the loan stays open).
  */
 export async function balanceOf(db: Db, tenantId: string, loanId: string, opts: { excludeRunId?: string } = {}) {
-  const r = (await db.query<{ amount: string; committed: string; final: string }>(`SELECT l.amount::text,
-      coalesce(sum(x.amount) FILTER (WHERE x.source='repayment' OR (r.status <> 'cancelled' AND x.payroll_run_id IS DISTINCT FROM $3::uuid)), 0)::text AS committed,
-      coalesce(sum(x.amount) FILTER (WHERE x.source='repayment' OR (r.status IN ('finalized','paid') AND NOT coalesce(i.hold, false))), 0)::text AS final
-    FROM employee_loans l LEFT JOIN loan_recoveries x ON x.tenant_id=l.tenant_id AND x.loan_id=l.id
-    LEFT JOIN payroll_runs r ON r.tenant_id=x.tenant_id AND r.id=x.payroll_run_id
-    LEFT JOIN payroll_items i ON i.tenant_id=x.tenant_id AND i.run_id=x.payroll_run_id AND i.employee_id=l.employee_id
-    WHERE l.tenant_id=$1 AND l.id=$2 GROUP BY l.amount`, [tenantId, loanId, opts.excludeRunId ?? null])).rows[0];
-  if (!r) return { amount: '0.00', outstanding: '0.00', recovered: '0.00', inProgress: '0.00' };
-  const outstanding = Decimal.max(0, new Decimal(r.amount).minus(r.committed));
-  return { amount: r.amount, outstanding: outstanding.toFixed(2), recovered: new Decimal(r.final).toFixed(2), inProgress: new Decimal(r.committed).minus(r.final).toFixed(2) };
+  const loan = (await db.query<{ amount: string }>(`SELECT amount::text FROM employee_loans WHERE tenant_id=$1 AND id=$2`, [tenantId, loanId])).rows[0];
+  if (!loan) return { amount: '0.00', outstanding: '0.00', recovered: '0.00', inProgress: '0.00' };
+  const rows = (await db.query<{ amount: string; source: string; payroll_run_id: string | null; run_status: string | null; hold: boolean | null }>(
+    `SELECT x.amount::text, x.source, x.payroll_run_id, r.status AS run_status, i.hold FROM loan_recoveries x JOIN employee_loans l ON l.tenant_id=x.tenant_id AND l.id=x.loan_id
+     LEFT JOIN payroll_runs r ON r.tenant_id=x.tenant_id AND r.id=x.payroll_run_id
+     LEFT JOIN payroll_items i ON i.tenant_id=x.tenant_id AND i.run_id=x.payroll_run_id AND i.employee_id=l.employee_id WHERE x.tenant_id=$1 AND x.loan_id=$2`, [tenantId, loanId])).rows;
+  let committed = new Decimal(0); let final = new Decimal(0);
+  for (const x of rows) {
+    if (x.source === 'repayment' || (x.run_status !== 'cancelled' && x.payroll_run_id !== (opts.excludeRunId ?? null))) committed = committed.plus(x.amount);
+    if (x.source === 'repayment' || (['finalized', 'paid'].includes(x.run_status ?? '') && !x.hold)) final = final.plus(x.amount);
+  }
+  const outstanding = Decimal.max(0, new Decimal(loan.amount).minus(committed));
+  return { amount: loan.amount, outstanding: outstanding.toFixed(2), recovered: final.toFixed(2), inProgress: committed.minus(final).toFixed(2) };
+}
+
+/** Outstanding per loan, for a page of them: everything recovered that is not in a cancelled run. */
+export async function outstandingOf(db: Db, tenantId: string, loans: readonly { id: string; amount: string }[]) {
+  const out = new Map(loans.map((l) => [l.id, new Decimal(l.amount)]));
+  if (!loans.length) return new Map<string, string>();
+  const rows = (await db.query<{ loan_id: string; amount: string; source: string; run_status: string | null }>(`SELECT x.loan_id, x.amount::text, x.source, r.status AS run_status FROM loan_recoveries x
+    LEFT JOIN payroll_runs r ON r.tenant_id=x.tenant_id AND r.id=x.payroll_run_id WHERE x.tenant_id=$1 AND x.loan_id = ANY($2)`, [tenantId, loans.map((l) => l.id)])).rows;
+  for (const x of rows) if (x.source === 'repayment' || x.run_status !== 'cancelled') out.set(x.loan_id, out.get(x.loan_id)!.minus(x.amount));
+  return new Map([...out].map(([id, v]) => [id, Decimal.max(0, v).toFixed(2)]));
 }
 
 interface Planned { loanId: string; kind: string; amount: Decimal; label: string; ref: string }

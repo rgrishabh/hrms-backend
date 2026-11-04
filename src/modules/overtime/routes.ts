@@ -5,7 +5,7 @@ import { tenantActor, tenantActorAny, gateFeatures, requireFeature, type TenantA
 import { audit } from '../../core/audit/audit.js';
 import { badRequest, conflict, forbidden, notFound } from '../../core/http/errors.js';
 import { IsoDate, PageQuery, offsetOf, paged, Uuid } from '../../core/http/pagination.js';
-import { createApprovalRequest, registerApprovalHandler, cancelRequest, type ApprovalHandler, type StepSpec } from '../../core/workflow/engine.js';
+import { buildSteps, createApprovalRequest, registerApprovalHandler, cancelRequest, type ApprovalHandler } from '../../core/workflow/engine.js';
 import { getSettingValue } from '../../core/settings/service.js';
 import { featureOn } from '../lifecycle/service.js';
 import { isModuleEnabled } from '../../core/features/state.js';
@@ -151,9 +151,7 @@ export async function overtimeRoutes(app: FastifyInstance) {
       const mgr = (await db.query<{ user_id: string | null; name: string }>(`SELECT m.user_id, trim(e.first_name||' '||coalesce(e.last_name,'')) AS name FROM employees e
         LEFT JOIN employees m ON m.tenant_id=e.tenant_id AND m.id=e.reporting_manager_id WHERE e.tenant_id=$1 AND e.id=$2`, [a.tenantId, empId])).rows[0]!;
       // The manager confirms the work was needed and done; HR checks it against policy and the limits.
-      const steps: StepSpec[] = [];
-      if (mgr.user_id && mgr.user_id !== a.user.userId) steps.push({ kind: 'user', userId: mgr.user_id });
-      steps.push({ kind: 'permission', permission: 'overtime.approve' });
+      const steps = buildSteps({ requesterId: a.user.userId, managerUserId: mgr.user_id, then: ['overtime.approve'] });
       const h = Math.round((b.minutes / 60) * 100) / 100;
       const approvalId = await createApprovalRequest(db, a.tenantId, { entityType: b.payout === 'comp_off' ? 'overtime_comp_off' : 'overtime_claim', entityId: id, requesterId: a.user.userId,
         summary: `${mgr.name}: ${h} h overtime on ${b.workDate} (${b.payout === 'pay' ? 'paid' : 'compensatory off'})`, steps, excludeUserIds: [a.user.userId] });

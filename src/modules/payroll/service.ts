@@ -5,6 +5,8 @@ import { addDays, daysBetween } from '../attendance/time.js';
 import { calculate, CALC_VERSION, RULE_PARAMS, type Component, type RuleKind, type CalcInput } from './calc.js';
 import { plannedRecoveries, applyRecoveries, enabledLoanKinds } from '../loans/service.js';
 import { overtimeForRun } from '../overtime/service.js';
+import { sealJson } from '../../core/crypto/index.js';
+import { openAdjustment, openAmounts, sealItem } from './sealed.js';
 
 export function periodBounds(period: string) {
   const [y, m] = period.split('-').map(Number) as [number, number];
@@ -59,8 +61,9 @@ export async function lossOfPay(db: Db, tenantId: string, employeeId: string, fr
  * same effective date has already superseded the earlier one. Days before the first salary belong to no stretch.
  */
 export async function salaryVersions(db: Db, tenantId: string, employeeId: string, from: string, to: string) {
-  const rows = (await db.query<{ id: string; amounts: Record<string, number>; effective_from: string }>(`SELECT id, amounts, effective_from::text FROM employee_salaries
-    WHERE tenant_id=$1 AND employee_id=$2 AND status='active' AND effective_from <= $3::date ORDER BY effective_from`, [tenantId, employeeId, to])).rows;
+  const rows = (await db.query<{ id: string; amounts_enc: string; effective_from: string }>(`SELECT id, amounts_enc, effective_from::text FROM employee_salaries
+    WHERE tenant_id=$1 AND employee_id=$2 AND status='active' AND effective_from <= $3::date ORDER BY effective_from`, [tenantId, employeeId, to])).rows
+    .map((r) => ({ id: r.id, amounts: openAmounts(r.amounts_enc), effective_from: r.effective_from }));
   const inPeriod = rows.filter((s, x) => s.effective_from > from || !rows[x + 1] || rows[x + 1]!.effective_from > from);
   return inPeriod.map((s, x) => ({ id: s.id, amounts: s.amounts, start: s.effective_from > from ? s.effective_from : from,
     end: inPeriod[x + 1] ? addDays(inPeriod[x + 1]!.effective_from, -1) : to }));
@@ -150,8 +153,9 @@ export async function computeRun(db: Db, tenantId: string, runId: string) {
       if (missingPunch) warnings.push(`${missingPunch} unresolved missing-punch day(s)`);
       if (uncalculated) warnings.push(`attendance not calculated for ${uncalculated} day(s) — paid`);
     }
-    const adj = (await db.query<{ kind: 'earning' | 'deduction' | 'lop_days'; label: string; amount: string; taxable: boolean }>(
-      'SELECT kind, label, amount::text, taxable FROM payroll_adjustments WHERE tenant_id=$1 AND run_id=$2 AND employee_id=$3 ORDER BY created_at', [tenantId, runId, e.id])).rows;
+    const adj = (await db.query<{ kind: 'earning' | 'deduction' | 'lop_days'; label: string; data_enc: string; taxable: boolean }>(
+      'SELECT kind, label, data_enc, taxable FROM payroll_adjustments WHERE tenant_id=$1 AND run_id=$2 AND employee_id=$3 ORDER BY created_at', [tenantId, runId, e.id])).rows
+      .map((a) => ({ kind: a.kind, label: a.label, taxable: a.taxable, amount: openAdjustment(a.data_enc).amount }));
     const lopAdjustment = adj.filter((a) => a.kind === 'lop_days').reduce((s, a) => s + Number(a.amount), 0);
     const lop = inRegularRun ? 0 : Math.max(0, stretches.reduce((t, v) => t + v.lop, 0) + lopAdjustment);
     const paid = inRegularRun ? stretches.map(() => 0) : paidPerStretch(stretches, lopAdjustment);
@@ -166,10 +170,10 @@ export async function computeRun(db: Db, tenantId: string, runId: string) {
     const ptState = e.pt_state ?? e.branch_state ?? null;
     // Salary in force when the contribution period began (or the earliest one since, for a joiner): decides ESI cover.
     const cpStart = esiContributionStart(p.start);
-    const esiCover = (await db.query<{ amounts: Record<string, number> }>(`SELECT amounts FROM employee_salaries WHERE tenant_id=$1 AND employee_id=$2 AND status='active' AND effective_from <= $4::date
+    const esiCover = (await db.query<{ amounts_enc: string }>(`SELECT amounts_enc FROM employee_salaries WHERE tenant_id=$1 AND employee_id=$2 AND status='active' AND effective_from <= $4::date
       ORDER BY (effective_from <= $3::date) DESC, CASE WHEN effective_from <= $3::date THEN effective_from END DESC, effective_from ASC LIMIT 1`, [tenantId, e.id, cpStart, p.end])).rows[0];
     const input: CalcInput = {
-      month: p.month, esiCoverageAmounts: esiCover?.amounts, daysInPeriod: p.days, paidDays, components, amounts: stretches[stretches.length - 1]!.amounts,
+      month: p.month, esiCoverageAmounts: esiCover ? openAmounts(esiCover.amounts_enc) : undefined, daysInPeriod: p.days, paidDays, components, amounts: stretches[stretches.length - 1]!.amounts,
       supplementary: inRegularRun,
       ...(stretches.length > 1 ? { segments: stretches.map((v, x) => ({ amounts: v.amounts, paidDays: paid[x]!, days: v.days, from: v.start })) } : {}),
       adjustments,
@@ -188,15 +192,15 @@ export async function computeRun(db: Db, tenantId: string, runId: string) {
       }
     }
     warnings.push(...r.warnings);
-    await db.query(`INSERT INTO payroll_items (tenant_id, run_id, employee_id, salary_id, days_in_period, employed_days, lop_days, paid_days, lines, gross, deductions, net, employer_cost, warnings, hold, calc_version)
-      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16)`,
-      [tenantId, runId, e.id, inRegularRun ? null : stretches[stretches.length - 1]!.id, p.days, employed, lop, paidDays, JSON.stringify(r.lines), r.gross, r.deductions, r.net, r.employerCost, JSON.stringify(warnings), r.net < 0, CALC_VERSION]);
+    await db.query(`INSERT INTO payroll_items (tenant_id, run_id, employee_id, salary_id, days_in_period, employed_days, lop_days, paid_days, data_enc, hold, calc_version)
+      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)`,
+      [tenantId, runId, e.id, inRegularRun ? null : stretches[stretches.length - 1]!.id, p.days, employed, lop, paidDays, sealItem({ lines: r.lines, gross: r.gross, deductions: r.deductions, net: r.net, employerCost: r.employerCost, warnings }), r.net < 0, CALC_VERSION]);
     totals.employees++; totals.gross += r.gross; totals.deductions += r.deductions; totals.net += r.net; totals.employerCost += r.employerCost; if (r.net < 0) totals.held++;
     warningCount += warnings.length;
   }
   for (const k of ['gross', 'deductions', 'net', 'employerCost'] as const) totals[k] = Math.round(totals[k] * 100) / 100;
-  await db.query(`UPDATE payroll_runs SET status='computed', totals=$3, warnings=$4, warnings_acknowledged=false, computed_at=now() WHERE tenant_id=$1 AND id=$2`,
-    [tenantId, runId, JSON.stringify(totals), warningCount]);
+  await db.query(`UPDATE payroll_runs SET status='computed', totals_enc=$3, warnings=$4, warnings_acknowledged=false, computed_at=now() WHERE tenant_id=$1 AND id=$2`,
+    [tenantId, runId, sealJson(totals), warningCount]);
   return { totals, warnings: warningCount };
 }
 

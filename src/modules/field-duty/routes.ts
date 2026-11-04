@@ -4,7 +4,7 @@ import { tenantActor, tenantActorAny, gateFeatures, type TenantActor } from '../
 import { audit } from '../../core/audit/audit.js';
 import { badRequest, conflict, forbidden, notFound } from '../../core/http/errors.js';
 import { IsoDate, PageQuery, offsetOf, paged, Uuid } from '../../core/http/pagination.js';
-import { createApprovalRequest, registerApprovalHandler, cancelRequest, type StepSpec } from '../../core/workflow/engine.js';
+import { buildSteps, createApprovalRequest, registerApprovalHandler, cancelRequest } from '../../core/workflow/engine.js';
 import { getSettingValue } from '../../core/settings/service.js';
 import { lockedDates, recalculateRange, teamEmployeeIds } from '../attendance/service.js';
 import { addDays, daysBetween } from '../attendance/time.js';
@@ -109,10 +109,8 @@ export async function fieldDutyRoutes(app: FastifyInstance) {
         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) RETURNING id`,
         [a.tenantId, empId, b.startDate, b.endDate, b.dayPart, b.purpose, b.place, b.clientName, b.reference, b.reason, a.user.userId])).rows[0]!.id;
       // The manager confirms the assignment; HR as well when the organization asks for it, or when there is no manager to ask.
-      const steps: StepSpec[] = [];
-      const mgr = e.mgr_user && e.mgr_user !== a.user.userId && e.mgr_user !== e.user_id ? e.mgr_user : null;
-      if (mgr) steps.push({ kind: 'user', userId: mgr });
-      if (!mgr || await getSettingValue<boolean>(db, a.tenantId, 'field_duty.hr_approval')) steps.push({ kind: 'permission', permission: 'field_duty.approve' });
+      const hrToo = await getSettingValue<boolean>(db, a.tenantId, 'field_duty.hr_approval');
+      const steps = buildSteps({ requesterId: a.user.userId, subjectUserId: e.user_id, managerUserId: e.mgr_user, then: hrToo ? ['field_duty.approve'] : [], ifNoManager: hrToo ? [] : ['field_duty.approve'] });
       const when = span({ start_date: b.startDate, end_date: b.endDate, day_part: b.dayPart });
       const approvalId = await createApprovalRequest(db, a.tenantId, { entityType: 'field_duty', entityId: id, requesterId: a.user.userId,
         summary: `${e.name}: ${PURPOSE_LABEL[b.purpose]} at ${b.place}, ${when}${days > 1 ? ` (${days} days)` : ''}`, steps, excludeUserIds: [a.user.userId, e.user_id] });

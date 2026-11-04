@@ -50,10 +50,12 @@ export const COLS: Record<keyof EmployeeInput, string> = {
   confirmationDate: 'confirmation_date', contractEndDate: 'contract_end_date',
 };
 
-export const DIRECTORY_SELECT = `e.id, e.employee_code, e.first_name, e.last_name, e.work_email, e.designation, e.status,
-  e.branch_id, b.name AS branch_name, e.department_id, d.name AS department_name`;
+/** L1: what every employee may see of anyone. */
+export const DIRECTORY_SELECT = `e.id, e.employee_code, e.first_name, e.last_name, e.work_email, e.designation, e.department_id, d.name AS department_name`;
+/** L2: the employee's manager chain sees this as well. */
+export const TEAM_SELECT = `${DIRECTORY_SELECT}, e.status, e.branch_id, b.name AS branch_name, e.reporting_manager_id, trim(m.first_name || ' ' || coalesce(m.last_name, '')) AS reporting_manager_name, e.date_of_joining`;
 /** Probation and confirmation dates belong to onboarding: while it is off they are not part of an employee record. */
-export const fullSelect = () => `${DIRECTORY_SELECT}, e.phone, e.date_of_birth, e.legal_entity_id, le.name AS legal_entity_name, e.grade,
+export const fullSelect = () => `${DIRECTORY_SELECT}, e.status, e.branch_id, b.name AS branch_name, e.phone, e.date_of_birth, e.legal_entity_id, le.name AS legal_entity_name, e.grade,
   e.employment_type, e.reporting_manager_id, trim(m.first_name || ' ' || coalesce(m.last_name, '')) AS reporting_manager_name,
   e.date_of_joining, ${isModuleEnabled('core.onboarding') ? 'e.probation_end_date, e.confirmation_date, ' : ''}e.contract_end_date, e.exit_date, e.user_id, e.version, e.created_at, e.updated_at`;
 export const FROM_JOINS = `FROM employees e

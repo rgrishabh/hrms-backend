@@ -1,7 +1,9 @@
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import { z } from 'zod';
 import { only } from '../../core/features/routes.js';
-import { tenantActor, requireFeature, type TenantActor } from '../../core/http/context.js';
+import { tenantActor, requireFeature, readDevice, type TenantActor } from '../../core/http/context.js';
+import { openJson } from '../../core/crypto/index.js';
+import { wantsReveal } from '../../core/policy/salary.js';
 import { audit } from '../../core/audit/audit.js';
 import { badRequest, conflict, notFound } from '../../core/http/errors.js';
 import { csv } from '../../core/http/csv.js';
@@ -16,7 +18,7 @@ import type { Db } from '../../db/tx.js';
 /** Permissions that can open at least one report (the UI shows the Reports menu for these). */
 export const REPORT_PERMISSIONS = [...new Set(REPORTS.flatMap((r) => [...r.access.all, ...(r.access.team ?? [])]))];
 
-const viewer = (a: TenantActor): Viewer => ({ userId: a.user.userId, employeeId: a.user.employeeId, has: a.has });
+const viewer = (a: TenantActor): Viewer => ({ userId: a.user.userId, employeeId: a.user.employeeId, level: a.user.salaryLevel, has: a.has });
 const ADV = 'reports.advanced';
 
 /** The same report as an Excel workbook: typed columns (money, dates, percentages), bold header and totals. */
@@ -179,11 +181,15 @@ export async function reportRoutes(app: FastifyInstance) {
   async function loadSnapshot(a: TenantActor, id: string) {
     return a.tx(async (db) => {
       await requireFeature(db, a.tenantId, ADV);
-      const s = (await db.query<{ id: string; name: string; report_key: string; scope: string; owner_id: string; columns: Column[]; rows: Row[]; totals: Row | null; notes: string[]; params: unknown; generated_at: Date }>(
-        `SELECT id, name, report_key, scope, owner_id, columns, rows, totals, notes, params, generated_at FROM report_snapshots
+      const stored = (await db.query<{ id: string; name: string; report_key: string; scope: string; owner_id: string; columns: Column[]; data_enc: string; notes: string[]; params: unknown; generated_at: Date; viewer_level: number | null }>(
+        `SELECT id, name, report_key, scope, owner_id, columns, data_enc, notes, params, generated_at, viewer_level FROM report_snapshots
           WHERE tenant_id=$1 AND id=$2 AND $3 = ANY(recipient_ids) AND expires_at > now()`, [a.tenantId, id, a.user.userId])).rows[0];
-      const def = s && REPORT_MAP.get(s.report_key);
-      if (!s || !def) throw notFound('Report not found');
+      const def = stored && REPORT_MAP.get(stored.report_key);
+      if (!stored || !def) throw notFound('Report not found');
+      // Sealed for one reader at one level. Someone whose level has since dropped no longer gets it.
+      if (stored.viewer_level !== null && stored.viewer_level > a.user.salaryLevel) throw notFound('Report not found');
+      const { data_enc, ...meta } = stored;
+      const s = { ...meta, ...openJson<{ rows: Row[]; totals: Row | null }>(data_enc) };
       const mine = scopeOf(def, viewer(a));
       if (!mine || (s.scope === 'all' && mine !== 'all')) throw notFound('Report not found');
       if (def.feature) await requireFeature(db, a.tenantId, def.feature);
@@ -195,6 +201,7 @@ export async function reportRoutes(app: FastifyInstance) {
     const a = tenantActor(req);
     const { id } = z.object({ id: Uuid }).parse(req.params);
     const s = await loadSnapshot(a, id);
+    if (REPORT_MAP.get(s.report_key)?.l4) await a.tx((db) => audit(db, { ...a.auditBase, userAgent: readDevice(req).userAgent, action: 'l4.read', category: 'access', targetType: 'report_snapshot', targetId: id, metadata: { report: s.report_key, rows: s.rows.length } }));
     return { id: s.id, key: s.report_key, name: s.name, params: s.params, scope: s.scope, columns: s.columns, rows: s.rows, totals: s.totals, notes: s.notes, generatedAt: s.generated_at };
   });
   for (const format of ['csv', 'xlsx'] as const) app.get(`/snapshots/:id/export.${format}`, async (req, reply) => {
@@ -218,7 +225,9 @@ export async function reportRoutes(app: FastifyInstance) {
   app.get('/:key', async (req) => {
     const key = reportKey(req);
     const a = tenantActor(req);
-    const { def, ...r } = await a.tx((db) => runReport(db, a.tenantId, key, req.query, viewer(a)));
+    const reveal = wantsReveal(req);
+    const { def, ...r } = await a.tx((db) => runReport(db, a.tenantId, key, req.query, viewer(a), { reveal }));
+    if (def.l4 && reveal) await a.tx((db) => audit(db, { ...a.auditBase, userAgent: readDevice(req).userAgent, action: 'l4.reveal', category: 'access', targetType: 'report', targetId: def.key, metadata: { params: r.params, excluded: r.excluded ?? 0 } }));
     return { key: def.key, name: def.name, generatedAt: new Date().toISOString(), ...r };
   });
 
@@ -226,8 +235,9 @@ export async function reportRoutes(app: FastifyInstance) {
   for (const format of ['csv', 'xlsx'] as const) app.get(`/:key/export.${format}`, async (req, reply) => {
     const key = reportKey(req);
     const a = tenantActor(req);
-    const { def, params, today, columns, rows, totals, scope } = await a.tx((db) => runReport(db, a.tenantId, key, req.query, viewer(a)));
-    await a.tx((db) => audit(db, { ...a.auditBase, action: 'reports.exported', category: 'access', targetType: 'report', targetId: def.key, metadata: { params, scope, rows: rows.length, format } }));
+    const { def, params, today, columns, rows, totals, scope, excluded } = await a.tx((db) => runReport(db, a.tenantId, key, req.query, viewer(a), { reveal: true }));
+    await a.tx((db) => audit(db, { ...a.auditBase, userAgent: readDevice(req).userAgent, action: 'reports.exported', category: 'access', targetType: 'report', targetId: def.key, metadata: { params, scope, rows: rows.length, format, excluded: excluded ?? 0 } }));
+    reply.header('x-excluded-subjects', String(excluded ?? 0));
     return format === 'csv' ? sendCsv(reply, `${def.key}-${today}`, columns, rows, totals) : sendXlsx(reply, `${def.key}-${today}`, def.name, columns, rows, totals);
   });
 }

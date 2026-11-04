@@ -1,12 +1,13 @@
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
+import { auditL4, l4RowFilter, policyViewer, readContext, refuseHigherLevel } from '../../core/policy/salary.js';
 import { createHash } from 'node:crypto';
 import { Decimal } from 'decimal.js';
 import { tenantActor, tenantActorAny, requireFeature, type TenantActor, gateFeatures } from '../../core/http/context.js';
 import { audit } from '../../core/audit/audit.js';
 import { AppError, badRequest, conflict, forbidden, notFound } from '../../core/http/errors.js';
 import { IsoDate, PageQuery, offsetOf, paged, Uuid } from '../../core/http/pagination.js';
-import { createApprovalRequest, registerApprovalHandler, cancelRequest, type StepSpec } from '../../core/workflow/engine.js';
+import { buildSteps, createApprovalRequest, registerApprovalHandler, cancelRequest } from '../../core/workflow/engine.js';
 import { getStore, newKey } from '../../core/storage/index.js';
 import { detectFile, safeFileName } from '../../core/storage/sniff.js';
 import { getSettingValue } from '../../core/settings/service.js';
@@ -306,12 +307,10 @@ export async function expenseRoutes(app: FastifyInstance) {
       // Manager (if they have a login) then finance — two separate approvals.
       const mgr = await db.query<{ user_id: string | null }>(`SELECT m.user_id FROM employees e JOIN employees m ON m.tenant_id=e.tenant_id AND m.id=e.reporting_manager_id
         WHERE e.tenant_id=$1 AND e.id=$2 AND m.status IN ('active','on_notice')`, [a.tenantId, c.employee_id]);
-      const steps: StepSpec[] = [];
-      if (mgr.rows[0]?.user_id && mgr.rows[0].user_id !== a.user.userId) steps.push({ kind: 'user', userId: mgr.rows[0].user_id });
-      steps.push({ kind: 'permission', permission: 'expenses.approve' });
+      const steps = buildSteps({ requesterId: a.user.userId, managerUserId: mgr.rows[0]?.user_id, then: ['expenses.approve'] });
       const total = (await db.query<{ total: string }>('SELECT total FROM expense_claims WHERE tenant_id=$1 AND id=$2', [a.tenantId, id])).rows[0]!.total;
       const claimant = (await db.query<{ user_id: string | null }>('SELECT user_id FROM employees WHERE tenant_id=$1 AND id=$2', [a.tenantId, c.employee_id])).rows[0]?.user_id;
-      const reqId = await createApprovalRequest(db, a.tenantId, { entityType: 'expense_claim', entityId: id, requesterId: a.user.userId, summary: `${c.title}: ${money(total)}`, steps, excludeUserIds: [claimant] });
+      const reqId = await createApprovalRequest(db, a.tenantId, { entityType: 'expense_claim', entityId: id, requesterId: a.user.userId, summary: c.title, steps, excludeUserIds: [claimant] });
       await audit(db, { ...a.auditBase, action: 'expenses.claim_submitted', targetType: 'expense_claim', targetId: id, metadata: { total, approvalRequestId: reqId } });
       return { ok: true, approvalRequestId: reqId };
     });
@@ -425,12 +424,17 @@ export async function expenseRoutes(app: FastifyInstance) {
       const b = (await db.query<{ status: string }>(`SELECT status FROM reimbursement_batches WHERE tenant_id=$1 AND id=$2`, [a.tenantId, id])).rows[0];
       if (!b) throw notFound('Batch not found');
       if (!['approved', 'paid'].includes(b.status)) throw conflict('Export is available once the batch is approved');
-      const r = await db.query<{ employee_code: string; name: string; total: string; claims: number; account_holder: string | null; ifsc: string | null; account_last4: string | null; account_number_enc: string | null }>(
-        `SELECT e.employee_code, trim(e.first_name||' '||coalesce(e.last_name,'')) AS name, sum(c.total - c.advance_adjusted)::text AS total, count(*)::int AS claims,
+      const viewer = await policyViewer(db, a.tenantId, a.user);
+      const r = await db.query<{ id: string; visible: boolean; employee_code: string; name: string; total: string; claims: number; account_holder: string | null; ifsc: string | null; account_last4: string | null; account_number_enc: string | null }>(
+        `SELECT e.id, ${l4RowFilter(viewer, 'e')} AS visible, e.employee_code, trim(e.first_name||' '||coalesce(e.last_name,'')) AS name, sum(c.total - c.advance_adjusted)::text AS total, count(*)::int AS claims,
            ba.account_holder, ba.ifsc, ba.account_last4, ba.account_number_enc
          FROM expense_claims c JOIN employees e ON e.tenant_id=c.tenant_id AND e.id=c.employee_id
          LEFT JOIN employee_bank_accounts ba ON ba.tenant_id=e.tenant_id AND ba.employee_id=e.id
-         WHERE c.tenant_id=$1 AND c.batch_id=$2 GROUP BY e.employee_code, name, ba.account_holder, ba.ifsc, ba.account_last4, ba.account_number_enc ORDER BY e.employee_code`, [a.tenantId, id]);
+         WHERE c.tenant_id=$1 AND c.batch_id=$2 GROUP BY e.id, e.employee_code, name, ba.account_holder, ba.ifsc, ba.account_last4, ba.account_number_enc ORDER BY e.employee_code`, [a.tenantId, id]);
+      // A payment file is whole or it is not produced: see DECISIONS.md.
+      const hidden = r.rows.filter((x) => !x.visible).length;
+      if (hidden) throw refuseHigherLevel(hidden);
+      await auditL4(db, readContext(req, a), 'export', 'expenses.batch', r.rows.map((x) => ({ employeeId: x.id, fields: ['account_number', 'ifsc', 'account_holder'] })));
       await audit(db, { ...a.auditBase, action: 'expenses.batch_exported', category: 'access', targetType: 'reimbursement_batch', targetId: id, metadata: { fullAccountNumbers: full, rows: r.rowCount } });
       return r.rows;
     });

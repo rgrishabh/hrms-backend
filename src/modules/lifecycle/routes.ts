@@ -1,12 +1,13 @@
 import type { FastifyInstance } from 'fastify';
 import { only } from '../../core/features/routes.js';
 import { z } from 'zod';
+import { scrubAmounts } from '../../core/policy/text.js';
 import { evaluateFeatures } from '../../core/features/state.js';
 import { tenantActor, tenantActorAny, requireFeature, type TenantActor, gateFeatures } from '../../core/http/context.js';
 import { audit } from '../../core/audit/audit.js';
 import { badRequest, conflict, forbidden, notFound } from '../../core/http/errors.js';
 import { IsoDate, PageQuery, offsetOf, paged, Uuid } from '../../core/http/pagination.js';
-import { createApprovalRequest, registerApprovalHandler, cancelRequest, type StepSpec } from '../../core/workflow/engine.js';
+import { buildSteps, createApprovalRequest, registerApprovalHandler, cancelRequest, type StepSpec } from '../../core/workflow/engine.js';
 import { notifyUsers, usersWithPermission } from '../../core/notify/service.js';
 import { getSettingValue } from '../../core/settings/service.js';
 import { orgToday } from '../competency/service.js';
@@ -287,9 +288,7 @@ export async function lifecycleRoutes(app: FastifyInstance) {
     const id = (await db.query<{ id: string }>(`INSERT INTO separations (tenant_id, employee_id, kind, reason, notice_date, requested_lwd, notice_days_required, shortfall_days, initiated_by)
       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9) RETURNING id`, [a.tenantId, p.employeeId, p.kind, p.reason, p.noticeDate, p.requestedLwd, n.required, n.shortfall, a.user.userId])).rows[0]!.id;
     // Resignations: reporting manager, then HR. HR-initiated: a second HR approver (maker-checker).
-    const steps: StepSpec[] = [];
-    if (p.kind === 'resignation' && emp.manager_user_id && emp.manager_user_id !== a.user.userId) steps.push({ kind: 'user', userId: emp.manager_user_id });
-    steps.push({ kind: 'permission', permission: 'lifecycle.manage' });
+    const steps = buildSteps({ requesterId: a.user.userId, managerUserId: p.kind === 'resignation' ? emp.manager_user_id : null, then: ['lifecycle.manage'] });
     const approvalId = await createApprovalRequest(db, a.tenantId, { entityType: 'separation', entityId: id, requesterId: a.user.userId,
       summary: `${emp.name}: ${p.kind.replace('_', ' ')}, last day ${p.requestedLwd}${n.shortfall ? ` (notice short by ${n.shortfall} days)` : ''}`, steps,
       excludeUserIds: [emp.user_id] }); // nobody approves their own separation
@@ -424,8 +423,8 @@ export async function lifecycleRoutes(app: FastifyInstance) {
     const b = z.object({ status: z.enum(['not_started', 'in_progress', 'settled']), note: Text(2000) }).parse(req.body);
     return a.tx(async (db) => {
       await loadSeparation(db, a, id, true);
-      await db.query(`UPDATE separations SET fnf_status=$3, fnf_note=$4 WHERE tenant_id=$1 AND id=$2`, [a.tenantId, id, b.status, b.note]);
-      await audit(db, { ...a.auditBase, action: 'lifecycle.fnf_updated', targetType: 'separation', targetId: id, metadata: b });
+      await db.query(`UPDATE separations SET fnf_status=$3, fnf_note=$4 WHERE tenant_id=$1 AND id=$2`, [a.tenantId, id, b.status, b.note === null ? null : scrubAmounts(b.note)]);
+      await audit(db, { ...a.auditBase, action: 'lifecycle.fnf_updated', targetType: 'separation', targetId: id, metadata: { status: b.status, fields: ['note'] } });
       return { ok: true };
     });
   });

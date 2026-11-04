@@ -4,7 +4,10 @@ import { currentFeatures } from '../core/features/state.js';
 import { randomBytes } from 'node:crypto';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { hashPassword } from '../core/crypto/index.js';
+import { dataCipher, hashPassword, setDataCipher, type FieldCipher } from '../core/crypto/index.js';
+import { loadFieldCipherFromProcess } from '../core/crypto/keys.js';
+import { assignableRoles } from '../core/auth/permissions.js';
+import { currentMode, withMode, type ManagementMode } from '../core/policy/mode.js';
 import { pgSsl } from './ssl.js';
 // Same type parsing as the app (DATE and NUMERIC as strings): the attendance engine compares dates as text,
 // so without it every demo day was calculated without its shift (no late, early-exit or overtime minutes).
@@ -26,7 +29,8 @@ import type { Db } from './tx.js';
 const say = (m: string) => { if (!process.env.VITEST) process.stderr.write(`[demo] ${m}\n`); };
 
 // Deterministic PRNG so every run produces the same organization.
-let seed = 20261104;
+const SEED = 20261104;
+let seed = SEED;
 const rnd = () => { seed = (seed * 1664525 + 1013904223) % 4294967296; return seed / 4294967296; };
 const pick = <T>(a: readonly T[]) => a[Math.floor(rnd() * a.length)]!;
 const int = (lo: number, hi: number) => lo + Math.floor(rnd() * (hi - lo + 1));
@@ -66,8 +70,19 @@ const PERSONAS = [
 ] as const;
 const BASIC_BY_GRADE: Record<string, [number, number]> = { L1: [14000, 17000], L2: [18000, 24000], L3: [25000, 32000], L4: [34000, 45000], L5: [48000, 65000], L7: [90000, 120000] };
 
-export async function generateDemo(c: pg.Client | pg.PoolClient, opts: { password: string; today: string; tenantId?: string; features?: ReadonlySet<string> }) {
+/** A persona's roles in this mode: what exists there, and Employee for the rest. The same people, so the three datasets line up. */
+export const demoRoles = (roles: readonly string[], mode: ManagementMode) => {
+  const allowed = assignableRoles(mode);
+  const kept = roles.filter((r) => allowed.includes(r));
+  return kept.includes('employee') ? kept : [...kept, 'employee'];
+};
+
+export async function generateDemo(c: pg.Client | pg.PoolClient, opts: { password: string; today: string; tenantId?: string; features?: ReadonlySet<string>; mode?: ManagementMode; cipher?: FieldCipher }) {
   const db = c as unknown as Db;
+  // Every run from the same start, so a mode can be seeded again and come out the same.
+  seed = SEED;
+  const mode = opts.mode ?? currentMode();
+  const cipher = opts.cipher ?? dataCipher();
   // A module that is off gets no demo data, just as it has no routes.
   const features = opts.features ?? currentFeatures();
   const on = (...keys: string[]) => keys.some((k) => features.has(k));
@@ -85,6 +100,8 @@ export async function generateDemo(c: pg.Client | pg.PoolClient, opts: { passwor
   const domain = host && host.includes('.') ? host : 'example.test'; // logins need a valid email domain (not "localhost")
   const adminId = (await q<{ id: string }>(`SELECT u.id FROM users u JOIN user_roles r ON r.user_id=u.id AND r.role_key='tenant_admin' WHERE u.tenant_id=$1 ORDER BY u.created_at LIMIT 1`, [tid])).rows[0]?.id;
   if (!adminId) throw new Error('No administrator: run bootstrap first');
+  // The smaller modes have an Owner: the bootstrap administrator. It stays when the organization moves up.
+  if (mode !== 'multi') await q(`INSERT INTO user_roles (user_id, tenant_id, role_key) SELECT $1,$2,'owner' WHERE NOT EXISTS (SELECT 1 FROM user_roles WHERE user_id=$1 AND role_key='owner')`, [adminId, tid]);
   const today = opts.today;
   const pw = await hashPassword(opts.password);
 
@@ -150,7 +167,7 @@ export async function generateDemo(c: pg.Client | pg.PoolClient, opts: { passwor
     const email = `${p.key}@${domain}`;
     const u = (await q<{ id: string }>(`INSERT INTO users (tenant_id, email, display_name, password_hash, must_change_password) VALUES ($1,$2,$3,$4,false) RETURNING id`,
       [tid, email, `${p.first} ${p.last}`, pw])).rows[0]!.id;
-    for (const r of p.roles) await q(`INSERT INTO user_roles (user_id, tenant_id, role_key) VALUES ($1,$2,$3)`, [u, tid, r]);
+    for (const r of demoRoles(p.roles, mode)) await q(`INSERT INTO user_roles (user_id, tenant_id, role_key) VALUES ($1,$2,$3)`, [u, tid, r]);
     await q(`UPDATE employees SET user_id=$2 WHERE id=$1`, [e.id, u]);
     e.userId = u;
   }
@@ -527,8 +544,8 @@ export async function generateDemo(c: pg.Client | pg.PoolClient, opts: { passwor
     for (const e of emps) {
       const [lo, hi] = BASIC_BY_GRADE[e.grade] ?? [18000, 24000];
       const basic = Math.round(int(lo, hi) / 100) * 100;
-      await q(`INSERT INTO employee_salaries (tenant_id, employee_id, effective_from, amounts, reason, status, created_by, approved_at) VALUES ($1,$2,$3,$4,'Demo salary','active',$5, now())`,
-        [tid, e.id, e.joined < `${year}-04-01` ? `${year}-04-01` : e.joined, JSON.stringify({ BASIC: basic, HRA: 40, CONV: 1600, SPECIAL: Math.round(basic * 0.35 / 100) * 100 }), uid('payroll')]);
+      await q(`INSERT INTO employee_salaries (tenant_id, employee_id, effective_from, amounts_enc, reason, status, created_by, approved_at) VALUES ($1,$2,$3,$4,'Demo salary','active',$5, now())`,
+        [tid, e.id, e.joined < `${year}-04-01` ? `${year}-04-01` : e.joined, cipher.encrypt(JSON.stringify({ BASIC: basic, HRA: 40, CONV: 1600, SPECIAL: Math.round(basic * 0.35 / 100) * 100 })), uid('payroll')]);
     }
     say('payroll: 4 components and salaries for everyone (statutory rules NOT created)');
   }
@@ -590,7 +607,10 @@ if (process.argv[1] && fileURLToPath(import.meta.url) === path.resolve(process.a
       if (flags.problems.length) throw new Error(flags.problems.join('; '));
       const today = new Intl.DateTimeFormat('en-CA', { timeZone: tz, year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date());
       const password = `Demo-${randomBytes(9).toString('base64url')}`;
-      const r = await generateDemo(c, { password, today, features: flags.features });
+      const cipher = await loadFieldCipherFromProcess();
+      setDataCipher(cipher);
+      const mode = (['single', 'single_hr', 'multi'] as const).find((m) => m === process.env.ORG_MANAGEMENT_MODE) ?? 'multi';
+      const r = await withMode(mode, () => generateDemo(c, { password, today, features: flags.features, mode, cipher }));
       if (!r) return;
       process.stdout.write(`HRMS demo logins (synthetic data) — https://${process.env.BRAND_DOMAIN ?? r.domain}\nPassword for all demo logins: ${password}\n` +
         `Privileged roles must set up two-factor authentication at first sign-in.\n\n${r.logins.map((l) => `${l.login.padEnd(36)} ${l.name.padEnd(18)} ${l.role}`).join('\n')}\n`);

@@ -1,12 +1,13 @@
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import { tenantActor, tenantActorAny } from '../../core/http/context.js';
-import { audit } from '../../core/audit/audit.js';
+import { audit, redact } from '../../core/audit/audit.js';
+import { assertMayChangeSubject, auditL4, l3RowFilter, maskFields, policyViewer, readContext, subjectVisible, wantsReveal } from '../../core/policy/salary.js';
 import { badRequest, conflict, forbidden, notFound } from '../../core/http/errors.js';
 import { IsoDate, PageQuery, offsetOf, paged, Uuid } from '../../core/http/pagination.js';
 import { endAccess } from '../lifecycle/service.js';
 import {
-  EmployeeInput, COLS, DIRECTORY_SELECT, fullSelect, FROM_JOINS, EMPLOYEE_STATUSES,
+  EmployeeInput, COLS, DIRECTORY_SELECT, TEAM_SELECT, fullSelect, FROM_JOINS, EMPLOYEE_STATUSES,
   insertEmployee, validateReferences, findDuplicates,
 } from './service.js';
 import { profileRoutes } from './profile.js';
@@ -19,6 +20,10 @@ const ListQuery = PageQuery.extend({
   departmentId: Uuid.optional(),
   status: z.enum(EMPLOYEE_STATUSES).optional(),
 });
+
+/** Phone and date of birth: the person themselves and HR above them. Anyone else reading the record gets the masked shape. */
+const withoutL3 = ({ l3_visible, ...row }: Record<string, unknown>) => (l3_visible ? row : maskFields(row, ['phone', 'date_of_birth']));
+const L3_EMPLOYEE_FIELDS: readonly string[] = ['phone', 'dateOfBirth'];
 
 const BankBody = z.object({
   accountHolder: z.string().trim().min(2).max(120),
@@ -44,7 +49,7 @@ export function registerEmployeeApprovals() {
       if (u) await notifyUsers(db, tenantId, [u], { kind: 'employee.bank_changed', title: 'Your salary bank account was changed',
         body: 'Your next salary goes to the new account. If you did not ask for this, contact HR immediately.', link: '/profile', actionLabel: 'Review', dedupeKey: `bank-change:${changeId}:applied` });
       await audit(db, { tenantId, actorId, action: 'employee.bank_updated', category: 'security', targetType: 'employee', targetId: c.employee_id,
-        metadata: { changeId, requestedBy: c.requested_by, previousLast4: prev.rows[0]?.account_last4 ?? null, newLast4: c.account_last4, ifsc: c.ifsc } });
+        metadata: { changeId, requestedBy: c.requested_by, fields: ['accountNumber', 'accountHolder', 'ifsc', 'bankName'], replaced: !!prev.rowCount } });
     },
     async onRejected(db, tenantId, changeId, _actor, status) {
       await db.query(`UPDATE employee_bank_changes SET status=$3, decided_at=now() WHERE tenant_id=$1 AND id=$2 AND status='pending'`, [tenantId, changeId, status]);
@@ -69,9 +74,10 @@ export async function employeeRoutes(app: FastifyInstance) {
         AND ($2::text IS NULL OR e.employee_code ILIKE $2||'%' OR lower(e.first_name||' '||coalesce(e.last_name,'')) LIKE '%'||lower($2)||'%' OR e.work_email ILIKE '%'||$2||'%')
         AND ($3::uuid IS NULL OR e.branch_id=$3) AND ($4::uuid IS NULL OR e.department_id=$4) AND ($5::text IS NULL OR e.status=$5)`;
       const total = Number((await db.query<{ n: string }>(`SELECT count(*) AS n FROM employees e WHERE ${where}`, params)).rows[0]!.n);
-      const rows = await db.query(`SELECT ${full ? fullSelect() : DIRECTORY_SELECT} ${FROM_JOINS} WHERE ${where}
+      const v = await policyViewer(db, a.tenantId, a.user);
+      const rows = await db.query(`SELECT ${full ? `${fullSelect()}, ${l3RowFilter(v, 'e')} AS l3_visible` : DIRECTORY_SELECT} ${FROM_JOINS} WHERE ${where}
         ORDER BY e.first_name, e.last_name, e.employee_code LIMIT $6 OFFSET $7`, [...params, q.pageSize, offsetOf(q)]);
-      return { ...paged(rows.rows, total, q), view: full ? 'full' : 'directory' };
+      return { ...paged(full ? rows.rows.map(withoutL3) : rows.rows, total, q), view: full ? 'full' : 'directory' };
     });
   });
 
@@ -86,9 +92,13 @@ export async function employeeRoutes(app: FastifyInstance) {
     const { id } = z.object({ id: Uuid }).parse(req.params);
     const full = a.has('employees.read') || a.user.employeeId === id;
     return a.tx(async (db) => {
-      const r = await db.query(`SELECT ${full ? fullSelect() : DIRECTORY_SELECT} ${FROM_JOINS} WHERE e.tenant_id=$1 AND e.id=$2`, [a.tenantId, id]);
+      const v = await policyViewer(db, a.tenantId, a.user);
+      // L2: someone in the employee's manager chain sees more than the directory, and still nothing personal.
+      const chain = !full && !!a.user.employeeId && (await db.query(`WITH RECURSIVE up AS (SELECT reporting_manager_id AS id FROM employees WHERE tenant_id=$1 AND id=$2
+        UNION SELECT e.reporting_manager_id FROM employees e JOIN up ON e.id=up.id WHERE e.tenant_id=$1) SELECT 1 FROM up WHERE id=$3`, [a.tenantId, id, a.user.employeeId])).rowCount! > 0;
+      const r = await db.query(`SELECT ${full ? `${fullSelect()}, ${l3RowFilter(v, 'e')} AS l3_visible` : chain ? TEAM_SELECT : DIRECTORY_SELECT} ${FROM_JOINS} WHERE e.tenant_id=$1 AND e.id=$2`, [a.tenantId, id]);
       if (!r.rowCount) throw notFound('Employee not found');
-      return { ...r.rows[0], view: full ? 'full' : 'directory' };
+      return { ...(full ? withoutL3(r.rows[0]) : r.rows[0]), view: full ? 'full' : chain ? 'team' : 'directory' };
     });
   });
 
@@ -125,6 +135,7 @@ export async function employeeRoutes(app: FastifyInstance) {
       if (!exiting && body.exitDate) throw badRequest('An exit date goes with changing the status to exited');
       if (body.exitDate && body.exitDate < next.dateOfJoining) throw badRequest('The exit date cannot be before the date of joining');
       if (!changed.length) return { ok: true, version: row.version, changed: [] };
+      if (changed.some((k) => L3_EMPLOYEE_FIELDS.includes(k)) && !(await subjectVisible(db, a.tenantId, await policyViewer(db, a.tenantId, a.user), id, l3RowFilter))) throw notFound('Employee not found');
       if (changed.includes('workEmail') || changed.includes('phone')) {
         const d = await findDuplicates(db, a.tenantId, { workEmail: next.workEmail, phone: next.phone }, id);
         if (d.length) throw conflict('Another employee already uses this email or phone', { duplicates: d });
@@ -139,7 +150,7 @@ export async function employeeRoutes(app: FastifyInstance) {
         await db.query('UPDATE employees SET exit_date=NULL WHERE tenant_id=$1 AND id=$2', [a.tenantId, id]);
       }
       await audit(db, { ...a.auditBase, action: 'employee.updated', targetType: 'employee', targetId: id,
-        metadata: { changes: Object.fromEntries(changed.map((k) => [k, { from: currentInput[k] ?? null, to: next[k] ?? null }])), ...(exiting ? { exitDate: body.exitDate } : {}) } });
+        metadata: { changes: Object.fromEntries(changed.filter((k) => !L3_EMPLOYEE_FIELDS.includes(k)).map((k) => [k, { from: currentInput[k] ?? null, to: next[k] ?? null }])), fields: changed, ...(exiting ? { exitDate: body.exitDate } : {}) } });
       return { ok: true, version: r.rows[0]!.version, changed };
     });
   });
@@ -211,7 +222,7 @@ export async function employeeRoutes(app: FastifyInstance) {
     const { id } = z.object({ id: Uuid }).parse(req.params);
     return a.tx(async (db) => ({ items: (await db.query(`SELECT l.id, l.action, l.change_metadata, l.created_at, u.display_name AS actor_name
       FROM audit_logs l LEFT JOIN users u ON u.id=l.actor_id WHERE l.tenant_id=$1 AND l.target_type='employee' AND l.target_id=$2
-      ORDER BY l.created_at DESC LIMIT 100`, [a.tenantId, id])).rows }));
+      ORDER BY l.created_at DESC LIMIT 100`, [a.tenantId, id])).rows.map((r) => ({ ...r, change_metadata: redact(r.change_metadata) })) }));
   });
 
   // ------------------------------------------------------------ restricted: bank details
@@ -220,11 +231,17 @@ export async function employeeRoutes(app: FastifyInstance) {
     const { id } = z.object({ id: Uuid }).parse(req.params);
     if (!a.has('employees.bank.read') && a.user.employeeId !== id) throw forbidden();
     return a.tx(async (db) => {
-      const r = await db.query(`SELECT account_holder, account_last4, ifsc, bank_name, updated_at FROM employee_bank_accounts WHERE tenant_id=$1 AND employee_id=$2`, [a.tenantId, id]);
+      if (!(await subjectVisible(db, a.tenantId, await policyViewer(db, a.tenantId, a.user), id))) throw notFound('Employee not found');
+      const r = await db.query<{ account_holder: string; account_last4: string; account_number_enc: string; ifsc: string; bank_name: string | null; updated_at: Date }>(`SELECT account_holder, account_last4, account_number_enc, ifsc, bank_name, updated_at FROM employee_bank_accounts WHERE tenant_id=$1 AND employee_id=$2`, [a.tenantId, id]);
       // Viewing restricted data is itself audited.
       await audit(db, { ...a.auditBase, action: 'employee.bank_viewed', category: 'access', targetType: 'employee', targetId: id });
       const b = r.rows[0];
-      return b ? { accountHolder: b.account_holder, accountNumberMasked: `XXXXXX${b.account_last4}`, ifsc: b.ifsc, bankName: b.bank_name, updatedAt: b.updated_at } : null;
+      if (!b) return null;
+      const fields = ['accountNumber', 'accountHolder', 'ifsc', 'bankName'];
+      const row = { accountNumber: cipher.decrypt(b.account_number_enc) as string | null, accountHolder: b.account_holder, accountNumberMasked: `XXXXXX${b.account_last4}`, ifsc: b.ifsc, bankName: b.bank_name, updatedAt: b.updated_at };
+      if (!wantsReveal(req)) return maskFields(row, fields);
+      await auditL4(db, readContext(req, a), 'reveal', 'employees.bank', [{ employeeId: id, fields }]);
+      return row;
     });
   });
 
@@ -240,6 +257,7 @@ export async function employeeRoutes(app: FastifyInstance) {
       const e = (await db.query<{ user_id: string | null; name: string }>(`SELECT user_id, trim(first_name||' '||coalesce(last_name,'')) AS name FROM employees WHERE tenant_id=$1 AND id=$2 FOR UPDATE`, [a.tenantId, id])).rows[0];
       if (!e) throw notFound('Employee not found');
       if (id === a.user.employeeId || e.user_id === a.user.userId) throw forbidden('You cannot change your own bank details here; ask HR');
+      await assertMayChangeSubject(db, a.tenantId, await policyViewer(db, a.tenantId, a.user), id);
       if ((await db.query(`SELECT 1 FROM employee_bank_changes WHERE tenant_id=$1 AND employee_id=$2 AND status='pending'`, [a.tenantId, id])).rowCount) throw conflict('A change to these bank details is already waiting for approval');
       const changeId = (await db.query<{ id: string }>(`INSERT INTO employee_bank_changes (tenant_id, employee_id, account_holder, account_number_enc, account_last4, ifsc, bank_name, requested_by)
         VALUES ($1,$2,$3,$4,$5,$6,$7,$8) RETURNING id`, [a.tenantId, id, body.accountHolder, cipher.encrypt(body.accountNumber), body.accountNumber.slice(-4), body.ifsc, body.bankName ?? null, a.user.userId])).rows[0]!.id;
@@ -258,11 +276,14 @@ export async function employeeRoutes(app: FastifyInstance) {
     const a = tenantActorAny(req, 'employees.bank.read', 'employees.bank.approve');
     const { id } = z.object({ id: Uuid }).parse(req.params);
     return a.tx(async (db) => {
+      if (!(await subjectVisible(db, a.tenantId, await policyViewer(db, a.tenantId, a.user), id))) throw notFound('Employee not found');
       const c = (await db.query<{ id: string; account_holder: string; account_last4: string; ifsc: string; bank_name: string | null; created_at: Date; requested_by_name: string }>(
         `SELECT c.id, c.account_holder, c.account_last4, c.ifsc, c.bank_name, c.created_at, u.display_name AS requested_by_name FROM employee_bank_changes c JOIN users u ON u.id=c.requested_by
           WHERE c.tenant_id=$1 AND c.employee_id=$2 AND c.status='pending'`, [a.tenantId, id])).rows[0];
       await audit(db, { ...a.auditBase, action: 'employee.bank_viewed', category: 'access', targetType: 'employee', targetId: id, metadata: { pendingChange: true } });
-      return { pending: c ? { id: c.id, accountHolder: c.account_holder, accountNumberMasked: `XXXXXX${c.account_last4}`, ifsc: c.ifsc, bankName: c.bank_name, requestedAt: c.created_at, requestedBy: c.requested_by_name } : null };
+      const row = c ? { id: c.id, accountHolder: c.account_holder as string | null, accountNumberMasked: `XXXXXX${c.account_last4}`, ifsc: c.ifsc as string | null, bankName: c.bank_name, requestedAt: c.created_at, requestedBy: c.requested_by_name } : null;
+      if (row && wantsReveal(req)) await auditL4(db, readContext(req, a), 'reveal', 'employees.bank_pending', [{ employeeId: id, fields: ['accountHolder', 'ifsc', 'bankName'] }]);
+      return { pending: row && !wantsReveal(req) ? maskFields(row, ['accountHolder', 'ifsc', 'bankName']) : row };
     });
   });
 
