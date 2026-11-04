@@ -298,6 +298,26 @@ export async function generateDemo(c: pg.Client | pg.PoolClient, opts: { passwor
   }
   say('expenses: 5 categories, 2 draft claims');
 
+  // ---- travel: the analyst went to Mumbai for the NABL assessor workshop with an advance (the draft claim above is that
+  // trip's, so the advance is set off when it is approved); the sampler has a sampling trip next week awaiting the advance.
+  {
+    const a = personas.analyst!; const s = personas.sampler!;
+    let w = addDays(today, -14); while (new Date(`${w}T00:00:00Z`).getUTCDay() === 0) w = addDays(w, -1);
+    const past = (await q<{ id: string }>(`INSERT INTO travel_requests (tenant_id, employee_id, purpose, trip_type, origin, destination, start_date, end_date, travel_mode, accommodation,
+        estimate_travel, estimate_meals, estimate_local, advance_requested, mark_on_duty, status, decided_at, advance_paid_amount, advance_paid_at, advance_paid_by, advance_reference, completed_at, created_by)
+      VALUES ($1,$2,'NABL assessor workshop on ISO/IEC 17025:2017','domestic','Pune','Mumbai — NABL regional office',$3,$3,'rail',false,1200,600,800,1500,false,'completed',now(),1500,now(),$4,'NEFT-DEMO-ADV-01',now(),$5) RETURNING id`,
+      [tid, a.id, w, uid('finance'), uid('analyst')])).rows[0]!.id;
+    await q(`UPDATE expense_claims SET travel_request_id=$2 WHERE tenant_id=$1 AND employee_id=$3 AND title='Training at NABL assessor workshop'`, [tid, past, a.id]);
+    let n = addDays(today, 7); while ([n, addDays(n, 1)].some((d) => new Date(`${d}T00:00:00Z`).getUTCDay() === 0)) n = addDays(n, 1);
+    const next = (await q<{ id: string }>(`INSERT INTO travel_requests (tenant_id, employee_id, purpose, trip_type, origin, destination, start_date, end_date, travel_mode, accommodation, project,
+        estimate_travel, estimate_stay, estimate_meals, advance_requested, status, decided_at, created_by)
+      VALUES ($1,$2,'Quarterly stack and ambient air monitoring for the client plant','domestic','Navi Mumbai','Aurangabad — Waluj MIDC',$3,$4,'road',true,'WO-AUR-0412',
+        2800,3200,1200,5000,'approved',now(),$5) RETURNING id`, [tid, s.id, n, addDays(n, 1), uid('sampler')])).rows[0]!.id;
+    await q(`INSERT INTO field_duty_requests (tenant_id, employee_id, start_date, end_date, purpose, place, reference, reason, status, created_by, decided_at, travel_request_id)
+      VALUES ($1,$2,$3,$4,'official_work','Aurangabad — Waluj MIDC','Travel','Quarterly stack and ambient air monitoring for the client plant','approved',$5,now(),$6)`, [tid, s.id, n, addDays(n, 1), uid('sampler'), next]);
+    say('travel: a completed trip with its advance (claim in draft), an approved trip awaiting its advance');
+  }
+
   // ---- training & competency
   const course: Record<string, string> = {};
   for (const [code, name, kind, months] of [['INDUCTION', 'Laboratory induction', 'induction', null], ['CHEM-SAFETY', 'Chemical safety & spill response', 'safety', 12], ['QMS', 'ISO/IEC 17025 awareness', 'quality', 24],

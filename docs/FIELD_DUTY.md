@@ -20,6 +20,10 @@ Field duty is approved work away from the workplace: field sampling, a client vi
    - The employee, or whoever recorded it, can withdraw a pending request.
    - Approved field duty can be cancelled by the employee before it starts, and by HR until its dates are locked for payroll. HR can never cancel their own. Attendance for those dates is recalculated.
 
+## Travel
+
+An approved trip (docs/TRAVEL.md) becomes field duty for its dates (official work at the destination), unless leave or other field duty already covers them. Cancelling the trip cancels it.
+
 ## Attendance and payroll
 
 Attendance rule 12 in docs/ATTENDANCE.md:
