@@ -75,6 +75,8 @@ export async function documentRoutes(app: FastifyInstance) {
     return a.tx(async (db) => {
       const prev = await loadCategory(db, a.tenantId, id);
       if (prev.scope !== b.scope) throw badRequest('The scope of an existing category cannot change');
+      // The restricted flag is what keeps medical / identity files from document managers: only those cleared for them may change it.
+      if ((prev.restricted || b.restricted) && !a.has('documents.restricted')) throw forbidden('Only users with access to restricted documents can change a restricted category');
       await db.query(`UPDATE document_categories SET code=$3, name=$4, scope=$5, employee_visible=$6, employee_upload=$7, restricted=$8, requires_expiry=$9, status=$10
         WHERE tenant_id=$1 AND id=$2`, [a.tenantId, id, ...catCols(b)]);
       await audit(db, { ...a.auditBase, action: 'documents.category_updated', category: 'configuration', targetType: 'document_category', targetId: id, metadata: { from: prev, to: b } });
