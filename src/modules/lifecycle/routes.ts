@@ -1,6 +1,7 @@
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
-import { tenantActor, tenantActorAny, requireFeature, type TenantActor } from '../../core/http/context.js';
+import { evaluateFeatures } from '../../core/features/state.js';
+import { tenantActor, tenantActorAny, requireFeature, type TenantActor, gateFeatures } from '../../core/http/context.js';
 import { audit } from '../../core/audit/audit.js';
 import { badRequest, conflict, forbidden, notFound } from '../../core/http/errors.js';
 import { IsoDate, PageQuery, offsetOf, paged, Uuid } from '../../core/http/pagination.js';
@@ -35,6 +36,7 @@ async function endAccess(db: Db, tenantId: string, employeeId: string) {
 }
 
 export async function lifecycleRoutes(app: FastifyInstance) {
+  gateFeatures(app, ON, OFF);
   // ------------------------------------------------------------ approvals
   registerApprovalHandler('separation', {
     feature: OFF, label: 'Separation', requesterLink: '/lifecycle?tab=separations',
@@ -149,6 +151,7 @@ export async function lifecycleRoutes(app: FastifyInstance) {
     const c = (await db.query<{ id: string; kind: 'onboarding' | 'offboarding'; employee_id: string; status: string; anchor_date: string; separation_id: string | null }>(
       `SELECT id, kind, employee_id, status, anchor_date::text, separation_id FROM checklists WHERE tenant_id=$1 AND id=$2`, [a.tenantId, id])).rows[0];
     if (!c) throw notFound('Checklist not found');
+    await requireFeature(db, a.tenantId, featureFor(c.kind));
     const emp = (await loadEmp(db, a.tenantId, c.employee_id))!;
     const reader = a.has('lifecycle.manage') || a.has('lifecycle.read');
     const self = emp.user_id === a.user.userId; const mgr = emp.manager_user_id === a.user.userId;
@@ -168,6 +171,7 @@ export async function lifecycleRoutes(app: FastifyInstance) {
     const { id } = z.object({ id: Uuid }).parse(req.params);
     const { reason } = z.object({ reason: z.string().trim().min(3).max(500) }).parse(req.body);
     return a.tx(async (db) => {
+      await requireFeature(db, a.tenantId, ON);
       const r = await db.query(`UPDATE checklists SET status='cancelled' WHERE tenant_id=$1 AND id=$2 AND status='open' AND separation_id IS NULL`, [a.tenantId, id]);
       if (!r.rowCount) throw conflict('Only open onboarding checklists can be cancelled (exit clearance follows its separation)');
       await audit(db, { ...a.auditBase, action: 'lifecycle.checklist_cancelled', targetType: 'checklist', targetId: id, metadata: { reason } });
@@ -179,13 +183,14 @@ export async function lifecycleRoutes(app: FastifyInstance) {
   app.get('/tasks/mine', async (req) => {
     const a = tenantActor(req);
     return a.tx(async (db) => {
-      const rows = (await db.query<{ owner: Owner; user_id: string | null; manager_user_id: string | null }>(`SELECT t.id, t.title, t.description, t.owner, t.due_date::text, t.checklist_id, c.kind,
+      const rows = (await db.query<{ owner: Owner; user_id: string | null; manager_user_id: string | null; kind: 'onboarding' | 'offboarding' }>(`SELECT t.id, t.title, t.description, t.owner, t.due_date::text, t.checklist_id, c.kind,
           e.id AS employee_id, trim(e.first_name||' '||coalesce(e.last_name,'')) AS employee_name, e.user_id, m.user_id AS manager_user_id
         FROM checklist_tasks t JOIN checklists c ON c.tenant_id=t.tenant_id AND c.id=t.checklist_id AND c.status='open'
         JOIN employees e ON e.tenant_id=c.tenant_id AND e.id=c.employee_id LEFT JOIN employees m ON m.tenant_id=e.tenant_id AND m.id=e.reporting_manager_id
         WHERE t.tenant_id=$1 AND t.status='pending' ORDER BY t.due_date LIMIT 500`, [a.tenantId])).rows;
       // "Mine" = tasks of my group (not everything lifecycle.manage could technically complete).
-      const mine = rows.filter((t) => t.owner === 'employee' ? t.user_id === a.user.userId : t.owner === 'manager' ? t.manager_user_id === a.user.userId : a.has(OWNER_PERMISSION[t.owner]!));
+      const features = await evaluateFeatures(db, a.tenantId);
+      const mine = rows.filter((t) => features.get(featureFor(t.kind))?.usable).filter((t) => t.owner === 'employee' ? t.user_id === a.user.userId : t.owner === 'manager' ? t.manager_user_id === a.user.userId : a.has(OWNER_PERMISSION[t.owner]!));
       return { date: await orgToday(db, a.tenantId), items: mine.map(({ user_id: _u, manager_user_id: _m, ...t }) => t) };
     });
   });
@@ -195,9 +200,10 @@ export async function lifecycleRoutes(app: FastifyInstance) {
     const { id } = z.object({ id: Uuid }).parse(req.params);
     const { note } = z.object({ note: action === 'skip' ? z.string().trim().min(3).max(500) : Text(500) }).parse(req.body ?? {});
     return a.tx(async (db) => {
-      const t = (await db.query<{ owner: Owner; status: string; checklist_id: string; employee_id: string; cstatus: string }>(`SELECT t.owner, t.status, t.checklist_id, c.employee_id, c.status AS cstatus
+      const t = (await db.query<{ owner: Owner; status: string; checklist_id: string; employee_id: string; cstatus: string; kind: 'onboarding' | 'offboarding' }>(`SELECT t.owner, t.status, t.checklist_id, c.employee_id, c.status AS cstatus, c.kind
         FROM checklist_tasks t JOIN checklists c ON c.tenant_id=t.tenant_id AND c.id=t.checklist_id WHERE t.tenant_id=$1 AND t.id=$2 FOR UPDATE OF t`, [a.tenantId, id])).rows[0];
       if (!t) throw notFound('Task not found');
+      await requireFeature(db, a.tenantId, featureFor(t.kind));
       const emp = (await loadEmp(db, a.tenantId, t.employee_id))!;
       if (!canActOnTask(t.owner, emp, { userId: a.user.userId, permissions: a.user.permissions })) throw notFound('Task not found');
       if (t.cstatus !== 'open' && action !== 'reopen') throw conflict(`This checklist is ${t.cstatus}`);
@@ -314,6 +320,7 @@ export async function lifecycleRoutes(app: FastifyInstance) {
   });
 
   async function loadSeparation(db: Db, a: TenantActor, id: string, lock = false) {
+    await requireFeature(db, a.tenantId, OFF);
     const s = (await db.query<{ id: string; employee_id: string; status: string; initiated_by: string; approved_lwd: string | null; requested_lwd: string; notice_date: string; kind: string }>(
       `SELECT id, employee_id, status, initiated_by, approved_lwd::text, requested_lwd::text, notice_date::text, kind FROM separations WHERE tenant_id=$1 AND id=$2${lock ? ' FOR UPDATE' : ''}`, [a.tenantId, id])).rows[0];
     if (!s) throw notFound('Separation not found');

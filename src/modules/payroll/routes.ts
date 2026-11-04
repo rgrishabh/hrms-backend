@@ -1,6 +1,6 @@
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
-import { tenantActor, tenantActorAny, requireFeature, type TenantActor } from '../../core/http/context.js';
+import { tenantActor, tenantActorAny, requireFeature, type TenantActor, gateFeatures } from '../../core/http/context.js';
 import { audit } from '../../core/audit/audit.js';
 import { badRequest, conflict, forbidden, notFound } from '../../core/http/errors.js';
 import { IsoDate, Uuid } from '../../core/http/pagination.js';
@@ -30,6 +30,7 @@ async function loadRun(db: Db, a: TenantActor, id: string, lock = false) {
 }
 
 export async function payrollRoutes(app: FastifyInstance) {
+  gateFeatures(app, 'payroll');
   const cipher = app.deps.cipher;
 
   // ------------------------------------------------------------ approvals
@@ -201,6 +202,7 @@ export async function payrollRoutes(app: FastifyInstance) {
     const b = RuleBody.parse(req.body);
     const params = checkRule(b);
     return a.tx(async (db) => {
+      await requireFeature(db, a.tenantId, 'payroll.statutory');
       const r = await db.query(`UPDATE statutory_rules SET kind=$3, scope=$4, effective_from=$5, effective_to=$6, params=$7, source_reference=$8, created_by=$9 WHERE tenant_id=$1 AND id=$2 AND status='draft'`,
         [a.tenantId, id, b.kind, b.scope, b.effectiveFrom, b.effectiveTo, JSON.stringify(params), b.sourceReference, a.user.userId]);
       if (!r.rowCount) throw conflict('Only draft rules can be edited; retire and replace an active rule');
@@ -213,6 +215,7 @@ export async function payrollRoutes(app: FastifyInstance) {
     const a = tenantActor(req, 'payroll.statutory');
     const { id } = z.object({ id: Uuid }).parse(req.params);
     return a.tx(async (db) => {
+      await requireFeature(db, a.tenantId, 'payroll.statutory');
       const r = (await db.query<{ created_by: string; status: string; kind: RuleKind; scope: string; effective_from: string }>(`SELECT created_by, status, kind, scope, effective_from::text FROM statutory_rules WHERE tenant_id=$1 AND id=$2 FOR UPDATE`, [a.tenantId, id])).rows[0];
       if (!r) throw notFound();
       if (r.status !== 'draft') throw conflict(`Rule is ${r.status}`);
@@ -229,6 +232,7 @@ export async function payrollRoutes(app: FastifyInstance) {
     const a = tenantActor(req, 'payroll.statutory');
     const { id } = z.object({ id: Uuid }).parse(req.params);
     return a.tx(async (db) => {
+      await requireFeature(db, a.tenantId, 'payroll.statutory');
       const r = await db.query(`UPDATE statutory_rules SET status='retired' WHERE tenant_id=$1 AND id=$2 AND status IN ('draft','active')`, [a.tenantId, id]);
       if (!r.rowCount) throw notFound();
       await audit(db, { ...a.auditBase, action: 'payroll.rule_retired', category: 'configuration', targetType: 'statutory_rule', targetId: id });
@@ -482,7 +486,9 @@ export async function payrollRoutes(app: FastifyInstance) {
     return a.tx(async (db) => {
       const p = (await db.query<{ employee_id: string; status: string; hold: boolean }>(`SELECT i.employee_id, r.status, i.hold FROM payroll_items i JOIN payroll_runs r ON r.tenant_id=i.tenant_id AND r.id=i.run_id WHERE i.tenant_id=$1 AND i.id=$2`, [a.tenantId, id])).rows[0];
       const own = !!p && p.employee_id === a.user.employeeId && a.has('payslips.self') && ['finalized', 'paid'].includes(p.status) && !p.hold;
-      if (!p || !(own || a.has('payroll.read') || a.has('payroll.manage'))) throw notFound('Payslip not found');
+      const admin = a.has('payroll.read') || a.has('payroll.manage');
+      if (!p || !(own || admin)) throw notFound('Payslip not found');
+      if (!admin) await requireFeature(db, a.tenantId, 'payroll.payslips');
       const d = (await db.query(`SELECT r.period, r.kind, i.days_in_period, i.employed_days, i.lop_days, i.paid_days, i.lines, i.gross, i.deductions, i.net,
           e.employee_code, trim(e.first_name||' '||coalesce(e.last_name,'')) AS name, e.designation, e.date_of_joining::text, d.name AS department, b.name AS branch, le.name AS legal_entity,
           s.uan, s.pan_last4, ba.account_last4, ba.ifsc

@@ -1,6 +1,6 @@
 import type { FastifyInstance, FastifyRequest } from 'fastify';
 import { z } from 'zod';
-import { tenantActor, tenantActorAny, requireFeature, type TenantActor } from '../../core/http/context.js';
+import { tenantActor, tenantActorAny, requireFeature, type TenantActor, gateFeatures } from '../../core/http/context.js';
 import { audit } from '../../core/audit/audit.js';
 import { AppError, badRequest, conflict, forbidden, notFound } from '../../core/http/errors.js';
 import { IsoDate, PageQuery, offsetOf, paged, Uuid } from '../../core/http/pagination.js';
@@ -47,6 +47,7 @@ function notSelf(a: TenantActor, employeeId: string, what: string) {
 }
 
 export async function competencyRoutes(app: FastifyInstance) {
+  gateFeatures(app, 'training');
   registerApprovalHandler('lab_authorization', {
     feature: 'lab.competency', label: 'Technical authorization', requesterLink: '/competency',
     async onApproved(db, tenantId, id, actorId) {

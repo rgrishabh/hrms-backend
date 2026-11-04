@@ -1,6 +1,6 @@
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
-import { tenantActor, requireFeature } from '../../core/http/context.js';
+import { tenantActor, requireFeature, gateFeatures } from '../../core/http/context.js';
 import { audit } from '../../core/audit/audit.js';
 import { badRequest, conflict, notFound } from '../../core/http/errors.js';
 import { IsoDate, PageQuery, offsetOf, paged, Uuid } from '../../core/http/pagination.js';
@@ -24,6 +24,7 @@ export async function openAssets(db: Db, tenantId: string, employeeId: string) {
 }
 
 export async function assetRoutes(app: FastifyInstance) {
+  gateFeatures(app, 'assets');
   app.get('/', async (req) => {
     const a = tenantActor(req, 'assets.manage');
     const q = PageQuery.extend({ search: z.string().trim().max(100).optional(), status: z.string().max(20).optional(), category: z.enum(CATEGORIES).optional(), calibrationWithinDays: z.coerce.number().int().min(0).max(365).optional() }).parse(req.query);

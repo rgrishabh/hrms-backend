@@ -1,6 +1,6 @@
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
-import { tenantActor, tenantActorAny, requireFeature, type TenantActor } from '../../core/http/context.js';
+import { tenantActor, tenantActorAny, requireFeature, type TenantActor, gateFeatures } from '../../core/http/context.js';
 import { audit } from '../../core/audit/audit.js';
 import { badRequest, conflict, forbidden, notFound } from '../../core/http/errors.js';
 import { IsoDate, PageQuery, offsetOf, paged, Uuid } from '../../core/http/pagination.js';
@@ -33,6 +33,7 @@ async function assertCanViewEmployee(db: Db, a: TenantActor, employeeId: string)
 }
 
 export async function attendanceRoutes(app: FastifyInstance) {
+  gateFeatures(app, 'attendance');
   // Regularization approval effects.
   registerApprovalHandler('attendance_regularization', {
     feature: 'attendance.regularization', label: 'Attendance correction', requesterLink: '/attendance/me',
@@ -251,7 +252,7 @@ export async function attendanceRoutes(app: FastifyInstance) {
   // ------------------------------------------------------------ shifts
   app.get('/shifts', async (req) => {
     const a = tenantActorAny(req, 'attendance.configure', 'attendance.read', 'attendance.self');
-    return a.tx(async (db) => ({ items: (await db.query(`SELECT id, code, name, start_time::text, end_time::text, break_minutes, grace_minutes, early_exit_grace_minutes,
+    return a.tx(async (db) => (await requireFeature(db, a.tenantId, 'shifts'), { items: (await db.query(`SELECT id, code, name, start_time::text, end_time::text, break_minutes, grace_minutes, early_exit_grace_minutes,
       half_day_min_minutes, full_day_min_minutes, overtime_after_minutes, status, end_time <= start_time AS overnight FROM shifts WHERE tenant_id=$1 ORDER BY code`, [a.tenantId])).rows }));
   });
 
@@ -311,7 +312,7 @@ export async function attendanceRoutes(app: FastifyInstance) {
   app.get('/holidays', async (req) => {
     const a = tenantActor(req);
     const q = z.object({ year: z.coerce.number().int().min(2000).max(2100) }).parse(req.query);
-    return a.tx(async (db) => ({ items: (await db.query(`SELECT h.id, h.holiday_date, h.name, h.optional, h.branch_id, b.name AS branch_name
+    return a.tx(async (db) => (await requireFeature(db, a.tenantId, 'holidays'), { items: (await db.query(`SELECT h.id, h.holiday_date, h.name, h.optional, h.branch_id, b.name AS branch_name
       FROM holidays h LEFT JOIN branches b ON b.tenant_id=h.tenant_id AND b.id=h.branch_id
       WHERE h.tenant_id=$1 AND extract(year FROM h.holiday_date)=$2 ORDER BY h.holiday_date`, [a.tenantId, q.year])).rows }));
   });
@@ -333,6 +334,7 @@ export async function attendanceRoutes(app: FastifyInstance) {
     const a = tenantActor(req, 'attendance.configure');
     const { id } = z.object({ id: Uuid }).parse(req.params);
     return a.tx(async (db) => {
+      await requireFeature(db, a.tenantId, 'holidays');
       const h = await db.query<{ holiday_date: string }>('SELECT holiday_date FROM holidays WHERE tenant_id=$1 AND id=$2', [a.tenantId, id]);
       if (!h.rowCount) throw notFound();
       if ((await lockedDates(db, a.tenantId, h.rows[0]!.holiday_date, h.rows[0]!.holiday_date)).size) throw conflict('This date is in a locked attendance period');

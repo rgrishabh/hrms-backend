@@ -128,9 +128,12 @@ export async function tenantAdminRoutes(app: FastifyInstance, opts: { publicConf
   // ------------------------------------------------------------ users & roles
   app.get('/roles', async (req) => {
     const a = tenantActorAny(req, 'users.manage', 'settings.read');
+    // `grantable`: whether this user may grant or remove the role (the same rule assertMayGrant enforces).
+    const grantable = (key: string, perms: readonly string[]) => isAdministrator(a) || (key !== 'tenant_admin' && perms.every((p) => a.user.permissions.has(p)));
     return a.tx(async (db) => ({
-      system: SYSTEM_ROLES.map((r) => ({ key: r.key, name: r.name, permissions: r.permissions })),
-      custom: (await db.query('SELECT key, name, permissions FROM tenant_roles WHERE tenant_id=$1 ORDER BY name', [a.tenantId])).rows,
+      system: SYSTEM_ROLES.map((r) => ({ key: r.key, name: r.name, permissions: r.permissions, grantable: grantable(r.key, r.permissions) })),
+      custom: (await db.query<{ key: string; name: string; permissions: string[] }>('SELECT key, name, permissions FROM tenant_roles WHERE tenant_id=$1 ORDER BY name', [a.tenantId])).rows
+        .map((r) => ({ ...r, grantable: grantable(r.key, r.permissions) })),
       permissions: Object.entries(PERMISSIONS).map(([key, label]) => ({ key, label })),
     }));
   });
