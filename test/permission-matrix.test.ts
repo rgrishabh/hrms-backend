@@ -15,9 +15,9 @@ import { runSchedules } from '../src/modules/reports/service.js';
  * salary and bank number nobody else has, and each answer is searched for them: a denied read must not contain them in any form.
  */
 type Mode = 'single' | 'single_hr' | 'multi';
-interface Persona { key: string; roles: string[]; stored?: number; level: number; login?: boolean; payroll?: boolean; bank?: boolean; loans?: boolean; hrL3?: boolean; employeesRead?: boolean; auditRead?: boolean; accounting?: boolean; pay?: boolean; chain?: boolean }
+interface Persona { key: string; roles: string[]; stored?: number; level: number; login?: boolean; payroll?: boolean; bank?: boolean; loans?: boolean; hrL3?: boolean; employeesRead?: boolean; auditRead?: boolean; accounting?: boolean; pay?: boolean; chain?: boolean; manage?: boolean; compensation?: boolean }
 
-const OWNER: Pick<Persona, 'payroll' | 'bank' | 'loans' | 'hrL3' | 'employeesRead' | 'auditRead' | 'accounting' | 'pay' | 'chain'> = { payroll: true, bank: true, loans: true, hrL3: true, employeesRead: true, auditRead: true, accounting: true, pay: true, chain: true };
+const OWNER: Pick<Persona, 'payroll' | 'bank' | 'loans' | 'hrL3' | 'employeesRead' | 'auditRead' | 'accounting' | 'pay' | 'chain' | 'manage' | 'compensation'> = { payroll: true, bank: true, loans: true, hrL3: true, employeesRead: true, auditRead: true, accounting: true, pay: true, chain: true, manage: true, compensation: true };
 const PEOPLE: Record<Mode, Persona[]> = {
   single: [
     { key: 'owner', roles: ['owner', 'employee'], level: 100, ...OWNER },
@@ -35,14 +35,14 @@ const PEOPLE: Record<Mode, Persona[]> = {
   multi: [
     { key: 'owner', roles: ['owner', 'employee'], level: 100, payroll: true, bank: true, loans: true, hrL3: false, employeesRead: true, auditRead: true, chain: true },
     { key: 'super', roles: ['tenant_admin', 'employee'], level: 90, payroll: true, bank: true, loans: true, employeesRead: true, auditRead: true, chain: true },
-    { key: 'seniorPayroll', roles: ['payroll_manager', 'employee'], stored: 85, level: 85, payroll: true, bank: true, loans: true, employeesRead: true, accounting: true, pay: true },
+    { key: 'seniorPayroll', roles: ['payroll_manager', 'employee'], stored: 85, level: 85, payroll: true, bank: true, loans: true, employeesRead: true, accounting: true, pay: true, manage: true },
     { key: 'it', roles: ['it_admin', 'employee'], level: 60 },
     // A misconfigured level cannot lift HR over an administrator, and a low one cannot put them under their floor.
-    { key: 'hrCapped', roles: ['hr_admin', 'employee'], stored: 99, level: 59, payroll: true, bank: true, loans: true, hrL3: true, employeesRead: true, auditRead: true },
-    { key: 'finance', roles: ['finance_manager', 'employee'], level: 50, payroll: true, loans: true, accounting: true, pay: true },
-    { key: 'hrA', roles: ['hr_admin', 'employee'], stored: 1, level: 40, payroll: true, bank: true, loans: true, hrL3: true, employeesRead: true, auditRead: true },
-    { key: 'hrB', roles: ['hr_admin', 'employee'], level: 40, payroll: true, bank: true, loans: true, hrL3: true, employeesRead: true, auditRead: true },
-    { key: 'payroll', roles: ['payroll_manager', 'employee'], level: 40, payroll: true, bank: true, loans: true, employeesRead: true, accounting: true, pay: true },
+    { key: 'hrCapped', roles: ['hr_admin', 'employee'], stored: 99, level: 59, payroll: true, bank: true, loans: true, hrL3: true, employeesRead: true, auditRead: true, compensation: true },
+    { key: 'finance', roles: ['finance_manager', 'employee'], level: 50, payroll: true, loans: true, accounting: true, pay: true, compensation: true },
+    { key: 'hrA', roles: ['hr_admin', 'employee'], stored: 1, level: 40, payroll: true, bank: true, loans: true, hrL3: true, employeesRead: true, auditRead: true, compensation: true },
+    { key: 'hrB', roles: ['hr_admin', 'employee'], level: 40, payroll: true, bank: true, loans: true, hrL3: true, employeesRead: true, auditRead: true, compensation: true },
+    { key: 'payroll', roles: ['payroll_manager', 'employee'], level: 40, payroll: true, bank: true, loans: true, employeesRead: true, accounting: true, pay: true, manage: true },
     { key: 'hrExec', roles: ['hr_executive', 'employee'], level: 30, hrL3: true, employeesRead: true },
     { key: 'auditor', roles: ['auditor', 'employee'], level: 30, payroll: true, loans: true, employeesRead: true, auditRead: true },
     { key: 'manager', roles: ['reporting_manager', 'employee'], level: 10 },
@@ -51,16 +51,17 @@ const PEOPLE: Record<Mode, Persona[]> = {
     { key: 'nologin', roles: [], level: 0, login: false },
   ],
 };
-const FLAGS = 'default,payroll,payroll.payslips,payroll.statutory,loans,salary_advance,reports.advanced,accounting_exports,expenses';
+const FLAGS = 'default,payroll,payroll.payslips,payroll.statutory,loans,salary_advance,reports.advanced,accounting_exports,expenses,recruitment,core.offboarding';
 const PERIOD = '2026-01';
 
 interface Subject extends Persona { employeeId: string; userId: string | null; code: string; gross: number; figure: string; account: string; uan: string; itemId: string; loanId: string; docId: string; phone: string }
-interface World { app: FastifyInstance; host: string; tenantId: string; runId: string; subjects: Record<string, Subject>; clients: Record<string, Client>; root: string }
+interface Hiring { requisitionId: string; candidateId: string; applicationId: string; budget: string; expected: string; offer: string }
+interface World { app: FastifyInstance; host: string; tenantId: string; runId: string; releasedRunId: string; subjects: Record<string, Subject>; clients: Record<string, Client>; root: string; hiring: Hiring }
 
 async function build(mode: Mode, env: Record<string, string> = {}): Promise<World> {
   const root = await mkdtemp(path.join(tmpdir(), 'hrms-matrix-'));
   setStore(new LocalStore(root));
-  const app = await makeApp({ ...flags(FLAGS), ORG_MANAGEMENT_MODE: mode, ...env }, { storeOverride: true });
+  const app = await makeApp({ ...flags(FLAGS), ORG_MANAGEMENT_MODE: mode, RATE_LIMIT_PER_MINUTE: '100000', ...env }, { storeOverride: true });
   const slug = 'm' + randomBytes(5).toString('hex'); const host = `${slug}.test`;
   const q = ownerQuery;
   const [t] = await q<{ id: string }>(`INSERT INTO tenants (slug, name) VALUES ($1,$1) RETURNING id`, [slug]);
@@ -108,10 +109,25 @@ async function build(mode: Mode, env: Record<string, string> = {}): Promise<Worl
       [tid, cat!.id, s.employeeId, key, creator, createHash('sha256').update(`%PDF secret of ${s.key}`).digest('hex')]);
     s.docId = d!.id;
   }
+  for (const s of Object.values(subjects)) {
+    await q(`INSERT INTO separations (tenant_id, employee_id, kind, reason, notice_date, requested_lwd, notice_days_required, status, initiated_by) VALUES ($1,$2,'resignation','Fixture reason','2026-01-01','2026-01-31',30,'approved',$3)`, [tid, s.employeeId, creator]);
+  }
+  const [rel] = await q<{ id: string }>(`INSERT INTO payroll_runs (tenant_id, legal_entity_id, period, created_by, totals_enc) VALUES ($1,$2,'2025-12',$3,$4) RETURNING id`, [tid, le!.id, creator, seal({ employees: 2, gross: 1, deductions: 0, net: 1, employerCost: 1, held: 0 })]);
+  for (const key of [people[0]!.key, people[people.length - 1]!.key]) {
+    const s = subjects[key]!;
+    await q(`INSERT INTO payroll_items (tenant_id, run_id, employee_id, days_in_period, employed_days, paid_days, data_enc, calc_version, hold_released_at) VALUES ($1,$2,$3,31,31,31,$4,6,now())`,
+      [tid, rel!.id, s.employeeId, seal({ lines: [{ code: 'BASIC', name: 'Basic', kind: 'earning', amount: s.gross }], gross: s.gross, deductions: 0, net: s.gross, employerCost: s.gross, warnings: [] })]);
+  }
+  await q(`UPDATE payroll_runs SET status='finalized', computed_at=now(), finalized_at=now() WHERE id=$1`, [rel!.id]);
+  const hiring = { budget: '7654321', expected: '6543217', offer: '5432176' };
+  const [rq] = await q<{ id: string }>(`INSERT INTO job_requisitions (tenant_id, number, title, legal_entity_id, branch_id, employment_type, justification, budget_ctc_max, status, created_by) VALUES ($1,1,'Analyst',$2,$3,'permanent','Fixture need',$4,'approved',$5) RETURNING id`, [tid, le!.id, br!.id, hiring.budget, creator]);
+  const [cd] = await q<{ id: string }>(`INSERT INTO candidates (tenant_id, first_name, source, expected_ctc, created_by, consent_at, consent_note, retain_until) VALUES ($1,'Cand','referral',$2,$3,now(),'Fixture','2030-01-01') RETURNING id`, [tid, hiring.expected, creator]);
+  const [ap] = await q<{ id: string }>(`INSERT INTO job_applications (tenant_id, requisition_id, candidate_id, stage, created_by) VALUES ($1,$2,$3,'offer',$4) RETURNING id`, [tid, rq!.id, cd!.id, creator]);
+  await q(`INSERT INTO job_offers (tenant_id, application_id, designation, legal_entity_id, branch_id, employment_type, annual_ctc, joining_date, created_by) VALUES ($1,$2,'Analyst',$3,$4,'permanent',$5,'2026-06-01',$6)`, [tid, ap!.id, le!.id, br!.id, hiring.offer, creator]);
   await q(`UPDATE payroll_runs SET status='paid', computed_at=now(), finalized_at=now(), paid_at=now() WHERE id=$1`, [run!.id]);
   const clients: Record<string, Client> = {};
   for (const p of people) if (p.login !== false) clients[p.key] = await Client.login(app, host, `${p.key.toLowerCase()}@${host}`);
-  return { app, host, tenantId: tid, runId: run!.id, subjects, clients, root };
+  return { app, host, tenantId: tid, runId: run!.id, releasedRunId: rel!.id, subjects, clients, root, hiring: { requisitionId: rq!.id, candidateId: cd!.id, applicationId: ap!.id, ...hiring } };
 }
 
 const mayL4 = (v: Persona, s: Persona, perm: boolean | undefined) => v.key === s.key || (!!perm && v.level > s.level);
@@ -207,6 +223,94 @@ for (const mode of ['single', 'single_hr', 'multi'] as const) {
           expect(r.json().error.details.hiddenSubjects).toBe(everyone.filter((sp) => !mayL4(v, sp, true)).length);
           for (const sp of everyone) expect(leaks(r.body, w.subjects[sp.key]!)).toBe(false);
         }
+      }
+    });
+
+    // The file for pay released after a hold covers only the people released: a later run, with the highest person and the lowest.
+    it.each(viewers.map((v) => [v.key, v] as const))('L4 bank-released file is whole or refused, as %s', async (_k, v) => {
+      const top = everyone[0]!; const bottom = everyone[everyone.length - 1]!;
+      const r = await w.clients[v.key]!.get(`/api/v1/payroll/runs/${w.releasedRunId}/bank-released.csv`);
+      if (!v.payroll) { expect(r.statusCode).toBe(403); return; }
+      const whole = mayL4(v, top, true) && mayL4(v, bottom, true);
+      expect(r.statusCode, `${v.key}: ${r.body}`).toBe(whole ? 200 : 403);
+      if (whole) {
+        for (const sp of everyone) {
+          const s = w.subjects[sp.key]!;
+          if (sp !== top && sp !== bottom) expect(r.body.includes(s.code), sp.key).toBe(false);
+          else { expect(r.body.includes(s.code), sp.key).toBe(true); expect(r.body.includes(s.account), `${v.key} account of ${sp.key}`).toBe(!!v.bank); }
+        }
+      } else {
+        expect(r.json().error.code).toBe('requires_higher_level');
+        for (const sp of everyone) expect(leaks(r.body, w.subjects[sp.key]!)).toBe(false);
+      }
+    });
+
+    it.each(viewers.map((v) => [v.key, v] as const))('L4 F&F suggestions: subject out of reach is 404, masked until revealed, as %s', async (_k, v) => {
+      for (const sp of everyone) {
+        const s = w.subjects[sp.key]!;
+        const url = `/api/v1/payroll/fnf-suggestions/${s.employeeId}`;
+        const [masked, shown] = [await w.clients[v.key]!.get(url), await w.clients[v.key]!.get(`${url}?reveal=1`)];
+        const label = `${v.key} -> ${sp.key}`;
+        if (!v.manage) { expect(masked.statusCode, label).toBe(403); expect(shown.statusCode, label).toBe(403); continue; }
+        const allowed = mayL4(v, sp, true);
+        expect(shown.statusCode, `${label}: ${shown.body}`).toBe(allowed ? 200 : 404);
+        expect(masked.statusCode, label).toBe(allowed ? 200 : 404);
+        expect(leaks(masked.body, s), `${label} masked`).toBe(false);
+        expect(shown.body.includes(s.figure), `${label} revealed`).toBe(allowed);
+        if (allowed) { expect(masked.json().masked).toBe(true); expect(masked.json().salary).toBeNull(); }
+      }
+    });
+
+    it.each(viewers.map((v) => [v.key, v] as const))('L4 accounting sources show totals of who is below, masked until revealed, as %s', async (_k, v) => {
+      const c = w.clients[v.key]!;
+      const r = await c.get('/api/v1/accounting/sources?reveal=1');
+      if (!v.accounting) { expect(r.statusCode, v.key).toBe(403); return; }
+      expect(r.statusCode, r.body).toBe(200);
+      const visible = everyone.filter((sp) => mayL4(v, sp, true));
+      const run = (r.json().runs as { id: string; totals: { gross: number }; excluded: number }[]).find((x) => x.id === w.runId)!;
+      expect(run.excluded).toBe(everyone.length - visible.length);
+      expect(run.totals.gross).toBe(visible.reduce((t, sp) => t + w.subjects[sp.key]!.gross, 0));
+      for (const sp of everyone.filter((x) => !visible.includes(x))) expect(leaks(r.body, w.subjects[sp.key]!), `${v.key} -> ${sp.key}`).toBe(false);
+      const masked = (await c.get('/api/v1/accounting/sources')).json().runs.find((x: { id: string }) => x.id === w.runId);
+      expect(masked.totals).toBeNull();
+      expect(masked.maskedFields).toEqual(['totals']);
+    });
+
+    it.each(viewers.map((v) => [v.key, v] as const))('L4 department overview adds up who is below, by level, in the report and its export, as %s', async (_k, v) => {
+      const c = w.clients[v.key]!;
+      const q = 'from=2026-01-01&to=2026-01-31';
+      const r = await c.get(`/api/v1/reports/department_overview?${q}&reveal=1`);
+      const file = await c.get(`/api/v1/reports/department_overview/export.csv?${q}`);
+      if (!v.employeesRead) { expect(r.statusCode, v.key).toBe(403); expect(file.statusCode, v.key).toBe(403); return; }
+      expect(r.statusCode, r.body).toBe(200);
+      const row = (r.json().rows as Record<string, unknown>[])[0]!;
+      for (const sp of everyone) expect(leaks(file.body, w.subjects[sp.key]!) && !mayL4(v, sp, true), `${v.key} export shows ${sp.key}`).toBe(false);
+      if (!v.payroll) { expect('payroll_gross' in row, v.key).toBe(false); expect(file.body.includes('Payroll gross')).toBe(false); return; }
+      const visible = everyone.filter((sp) => mayL4(v, sp, true));
+      const hidden = everyone.length - visible.length;
+      expect(r.json().excluded).toBe(hidden);
+      expect(file.headers['x-excluded-subjects']).toBe(String(hidden));
+      const sum = visible.reduce((t, sp) => t + w.subjects[sp.key]!.gross, 0);
+      if (hidden && visible.length < 3) { expect(row.payroll_gross, v.key).toBeNull(); expect(file.body.includes(String(sum)), v.key).toBe(false); }
+      else { expect(Number(row.payroll_gross), v.key).toBe(sum); expect(file.body.includes(String(sum)), v.key).toBe(true); }
+      const masked = await c.get(`/api/v1/reports/department_overview?${q}`);
+      expect((masked.json().rows as Record<string, unknown>[])[0]!.payroll_gross).toBeNull();
+      expect(masked.body.includes(String(sum))).toBe(false);
+    });
+
+    it.each(viewers.map((v) => [v.key, v] as const))('L4 recruitment figures: the compensation permission, then masked until revealed, as %s', async (_k, v) => {
+      const c = w.clients[v.key]!; const h = w.hiring;
+      const paths: [string, string][] = [['/recruitment/requisitions', h.budget], [`/recruitment/requisitions/${h.requisitionId}`, h.budget], ['/recruitment/candidates', h.expected], [`/recruitment/candidates/${h.candidateId}`, h.expected], [`/recruitment/applications/${h.applicationId}`, h.offer]];
+      for (const [path, figure] of paths) {
+        const masked = await c.get(`/api/v1${path}`);
+        expect(masked.body.includes(figure), `${v.key} ${path} without reveal`).toBe(false);
+        const shown = await c.get(`/api/v1${path}?reveal=1`);
+        // A reader with the compensation permission must really get an answer here, or this test proves nothing.
+        if (mode === 'multi' && v.key === 'hrA') expect(shown.statusCode, path).toBe(200);
+        if (shown.statusCode !== 200) { expect(shown.body.includes(figure)).toBe(false); continue; }
+        // The list of candidates never carries a figure, whoever asks.
+        const carries = !!v.compensation && path !== '/recruitment/candidates';
+        expect(shown.body.includes(figure), `${v.key} ${path} with reveal`).toBe(carries);
       }
     });
 
@@ -404,12 +508,27 @@ describe('permission matrix: named negatives', () => {
     expect(body.statusCode, body.body).toBe(200);
     const mine = PEOPLE.multi.filter((p) => p.level < 40 || p.key === 'payroll');
     expect(Number(body.json().totals.gross)).toBe(mine.reduce((t, p) => t + s[p.key]!.gross, 0));
-    const stored = await ownerQuery<{ recipient_ids: string[]; viewer_level: number; data_enc: string }>(`SELECT recipient_ids, viewer_level, data_enc FROM report_snapshots WHERE tenant_id=$1`, [w.tenantId]);
+    const stored = await ownerQuery<{ id: string; recipient_ids: string[]; viewer_level: number; data_enc: string }>(`SELECT id, recipient_ids, viewer_level, data_enc FROM report_snapshots WHERE tenant_id=$1`, [w.tenantId]);
     expect(stored).toHaveLength(2);
     for (const x of stored) { expect(x.recipient_ids).toHaveLength(1); expect(x.data_enc.startsWith('v2.')).toBe(true); }
     // The higher copy is not the lower reader's to open.
     const other = stored.find((x) => x.viewer_level === 85)!;
     expect(other.recipient_ids[0]).toBe(s.seniorPayroll!.userId);
+    // Exports of a snapshot: the reader's own copy at their level, nobody else's, and not after their level has dropped.
+    const sum = String(mine.reduce((t, p) => t + s[p.key]!.gross, 0));
+    for (const format of ['csv', 'xlsx']) {
+      const own = await w.clients.payroll!.get(`/api/v1/reports/snapshots/${snap.id}/export.${format}`);
+      expect(own.statusCode, own.body).toBe(200);
+      if (format === 'csv') { expect(own.body.includes(sum)).toBe(true); for (const p of PEOPLE.multi.filter((x) => x.level >= 40 && x.key !== 'payroll')) expect(leaks(own.body, s[p.key]!)).toBe(false); }
+      expect((await w.clients.payroll!.get(`/api/v1/reports/snapshots/${other.id}/export.${format}`)).statusCode).toBe(404);
+      expect((await w.clients.super!.get(`/api/v1/reports/snapshots/${snap.id}/export.${format}`)).statusCode).toBe(404);
+      expect((await w.clients.employee!.get(`/api/v1/reports/snapshots/${other.id}/export.${format}`)).statusCode).toBe(404);
+      expect((await w.clients.seniorPayroll!.get(`/api/v1/reports/snapshots/${other.id}/export.${format}`)).statusCode).toBe(200);
+    }
+    await ownerQuery(`UPDATE users SET salary_access_level=0 WHERE id=$1`, [s.seniorPayroll!.userId]);
+    const dropped = await Client.login(w.app, w.host, `seniorpayroll@${w.host}`);
+    expect((await dropped.get(`/api/v1/reports/snapshots/${other.id}/export.csv`)).statusCode).toBe(404);
+    await ownerQuery(`UPDATE users SET salary_access_level=85 WHERE id=$1`, [s.seniorPayroll!.userId]);
   });
 });
 
@@ -421,6 +540,7 @@ describe('permission matrix: flags and settings', () => {
       expect((await w.clients.owner!.get(`/api/v1/payroll/employees/${w.subjects.employee!.employeeId}/salaries?reveal=1`)).statusCode).toBe(404);
       expect((await w.clients.owner!.get(`/api/v1/reports/payroll_cost?reveal=1`)).statusCode).toBe(404);
       expect((await w.clients.owner!.get(`/api/v1/loans/requests?reveal=1`)).statusCode).toBe(404);
+      for (const format of ['csv', 'xlsx']) expect((await w.clients.owner!.get(`/api/v1/reports/snapshots/${w.runId}/export.${format}`)).statusCode, format).toBe(404);
       expect((await w.clients.owner!.get(`/api/v1/employees/${w.subjects.employee!.employeeId}`)).statusCode).toBe(200);
       const b = await w.clients.super!.get(`/api/v1/employees/${w.subjects.employee!.employeeId}/bank-account?reveal=1`);
       expect(b.statusCode, b.body).toBe(200);
