@@ -460,7 +460,31 @@ const departmentOverview: ReportDef = {
   },
 };
 
-export const REPORTS: readonly ReportDef[] = [headcount, attrition, joinersLeavers, attendance, leaveTaken, leaveBalances, payrollCost, expenses, trainingExpiry, authorizationReviews, departmentOverview];
+const missingDetails: ReportDef = {
+  key: 'missing_personal_details', name: 'Missing personal details', category: 'People',
+  description: 'Current employees without an emergency contact, a current or permanent address, or (with statutory payroll) a provident fund nominee, and changes awaiting HR approval.',
+  access: { all: ['employees.read'] },
+  params: [],
+  async run(c) {
+    const pf = c.usable('payroll.statutory');
+    const columns: Column[] = [{ key: 'employee_code', label: 'Code', type: 'text' }, { key: 'name', label: 'Name', type: 'text' },
+      { key: 'department', label: 'Department', type: 'text' }, { key: 'branch', label: 'Branch', type: 'text' }, { key: 'missing', label: 'Missing', type: 'text' },
+      { key: 'awaiting', label: 'Awaiting approval', type: 'text' }];
+    const rows = (await c.db.query(`SELECT * FROM (SELECT e.employee_code, ${EMP_NAME} AS name, ${DEPT} AS department, b.name AS branch,
+        concat_ws(', ',
+          CASE WHEN NOT EXISTS (SELECT 1 FROM employee_emergency_contacts x WHERE x.tenant_id=e.tenant_id AND x.employee_id=e.id) THEN 'Emergency contact' END,
+          CASE WHEN NOT EXISTS (SELECT 1 FROM employee_addresses x WHERE x.tenant_id=e.tenant_id AND x.employee_id=e.id AND x.kind='current') THEN 'Current address' END,
+          CASE WHEN NOT EXISTS (SELECT 1 FROM employee_addresses x WHERE x.tenant_id=e.tenant_id AND x.employee_id=e.id AND x.kind='permanent') THEN 'Permanent address' END,
+          CASE WHEN $3 AND NOT EXISTS (SELECT 1 FROM employee_nominees x WHERE x.tenant_id=e.tenant_id AND x.employee_id=e.id AND x.purpose='pf') THEN 'PF nominee' END) AS missing,
+        (SELECT string_agg(CASE x.section WHEN 'nominees' THEN 'Nominees' WHEN 'education' THEN 'Education' ELSE 'Previous employment' END, ', ' ORDER BY x.section)
+           FROM employee_profile_changes x WHERE x.tenant_id=e.tenant_id AND x.employee_id=e.id AND x.status='pending') AS awaiting
+      FROM employees e ${EMP_JOINS} WHERE e.tenant_id=$1 AND ${onDate('$2')}) q
+      WHERE q.missing <> '' OR q.awaiting IS NOT NULL ORDER BY q.department, q.name`, [c.tenantId, c.today, pf])).rows;
+    return { columns, rows, totals: null, notes: ['Employees update their own contacts and addresses under My profile; HR can fill them in on the employee record.'] };
+  },
+};
+
+export const REPORTS: readonly ReportDef[] = [headcount, attrition, joinersLeavers, missingDetails, attendance, leaveTaken, leaveBalances, payrollCost, expenses, trainingExpiry, authorizationReviews, departmentOverview];
 export const REPORT_MAP: ReadonlyMap<string, ReportDef> = new Map(REPORTS.map((r) => [r.key, r]));
 
 /** Validate the query against the report's parameters; missing ones take their defaults. */
