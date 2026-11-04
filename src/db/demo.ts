@@ -296,7 +296,15 @@ export async function generateDemo(c: pg.Client | pg.PoolClient, opts: { passwor
     for (const [c2, amt, desc] of items) await q(`INSERT INTO expense_items (tenant_id, claim_id, category_id, expense_date, amount, description) VALUES ($1,$2,$3,$4,$5,$6)`, [tid, cid, cat[c2], addDays(today, -int(2, 10)), amt, desc]);
     await q(`UPDATE expense_claims SET total=(SELECT sum(amount) FROM expense_items WHERE claim_id=$1) WHERE id=$1`, [cid]);
   }
-  say('expenses: 5 categories, 2 draft claims');
+  // Allowances: illustrative policy rates entered by finance (each organization sets its own; none ship with HRMS).
+  for (const [code, name, calc] of [['DAILY_ALLOWANCE', 'Daily allowance (per diem)', 'per_diem'], ['OWN_VEHICLE', 'Own vehicle (mileage)', 'mileage']] as const)
+    cat[code] = (await q<{ id: string }>(`INSERT INTO expense_categories (tenant_id, code, name, requires_receipt, calc) VALUES ($1,$2,$3,false,$4) RETURNING id`, [tid, code, name, calc])).rows[0]!.id;
+  const rateFrom = addDays(today, -60);
+  for (const [kind, tier, grade, vehicle, rate] of [['per_diem', 'METRO', null, null, 1200], ['per_diem', 'OTHER', null, null, 800], ['per_diem', 'METRO', 'L5', null, 1800],
+    ['per_diem', 'OTHER', 'L5', null, 1200], ['mileage', null, null, 'car', 9], ['mileage', null, null, 'two_wheeler', 4]] as const)
+    await q(`INSERT INTO allowance_rates (tenant_id, kind, tier, grade, vehicle, rate, effective_from, note, created_by) VALUES ($1,$2,$3,$4,$5,$6,$7,'Demo policy rate',$8)`,
+      [tid, kind, tier, grade, vehicle, rate, rateFrom, adminId]);
+  say('expenses: 7 categories (incl. per diem and mileage), 6 allowance rates, 2 draft claims');
 
   // ---- travel: the analyst went to Mumbai for the NABL assessor workshop with an advance (the draft claim above is that
   // trip's, so the advance is set off when it is approved); the sampler has a sampling trip next week awaiting the advance.
