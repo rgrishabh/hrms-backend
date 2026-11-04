@@ -13,6 +13,7 @@ import { orgToday } from '../competency/service.js';
 import { KIND_LABEL, balanceOf, closeRepaid, installmentOf, KIND_FEATURE, enabledLoanKinds } from './service.js';
 import { isModuleEnabled } from '../../core/features/state.js';
 import type { Db } from '../../db/tx.js';
+import { money } from '../../core/brand.js';
 
 const READ_ALL = ['loans.read', 'loans.approve', 'loans.manage'];
 const Period = z.string().regex(/^\d{4}-(0[1-9]|1[0-2])$/, 'Use YYYY-MM');
@@ -96,7 +97,7 @@ export async function loanRoutes(app: FastifyInstance) {
       const maxN = await getSettingValue<number>(db, a.tenantId, adv ? 'loans.advance_max_installments' : 'loans.max_installments');
       const maxAmt = await getSettingValue<number | null>(db, a.tenantId, adv ? 'loans.max_advance_amount' : 'loans.max_loan_amount');
       if (b.installments > maxN) throw badRequest(`${KIND_LABEL[b.kind]} can be recovered in at most ${maxN} instalment(s)`);
-      if (maxAmt != null && b.amount > maxAmt) throw badRequest(`${KIND_LABEL[b.kind]} is limited to ₹${maxAmt}`);
+      if (maxAmt != null && b.amount > maxAmt) throw badRequest(`${KIND_LABEL[b.kind]} is limited to ${money(maxAmt)}`);
       const thisMonth = (await orgToday(db, a.tenantId)).slice(0, 7);
       if (b.firstPeriod < thisMonth) throw badRequest('Recovery cannot start in a past month');
       if (await getSettingValue<boolean>(db, a.tenantId, 'loans.one_at_a_time')) {
@@ -111,7 +112,7 @@ export async function loanRoutes(app: FastifyInstance) {
       if (mgr) steps.push({ kind: 'user', userId: mgr });
       steps.push({ kind: 'permission', permission: 'loans.approve' });
       const approvalId = await createApprovalRequest(db, a.tenantId, { entityType: adv ? 'salary_advance' : 'employee_loan', entityId: id, requesterId: a.user.userId,
-        summary: `${e.name}: ${KIND_LABEL[b.kind]!.toLowerCase()} ₹${b.amount} in ${b.installments} instalment(s) from ${b.firstPeriod}`, steps, excludeUserIds: [a.user.userId, e.user_id] });
+        summary: `${e.name}: ${KIND_LABEL[b.kind]!.toLowerCase()} ${money(b.amount)} in ${b.installments} instalment(s) from ${b.firstPeriod}`, steps, excludeUserIds: [a.user.userId, e.user_id] });
       await audit(db, { ...a.auditBase, action: 'loans.requested', targetType: 'employee_loan', targetId: id, metadata: { employeeId: empId, kind: b.kind, amount: b.amount, installments: b.installments, onBehalf: forOther, approvalId } });
       reply.code(201); return { id, installmentAmount: inst };
     });
@@ -172,7 +173,7 @@ export async function loanRoutes(app: FastifyInstance) {
       if (l.employee_id === a.user.employeeId) throw forbidden('You cannot disburse your own advance or loan');
       if (l.status !== 'approved') throw conflict(`Only an approved request can be disbursed (this one is ${l.status})`);
       await db.query(`UPDATE employee_loans SET status='disbursed', disbursed_at=now(), disbursed_by=$3, disbursement_reference=$4 WHERE tenant_id=$1 AND id=$2`, [a.tenantId, id, a.user.userId, b.reference]);
-      if (l.user_id) await notifyUsers(db, a.tenantId, [l.user_id], { kind: 'loans.disbursed', feature: KIND_FEATURE[l.kind], title: `${KIND_LABEL[l.kind]} paid: ₹${new Decimal(l.amount).toFixed(0)}`, body: `Recovered through payroll from ${l.first_period}. Reference ${b.reference}`, link: '/loans' });
+      if (l.user_id) await notifyUsers(db, a.tenantId, [l.user_id], { kind: 'loans.disbursed', feature: KIND_FEATURE[l.kind], title: `${KIND_LABEL[l.kind]} paid: ${money(l.amount)}`, body: `Recovered through payroll from ${l.first_period}. Reference ${b.reference}`, link: '/loans' });
       await audit(db, { ...a.auditBase, action: 'loans.disbursed', targetType: 'employee_loan', targetId: id, metadata: { amount: l.amount, reference: b.reference } });
       return { ok: true };
     });
@@ -202,7 +203,7 @@ export async function loanRoutes(app: FastifyInstance) {
       if (l.employee_id === a.user.employeeId) throw forbidden('You cannot record a repayment of your own loan');
       if (l.status !== 'disbursed') throw conflict(`Repayments are recorded against a disbursed loan (this one is ${l.status})`);
       const bal = await balanceOf(db, a.tenantId, id);
-      if (new Decimal(b.amount).gt(bal.outstanding)) throw badRequest(`Only ₹${new Decimal(bal.outstanding).toFixed(0)} is outstanding${new Decimal(bal.inProgress).gt(0) ? ` (₹${new Decimal(bal.inProgress).toFixed(0)} more is in a payroll run being processed)` : ''}`);
+      if (new Decimal(b.amount).gt(bal.outstanding)) throw badRequest(`Only ${money(bal.outstanding)} is outstanding${new Decimal(bal.inProgress).gt(0) ? ` (${money(bal.inProgress)} more is in a payroll run being processed)` : ''}`);
       await db.query(`INSERT INTO loan_recoveries (tenant_id, loan_id, source, amount, reference, recorded_by) VALUES ($1,$2,'repayment',$3,$4,$5)`, [a.tenantId, id, b.amount, b.reference, a.user.userId]);
       const closed = await closeRepaid(db, a.tenantId, [l.employee_id]);
       await audit(db, { ...a.auditBase, action: 'loans.repaid', targetType: 'employee_loan', targetId: id, metadata: { amount: b.amount, reference: b.reference } });

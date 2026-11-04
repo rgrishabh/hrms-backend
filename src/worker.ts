@@ -25,7 +25,7 @@ const pool = createPool(env.DATABASE_URL, env.DATABASE_POOL_MAX);
 
 let features: ReadonlySet<string>;
 try {
-  ({ features } = initRuntime(env, log));
+  ({ features } = initRuntime(env));
 } catch (e) {
   log.fatal(`Startup failed: ${(e as Error).message}`);
   process.exit(1);

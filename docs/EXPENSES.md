@@ -1,6 +1,6 @@
 # Expenses and reimbursements
 
-Module key: `expenses` (not in `default`; add it to `ENABLED_MODULES` / `enabled_modules`). Receipts use the same storage as documents (`STORAGE_DRIVER`), so storage must be configured.
+Module key: `expenses`, flag `FEATURE_EXPENSE_CLAIMS` (off by default). Receipts use the same storage as documents (`STORAGE_DRIVER`), so storage must be configured.
 
 ## Flow
 

@@ -62,7 +62,7 @@ const CONFIG_CHECKS: Record<string, (db: Db, tenantId: string) => Promise<{ conf
   }),
   'notifications.email': async () => ({
     configured: emailTransportConfigured, operational: 'not_applicable',
-    note: emailTransportConfigured ? undefined : 'Email transport not configured (MAIL_TRANSPORT / SMTP_* deployment settings)',
+    note: emailTransportConfigured ? undefined : 'Email transport not configured (SMTP_HOST deployment setting)',
   }),
   'notifications.push': async () => ({
     configured: pushConfigured, operational: 'not_applicable',

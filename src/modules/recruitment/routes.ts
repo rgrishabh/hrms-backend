@@ -485,7 +485,7 @@ export async function recruitmentRoutes(app: FastifyInstance) {
       for (const u of users) await db.query('INSERT INTO interview_panel (tenant_id, interview_id, user_id) VALUES ($1,$2,$3)', [a.tenantId, iid, u.id]);
       const cand = (await db.query<{ first_name: string; last_name: string | null }>('SELECT first_name, last_name FROM candidates WHERE tenant_id=$1 AND id=$2', [a.tenantId, ap.candidate_id])).rows[0]!;
       await notifyUsers(db, a.tenantId, users.map((u) => u.id), { kind: 'recruitment.interview', title: `Interview: ${fullName(cand)} for ${ap.req_title}`,
-        body: `Round ${b.round} (${b.kind.replace('_', ' ')}) on ${new Date(b.scheduledAt).toISOString().slice(0, 16).replace('T', ' ')} UTC${b.location ? ` — ${b.location}` : ''}. Submit your feedback in HRMS afterwards.`,
+        body: `Round ${b.round} (${b.kind.replace('_', ' ')}) on ${new Date(b.scheduledAt).toISOString().slice(0, 16).replace('T', ' ')} UTC${b.location ? ` — ${b.location}` : ''}. Submit your feedback afterwards.`,
         link: '/recruitment?tab=interviews', actionLabel: 'Open' });
       await audit(db, { ...a.auditBase, action: 'recruitment.interview_scheduled', targetType: 'interview', targetId: iid, metadata: { applicationId: id, round: b.round, panel: users.length } });
       reply.code(201); return { id: iid };

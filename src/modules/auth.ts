@@ -31,11 +31,10 @@ export async function authRoutes(app: FastifyInstance, opts: { publicConfig: Pub
     reply.setCookie(SESSION_COOKIE, token, { httpOnly: true, secure: env.COOKIE_SECURE, sameSite: 'lax', path: '/', expires });
 
   /**
-   * Runtime configuration for the web app: branding, organization identity and
-   * enabled modules from deployment configuration. Public and non-sensitive by
-   * construction (see config/installation.ts). Lets one image serve any customer.
+   * Runtime configuration for the web app: brand, feature flags, mode and MFA from deployment configuration.
+   * Public and non-sensitive by construction (see config/installation.ts). Lets one image serve any customer.
    */
-  app.get('/public/config', async (req, reply) => {
+  app.get('/config/public', async (req, reply) => {
     requireTenantHost(req);
     reply.header('cache-control', 'no-cache');
     return publicConfig;

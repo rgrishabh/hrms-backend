@@ -6,7 +6,7 @@ import { z } from 'zod';
  *
  * Resolution (later layers override earlier ones; constraints always apply):
  *   1. Code default            — `default`
- *   2. Deployment default      — from deployment config (e.g. ORGANIZATION_TIMEZONE)
+ *   2. Deployment default      — from deployment config (e.g. BRAND_TIMEZONE)
  *   3. Organization value      — set by an administrator (tenant_settings scope 'tenant')
  *   4. Branch override         — tenant_settings scope 'branch', only if `scopes` includes 'branch'
  *   Always enforced: immutable constraints (`schema`) and deployment ceilings (`deploymentCeiling`).
@@ -100,16 +100,16 @@ export const SETTINGS: readonly SettingDefinition[] = [
     control: 'number', schema: z.number().int().min(1).max(180), default: 60, scopes: ['tenant'], editPermission: 'travel.manage' }),
   def({ key: 'travel.max_advance_percent', group: 'general', feature: 'travel', label: 'Travel: largest advance (% of the estimate)', description: 'An advance can be at most this share of the trip\'s estimated cost.',
     control: 'number', schema: z.number().int().min(0).max(100), default: 80, scopes: ['tenant'], editPermission: 'travel.manage' }),
-  def({ key: 'travel.finance_approval_above', group: 'general', feature: 'travel', label: 'Travel: finance approves estimates from (₹)', description: 'Trips estimated at or above this also need finance approval. Empty = only trips with an advance, trips abroad and trips of people without a manager.',
+  def({ key: 'travel.finance_approval_above', group: 'general', feature: 'travel', label: 'Travel: finance approves estimates from', description: 'Trips estimated at or above this also need finance approval. Empty = only trips with an advance, trips abroad and trips of people without a manager.',
     control: 'number', schema: z.number().min(0).nullable(), default: null, scopes: ['tenant'], editPermission: 'travel.manage' }),
   // Salary advances and loans (the organization's policy).
   def({ key: 'loans.advance_max_installments', group: 'general', feature: 'salary_advance', label: 'Salary advance: most instalments', description: 'A salary advance is recovered in at most this many monthly instalments.',
     control: 'number', schema: z.number().int().min(1).max(24), default: 3, scopes: ['tenant'], editPermission: 'loans.manage' }),
   def({ key: 'loans.max_installments', group: 'general', feature: 'loans', label: 'Loan: most instalments', description: 'A loan is recovered in at most this many monthly instalments.',
     control: 'number', schema: z.number().int().min(1).max(120), default: 24, scopes: ['tenant'], editPermission: 'loans.manage' }),
-  def({ key: 'loans.max_advance_amount', group: 'general', feature: 'salary_advance', label: 'Salary advance: largest amount (₹)', description: 'Empty = no limit (finance decides at approval).',
+  def({ key: 'loans.max_advance_amount', group: 'general', feature: 'salary_advance', label: 'Salary advance: largest amount', description: 'Empty = no limit (finance decides at approval).',
     control: 'number', schema: z.number().int().positive().nullable(), default: null, scopes: ['tenant'], editPermission: 'loans.manage' }),
-  def({ key: 'loans.max_loan_amount', group: 'general', feature: 'loans', label: 'Loan: largest amount (₹)', description: 'Empty = no limit (finance decides at approval).',
+  def({ key: 'loans.max_loan_amount', group: 'general', feature: 'loans', label: 'Loan: largest amount', description: 'Empty = no limit (finance decides at approval).',
     control: 'number', schema: z.number().int().positive().nullable(), default: null, scopes: ['tenant'], editPermission: 'loans.manage' }),
   def({ key: 'loans.one_at_a_time', group: 'general', feature: ['loans', 'salary_advance'], label: 'One advance and one loan at a time', description: 'Refuse a new salary advance (or loan) while another is pending, approved or not yet repaid.',
     control: 'boolean', schema: z.boolean(), default: true, scopes: ['tenant'], editPermission: 'loans.manage' }),

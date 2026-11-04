@@ -68,7 +68,7 @@ describe('advances and loans', () => {
     expect((await other.get(`/api/v1/loans/requests/${adv}`)).statusCode).toBe(404);
     expect((await emp.get('/api/v1/approvals/inbox')).json().items.some((x: { entity_id: string }) => x.entity_id === adv)).toBe(false);
     const step = await approve(mgr, adv);
-    expect(step.summary).toMatch(/salary advance ₹10000 in 3 instalment\(s\) from/);
+    expect(step.summary).toMatch(/salary advance ₹10,000 in 3 instalment\(s\) from/);
     expect((await loan(adv)).status).toBe('pending');
     await approve(fin, adv);
     expect((await loan(adv)).status).toBe('approved');
@@ -84,7 +84,7 @@ describe('advances and loans', () => {
     expect(loanLines(item)).toEqual([expect.objectContaining({ code: 'LOAN', kind: 'deduction', amount: 3334, name: 'Salary advance recovery (1 of 3)' })]);
     expect(Number(item.net)).toBe(26000 - 3334);
     expect((await loan(adv)).balance).toMatchObject({ outstanding: '6666.00', inProgress: '3334.00', recovered: '0.00' });
-    expect((await pay.post(`/api/v1/loans/requests/${adv}/repayment`, { amount: 7000, reference: 'Cash' })).json().error.message).toMatch(/Only ₹6666 is outstanding \(₹3334 more is in a payroll run/);
+    expect((await pay.post(`/api/v1/loans/requests/${adv}/repayment`, { amount: 7000, reference: 'Cash' })).json().error.message).toMatch(/Only ₹6,666 is outstanding \(₹3,334 more is in a payroll run/);
     expect((await pay.post(`/api/v1/loans/requests/${adv}/repayment`, { amount: 6666, reference: 'Cash receipt 114' })).json()).toMatchObject({ closed: false, outstanding: '0.00' });
     // Finalize the run: then the instalment is recovered and the advance is closed.
     expect((await pay.post('/api/v1/attendance/locks', { periodStart: `${THIS}-01`, periodEnd: lastDay(THIS) })).statusCode).toBeLessThan(300);
@@ -107,7 +107,7 @@ describe('advances and loans', () => {
     const item = await compute(run);
     expect(loanLines(item)).toEqual([expect.objectContaining({ amount: 26000, name: 'Loan recovery (1 of 1)' })]);
     expect(Number(item.net)).toBe(0);
-    expect(item.warnings.some((w: string) => /Loan recovery \(1 of 1\): ₹26000 of ₹50000 recovered/.test(w))).toBe(true);
+    expect(item.warnings.some((w: string) => /Loan recovery \(1 of 1\): ₹26,000 of ₹50,000 recovered/.test(w))).toBe(true);
     const d = await pay.post(`/api/v1/loans/requests/${id}/defer`, { period: NEXT, reason: 'Hardship: hospitalisation' });
     expect(d.json()).toMatchObject({ ok: true, recomputePayroll: NEXT });
     expect(loanLines(await compute(run))).toEqual([]);

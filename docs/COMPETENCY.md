@@ -1,6 +1,6 @@
 # Training, laboratory competency and technical authorization
 
-Modules: `training` (courses and training records) and `lab.competency` (methods, assessments, authorizations, matrix; needs `training`). Neither is in `default`; add them to `ENABLED_MODULES` / `enabled_modules`.
+Modules: `training` (courses and training records) and `lab.competency` (methods, assessments, authorizations, matrix; needs `training`). Flags `FEATURE_TRAINING` and `FEATURE_LAB_COMPETENCY`, both off by default.
 
 The module keeps **personnel competence records** of the kind ISO/IEC 17025 (clause 6.2) asks a laboratory to keep: competence requirements, training, assessment of competence, authorization for specific activities, and monitoring. It does **not** make an installation compliant or accredited. The laboratory's quality system defines the actual requirements, and its assessors and quality manager decide.
 

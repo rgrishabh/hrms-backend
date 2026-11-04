@@ -17,6 +17,7 @@ import type { Db } from '../../db/tx.js';
 import { setOffAdvance } from '../travel/service.js';
 import { isModuleEnabled } from '../../core/features/state.js';
 import { allowanceRoutes, priceAllowance } from './allowances.js';
+import { money } from '../../core/brand.js';
 
 const Money = z.union([z.number(), z.string()]).transform((v, ctx) => {
   const d = new Decimal(v);
@@ -310,7 +311,7 @@ export async function expenseRoutes(app: FastifyInstance) {
       steps.push({ kind: 'permission', permission: 'expenses.approve' });
       const total = (await db.query<{ total: string }>('SELECT total FROM expense_claims WHERE tenant_id=$1 AND id=$2', [a.tenantId, id])).rows[0]!.total;
       const claimant = (await db.query<{ user_id: string | null }>('SELECT user_id FROM employees WHERE tenant_id=$1 AND id=$2', [a.tenantId, c.employee_id])).rows[0]?.user_id;
-      const reqId = await createApprovalRequest(db, a.tenantId, { entityType: 'expense_claim', entityId: id, requesterId: a.user.userId, summary: `${c.title}: ₹${total}`, steps, excludeUserIds: [claimant] });
+      const reqId = await createApprovalRequest(db, a.tenantId, { entityType: 'expense_claim', entityId: id, requesterId: a.user.userId, summary: `${c.title}: ${money(total)}`, steps, excludeUserIds: [claimant] });
       await audit(db, { ...a.auditBase, action: 'expenses.claim_submitted', targetType: 'expense_claim', targetId: id, metadata: { total, approvalRequestId: reqId } });
       return { ok: true, approvalRequestId: reqId };
     });
@@ -408,7 +409,7 @@ export async function expenseRoutes(app: FastifyInstance) {
       const paid = await db.query<{ created_by: string; title: string; total: string }>(`UPDATE expense_claims SET status='paid', paid_at=now(), payment_reference=$3, updated_at=now()
         WHERE tenant_id=$1 AND batch_id=$2 AND status='approved' RETURNING created_by, title, (total - advance_adjusted)::text AS total`, [a.tenantId, id, body.paymentReference]);
       for (const c of paid.rows) {
-        await notifyUsers(db, a.tenantId, [c.created_by], { kind: 'expenses.paid', title: `Expense claim reimbursed: ₹${c.total}`, body: `${c.title} · reference ${body.paymentReference}`, link: '/expenses' });
+        await notifyUsers(db, a.tenantId, [c.created_by], { kind: 'expenses.paid', title: `Expense claim reimbursed: ${money(c.total)}`, body: `${c.title} · reference ${body.paymentReference}`, link: '/expenses' });
       }
       await audit(db, { ...a.auditBase, action: 'expenses.batch_paid', targetType: 'reimbursement_batch', targetId: id, metadata: { reference: body.paymentReference, claims: paid.rowCount, total: b.total } });
       return { ok: true, claimsPaid: paid.rowCount };

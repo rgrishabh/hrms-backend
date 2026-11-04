@@ -60,7 +60,7 @@ export function vapidHeader(endpoint: string, publicKey: string, privateKey: str
 export function createPushSender(env: Pick<Env, 'VAPID_PUBLIC_KEY' | 'VAPID_PRIVATE_KEY' | 'VAPID_SUBJECT' | 'BRAND_SUPPORT_EMAIL'>): PushSender | null {
   const { VAPID_PUBLIC_KEY: pub, VAPID_PRIVATE_KEY: priv } = env;
   if (!pub || !priv) return null;
-  const subject = env.VAPID_SUBJECT ?? (env.BRAND_SUPPORT_EMAIL ? `mailto:${env.BRAND_SUPPORT_EMAIL}` : 'mailto:support@invalid.example');
+  const subject = env.VAPID_SUBJECT ?? `mailto:${env.BRAND_SUPPORT_EMAIL}`;
   return {
     publicKey: pub,
     async send(sub, message) {

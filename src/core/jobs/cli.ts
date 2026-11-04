@@ -18,7 +18,7 @@ if (process.argv[1] && fileURLToPath(import.meta.url) === path.resolve(process.a
   const [cmd, job] = process.argv.slice(2);
   const env = loadEnv({ ...process.env, PROCESS_ROLE: 'worker' });
   const log = pino({ level: env.LOG_LEVEL, base: { role: 'cli' } });
-  const { features } = initRuntime(env, log);
+  const { features } = initRuntime(env);
   const pool = createPool(env.DATABASE_URL, 2);
   withFeatures(features, async () => {
     if (cmd === 'tick') log.info({ ran: await tick(pool, log) }, 'tick finished');

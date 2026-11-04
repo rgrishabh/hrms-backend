@@ -6,6 +6,7 @@ import type { Db } from '../../db/tx.js';
 import { orgToday } from '../competency/service.js';
 import { teamEmployeeIds } from '../attendance/service.js';
 import { leaveYearOf, yearStartMonth } from '../leave/service.js';
+import { money } from '../../core/brand.js';
 
 /**
  * Dashboard summary: one call returning the tiles and short lists the signed-in user may see.

@@ -2,6 +2,7 @@ import { Decimal } from 'decimal.js';
 import type { Db } from '../../db/tx.js';
 import { isModuleEnabled } from '../../core/features/state.js';
 import type { Adjustment } from '../payroll/calc.js';
+import { money } from '../../core/brand.js';
 
 export const KIND_LABEL: Record<string, string> = { salary_advance: 'Salary advance', loan: 'Loan' };
 /** The two kinds share a table and a screen, but each has its own flag. */
@@ -63,7 +64,7 @@ export async function applyRecoveries(db: Db, tenantId: string, runId: string, p
   const adjustments: Adjustment[] = []; const warnings: string[] = [];
   for (const [i, p] of planned.entries()) {
     const take = Decimal.min(p.amount, left);
-    if (take.lt(p.amount)) warnings.push(`${p.label}: ₹${take.toFixed(0)} of ₹${p.amount.toFixed(0)} recovered (net pay is not enough); the rest stays outstanding`);
+    if (take.lt(p.amount)) warnings.push(`${p.label}: ${money(take)} of ${money(p.amount)} recovered (net pay is not enough); the rest stays outstanding`);
     if (take.lte(0)) continue;
     left = left.minus(take);
     await db.query(`INSERT INTO loan_recoveries (tenant_id, loan_id, source, payroll_run_id, period, amount) VALUES ($1,$2,'payroll',$3,$4,$5)`, [tenantId, p.loanId, runId, period, take.toFixed(2)]);

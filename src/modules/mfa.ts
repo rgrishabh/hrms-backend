@@ -20,7 +20,7 @@ const Code = z.string().trim().min(6).max(20);
  */
 export async function mfaRoutes(app: FastifyInstance, opts: { publicConfig: PublicConfig }) {
   const { pool, cipher } = app.deps;
-  const issuer = opts.publicConfig.brand.shortName;
+  const issuer = opts.publicConfig.product.name;
 
   const actor = (req: FastifyRequest) => {
     const u = req.ctx.user;

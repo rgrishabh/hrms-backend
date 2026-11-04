@@ -18,7 +18,7 @@ let app: FastifyInstance; let T: TenantFixture;
 beforeAll(async () => {
   setMailer(capture, '"Acme Labs" <hr@acme.test>');
   app = await makeApp({ ...flags('default,notifications.email,attendance.mobile,attendance.biometric'), BRAND_NAME: 'Acme Labs', BRAND_PRIMARY_COLOR: '#14532D',
-    APP_URL: 'https://hrms.acme.test' }, { mailerOverride: true });
+    BRAND_DOMAIN: 'hrms.acme.test', COOKIE_SECURE: 'true' }, { mailerOverride: true });
   T = await createTenant();
 });
 afterAll(async () => { await app.close(); setMailer(null); await makeApp().then((x) => x.close()); });

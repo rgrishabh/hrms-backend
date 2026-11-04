@@ -26,7 +26,7 @@ export function normalizeHostname(raw: string | undefined | null): string | null
 
 /**
  * Host → the installation's organization. A Host header is honoured ONLY when it
- * is one of the domains configured for this deployment (APP_URL / APP_EXTRA_DOMAINS,
+ * is one of the domains configured for this deployment (BRAND_DOMAIN / BRAND_EXTRA_DOMAINS,
  * synced to tenant_domains at startup and by the bootstrap task). Unknown hosts get
  * no organization. Lookup is per request (indexed).
  */

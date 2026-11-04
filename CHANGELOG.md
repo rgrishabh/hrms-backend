@@ -4,11 +4,13 @@
 
 ### Added
 
+* `BRAND_LOGO_DARK_URL`, `BRAND_FONT_FAMILY`, `BRAND_LOCALE`, `S3_ENDPOINT` for MinIO, CORS limited to `BRAND_DOMAIN`. Amounts in messages follow `BRAND_CURRENCY` and `BRAND_LOCALE`; payslips carry the brand.
 * `FEATURE_*` flags, one per module, with a registry entry (`envName`) each. New: `FEATURE_SALARY_ADVANCE` (split from loans), `FEATURE_COMP_OFF` (split from overtime), `FEATURE_ATTENDANCE_GEOFENCE` (location policy, plus branch geofences), `FEATURE_ATTENDANCE_SELFIE`, `FEATURE_PUSH_NOTIFICATIONS`.
 * `MFA_AVAILABLE`, `MFA_ENFORCED`, `MFA_METHODS`, `ORG_MANAGEMENT_MODE`, `VAPID_PUBLIC_KEY`, `VAPID_PRIVATE_KEY`, `VAPID_SUBJECT`.
 
 ### Removed
 
+* Renamed to the contract: `MAIL_TRANSPORT` (gone), `MAIL_FROM_ADDRESS` and `MAIL_FROM_NAME` (`BRAND_EMAIL_FROM`, display name `BRAND_PRODUCT_NAME`), `PRODUCT_NAME` (`BRAND_PRODUCT_NAME`), `BRAND_SHORT_NAME` (gone), `APP_URL` and `APP_EXTRA_DOMAINS` (`BRAND_DOMAIN`, `BRAND_EXTRA_DOMAINS`), `ORGANIZATION_NAME` and `ORGANIZATION_LEGAL_NAME` (`BRAND_NAME`, `BRAND_LEGAL_NAME`), `ORGANIZATION_COUNTRY`, `_TIMEZONE`, `_CURRENCY`, `_DATE_FORMAT` (`BRAND_*`), `ORGANIZATION_FY_START_MONTH` (`BRAND_FINANCIAL_YEAR_START`), `BRANDING_DIR` and `/branding/*` (fixed `/brand` mount, `/brand/*`), `SMTP_SECURE=true/false` (`tls`, `starttls`, `none`), `GET /api/v1/public/config` (`GET /api/v1/config/public`).
 * `ENABLED_MODULES` and `MFA_ENFORCEMENT`: the server refuses to start while they are set. Module key `advances_loans` is now `loans` and `salary_advance`.
 * The `feature_unavailable` error. A module that is off answers 404; one that is on but not set up answers 409 `feature_not_configured`.
 * SMS, entirely: the `sms_templates` and `sms_outbox` tables and `users.sms_notifications` (migration 039), `notifications.sms`, `/api/v1/sms/*`, `SMS_*`, `smsNotifications` in `/auth/me` and `PATCH /auth/preferences`.

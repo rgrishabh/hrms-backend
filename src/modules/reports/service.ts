@@ -95,7 +95,7 @@ const RETAIN_DAYS = 90;
  * Run every schedule due by `today` (daily job). Each runs with its owner's current access; recipients other than
  * the owner get it only when they may see the report for the whole organization themselves, and only when the
  * owner's copy is organization-wide (a manager's team report goes to that manager alone). Recipients are told in
- * HRMS (and by email); the data stays in HRMS behind sign-in. Old snapshots are removed.
+ * HRMS (and by email); the data stays behind sign-in. Old snapshots are removed.
  */
 export async function runSchedules(db: Db, tenantId: string, today: string) {
   const due = (await db.query<{ id: string; frequency: string; weekday: number | null; day_of_month: number | null; period: string; recipient_ids: string[];
@@ -125,7 +125,7 @@ export async function runSchedules(db: Db, tenantId: string, today: string) {
         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13, now() + make_interval(days => $14)) RETURNING id`,
         [tenantId, s.id, owner.userId, s.report_key, s.name, JSON.stringify(r.params), r.scope, JSON.stringify(r.columns), JSON.stringify(r.rows), r.totals ? JSON.stringify(r.totals) : null,
          JSON.stringify(r.notes), r.rows.length, recipients, RETAIN_DAYS])).rows[0]!.id;
-      await notifyUsers(db, tenantId, recipients, { kind: 'reports.ready', title: `Report ready: ${s.name}`, body: `${def.name} · ${r.rows.length} row(s). Open it in HRMS.`,
+      await notifyUsers(db, tenantId, recipients, { kind: 'reports.ready', title: `Report ready: ${s.name}`, body: `${def.name} · ${r.rows.length} row(s). Sign in to open it.`,
         link: `/reports?snapshot=${snap}`, actionLabel: 'Open report', dedupeKey: `report:${snap}` });
       await advance(`Sent to ${recipients.length} person(s)${recipients.length < s.recipient_ids.length + 1 ? '; recipients without organization-wide access were left out' : ''}`);
       ran++;

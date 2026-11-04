@@ -231,7 +231,7 @@ export const JOBS: readonly JobDefinition[] = [
   {
     key: 'reports.scheduled',
     name: 'Scheduled reports',
-    description: 'Runs saved reports that are due, as their owners, and tells the recipients the report is ready in HRMS (no report data goes by email). Removes copies older than 90 days.',
+    description: 'Runs saved reports that are due, as their owners, and tells the recipients the report is ready in the app (no report data goes by email). Removes copies older than 90 days.',
     schedule: { kind: 'daily', at: '06:30' },
     feature: 'reports.advanced',
     runPermission: 'settings.manage',

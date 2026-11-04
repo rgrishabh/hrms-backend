@@ -21,7 +21,7 @@ declare module 'fastify' {
   interface FastifyInstance { deps: AppDeps; featureRoutes: readonly FeatureRoute[] }
 }
 
-export interface AppDeps { env: Env; pool: Pool; cipher: FieldCipher; /** Tests: keep an injected mailer instead of building one from env. */ mailerOverride?: boolean; storeOverride?: boolean; pushOverride?: boolean }
+export interface AppDeps { env: Env; pool: Pool; cipher: FieldCipher; /** Tests: keep an injected mailer instead of building one from env. */ mailerOverride?: boolean; storeOverride?: boolean; pushOverride?: boolean; /** Tests: another directory than the fixed /brand mount. */ brandDirOverride?: string }
 
 export interface TenantActor {
   tenantId: string;

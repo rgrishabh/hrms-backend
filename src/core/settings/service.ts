@@ -5,7 +5,7 @@ import { badRequest } from '../http/errors.js';
 let limits: DeploymentLimits = { sessionTtlHours: 12 };
 export function setDeploymentLimits(l: DeploymentLimits) { limits = l; }
 
-/** Defaults supplied by deployment configuration (e.g. ORGANIZATION_TIMEZONE). Administrators may override them. */
+/** Defaults supplied by deployment configuration (e.g. BRAND_TIMEZONE). Administrators may override them. */
 let deploymentDefaults: Record<string, unknown> = {};
 export function setDeploymentDefaults(d: Record<string, unknown>) { deploymentDefaults = d; }
 

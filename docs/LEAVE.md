@@ -1,6 +1,6 @@
 # Leave management
 
-Module key `leave` (enabled by `ENABLED_MODULES=default`). Code: `apps/api/src/modules/leave/`. Tests: `test/leave.test.ts`, `test/attendance-calc.test.ts`.
+Module key `leave`, flag `FEATURE_LEAVE` (on by default). Code: `apps/api/src/modules/leave/`. Tests: `test/leave.test.ts`, `test/attendance-calc.test.ts`.
 
 > Leave types are **the organization's policy**, configured by HR. The application hardcodes no statutory entitlements (state Shops & Establishments rules, maternity benefit, etc.). Verify them with a qualified advisor before publishing types. See INDIAN_PAYROLL_COMPLIANCE.md (C8, C11).
 

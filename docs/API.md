@@ -1,10 +1,10 @@
 # API reference (v1)
 
-Base path `/api/v1`. JSON in and out. Each installation serves one organization; requests must use one of its configured hostnames (`APP_URL`/`APP_EXTRA_DOMAINS`), otherwise `404 unknown_tenant`.
+Base path `/api/v1`. JSON in and out. Each installation serves one organization; requests must use one of its configured hostnames (`BRAND_DOMAIN`/`BRAND_EXTRA_DOMAINS`), otherwise `404 unknown_tenant`.
 
 **Auth:** `POST /auth/login` sets an httpOnly session cookie and returns `csrfToken`. Every `POST/PUT/PATCH/DELETE` made with the cookie must send `x-csrf-token`. Device ingestion uses `X-Device-Key` instead.
 
-**Errors:** `{ "error": { "code": "...", "message": "...", "details": ... } }`. Codes include `validation_failed` (400, details = `[{path, message}]`), `setup_link_invalid` (400), `unauthorized` (401), `forbidden` (403), `feature_unavailable` (403), `password_change_required` (403), `csrf_failed` (403), `not_found` / `unknown_tenant` (404), `conflict` / `duplicate` (409), `rate_limited` (429).
+**Errors:** `{ "error": { "code": "...", "message": "...", "details": ... } }`. Codes include `validation_failed` (400, details = `[{path, message}]`), `setup_link_invalid` (400), `unauthorized` (401), `forbidden` (403), `feature_not_configured` (409: the module is on but needs setting up; a module that is off has no routes and answers 404), `password_change_required` (403), `csrf_failed` (403), `not_found` / `unknown_tenant` (404), `conflict` / `duplicate` (409), `rate_limited` (429).
 
 **Pagination:** `?page=1&pageSize=25` (max 100) → `{ items, page, pageSize, total }`.
 
@@ -13,7 +13,7 @@ Base path `/api/v1`. JSON in and out. Each installation serves one organization;
 | **Health** | | |
 | GET `/health/live`, `/health/ready` | none | Liveness / readiness (DB reachable, migrations current, installation bootstrapped) |
 | **Auth & self** | | |
-| GET `/public/config` | none | Runtime branding, organization identity and enabled modules (no secrets) |
+| GET `/config/public` | none | `{product, brand, features, mode, mfa}`: brand, every `FEATURE_*` flag (off is `false`), mode and MFA. No secrets |
 | POST `/auth/setup` | one-time token | Complete an administrator setup link `{token, newPassword}` |
 | POST `/auth/login` · `/auth/logout` | none / session | Sign in / out |
 | GET `/auth/me` | session | User, roles, permissions, `capabilities` (module → usable), preferences, `passwordChangeRequired`, csrf |

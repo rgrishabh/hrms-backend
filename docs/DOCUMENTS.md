@@ -1,6 +1,6 @@
 # Documents and file storage
 
-Module `core.documents` (in `ENABLED_MODULES=default`). It's usable once storage is configured. Code: `apps/api/src/core/storage/`, `modules/documents/`. Tests: `test/documents.test.ts`.
+Module `core.documents`, flag `FEATURE_DOCUMENTS` (on by default). It's usable once storage is configured. Code: `apps/api/src/core/storage/`, `modules/documents/`. Tests: `test/documents.test.ts`.
 
 ## Storage (deployment-level, one per installation)
 

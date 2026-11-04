@@ -11,7 +11,7 @@ Every module in the feature registry (34) is built and `available`; none is `pla
 | 2 | Repository docs | ✅ | This set; per-module guides in `docs/` | |
 | 3 | Platform / tenant / self-service / core services separation | ✅ | See ARCHITECTURE.md | |
 | 4 | Isolation, domains | ✅ | One installation per customer (Compose project or AWS account); hosts from deployment config; tenant scoping and Postgres RLS kept as defence in depth | |
-| 5 | Feature registry, module states, safe disable | ✅ | `ENABLED_MODULES` per installation, validated at startup; supported / enabled / configured / operational; every route of a switched-off module refused | |
+| 5 | Feature registry, module states, safe disable | ✅ | `FEATURE_*` per installation, validated at startup; supported / enabled / configured / operational; every route of a switched-off module refused | |
 | 6 | Configuration layers, precedence | ✅ | Deployment config (env, validated) / secrets / business settings (DB) / deployment defaults | |
 | 7 | Admin settings | ✅ | General, attendance, security, organization, users, audit, installation view; module settings (payroll, expenses, accounting, …) | |
 | 8 | Roles & permissions | ✅ | 12 system roles, segregation of duties, grantable-role limits, server-side checks; TOTP MFA enforced for privileged roles; organization-defined roles (Settings → Roles) within the same grant limits, MFA-enforced when they carry privileged permissions; approval delegation (docs/APPROVALS.md) | |

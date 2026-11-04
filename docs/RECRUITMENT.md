@@ -1,6 +1,6 @@
 # Recruitment
 
-Module key: `recruitment` (not in `default`; add it to `ENABLED_MODULES`). Resumes use the installation's file storage.
+Module key: `recruitment`, flag `FEATURE_RECRUITMENT` (off by default). Resumes use the installation's file storage.
 
 ## Flow
 

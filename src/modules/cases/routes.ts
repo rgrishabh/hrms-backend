@@ -148,7 +148,7 @@ export async function caseRoutes(app: FastifyInstance) {
       const to = (b.kind === 'posh' ? await committeeUsers(db, a.tenantId) : await usersWithPermission(db, a.tenantId, 'grievance.manage')).filter((u) => u !== respondentUser);
       // Notifications (and email) carry no names or details.
       await notifyUsers(db, a.tenantId, to.filter((u) => u !== a.user.userId), { kind: `cases.${b.kind}`, title: `New ${b.kind === 'posh' ? 'POSH complaint' : 'grievance'} ${ref(b.kind, n)}`,
-        body: 'Open HRMS to view it. Keep it confidential.', link: `/cases?case=${id}`, actionLabel: 'Open case' });
+        body: 'Sign in to view it. Keep it confidential.', link: `/cases?case=${id}`, actionLabel: 'Open case' });
       // Audit: metadata only — never the narrative.
       const base = caseAuditBase(a, 'complainant');
       await audit(db, { ...base, action: `cases.${b.kind}_filed`, category: 'data', targetType: 'case', targetId: id, metadata: { ...base.metadata, number: ref(b.kind, n), category: b.category, anonymous: b.anonymous, late } });
@@ -235,7 +235,7 @@ export async function caseRoutes(app: FastifyInstance) {
         // Inquiry finished → report due within 10 days (POSH Act s.13).
         if (c.kind === 'posh' && b.toStatus === 'report_submitted') await db.query(`UPDATE cases SET report_due=$3::date + 10 WHERE tenant_id=$1 AND id=$2`, [a.tenantId, id, today]);
         if ((b.visibleToComplainant || b.toStatus) && c.complainant_user)
-          await notifyUsers(db, a.tenantId, [c.complainant_user], { kind: 'cases.update', feature: FEATURE[c.kind], title: `Update on your case ${ref(c.kind, c.number)}`, body: 'Open HRMS to read it.', link: `/cases?case=${id}`, actionLabel: 'Open' });
+          await notifyUsers(db, a.tenantId, [c.complainant_user], { kind: 'cases.update', feature: FEATURE[c.kind], title: `Update on your case ${ref(c.kind, c.number)}`, body: 'Sign in to read it.', link: `/cases?case=${id}`, actionLabel: 'Open' });
       }
       const base = caseAuditBase(a, role);
       await audit(db, { ...base, action: 'cases.event_added', category: 'data', targetType: 'case', targetId: id, metadata: { ...base.metadata, role, toStatus: b.toStatus ?? null, visibleToComplainant: b.visibleToComplainant } });

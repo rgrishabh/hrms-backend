@@ -2,13 +2,13 @@ import { contentHash } from '../modules/policies/routes.js';
 import pg from 'pg';
 import { resolveFeatures } from '../core/features/registry.js';
 import { hashPassword } from '../core/crypto/index.js';
-import { loadInstallationEnv } from '../config/env.js';
+import { appUrl, loadInstallationEnv } from '../config/env.js';
 import { bootstrapInstallation } from './bootstrap.js';
 import { migrate } from './migrate.js';
 
 /**
  * Local development seed — SYNTHETIC data for ONE installation, configured
- * from .env like a real deployment (APP_URL, ORGANIZATION_NAME, ...).
+ * from .env like a real deployment (BRAND_DOMAIN, BRAND_NAME, ...).
  * Refuses to run in production or against a non-local database.
  *
  *   npm run seed              add demo data to a bootstrapped or empty dev database
@@ -37,7 +37,7 @@ async function main() {
   const c = new pg.Client({ connectionString: url });
   await c.connect();
   try {
-    const adminEmail = `admin@${new URL(env.APP_URL).hostname === 'localhost' ? 'example.test' : new URL(env.APP_URL).hostname}`;
+    const adminEmail = `admin@${env.BRAND_DOMAIN === 'localhost' ? 'example.test' : env.BRAND_DOMAIN}`;
     const boot = await bootstrapInstallation(c, env, { admin: { email: adminEmail, displayName: 'Demo Administrator' }, mode: 'password', password: DEV_PASSWORD });
     const tid = boot.tenantId;
     await c.query('BEGIN');
@@ -52,7 +52,7 @@ async function main() {
     }
     const pw = await hashPassword(DEV_PASSWORD);
     const domain = adminEmail.split('@')[1]!;
-    const le = (await c.query<{ id: string }>(`INSERT INTO legal_entities (tenant_id, name, state_code) VALUES ($1,$2,'27') RETURNING id`, [tid, env.ORGANIZATION_NAME])).rows[0]!.id;
+    const le = (await c.query<{ id: string }>(`INSERT INTO legal_entities (tenant_id, name, state_code) VALUES ($1,$2,'27') RETURNING id`, [tid, env.BRAND_NAME])).rows[0]!.id;
     const branchIds: string[] = [];
     for (const b of [{ code: 'MUM', name: 'Mumbai Central Lab', state: 'Maharashtra', city: 'Mumbai' }, { code: 'PUN', name: 'Pune Field Station', state: 'Maharashtra', city: 'Pune' }]) {
       branchIds.push((await c.query<{ id: string }>(`INSERT INTO branches (tenant_id, legal_entity_id, code, name, state, city) VALUES ($1,$2,$3,$4,$5,$6) RETURNING id`,
@@ -94,7 +94,7 @@ async function main() {
     for (let i = 4; i <= 40; i++) await mkEmp(i, 'Synthetic', `Employee${String(i).padStart(3, '0')}`, ['WATER', 'AIR', 'SOIL', 'QA'][i % 4]!, designations[i % 6]!, i % 3 === 0 ? labMgr : null);
     await seedModules(c, tid, domain);
     await c.query('COMMIT');
-    console.log(`Seeded ${env.ORGANIZATION_NAME} (40 synthetic employees) at ${env.APP_URL}`);
+    console.log(`Seeded ${env.BRAND_NAME} (40 synthetic employees) at ${appUrl(env)}`);
     console.log(`Users: admin@, hr@, manager@, employee@, payroll@, finance@, quality@, auditor@${domain}`);
     console.log(`Development password for all seeded users: ${DEV_PASSWORD}`);
   } finally {

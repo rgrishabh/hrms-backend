@@ -1,6 +1,6 @@
 # Notifications
 
-In-app notifications are always on. Email is module `notifications.email`: add it to `ENABLED_MODULES` and configure a transport. Code: `apps/api/src/core/notify/`, `modules/notifications/`. Tests: `test/notifications.test.ts`.
+In-app notifications are always on. Email is on when `FEATURE_EMAIL_NOTIFICATIONS=true` and `SMTP_HOST` is set. Only the worker sends; the API enqueues. Code: `apps/api/src/core/notify/`, `modules/notifications/`. Tests: `test/notifications.test.ts`.
 
 ## What triggers a notification
 
@@ -27,12 +27,12 @@ Email is queued only when the module is enabled, a transport is configured, the 
 
 | Setting | Compose `.env` | Terraform `mail = {…}` |
 |---|---|---|
-| Transport | `MAIL_TRANSPORT=smtp` (or `disabled`; `log` is development only and records recipient + subject, never the body) | `transport` |
-| Server | `SMTP_HOST`, `SMTP_PORT` (587), `SMTP_SECURE` (`true` = implicit TLS on 465; otherwise STARTTLS is required) | `smtp_host`, `smtp_port`, `smtp_secure` |
+| Transport | `SMTP_HOST`, `SMTP_PORT`; `SMTP_SECURE` is `starttls`, `tls` or `none` (Mailpit; refused in production) | `transport` |
+| Server | `SMTP_HOST`, `SMTP_PORT` (587), `SMTP_SECURE` (see above) | `smtp_host`, `smtp_port`, `smtp_secure` |
 | Credentials | `SMTP_USER`, `SMTP_PASSWORD` | `smtp_user`. The password goes in Secrets Manager `hrms/smtp-password` (Terraform creates the empty secret; set it with `aws secretsmanager put-secret-value`) |
-| Sender | `MAIL_FROM_ADDRESS`, `MAIL_FROM_NAME` (default: brand name) | `from_address`, `from_name` |
+| Sender | `BRAND_EMAIL_FROM`, in the name of `BRAND_PRODUCT_NAME` | `from_address`, `from_name` |
 
-Startup refuses `smtp` without a host or sender, a user without a password (or the reverse), and `log` in production. Emails use the installation's branding (name, primary colour, product, support email) and link to `APP_URL`.
+Startup refuses a user without a password (or the reverse), and `SMTP_SECURE=none` in production. Emails use the installation's branding (name, primary colour, product, support email) and link to `APP_URL`.
 
 Amazon SES: verify the sender domain (SPF/DKIM) and use the SES SMTP endpoint for the region. Request production access before sending to unverified recipients.
 
@@ -43,3 +43,7 @@ Amazon SES: verify the sender domain (SPF/DKIM) and use the SES SMTP endpoint fo
 ## Not yet implemented
 
 Per-event preferences, digest emails, expiry reminders (contracts, probation, certifications: these come with the respective modules), and a bounce/complaint feedback loop.
+
+## Web push
+
+`FEATURE_PUSH_NOTIFICATIONS`, with `VAPID_PUBLIC_KEY` and `VAPID_PRIVATE_KEY` (without them, `feature_not_configured`). RFC 8291 and RFC 8292 on `node:crypto`, in `core/notify/push.ts`. A push says only that something needs attention: the payload is built from the notification's kind, and the outbox stores nothing else. Endpoints must be a browser's push service, and a subscription the service reports as gone is deleted.

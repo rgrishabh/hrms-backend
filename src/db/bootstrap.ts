@@ -3,7 +3,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { hashPassword, randomToken, sha256 } from '../core/crypto/index.js';
 import { pgSsl } from './ssl.js';
-import { loadInstallationEnv, type InstallationEnv } from '../config/env.js';
+import { appUrl, loadInstallationEnv, organizationName, type InstallationEnv } from '../config/env.js';
 import { reconcileInstallation, SINGLE_ORG_SLUG } from '../config/installation.js';
 
 /**
@@ -60,7 +60,7 @@ export async function bootstrapInstallation(client: pg.Client | pg.PoolClient, e
     if (existing.rowCount! > 1) throw new Error('this database contains more than one organization; refusing to continue');
     const organizationCreated = existing.rowCount === 0;
     if (organizationCreated) {
-      await client.query(`INSERT INTO tenants (slug, name, timezone) VALUES ($1,$2,$3)`, [SINGLE_ORG_SLUG, env.ORGANIZATION_NAME, env.ORGANIZATION_TIMEZONE]);
+      await client.query(`INSERT INTO tenants (slug, name, timezone) VALUES ($1,$2,$3)`, [SINGLE_ORG_SLUG, organizationName(env), env.BRAND_TIMEZONE]);
     }
     const rec = (await reconcileInstallation(client, env))!;
     const tenantId = rec.tenantId;
@@ -102,7 +102,7 @@ export async function bootstrapInstallation(client: pg.Client | pg.PoolClient, e
         const token = randomToken(32);
         const exp = await client.query<{ expires_at: Date }>(`INSERT INTO admin_setup_tokens (tenant_id, user_id, token_hash, expires_at)
           VALUES ($1,$2,$3, now() + make_interval(hours => $4)) RETURNING expires_at`, [tenantId, userId, sha256(token), linkHours]);
-        setupUrl = `${new URL(env.APP_URL).origin}/setup#token=${token}`;
+        setupUrl = `${appUrl(env)}/setup#token=${token}`;
         setupExpiresAt = exp.rows[0]!.expires_at.toISOString();
       }
     }

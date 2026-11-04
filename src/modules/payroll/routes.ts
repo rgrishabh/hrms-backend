@@ -3,6 +3,7 @@ import { only } from '../../core/features/routes.js';
 import { closeRepaid, enabledLoanKinds } from '../loans/service.js';
 import { featureOn } from '../lifecycle/service.js';
 import { z } from 'zod';
+import { organizationName } from '../../config/env.js';
 import { tenantActor, tenantActorAny, requireFeature, type TenantActor, gateFeatures } from '../../core/http/context.js';
 import { audit } from '../../core/audit/audit.js';
 import { badRequest, conflict, forbidden, notFound } from '../../core/http/errors.js';
@@ -388,7 +389,7 @@ export async function payrollRoutes(app: FastifyInstance) {
       if (!u.rowCount) throw conflict('No held pay to release for this employee (or its net pay is negative)');
       if (enabledLoanKinds().length) await closeRepaid(db, a.tenantId, [employeeId]);
       const user = (await db.query<{ user_id: string | null }>('SELECT user_id FROM employees WHERE tenant_id=$1 AND id=$2', [a.tenantId, employeeId])).rows[0]?.user_id;
-      if (user) await notifyUsers(db, a.tenantId, [user], { kind: 'payroll.payslip', title: `Your payslip for ${r.period} is available`, body: 'Open HRMS to view or print it.', link: '/payslips', actionLabel: 'View payslip', dedupeKey: `payslip:${id}:${employeeId}` });
+      if (user) await notifyUsers(db, a.tenantId, [user], { kind: 'payroll.payslip', title: `Your payslip for ${r.period} is available`, body: 'Sign in to view or print it.', link: '/payslips', actionLabel: 'View payslip', dedupeKey: `payslip:${id}:${employeeId}` });
       await audit(db, { ...a.auditBase, action: 'payroll.hold_released', category: 'security', targetType: 'payroll_run', targetId: id, metadata: { employeeId, reason } });
       return { ok: true };
     });
@@ -440,7 +441,7 @@ export async function payrollRoutes(app: FastifyInstance) {
       if (enabledLoanKinds().length) await closeRepaid(db, a.tenantId, (await db.query<{ employee_id: string }>(`SELECT employee_id FROM payroll_items WHERE tenant_id=$1 AND run_id=$2`, [a.tenantId, id])).rows.map((x) => x.employee_id));
       const users = (await db.query<{ user_id: string }>(`SELECT e.user_id FROM payroll_items i JOIN employees e ON e.tenant_id=i.tenant_id AND e.id=i.employee_id
         WHERE i.tenant_id=$1 AND i.run_id=$2 AND NOT i.hold AND e.user_id IS NOT NULL`, [a.tenantId, id])).rows.map((x) => x.user_id);
-      await notifyUsers(db, a.tenantId, users, { kind: 'payroll.payslip', title: `Your payslip for ${r.period} is available`, body: 'Open HRMS to view or print it.', link: '/payslips', actionLabel: 'View payslip', dedupeKey: `payslip:${id}` });
+      await notifyUsers(db, a.tenantId, users, { kind: 'payroll.payslip', title: `Your payslip for ${r.period} is available`, body: 'Sign in to view or print it.', link: '/payslips', actionLabel: 'View payslip', dedupeKey: `payslip:${id}` });
       await audit(db, { ...a.auditBase, action: 'payroll.run_finalized', targetType: 'payroll_run', targetId: id, metadata: { payslips: users.length } });
       return { ok: true, payslips: users.length };
     });
@@ -578,7 +579,11 @@ export async function payrollRoutes(app: FastifyInstance) {
         LEFT JOIN departments d ON d.tenant_id=e.tenant_id AND d.id=e.department_id LEFT JOIN employee_statutory s ON s.tenant_id=e.tenant_id AND s.employee_id=e.id
         LEFT JOIN employee_bank_accounts ba ON ba.tenant_id=e.tenant_id AND ba.employee_id=e.id WHERE i.tenant_id=$1 AND i.id=$2`, [a.tenantId, id])).rows[0]!;
       if (own) await audit(db, { ...a.auditBase, action: 'payroll.payslip_viewed', category: 'access', targetType: 'payroll_item', targetId: id });
-      return { ...d, pan: d.pan_last4 ? `XXXXXX${d.pan_last4}X` : null, account: d.account_last4 ? `XXXXXX${d.account_last4}` : null };
+      const { env } = app.deps;
+      return { ...d, pan: d.pan_last4 ? `XXXXXX${d.pan_last4}X` : null, account: d.account_last4 ? `XXXXXX${d.account_last4}` : null,
+        // What a printed payslip is headed with: the deployment's brand, as the employer's name and its formats.
+        brand: { name: env.BRAND_NAME, legalName: organizationName(env), productName: env.BRAND_PRODUCT_NAME, logoUrl: env.BRAND_LOGO_URL ?? null, primaryColor: env.BRAND_PRIMARY_COLOR,
+          currency: env.BRAND_CURRENCY, locale: env.BRAND_LOCALE, dateFormat: env.BRAND_DATE_FORMAT } };
     });
   });
 

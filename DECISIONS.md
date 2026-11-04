@@ -144,3 +144,11 @@ A request is an approval request (`lab_authorization`) routed to holders of `com
 **Limits:** `/payslips/:id` is gated by `FEATURE_PAYSLIPS` too, so with payslips off a payroll manager reads pay through the run's items. Mail already queued when a module goes off is still delivered.
 **Runtime setup:** a module that is on but unusable keeps its routes and answers 409 `feature_not_configured`; `gateFeatures` and `requireFeature` do that now.
 
+## D34 — What `BRAND_DOMAIN` leaves open
+**Context:** the contract makes `BRAND_DOMAIN` a bare hostname and removes `APP_URL`, but links in emails need a scheme, and dev runs on other ports.
+**Decision:** https in production; elsewhere https unless `COOKIE_SECURE=false` or the host is this machine (`localhost`). So on a laptop behind `HTTP_PORT` an email link has no port. CORS allows exactly `https://BRAND_DOMAIN` in production; outside it, any port on that host, for the Vite dev server. `BRAND_EXTRA_DOMAINS` get no CORS: those hosts serve the app themselves, same-origin.
+**Organization name:** `BRAND_LEGAL_NAME`, else `BRAND_NAME`, at bootstrap and on each start, as `ORGANIZATION_NAME` was.
+**Layer 2 is required everywhere,** development and tests included: the contract marks those variables required, and a default would let a client go live as someone else.
+**Brand assets and SSRF:** an https logo is a URL for the browser and mail client. Nothing on the server fetches it, and a test watches `fetch` to keep it so. `/brand/*` serves only images found on the fixed mount at startup.
+**Old variables other than the three the contract names** (`APP_URL`, `ORGANIZATION_*`, and so on) are ignored, not refused, since the contract's merge order has the deployment repo move first and extra variables must stay harmless.
+

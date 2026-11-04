@@ -46,7 +46,7 @@ describe('RFC 8291 and RFC 8292', () => {
   });
 
   it('without keys there is no sender', () => {
-    expect(createPushSender({ VAPID_PUBLIC_KEY: undefined, VAPID_PRIVATE_KEY: undefined, VAPID_SUBJECT: undefined, BRAND_SUPPORT_EMAIL: undefined })).toBeNull();
+    expect(createPushSender({ VAPID_PUBLIC_KEY: undefined, VAPID_PRIVATE_KEY: undefined, VAPID_SUBJECT: undefined, BRAND_SUPPORT_EMAIL: 'a@example.test' })).toBeNull();
   });
 });
 

@@ -11,18 +11,21 @@ export function setMailer(m: Mailer | null, from = fromHeader) { mailer = m; fro
 export const getMailer = () => mailer;
 export const getFrom = () => fromHeader;
 
-export function createMailer(env: Env, log: { info: (o: object, m?: string) => void }): Mailer | null {
-  const fromName = (env.MAIL_FROM_NAME ?? env.BRAND_NAME ?? env.ORGANIZATION_NAME).replace(/["\r\n]/g, '');
-  fromHeader = env.MAIL_FROM_ADDRESS ? `"${fromName}" <${env.MAIL_FROM_ADDRESS}>` : `"${fromName}" <no-reply@localhost>`;
-  if (env.MAIL_TRANSPORT === 'disabled') return null;
-  if (env.MAIL_TRANSPORT === 'log') {
-    // Development only: records that an email would be sent, never the body.
-    return { async send(m) { log.info({ to: m.to, subject: m.subject }, 'email (log transport, not sent)'); } };
-  }
+/** Null unless SMTP_HOST is set and FEATURE_EMAIL_NOTIFICATIONS is on. Mail comes from BRAND_EMAIL_FROM, in the product's name. */
+export function createMailer(env: Env): Mailer | null {
+  fromHeader = `"${env.BRAND_PRODUCT_NAME.replace(/["\r\n]/g, '')}" <${env.BRAND_EMAIL_FROM}>`;
+  if (!env.SMTP_HOST || !env.enabledFeatures.has('notifications.email')) return null;
   const transport = nodemailer.createTransport({
-    host: env.SMTP_HOST, port: env.SMTP_PORT, secure: env.SMTP_SECURE, requireTLS: !env.SMTP_SECURE,
+    host: env.SMTP_HOST, port: env.SMTP_PORT, ...smtpSecurity(env.SMTP_SECURE),
     auth: env.SMTP_USER ? { user: env.SMTP_USER, pass: env.SMTP_PASSWORD } : undefined,
     connectionTimeout: 10_000, greetingTimeout: 10_000, socketTimeout: 20_000,
   });
   return { async send(m) { await transport.sendMail({ from: m.from, to: m.to, subject: m.subject, text: m.text, html: m.html }); } };
+}
+
+/** tls: encrypted from the first byte. starttls: upgraded, or refused. none: plain, never upgraded (Mailpit; refused in production). */
+export function smtpSecurity(mode: Env['SMTP_SECURE']) {
+  if (mode === 'tls') return { secure: true };
+  if (mode === 'starttls') return { secure: false, requireTLS: true };
+  return { secure: false, ignoreTLS: true };
 }

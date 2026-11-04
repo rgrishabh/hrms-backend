@@ -9,7 +9,7 @@ import { loadEnv } from '../src/config/env.js';
 import { FEATURES, FEATURE_MAP, type FeatureDefinition } from '../src/core/features/registry.js';
 import { withFeatures } from '../src/core/features/state.js';
 import { runQueued } from '../src/core/jobs/scheduler.js';
-import { TEST_APP_URL, TEST_OWNER_URL } from './env.js';
+import { TEST_APP_URL, TEST_BRAND, TEST_OWNER_URL } from './env.js';
 
 const SILENT_LOG = { info: () => undefined, error: () => undefined };
 export const PASSWORD = 'Test-Password-123!';
@@ -26,15 +26,15 @@ export function flags(spec: string): Record<string, string> {
   return Object.fromEntries(FEATURES.filter((d) => d.envName).map((d) => [d.envName!, String(on(d))]));
 }
 
-export async function makeApp(overrides: Record<string, string> = {}, opts: { mailerOverride?: boolean; storeOverride?: boolean; pushOverride?: boolean } = {}): Promise<FastifyInstance> {
+export async function makeApp(overrides: Record<string, string> = {}, opts: { mailerOverride?: boolean; storeOverride?: boolean; pushOverride?: boolean; brandDirOverride?: string } = {}): Promise<FastifyInstance> {
   const env = loadEnv({
-    NODE_ENV: 'test', DATABASE_URL: TEST_APP_URL, COOKIE_SECURE: 'false',
+    NODE_ENV: 'test', DATABASE_URL: TEST_APP_URL, COOKIE_SECURE: 'false', ...TEST_BRAND,
     ...flags('default,attendance.mobile,attendance.biometric'),
     DATA_ENCRYPTION_KEY: Buffer.alloc(32, 7).toString('base64'), SESSION_TTL_HOURS: '24', AUTH_RATE_LIMIT_PER_MINUTE: '10000', AUTH_ACCOUNT_RATE_LIMIT_PER_MINUTE: '10000',
     ...overrides,
   });
   const pool = createPool(env.DATABASE_URL, 5);
-  const app = await buildApp({ env, pool, cipher: new FieldCipher(env.DATA_ENCRYPTION_KEY), mailerOverride: opts.mailerOverride, storeOverride: opts.storeOverride, pushOverride: opts.pushOverride });
+  const app = await buildApp({ env, pool, cipher: new FieldCipher(env.DATA_ENCRYPTION_KEY), mailerOverride: opts.mailerOverride, storeOverride: opts.storeOverride, pushOverride: opts.pushOverride, brandDirOverride: opts.brandDirOverride });
   app.addHook('onClose', async () => { await pool.end(); });
   return app;
 }

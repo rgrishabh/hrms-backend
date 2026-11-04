@@ -585,14 +585,14 @@ if (process.argv[1] && fileURLToPath(import.meta.url) === path.resolve(process.a
     const c = new pg.Client({ connectionString: url, ssl: pgSsl() });
     await c.connect();
     try {
-      const tz = process.env.ORGANIZATION_TIMEZONE ?? 'Asia/Kolkata';
+      const tz = process.env.BRAND_TIMEZONE ?? 'Asia/Kolkata';
       const flags = resolveFeatures(process.env);
       if (flags.problems.length) throw new Error(flags.problems.join('; '));
       const today = new Intl.DateTimeFormat('en-CA', { timeZone: tz, year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date());
       const password = `Demo-${randomBytes(9).toString('base64url')}`;
       const r = await generateDemo(c, { password, today, features: flags.features });
       if (!r) return;
-      process.stdout.write(`HRMS demo logins (synthetic data) — ${process.env.APP_URL ?? `https://${r.domain}`}\nPassword for all demo logins: ${password}\n` +
+      process.stdout.write(`HRMS demo logins (synthetic data) — https://${process.env.BRAND_DOMAIN ?? r.domain}\nPassword for all demo logins: ${password}\n` +
         `Privileged roles must set up two-factor authentication at first sign-in.\n\n${r.logins.map((l) => `${l.login.padEnd(36)} ${l.name.padEnd(18)} ${l.role}`).join('\n')}\n`);
       say('done');
     } catch (e) { await c.query('ROLLBACK').catch(() => undefined); throw e; } finally { await c.end(); }

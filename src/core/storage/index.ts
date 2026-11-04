@@ -50,11 +50,14 @@ export class LocalStore implements BlobStore {
 export class S3Store implements BlobStore {
   driver = 's3' as const;
   private client: S3Client;
-  constructor(private bucket: string, region: string) { this.client = new S3Client({ region }); }
+  /** With an endpoint (MinIO): path-style addressing, and no KMS header, which such a store has no key for. */
+  constructor(private bucket: string, region: string, private endpoint?: string) {
+    this.client = new S3Client({ region, ...(endpoint ? { endpoint, forcePathStyle: true } : {}) });
+  }
   async put(key: string, data: Buffer, contentType: string) {
     assertKey(key);
     // Bucket default encryption is SSE-KMS with the installation key; requested explicitly as well.
-    await this.client.send(new PutObjectCommand({ Bucket: this.bucket, Key: key, Body: data, ContentType: contentType, ServerSideEncryption: 'aws:kms' }));
+    await this.client.send(new PutObjectCommand({ Bucket: this.bucket, Key: key, Body: data, ContentType: contentType, ...(this.endpoint ? {} : { ServerSideEncryption: 'aws:kms' as const }) }));
   }
   async get(key: string) {
     assertKey(key);
@@ -73,6 +76,6 @@ export const getStore = () => store;
 
 export function createStore(env: Env): BlobStore | null {
   if (env.STORAGE_DRIVER === 'local') return new LocalStore(env.STORAGE_PATH!);
-  if (env.STORAGE_DRIVER === 's3') return new S3Store(env.AWS_S3_BUCKET!, env.AWS_REGION!);
+  if (env.STORAGE_DRIVER === 's3') return new S3Store(env.AWS_S3_BUCKET!, env.AWS_REGION ?? 'us-east-1', env.S3_ENDPOINT);
   return null;
 }

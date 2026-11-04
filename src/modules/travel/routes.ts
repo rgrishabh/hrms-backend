@@ -15,6 +15,7 @@ import { featureOn } from '../lifecycle/service.js';
 import { assertNoOverlap } from '../field-duty/service.js';
 import { MODES, settlement } from './service.js';
 import type { Db } from '../../db/tx.js';
+import { money } from '../../core/brand.js';
 
 const F = 'travel';
 const READ_ALL = ['travel.read', 'travel.approve', 'expenses.pay'];
@@ -135,7 +136,7 @@ export async function travelRoutes(app: FastifyInstance) {
       const threshold = await getSettingValue<number | null>(db, a.tenantId, 'travel.finance_approval_above');
       if (b.startDate < addDays(today, notice)) throw badRequest(notice ? `Request travel at least ${notice} day(s) before it starts` : 'Travel cannot be requested for past dates');
       if (daysBetween(b.startDate, b.endDate) + 1 > maxDays) throw badRequest(`A trip can last at most ${maxDays} days; split longer travel`);
-      if (b.advance.gt(total.times(maxPct).div(100))) throw badRequest(`The advance can be at most ${maxPct}% of the estimate (₹${total.times(maxPct).div(100).toFixed(2)})`);
+      if (b.advance.gt(total.times(maxPct).div(100))) throw badRequest(`The advance can be at most ${maxPct}% of the estimate (${money(total.times(maxPct).div(100))})`);
       if (b.advance.gt(0) && total.lte(0)) throw badRequest('Enter the estimated costs to ask for an advance');
       const e = (await db.query<{ status: string; name: string; user_id: string | null; mgr_user: string | null; exit_date: string | null }>(
         `SELECT e.status, e.user_id, e.exit_date::text, trim(e.first_name||' '||coalesce(e.last_name,'')) AS name, CASE WHEN m.status IN ('active','on_notice') THEN m.user_id END AS mgr_user
@@ -157,7 +158,7 @@ export async function travelRoutes(app: FastifyInstance) {
       if (finance) steps.push({ kind: 'permission', permission: 'travel.approve' });
       const days = daysBetween(b.startDate, b.endDate) + 1;
       const approvalId = await createApprovalRequest(db, a.tenantId, { entityType: 'travel_request', entityId: id, requesterId: a.user.userId,
-        summary: `${e.name}: ${b.origin} → ${b.destination}, ${b.startDate}${days > 1 ? ` to ${b.endDate}` : ''} · estimate ₹${total.toFixed(2)}${b.advance.gt(0) ? `, advance ₹${b.advance.toFixed(2)}` : ''}`,
+        summary: `${e.name}: ${b.origin} → ${b.destination}, ${b.startDate}${days > 1 ? ` to ${b.endDate}` : ''} · estimate ${money(total)}${b.advance.gt(0) ? `, advance ${money(b.advance)}` : ''}`,
         steps, excludeUserIds: [a.user.userId] });
       await audit(db, { ...a.auditBase, action: 'travel.requested', targetType: 'travel_request', targetId: id,
         metadata: { startDate: b.startDate, endDate: b.endDate, tripType: b.tripType, estimate: total.toFixed(2), advance: b.advance.toFixed(2), approvalId } });
@@ -244,7 +245,7 @@ export async function travelRoutes(app: FastifyInstance) {
       if (t.advance_paid_amount) throw conflict('The advance is already recorded as paid');
       await db.query(`UPDATE travel_requests SET advance_paid_amount=advance_requested, advance_paid_at=now(), advance_paid_by=$3, advance_reference=$4 WHERE tenant_id=$1 AND id=$2`,
         [a.tenantId, id, a.user.userId, b.reference]);
-      if (t.user_id) await notifyUsers(db, a.tenantId, [t.user_id], { kind: 'travel.advance_paid', title: `Travel advance paid: ₹${t.advance_requested}`, body: `${t.origin} → ${t.destination} · reference ${b.reference}`, link: '/travel' });
+      if (t.user_id) await notifyUsers(db, a.tenantId, [t.user_id], { kind: 'travel.advance_paid', title: `Travel advance paid: ${money(t.advance_requested)}`, body: `${t.origin} → ${t.destination} · reference ${b.reference}`, link: '/travel' });
       await audit(db, { ...a.auditBase, action: 'travel.advance_paid', targetType: 'travel_request', targetId: id, metadata: { amount: t.advance_requested, reference: b.reference } });
       return { ok: true };
     });
@@ -294,9 +295,9 @@ export async function travelRoutes(app: FastifyInstance) {
       if (t.employee_id === a.user.employeeId) throw forbidden('You cannot record your own advance as returned');
       const s = await settlement(db, a.tenantId, id);
       if (!b.amount.isFinite() || b.amount.lte(0) || b.amount.decimalPlaces() > 2) throw badRequest('Enter the amount returned');
-      if (b.amount.gt(s.outstanding)) throw badRequest(`Only ₹${s.outstanding} of the advance is outstanding`);
+      if (b.amount.gt(s.outstanding)) throw badRequest(`Only ${money(s.outstanding)} of the advance is outstanding`);
       await db.query(`UPDATE travel_requests SET recovered_amount=recovered_amount+$3, recovered_note=concat_ws('; ', recovered_note, $4::text) WHERE tenant_id=$1 AND id=$2`,
-        [a.tenantId, id, b.amount.toFixed(2), `₹${b.amount.toFixed(2)}: ${b.note}`]);
+        [a.tenantId, id, b.amount.toFixed(2), `${money(b.amount)}: ${b.note}`]);
       await audit(db, { ...a.auditBase, action: 'travel.advance_returned', targetType: 'travel_request', targetId: id, metadata: { amount: b.amount.toFixed(2), note: b.note } });
       return { ok: true, outstanding: new Decimal(s.outstanding).minus(b.amount).toFixed(2) };
     });
@@ -310,7 +311,7 @@ export async function travelRoutes(app: FastifyInstance) {
       const t = await loadTrip(db, a, id, true);
       if (t.status !== 'completed') throw conflict('Close a trip once the traveller has marked it completed');
       const s = await settlement(db, a.tenantId, id);
-      if (new Decimal(s.outstanding).gt(0)) throw conflict(`₹${s.outstanding} of the advance is still outstanding`);
+      if (new Decimal(s.outstanding).gt(0)) throw conflict(`${money(s.outstanding)} of the advance is still outstanding`);
       if (s.openClaims) throw conflict('A claim for this trip is still in progress');
       await db.query(`UPDATE travel_requests SET status='closed', closed_at=now(), closed_by=$3 WHERE tenant_id=$1 AND id=$2`, [a.tenantId, id, a.user.userId]);
       await audit(db, { ...a.auditBase, action: 'travel.closed', targetType: 'travel_request', targetId: id, metadata: { advancePaid: s.advancePaid, claimed: s.claimed, advanceAdjusted: s.advanceAdjusted, recovered: s.recovered } });

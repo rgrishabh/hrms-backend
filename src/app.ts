@@ -1,5 +1,6 @@
 import Fastify, { type FastifyInstance, type FastifyPluginAsync } from 'fastify';
 import cookie from '@fastify/cookie';
+import cors from '@fastify/cors';
 import helmet from '@fastify/helmet';
 import rateLimit from '@fastify/rate-limit';
 import multipart from '@fastify/multipart';
@@ -41,7 +42,8 @@ import { accountingRoutes } from './modules/accounting/routes.js';
 import { assetRoutes } from './modules/assets/routes.js';
 import { reportRoutes } from './modules/reports/routes.js';
 import { dashboardRoutes } from './modules/dashboard/routes.js';
-import { registerWeb, registerBrandingAssets, spaCsp, API_CSP, ASSET_CSP } from './core/http/web.js';
+import { BRAND_MOUNT, registerWeb, registerBrandAssets, spaCsp, API_CSP, ASSET_CSP } from './core/http/web.js';
+import { allowedCorsOrigin } from './config/env.js';
 import { migrationStatus } from './db/migrate.js';
 
 const UNSAFE = new Set(['POST', 'PUT', 'PATCH', 'DELETE']);
@@ -61,7 +63,7 @@ export async function buildApp(deps: AppDeps): Promise<FastifyInstance> {
   });
   app.decorate('deps', deps);
   // Deployment configuration is validated here; an invalid module set stops the process.
-  const { publicConfig, features } = initRuntime(env, app.log, deps);
+  const { publicConfig, features } = initRuntime(env, deps);
   // Each app's requests see its own feature set. Reading the body leaves the async context, hence the second hook.
   app.addHook('onRequest', (_req, _reply, done) => { withFeatures(features, done); });
   app.addHook('preValidation', (_req, _reply, done) => { withFeatures(features, done); });
@@ -75,15 +77,18 @@ export async function buildApp(deps: AppDeps): Promise<FastifyInstance> {
       featureRoutes.push({ method, url: r.url, requires: [...(mounting ? [mounting] : []), ...(r.config?.features ? [r.config.features] : [])] });
     }
   });
-  const SPA_CSP = spaCsp([publicConfig.brand.logoUrl, publicConfig.brand.faviconUrl]);
+  const SPA_CSP = spaCsp([publicConfig.brand.logoUrl, publicConfig.brand.logoDarkUrl, publicConfig.brand.faviconUrl]);
   app.decorateRequest('ctx', null as never);
 
   await app.register(cookie);
+  // BRAND_DOMAIN is the only origin allowed to call the API from a browser, with cookies. Same-origin requests need none of this.
+  await app.register(cors, { credentials: true, methods: ['GET', 'HEAD', 'POST', 'PUT', 'PATCH', 'DELETE'], allowedHeaders: ['content-type', 'x-csrf-token'], maxAge: 600,
+    origin: (origin, cb) => { cb(null, !!origin && allowedCorsOrigin(env, origin)); } });
   // CSP is set per response: strict 'none' for API/JSON, sandboxed for branding files, same-origin for the SPA.
   await app.register(helmet, { contentSecurityPolicy: false, crossOriginResourcePolicy: { policy: 'same-origin' } });
   app.addHook('onSend', async (req, reply) => {
     const u = req.url;
-    reply.header('content-security-policy', u.startsWith('/api/') || u.startsWith('/health') || u === '/ready' ? API_CSP : u.startsWith('/branding/') ? ASSET_CSP : SPA_CSP);
+    reply.header('content-security-policy', u.startsWith('/api/') || u.startsWith('/health') || u === '/ready' ? API_CSP : u.startsWith('/brand/') ? ASSET_CSP : SPA_CSP);
   });
   await app.register(rateLimit, { global: true, max: env.RATE_LIMIT_PER_MINUTE, timeWindow: '1 minute' });
   await app.register(multipart, { limits: { fileSize: env.STORAGE_MAX_FILE_MB * 1024 * 1024, files: 1, fields: 10, parts: 12, fieldSize: 10_000 } });
@@ -200,8 +205,8 @@ export async function buildApp(deps: AppDeps): Promise<FastifyInstance> {
     await app.register(plugin, { prefix: `/api/v1/${path}` });
     mounting = null;
   }
-  const branding = env.BRANDING_DIR ? registerBrandingAssets(env.BRANDING_DIR, [env.BRAND_LOGO_URL, env.BRAND_FAVICON_URL]) : null;
-  registerWeb(app, env.WEB_DIST_DIR ?? null, publicConfig, branding);
+  const brandFiles = registerBrandAssets(deps.brandDirOverride ?? BRAND_MOUNT, [env.BRAND_LOGO_URL, env.BRAND_LOGO_DARK_URL, env.BRAND_FAVICON_URL]);
+  registerWeb(app, env.WEB_DIST_DIR ?? null, publicConfig, brandFiles);
 
   return app;
 }
