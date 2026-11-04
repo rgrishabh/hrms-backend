@@ -17,7 +17,7 @@ Every module in the feature registry (34) is built and `available`; none is `pla
 | 8 | Roles & permissions | 🟡 | 12 system roles, segregation of duties, grantable-role limits, server-side checks; TOTP MFA enforced for privileged roles; custom roles enforced from `tenant_roles` | Custom-role management API/UI ⬜ |
 | 9 | Employee information | ✅ | Master, history, import, duplicates, encrypted bank details, statutory IDs (PAN encrypted, UAN, ESIC), documents with restricted access and expiry; emergency contacts, addresses, nominees, education, previous employment, with employee changes to the verified sections approved by HR (docs/EMPLOYEE_RECORD.md) | |
 | 10 | Recruitment & lifecycle | ✅ | Requisitions, candidates with consent and erasure, pipeline, blind panel feedback, approved offers, hire; onboarding / exit checklists, probation, separations, exit interview, access ended after last working day (docs/RECRUITMENT.md, docs/LIFECYCLE.md) | Offer-letter documents, careers page ⬜ |
-| 11 | Attendance, shifts, rosters | 🟡 | Engine (calc v3), overnight shifts, grace, half day, weekly off, holidays, regularization, locking; overtime with pay or compensatory off (docs/OVERTIME.md); field duty as paid on-duty days (docs/FIELD_DUTY.md) | Rotating rosters ⬜; offline mobile queue ⬜ |
+| 11 | Attendance, shifts, rosters | ✅ | Engine (calc v3), overnight shifts, grace, half day, weekly off, holidays, regularization, locking; rotating rosters with staggered crews and one-day overrides, followed by attendance and leave (docs/ATTENDANCE.md); overtime with pay or compensatory off (docs/OVERTIME.md); field duty as paid on-duty days (docs/FIELD_DUTY.md) | Employee swap requests ⬜; offline mobile queue ⬜ (§13) |
 | 12 | Biometric integration | 🟡 | Vendor-neutral push contract, device keys, drift, dedupe, unmapped queue, reprocessing, health | Vendor-specific adapters 🔒 (need the actual hardware/API) |
 | 13 | Mobile attendance | 🟡 | Responsive web, policy-driven location | Offline queueing, native apps ⬜ |
 | 14 | Leave & holidays | ✅ | Configurable types, append-only ledger, accruals, carry/lapse, half days, sandwich rule, approval, cancellation with reversal, comp-off credit from overtime, notifications, scheduled jobs (docs/LEAVE.md) | Leave encashment outside F&F ⬜; attachments on leave ⬜ |
@@ -47,7 +47,7 @@ Every module in the feature registry (34) is built and `available`; none is `pla
 1. ~~Employee record completion~~ (done: docs/EMPLOYEE_RECORD.md).
 2. ~~Workflow delegation and escalation~~ (done: docs/APPROVALS.md).
 3. **Custom-role management**: create and edit organization roles within the grantable-permission limits.
-4. **Rotating shift rosters.**
+4. ~~Rotating shift rosters~~ (done: docs/ATTENDANCE.md → Rotating rosters).
 5. **Travel per diem and mileage.**
 6. **XLSX export** for reports and registers.
 7. **Tax declarations, then Form 16 / 24Q / ECR**: only after the compliance register review (INDIAN_PAYROLL_COMPLIANCE.md).

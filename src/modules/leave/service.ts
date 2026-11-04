@@ -1,5 +1,6 @@
 import { Decimal } from 'decimal.js';
 import type { Db } from '../../db/tx.js';
+import { scheduleFor } from '../attendance/roster.js';
 import { getSettingValue } from '../../core/settings/service.js';
 import { badRequest } from '../../core/http/errors.js';
 import { addDays, dateRange, daysBetween, weekday } from '../attendance/time.js';
@@ -51,13 +52,17 @@ export async function loadEmployee(db: Db, tenantId: string, employeeId: string)
   return r.rows[0] ?? null;
 }
 
-/** Non-working dates (weekly offs + non-optional holidays) for an employee's branch within [from, to]. */
-export async function nonWorkingDates(db: Db, tenantId: string, branchId: string, from: string, to: string): Promise<Set<string>> {
+/**
+ * Non-working dates (weekly offs + non-optional holidays) for an employee's branch within [from, to]. With the employee,
+ * a rotating roster (or a one-day override) decides their days off instead of the weekly-off setting.
+ */
+export async function nonWorkingDates(db: Db, tenantId: string, branchId: string, from: string, to: string, employeeId?: string): Promise<Set<string>> {
   const weeklyOffs = await getSettingValue<number[]>(db, tenantId, 'attendance.weekly_offs', branchId);
   const hol = await db.query<{ holiday_date: string }>(`SELECT holiday_date FROM holidays WHERE tenant_id=$1 AND NOT optional
     AND (branch_id IS NULL OR branch_id=$2) AND holiday_date BETWEEN $3 AND $4`, [tenantId, branchId, from, to]);
   const out = new Set(hol.rows.map((h) => h.holiday_date));
-  for (const d of dateRange(from, to)) if (weeklyOffs.includes(weekday(d))) out.add(d);
+  const plan = employeeId ? (await scheduleFor(db, tenantId, [employeeId], from, to)).get(employeeId) : undefined;
+  for (const d of dateRange(from, to)) if (plan?.get(d)?.off ?? weeklyOffs.includes(weekday(d))) out.add(d);
   return out;
 }
 
