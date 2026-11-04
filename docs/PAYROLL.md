@@ -43,7 +43,7 @@ Modules: `payroll` (components, salaries, runs, exports), `payroll.payslips` (em
 6. **Paid:** record the bank reference once the transfer is done.
 
 **Exports** (finalized runs; the register is available any time; every export is audited):
-- Payroll register.
+- Payroll register, as CSV or Excel (`register.xlsx`: employee codes stay text, days and amounts are numbers). Bank and statutory files stay CSV, in the layouts the bank or portal expects.
 - Bank file: full account numbers only with `employees.bank.read`, otherwise masked.
 - PF and ESI contribution files: inputs to the portal formats. Check them against the current ECR / ESI upload specification before uploading.
 

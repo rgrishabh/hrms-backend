@@ -3,6 +3,7 @@ import pg from 'pg';
 import { randomBytes } from 'node:crypto';
 import type { FastifyInstance } from 'fastify';
 import { makeApp, Client, ownerQuery } from './helpers.js';
+import { readXlsx } from './helpers.js';
 import { TEST_OWNER_URL } from './env.js';
 import { generateDemo } from '../src/db/demo.js';
 import { addDays, localDate } from '../src/modules/attendance/time.js';
@@ -133,6 +134,14 @@ describe('reports', () => {
     expect(r.totals).toMatchObject({ employees: 3, gross: 90000, deductions: 6000, net: 84000, employer_cost: 95400, lop_days: 3 });
     const csv = await as.payroll!.get('/api/v1/reports/payroll_cost/export.csv');
     expect(csv.body).toContain('Total,3,90000.00,6000.00,84000.00,95400.00,3');
+    // The same report as Excel: numbers stay numbers, totals bold (money style 7).
+    const x = await as.payroll!.get('/api/v1/reports/payroll_cost/export.xlsx');
+    expect(x.headers['content-type']).toBe('application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+    expect(x.headers['content-disposition']).toMatch(/payroll_cost-\d{4}-\d{2}-\d{2}\.xlsx/);
+    const sheet = readXlsx(x.rawPayload)['xl/worksheets/sheet1.xml']!;
+    expect(sheet).toContain('<t xml:space="preserve">Total</t>');
+    expect(sheet).toMatch(/s="7"><v>90000<\/v>/);
+    expect(readXlsx(x.rawPayload)['xl/workbook.xml']).toContain('name="Payroll cost"');
     expect((await run('payroll', 'payroll_cost', 'groupBy=department')).totals!.net).toBe(84000);
   });
 

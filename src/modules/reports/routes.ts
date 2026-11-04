@@ -4,6 +4,7 @@ import { tenantActor, requireFeature, type TenantActor } from '../../core/http/c
 import { audit } from '../../core/audit/audit.js';
 import { badRequest, conflict, notFound } from '../../core/http/errors.js';
 import { csv } from '../../core/http/csv.js';
+import { xlsx, XLSX_TYPE } from '../../core/http/xlsx.js';
 import { Uuid } from '../../core/http/pagination.js';
 import { evaluateFeatures } from '../../core/features/state.js';
 import { orgToday } from '../competency/service.js';
@@ -16,6 +17,13 @@ export const REPORT_PERMISSIONS = [...new Set(REPORTS.flatMap((r) => [...r.acces
 
 const viewer = (a: TenantActor): Viewer => ({ userId: a.user.userId, employeeId: a.user.employeeId, has: a.has });
 const ADV = 'reports.advanced';
+
+/** The same report as an Excel workbook: typed columns (money, dates, percentages), bold header and totals. */
+function sendXlsx(reply: FastifyReply, name: string, title: string, columns: Column[], rows: Row[], totals: Row | null) {
+  const body = xlsx([{ name: title, columns: columns.map((c) => ({ label: c.label, type: c.type })), rows: rows.map((r) => columns.map((c) => r[c.key])),
+    totals: totals ? columns.map((c, i) => (i === 0 ? 'Total' : totals[c.key])) : null }]);
+  return reply.header('content-type', XLSX_TYPE).header('content-disposition', `attachment; filename="${name}.xlsx"`).header('cache-control', 'private, no-store').send(body);
+}
 
 function sendCsv(reply: FastifyReply, name: string, columns: Column[], rows: Row[], totals: Row | null) {
   const cell = (type: string, v: unknown) => (v == null ? '' : type === 'money' ? Number(v).toFixed(2) : v);
@@ -184,12 +192,13 @@ export async function reportRoutes(app: FastifyInstance) {
     const s = await loadSnapshot(a, id);
     return { id: s.id, key: s.report_key, name: s.name, params: s.params, scope: s.scope, columns: s.columns, rows: s.rows, totals: s.totals, notes: s.notes, generatedAt: s.generated_at };
   });
-  app.get('/snapshots/:id/export.csv', async (req, reply) => {
+  for (const format of ['csv', 'xlsx'] as const) app.get(`/snapshots/:id/export.${format}`, async (req, reply) => {
     const a = tenantActor(req);
     const { id } = z.object({ id: Uuid }).parse(req.params);
     const s = await loadSnapshot(a, id);
-    await a.tx((db) => audit(db, { ...a.auditBase, action: 'reports.exported', category: 'access', targetType: 'report_snapshot', targetId: id, metadata: { report: s.report_key, rows: s.rows.length } }));
-    return sendCsv(reply, `${s.report_key}-${new Date(s.generated_at).toISOString().slice(0, 10)}`, s.columns, s.rows, s.totals);
+    await a.tx((db) => audit(db, { ...a.auditBase, action: 'reports.exported', category: 'access', targetType: 'report_snapshot', targetId: id, metadata: { report: s.report_key, rows: s.rows.length, format } }));
+    const name = `${s.report_key}-${new Date(s.generated_at).toISOString().slice(0, 10)}`;
+    return format === 'csv' ? sendCsv(reply, name, s.columns, s.rows, s.totals) : sendXlsx(reply, name, s.name, s.columns, s.rows, s.totals);
   });
 
   // ------------------------------------------------------------ run a report
@@ -200,12 +209,12 @@ export async function reportRoutes(app: FastifyInstance) {
     return { key: def.key, name: def.name, generatedAt: new Date().toISOString(), ...r };
   });
 
-  /** CSV export: audited (who exported which report with which parameters). */
-  app.get('/:key/export.csv', async (req, reply) => {
+  /** CSV or Excel export: audited (who exported which report with which parameters, in which format). */
+  for (const format of ['csv', 'xlsx'] as const) app.get(`/:key/export.${format}`, async (req, reply) => {
     const a = tenantActor(req);
     const { key } = z.object({ key: z.string().max(60) }).parse(req.params);
     const { def, params, today, columns, rows, totals, scope } = await a.tx((db) => runReport(db, a.tenantId, key, req.query, viewer(a)));
-    await a.tx((db) => audit(db, { ...a.auditBase, action: 'reports.exported', category: 'access', targetType: 'report', targetId: def.key, metadata: { params, scope, rows: rows.length } }));
-    return sendCsv(reply, `${def.key}-${today}`, columns, rows, totals);
+    await a.tx((db) => audit(db, { ...a.auditBase, action: 'reports.exported', category: 'access', targetType: 'report', targetId: def.key, metadata: { params, scope, rows: rows.length, format } }));
+    return format === 'csv' ? sendCsv(reply, `${def.key}-${today}`, columns, rows, totals) : sendXlsx(reply, `${def.key}-${today}`, def.name, columns, rows, totals);
   });
 }

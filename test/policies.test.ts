@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import type { FastifyInstance } from 'fastify';
 import { makeApp, createTenant, Client, ownerQuery, multipart, PASSWORD, type TenantFixture } from './helpers.js';
+import { readXlsx } from './helpers.js';
 import { LocalStore, setStore } from '../src/core/storage/index.js';
 import { hashPassword } from '../src/core/crypto/index.js';
 import { localDate } from '../src/modules/attendance/time.js';
@@ -81,6 +82,8 @@ describe('policies', () => {
     const csv = (await hr.get(`/api/v1/policies/versions/${v1}/acknowledgements.csv`)).body;
     expect(csv.split('\r\n')[0]).toBe('employee_code,name,branch,department,acknowledged_at,content_sha256');
     expect((await ownerQuery(`SELECT 1 FROM audit_logs WHERE tenant_id=$1 AND action='policies.acknowledgements_exported'`, [T.id])).length).toBe(1);
+    const book = readXlsx((await hr.get(`/api/v1/policies/versions/${v1}/acknowledgements.xlsx`)).rawPayload);
+    expect(book['xl/worksheets/sheet1.xml']).toContain('<t xml:space="preserve">Content SHA-256</t>');
     // Evidence cannot be altered by the application role.
     await expect(ownerQuery(`SET ROLE hrms_app; UPDATE policy_acknowledgements SET acknowledged_at=now()`)).rejects.toThrow(/permission denied/);
   });
