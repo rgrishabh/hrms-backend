@@ -5,6 +5,7 @@ import { fileURLToPath } from 'node:url';
 import { hashPassword } from '../core/crypto/index.js';
 import { pgSsl } from './ssl.js';
 import { recalculateRange } from '../modules/attendance/service.js';
+import { countDays, nonWorkingDates } from '../modules/leave/service.js';
 import { contentHash } from '../modules/policies/routes.js';
 import type { Db } from './tx.js';
 
@@ -147,6 +148,18 @@ export async function generateDemo(c: pg.Client | pg.PoolClient, opts: { passwor
   }
   const uid = (k: string) => personas[k]!.userId!;
 
+  // ---- leave plan (recorded after the leave types exist): a few people took casual or sick leave in the last weeks
+  const leavePlan: { e: Emp; start: string; end: string; code: 'CL' | 'SL' }[] = [];
+  const onLeave = new Set<string>();
+  const personaIds = new Set(Object.values(personas).map((p) => p.id));
+  for (const e of [personas.analyst!, ...emps.filter((x) => !personaIds.has(x.id) && x.id !== joiner.id && x.joined < addDays(today, -60))]) {
+    if (e !== personas.analyst && rnd() > 0.3) continue;
+    const start = addDays(today, -int(3, 26)); const end = addDays(start, rnd() < 0.7 ? 0 : 1);
+    if (start < `${year}-01-01`) continue;
+    leavePlan.push({ e, start, end, code: rnd() < 0.6 ? 'CL' : 'SL' });
+    for (let d = start; d <= end; d = addDays(d, 1)) onLeave.add(`${e.id}:${d}`);
+  }
+
   // ---- attendance: last 30 days of punches, calculated by the engine
   const from = addDays(today, -30); const to = addDays(today, -1);
   let punches = 0;
@@ -154,6 +167,7 @@ export async function generateDemo(c: pg.Client | pg.PoolClient, opts: { passwor
     if (e.joined > to || e.id === joiner.id) continue;
     for (let d = from > e.joined ? from : e.joined; d <= to; d = addDays(d, 1)) {
       if (new Date(`${d}T00:00:00Z`).getUTCDay() === 0) continue; // Sunday weekly off
+      if (onLeave.has(`${e.id}:${d}`)) continue;
       const r = rnd();
       if (r < 0.035) continue; // absent
       const late = rnd() < 0.15 ? int(12, 55) : int(-20, 8);
@@ -180,6 +194,22 @@ export async function generateDemo(c: pg.Client | pg.PoolClient, opts: { passwor
     for (let m = 1; m <= Number(today.slice(5, 7)); m++) await runAccruals(db as never, tid, year, m, null);
   }
   say('leave: CL/SL/EL/LWP with accruals to date (example policy — set your own)');
+  // approved leave history, written as the approval flow writes it: request, ledger debit, attendance recalculated (on_leave)
+  const typeId = Object.fromEntries((await q<{ code: string; id: string }>('SELECT code, id FROM leave_types WHERE tenant_id=$1', [tid])).rows.map((r) => [r.code, r.id]));
+  let leaveDays = 0;
+  for (const l of leavePlan) {
+    const branch = (await q<{ branch_id: string }>('SELECT branch_id FROM employees WHERE id=$1', [l.e.id])).rows[0]!.branch_id;
+    const days = countDays(l.start, l.end, 'full', 'full', await nonWorkingDates(db, tid, branch, l.start, l.end), false).days.toNumber();
+    if (!(days > 0)) continue;
+    const rid = (await q<{ id: string }>(`INSERT INTO leave_requests (tenant_id, employee_id, leave_type_id, leave_year, start_date, end_date, days, reason, status, requested_by, created_at, decided_at)
+      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,'approved',$9,$5::date - 3,$5::date - 2) RETURNING id`,
+      [tid, l.e.id, typeId[l.code], year, l.start, l.end, days, l.code === 'CL' ? 'Personal work at home' : 'Fever, advised rest', uid('hr.head')])).rows[0]!.id;
+    await q(`INSERT INTO leave_ledger (tenant_id, employee_id, leave_type_id, leave_year, entry_type, days, request_id, reference, note, created_by)
+      VALUES ($1,$2,$3,$4,'consumption',$5,$6,$7,$8,$9)`, [tid, l.e.id, typeId[l.code], year, -days, rid, `request:${rid}:consume`, `Leave ${l.start} to ${l.end}`, uid('hr.head')]);
+    await recalculateRange(db, tid, l.e.id, l.start, l.end);
+    leaveDays += days;
+  }
+  say(`leave history: ${leavePlan.length} approved requests, ${leaveDays} days`);
 
   // ---- expenses
   const cat: Record<string, string> = {};
