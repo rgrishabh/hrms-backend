@@ -87,6 +87,16 @@ export const SETTINGS: readonly SettingDefinition[] = [
   def({ key: 'field_duty.hr_approval', group: 'attendance', feature: 'field_duty', label: 'Field duty: HR approves after the manager', description: 'When off, the reporting manager\'s approval is enough. HR always approves when the employee has no manager with an account.',
     control: 'boolean', schema: z.boolean(), default: false, scopes: ['tenant'], editPermission: 'field_duty.manage' }),
 
+  // Travel (the organization's travel policy; nothing here is statutory).
+  def({ key: 'travel.min_notice_days', group: 'general', feature: 'travel', label: 'Travel: days of notice', description: 'How many days before a trip starts it must be requested (0 = up to the day itself).',
+    control: 'number', schema: z.number().int().min(0).max(60), default: 0, scopes: ['tenant'], editPermission: 'travel.manage' }),
+  def({ key: 'travel.max_days', group: 'general', feature: 'travel', label: 'Travel: longest trip (days)', description: 'Longer travel is split into several requests.',
+    control: 'number', schema: z.number().int().min(1).max(180), default: 60, scopes: ['tenant'], editPermission: 'travel.manage' }),
+  def({ key: 'travel.max_advance_percent', group: 'general', feature: 'travel', label: 'Travel: largest advance (% of the estimate)', description: 'An advance can be at most this share of the trip\'s estimated cost.',
+    control: 'number', schema: z.number().int().min(0).max(100), default: 80, scopes: ['tenant'], editPermission: 'travel.manage' }),
+  def({ key: 'travel.finance_approval_above', group: 'general', feature: 'travel', label: 'Travel: finance approves estimates from (₹)', description: 'Trips estimated at or above this also need finance approval. Empty = only trips with an advance, trips abroad and trips of people without a manager.',
+    control: 'number', schema: z.number().min(0).nullable(), default: null, scopes: ['tenant'], editPermission: 'travel.manage' }),
+
   def({ key: 'leave.year_start_month', group: 'attendance', feature: 'leave', label: 'Leave year starts in', description: 'Month in which the leave year begins (balances, accruals and carry-forward follow this year).',
     control: 'select', options: ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'].map((m, i) => ({ value: String(i + 1), label: m })),
     schema: z.coerce.number().int().min(1).max(12), default: 1, scopes: ['tenant'], editPermission: 'leave.manage' }),
