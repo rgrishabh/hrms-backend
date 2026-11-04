@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import type { FastifyInstance } from 'fastify';
 import { makeApp, createTenant, Client, ownerQuery, type TenantFixture } from './helpers.js';
-import { activeSalary, compute, createRun, day, itemOf, seedComponents } from './payroll-helpers.js';
+import { activeRule, activeSalary, compute, createRun, day, itemOf, lineOf, seedComponents } from './payroll-helpers.js';
 import { calculateDay, type DayInput } from '../src/modules/attendance/calc.js';
 
 const MODULES = 'default,payroll,payroll.payslips,payroll.statutory';
@@ -40,5 +40,45 @@ describe('F-1 half-day leave and loss of pay', () => {
     const id = await createRun(pay, T, period);
     await compute(pay, id);
     expect((await itemOf(pay, id, emp))!.lop_days).toBe(expected);
+  });
+});
+
+describe('F-5 ESI contribution periods through a run', () => {
+  const ESI = { employeeRate: 1, employerRate: 3, wageThreshold: 21000, rounding: 'up' };
+  let W: TenantFixture; let p: Client;
+  beforeAll(async () => {
+    W = await createTenant();
+    p = await Client.login(app, W.host, W.users.payroll!.email);
+    await seedComponents(W);
+    await activeRule(W, 'esi', 'IN', ESI);
+  });
+
+  it('a raise mid-period keeps cover until the next period; a cut mid-period does not start it', async () => {
+    const raised = W.users.employee!.employeeId!; const cut = W.users.other!.employeeId!;
+    await activeSalary(W, raised, '2024-01-01', { BASIC: 20000 });
+    await activeSalary(W, raised, '2026-07-01', { BASIC: 25000 });
+    await activeSalary(W, cut, '2024-01-01', { BASIC: 25000 });
+    await activeSalary(W, cut, '2026-07-01', { BASIC: 20000 });
+    const july = await createRun(p, W, '2026-07');
+    await compute(p, july);
+    expect(lineOf(await itemOf(p, july, raised), 'ESI_EE')).toBe(250);
+    expect(lineOf(await itemOf(p, july, cut), 'ESI_EE')).toBeUndefined();
+    const oct = await createRun(p, W, '2026-10');
+    await compute(p, oct);
+    expect(lineOf(await itemOf(p, oct, raised), 'ESI_EE')).toBeUndefined();
+    expect(lineOf(await itemOf(p, oct, cut), 'ESI_EE')).toBe(200);
+    const jan = await createRun(p, W, '2027-01');   // same contribution period as October
+    await compute(p, jan);
+    expect(lineOf(await itemOf(p, jan, cut), 'ESI_EE')).toBe(200);
+  });
+
+  it('a joiner is judged on their first salary in the period', async () => {
+    const J = W.users.manager!.employeeId!;
+    await ownerQuery(`UPDATE employees SET date_of_joining='2026-08-15' WHERE id=$1`, [J]);
+    await activeSalary(W, J, '2026-08-15', { BASIC: 20000 });
+    await activeSalary(W, J, '2026-09-01', { BASIC: 30000 });
+    const sep = await createRun(p, W, '2026-09');
+    await compute(p, sep);
+    expect(lineOf(await itemOf(p, sep, J), 'ESI_EE')).toBe(300);
   });
 });

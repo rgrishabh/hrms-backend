@@ -7,7 +7,7 @@ import { z } from 'zod';
  * is missing the deduction is NOT guessed — a warning is raised instead.
  * CALC_VERSION changes whenever results for the same inputs would change.
  */
-export const CALC_VERSION = 2;
+export const CALC_VERSION = 3;
 
 const pct = z.number().min(0).max(100);
 const money = z.number().min(0).max(1e9);
@@ -40,6 +40,8 @@ export interface CalcInput {
   adjustments: Adjustment[];
   statutory: { pfExcluded: boolean; regime: 'new' | 'old'; ptState: string | null };
   rules: { pf?: PfParams; esi?: EsiParams; pt?: PtParams; lwf?: LwfParams; tds?: TdsParams };
+  /** Salary at the start of the ESI contribution period, which decides cover for the whole period. Default: `amounts`. */
+  esiCoverageAmounts?: Record<string, number>;
   /** Which kinds the deployment expects (warn when the rule is missing). */
   expect: RuleKind[];
 }
@@ -60,14 +62,11 @@ export function progressiveTax(income: Decimal, slabs: { upTo: number | null; ra
   return tax;
 }
 
-export function calculate(i: CalcInput): CalcResult {
-  const warnings: string[] = [];
-  const factor = i.daysInPeriod > 0 ? new Decimal(i.paidDays).div(i.daysInPeriod) : new Decimal(0);
-  const comps = [...i.components].sort((a, b) => (a.calc === b.calc ? a.position - b.position : a.calc === 'fixed' ? -1 : 1));
+/** Each component's amount for a salary, fixed components scaled by `factor` where they prorate; percents follow their base. */
+function componentAmounts(comps: Component[], amounts: Record<string, number>, factor: Decimal, warnings: string[] = []) {
   const amount = new Map<string, Decimal>();
-  const lines: Line[] = [];
   for (const c of comps) {
-    const v = i.amounts[c.code];
+    const v = amounts[c.code];
     if (v == null) continue;
     let a: Decimal;
     if (c.calc === 'fixed') a = new Decimal(v).times(c.prorate ? factor : 1);
@@ -76,19 +75,43 @@ export function calculate(i: CalcInput): CalcResult {
       if (missing.length) warnings.push(`${c.code}: base ${missing.join(', ')} not in this salary`);
       a = c.base_codes.reduce((s, b) => s.plus(amount.get(b) ?? 0), new Decimal(0)).times(v).div(100);
     }
-    a = r0(a);
-    amount.set(c.code, a);
-    lines.push({ code: c.code, name: c.name, kind: c.kind, amount: n(a) });
+    amount.set(c.code, r0(a));
   }
+  return amount;
+}
+
+/** Full-month ESI wages of a salary: what cover is judged on. */
+function esiFullWage(comps: Component[], amounts: Record<string, number>) {
+  const full = componentAmounts(comps, amounts, new Decimal(1));
+  return comps.filter((c) => c.kind === 'earning' && c.esi_wage).reduce((s, c) => s.plus(full.get(c.code) ?? 0), new Decimal(0));
+}
+
+/** The year's tax on an annual taxable income: slabs, rebate at or under the limit, then cess. */
+function annualTax(income: Decimal, t: TdsParams) {
+  const taxable = Decimal.max(0, income.minus(t.standardDeduction));
+  let tax = progressiveTax(taxable, t.slabs);
+  if (taxable.lte(t.rebateLimit)) tax = Decimal.max(0, tax.minus(t.rebateMax));
+  return { taxable, tax: tax.times(new Decimal(1).plus(new Decimal(t.cessRate).div(100))) };
+}
+
+export function calculate(i: CalcInput): CalcResult {
+  const warnings: string[] = [];
+  const factor = i.daysInPeriod > 0 ? new Decimal(i.paidDays).div(i.daysInPeriod) : new Decimal(0);
+  const comps = [...i.components].sort((a, b) => (a.calc === b.calc ? a.position - b.position : a.calc === 'fixed' ? -1 : 1));
+  const amount = componentAmounts(comps, i.amounts, factor, warnings);
+  const lines: Line[] = [];
+  for (const c of comps) { const a = amount.get(c.code); if (a) lines.push({ code: c.code, name: c.name, kind: c.kind, amount: n(a) }); }
   for (const [idx, a] of i.adjustments.entries()) lines.push({ code: a.code ?? `ADJ${idx + 1}`, name: a.label, kind: a.kind, amount: n(r0(new Decimal(a.amount))), ...(a.basis ? { basis: a.basis } : {}) });
 
   const sum = (pred: (c: Component) => boolean) => comps.filter((c) => c.kind === 'earning' && pred(c)).reduce((s, c) => s.plus(amount.get(c.code) ?? 0), new Decimal(0));
   const adjEarnings = i.adjustments.filter((a) => a.kind === 'earning');
   const gross = sum(() => true).plus(adjEarnings.reduce((s, a) => s.plus(r0(new Decimal(a.amount))), new Decimal(0)));
-  const taxableMonthly = sum((c) => c.taxable).plus(adjEarnings.filter((a) => a.taxable).reduce((s, a) => s.plus(r0(new Decimal(a.amount))), new Decimal(0)));
+  const taxableMonthly = sum((c) => c.taxable);
+  const taxableOneOff = adjEarnings.filter((a) => a.taxable).reduce((s, a) => s.plus(r0(new Decimal(a.amount))), new Decimal(0));
   const pfWage = sum((c) => c.pf_wage);
   const esiWage = sum((c) => c.esi_wage);
-  // Coverage is decided on the regular ESI wages; contributions also apply to earnings flagged esiWage (overtime).
+  // Contributions apply to the ESI wages paid and to earnings flagged esiWage (overtime). Cover is decided on the full
+  // monthly wage at the start of the contribution period, never on prorated pay (DECISIONS.md D25).
   const esiContribution = esiWage.plus(adjEarnings.filter((a) => a.esiWage).reduce((s, a) => s.plus(r0(new Decimal(a.amount))), new Decimal(0)));
   const missingRule = (k: RuleKind, what: string) => { if (i.expect.includes(k)) warnings.push(`${what}: no active, verified ${k.toUpperCase()} rule for this period — not deducted`); };
 
@@ -108,7 +131,7 @@ export function calculate(i: CalcInput): CalcResult {
   }
   // ESI
   if (!i.rules.esi) missingRule('esi', 'ESI');
-  else if (esiWage.gt(0) && esiWage.lte(i.rules.esi.wageThreshold)) {
+  else if (esiWage.gt(0) && esiFullWage(comps, i.esiCoverageAmounts ?? i.amounts).lte(i.rules.esi.wageThreshold)) {
     const e = i.rules.esi; const rnd = e.rounding === 'up' ? up0 : r0;
     lines.push({ code: 'ESI_EE', name: 'ESI (employee)', kind: 'deduction', amount: n(rnd(esiContribution.times(e.employeeRate).div(100))), basis: `ESI wages ${n(esiContribution)}` });
     lines.push({ code: 'ESI_ER', name: 'ESI (employer)', kind: 'employer', amount: n(rnd(esiContribution.times(e.employerRate).div(100))) });
@@ -127,16 +150,16 @@ export function calculate(i: CalcInput): CalcResult {
     if (i.rules.lwf.employee > 0) lines.push({ code: 'LWF_EE', name: 'Labour welfare fund (employee)', kind: 'deduction', amount: i.rules.lwf.employee });
     if (i.rules.lwf.employer > 0) lines.push({ code: 'LWF_ER', name: 'Labour welfare fund (employer)', kind: 'employer', amount: i.rules.lwf.employer });
   }
-  // TDS: projection from this month's taxable pay; no declarations, no previous-month true-up (see docs/PAYROLL.md).
+  // TDS: the regular salary is projected over the year and spread over 12 months; a one-off (adjustment, overtime,
+  // encashment) adds the extra tax it causes this year, all in this month. No declarations or previous-month true-up
+  // (docs/PAYROLL.md, DECISIONS.md D25).
   if (!i.rules.tds) missingRule('tds', `TDS (${i.statutory.regime} regime)`);
   else {
     const t = i.rules.tds;
-    const annual = Decimal.max(0, taxableMonthly.times(12).minus(t.standardDeduction));
-    let tax = progressiveTax(annual, t.slabs);
-    if (annual.lte(t.rebateLimit)) tax = Decimal.max(0, tax.minus(t.rebateMax));
-    tax = tax.times(new Decimal(1).plus(new Decimal(t.cessRate).div(100)));
-    const monthly = r0(tax.div(12));
-    if (monthly.gt(0)) lines.push({ code: 'TDS', name: 'Income tax (TDS)', kind: 'deduction', amount: n(monthly), basis: `projected taxable ${n(r0(annual))}` });
+    const regular = annualTax(taxableMonthly.times(12), t);
+    const withOneOff = annualTax(taxableMonthly.times(12).plus(taxableOneOff), t);
+    const monthly = r0(regular.tax.div(12).plus(withOneOff.tax.minus(regular.tax)));
+    if (monthly.gt(0)) lines.push({ code: 'TDS', name: 'Income tax (TDS)', kind: 'deduction', amount: n(monthly), basis: `projected taxable ${n(r0(withOneOff.taxable))}` });
   }
 
   const deductions = lines.filter((l) => l.kind === 'deduction').reduce((s, l) => s.plus(l.amount), new Decimal(0));

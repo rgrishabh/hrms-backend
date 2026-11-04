@@ -83,3 +83,11 @@ Each customer gets its own Compose project. Postgres has no published port and s
 
 ## D24 — Technical authorization reuses the approval engine, with competence-specific guards
 A request is an approval request (`lab_authorization`) routed to holders of `competency.authorize`, so it appears in the normal inbox and notifications. On top of the engine's requester-cannot-approve rule, the handler refuses an approver who *is* the person being authorized, re-checks training prerequisites at approval time, and a database CHECK rejects `authorized_by = requested_by`. "In force" is computed live (status + review date + training validity today) rather than by auto-suspending, so a lapse is visible immediately and the quality manager keeps the decision to suspend; overdue reviews are expired by a scheduled job with an event attributed to the system.
+
+## D25 — ESI contribution periods and TDS on one-off earnings
+**Context:** F-4 annualized one-offs for TDS, F-5 judged ESI cover on prorated pay. Both are legal treatments, so they sit in code as rules without any rate; rates stay in the verified register.
+**Options, ESI:** judge each month on current wage; judge on the wage at the start of the contribution period; a per-employee cover flag kept by HR.
+**Decision, ESI:** contribution periods are 1 April to 30 September and 1 October to 31 March. Cover for a whole period follows the full-month ESI wage (no proration, overtime excluded) at the period start, or the employee's first salary in the period if they joined later. A raise mid-period keeps cover until the period ends. A cut mid-period starts cover only at the next period. The threshold is the verified rule in force at the end of the payroll month.
+**Options, TDS:** annualize everything; spread the one-off over the remaining months; tax it fully in the month paid.
+**Decision, TDS:** each taxable adjustment, overtime and encashment is a one-off. Regular salary is projected to 12 months and its tax spread over 12. The one-off adds the difference between the year's tax with and without it, all in the month paid, including any rebate it forfeits.
+**Reason:** this is the mainstream Indian payroll treatment. YTD true-up, declarations and marginal relief at the rebate limit remain unimplemented. **Both need confirmation by a qualified reviewer; see `INDIAN_PAYROLL_COMPLIANCE.md`.**

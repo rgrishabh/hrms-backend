@@ -33,7 +33,7 @@ Modules: `payroll` (components, salaries, runs, exports), `payroll.payslips` (em
 
 1. **Create** a run for a legal entity and month (one regular run per entity and month) and **compute** it. Every active or leaving employee of the entity with an active salary is included.
    - **Employed days** = days in the month between joining and exit.
-   - **Loss of pay** (LOP) comes from calculated attendance: absent = 1, unresolved missing punch = 1 (setting `payroll.missing_punch_is_lop`), a half day not covered by paid leave = 0.5, unpaid leave = its fraction (also on a day otherwise worked or on field duty). Field duty (`on_duty`) is paid. Days without calculated attendance are paid and reported as warnings.
+   - **Loss of pay** (LOP) comes from calculated attendance: absent = 1, unresolved missing punch = 1 (setting `payroll.missing_punch_is_lop`), a half day = 0.5 for the half not worked, whether or not leave covers the other half, unpaid leave = its fraction (also on a day otherwise worked or on field duty). Field duty (`on_duty`) is paid. Days without calculated attendance are paid and reported as warnings.
    - **Paid days** = employed days − LOP. Proration = paid days / calendar days of the month.
    - **Loan instalments** (module `advances_loans`, docs/ADVANCES_LOANS.md) are deducted after everything else, never taking net pay below zero; a full-and-final run deducts the whole balance.
 2. **Adjust:** add one-off earnings/deductions (arrears, allowances, recoveries) and LOP corrections. Any change sends the run back to draft, so it must be recomputed.
@@ -56,9 +56,9 @@ Modules: `payroll` (components, salaries, runs, exports), `payroll.payslips` (em
 
 - Decimal arithmetic. Each line is rounded half-up to the rupee; ESI rounding follows its rule.
 - **PF:** employee = rate × (PF wages, capped if configured). Employer total = rate × base; EPS = EPS% × capped wages; EPF = employer total − EPS.
-- **ESI** applies when ESI wages ≤ the threshold in that month. Contribution-period continuity is **not** modelled.
+- **ESI** cover is fixed for each contribution period (April to September, October to March) by the full-month ESI wage at the period start, or the first salary in the period for a joiner. Contributions apply to wages actually paid. A qualified reviewer must confirm this (`DECISIONS.md` D25).
 - **PT** uses the slab of the month's gross, with a per-month override where set.
-- **TDS** is a **simple projection**: (this month's taxable pay × 12 − standard deduction) → slabs → rebate if within the limit → cess → ÷ 12. It does **not** use investment declarations, previous employment, previous months' actuals, surcharge or marginal relief. Correct it with adjustments where needed and reconcile annually.
+- **TDS** is a **simple projection**: (this month's regular taxable pay × 12 − standard deduction) → slabs → rebate if within the limit → cess → ÷ 12. A taxable one-off (adjustment, overtime, encashment) adds the extra tax it causes for the year, all in the month paid; a qualified reviewer must confirm this (`DECISIONS.md` D25). It does **not** use investment declarations, previous employment, previous months' actuals, surcharge or marginal relief. Correct it with adjustments where needed and reconcile annually.
 
 ## Permissions
 

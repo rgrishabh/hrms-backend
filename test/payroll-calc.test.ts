@@ -80,3 +80,44 @@ describe('payroll calculation', () => {
     expect(progressiveTax(new Decimal(300), slabs).toNumber()).toBe(30);
   });
 });
+
+describe('F-4 TDS on one-off earnings', () => {
+  const tds = { slabs: [{ upTo: 300000, rate: 0 }, { upTo: 600000, rate: 5 }, { upTo: null, rate: 10 }], standardDeduction: 50000, rebateLimit: 0, rebateMax: 0, cessRate: 0 };
+  const input = (adjustments: CalcInput['adjustments'], o: Partial<CalcInput> = {}) => base({ amounts: { BASIC: 50000 }, components: [comp('BASIC', { esi_wage: false })], adjustments, rules: { tds }, expect: [], ...o });
+
+  it('a one-off is taxed once on top of the annual salary, not annualized', () => {
+    expect(line(calculate(input([])), 'TDS')).toBe(1042);   // 550000 → 12500 / 12
+    const r = calculate(input([{ kind: 'earning', label: 'Bonus', amount: 100000, taxable: true }]));
+    // 12500/12 for the month, plus the whole tax the bonus adds to the year: tax(650000) 20000 − tax(550000) 12500.
+    expect(line(r, 'TDS')).toBe(1042 + 7500);
+  });
+
+  it('a non-taxable one-off does not change TDS', () => {
+    expect(line(calculate(input([{ kind: 'earning', label: 'Reimbursement', amount: 100000, taxable: false }])), 'TDS')).toBe(1042);
+  });
+
+  it('a one-off is taxed even when the salary alone owes nothing', () => {
+    const r = calculate(input([{ kind: 'earning', label: 'Encashment', amount: 100000, taxable: true }], { amounts: { BASIC: 25000 } }));
+    // salary 300000 − 50000 → 0 tax; with one-off 350000 → 2500, all in this month.
+    expect(line(r, 'TDS')).toBe(2500);
+  });
+});
+
+describe('F-5 ESI coverage', () => {
+  const esi = { employeeRate: 1, employerRate: 3, wageThreshold: 21000, rounding: 'up' as const };
+  const input = (o: Partial<CalcInput>) => base({ amounts: { BASIC: 30000 }, components: [comp('BASIC')], rules: { esi }, expect: [], ...o });
+
+  it('is decided on the full monthly wage: proration never brings someone into cover', () => {
+    expect(line(calculate(input({})), 'ESI_EE')).toBeUndefined();
+    expect(line(calculate(input({ paidDays: 15 })), 'ESI_EE')).toBeUndefined();
+  });
+
+  it('a covered employee on prorated pay contributes on the wages actually paid', () => {
+    expect(line(calculate(input({ amounts: { BASIC: 20000 }, paidDays: 15 })), 'ESI_EE')).toBe(100);
+  });
+
+  it('coverage follows the wage at the start of the contribution period', () => {
+    expect(line(calculate(input({ amounts: { BASIC: 25000 }, esiCoverageAmounts: { BASIC: 20000 } })), 'ESI_EE')).toBe(250);
+    expect(line(calculate(input({ amounts: { BASIC: 20000 }, esiCoverageAmounts: { BASIC: 25000 } })), 'ESI_EE')).toBeUndefined();
+  });
+});

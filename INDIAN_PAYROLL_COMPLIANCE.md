@@ -31,6 +31,13 @@ Columns: **Req** requirement · **Jurisdiction** · **Applicability assumptions*
 | C14 | Digital Personal Data Protection Act 2023 and rules: commencement, notices, consent, retention, data-principal rights | Central | Notified rules and effective dates at verification time | MeitY — https://www.meity.gov.in | — | Not verified |
 | C15 | GST on reimbursements / input tax credit treatment | Central/State | Finance policy | GST portal / CBIC — https://cbic-gst.gov.in | — | Not verified |
 
+## Treatments in code that a qualified reviewer must confirm
+
+These are the engine's legal treatments, not rates. They are the mainstream reading, chosen so the engine has a defined behaviour (`DECISIONS.md` D25 onward). They are not legal advice and have not been reviewed.
+
+- **ESI (C2):** contribution periods April to September and October to March; cover fixed by the full-month wage at the period start. A qualified reviewer must confirm this.
+- **TDS (C5):** taxable one-offs add their extra annual tax in the month paid; regular salary spreads over 12 months with no YTD true-up, declarations or marginal relief. A qualified reviewer must confirm this.
+
 ## Process to verify an item
 
 1. A qualified Indian payroll or legal reviewer reads the official source and records the exact URL, notification number and effective date.

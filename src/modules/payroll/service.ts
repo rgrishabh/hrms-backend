@@ -13,6 +13,12 @@ export function periodBounds(period: string) {
   return { start, end, days: daysBetween(start, end) + 1, month: m };
 }
 
+/** First day of the ESI contribution period holding `date`: 1 April to 30 September, 1 October to 31 March. */
+export function esiContributionStart(date: string) {
+  const y = Number(date.slice(0, 4)); const m = Number(date.slice(5, 7));
+  return m >= 4 && m <= 9 ? `${y}-04-01` : `${m >= 10 ? y : y - 1}-10-01`;
+}
+
 /** Active, verified rule of a kind for the period (latest effective_from on or before the period end). */
 async function rule(db: Db, tenantId: string, kind: RuleKind, scope: string, at: string) {
   const r = (await db.query<{ params: unknown }>(`SELECT params FROM statutory_rules WHERE tenant_id=$1 AND kind=$2 AND lower(scope)=lower($3) AND status='active'
@@ -105,8 +111,12 @@ export async function computeRun(db: Db, tenantId: string, runId: string) {
     }
     const regime = (e.tax_regime ?? 'new') as 'new' | 'old';
     const ptState = e.pt_state ?? e.branch_state ?? null;
+    // Salary in force when the contribution period began (or the earliest one since, for a joiner): decides ESI cover.
+    const cpStart = esiContributionStart(p.start);
+    const esiCover = (await db.query<{ amounts: Record<string, number> }>(`SELECT amounts FROM employee_salaries WHERE tenant_id=$1 AND employee_id=$2 AND status='active' AND effective_from <= $4::date
+      ORDER BY (effective_from <= $3::date) DESC, CASE WHEN effective_from <= $3::date THEN effective_from END DESC, effective_from ASC LIMIT 1`, [tenantId, e.id, cpStart, p.end])).rows[0];
     const input: CalcInput = {
-      month: p.month, daysInPeriod: p.days, paidDays, components, amounts: sal.amounts,
+      month: p.month, esiCoverageAmounts: esiCover?.amounts, daysInPeriod: p.days, paidDays, components, amounts: sal.amounts,
       adjustments,
       statutory: { pfExcluded: !!e.pf_excluded, regime, ptState },
       rules: { pf: await cached('pf', 'IN'), esi: await cached('esi', 'IN'), pt: ptState ? await cached('pt', ptState) : undefined, lwf: ptState ? await cached('lwf', ptState) : undefined, tds: await cached('tds', regime) },
