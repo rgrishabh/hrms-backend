@@ -43,6 +43,16 @@ async function loadCase(db: Db, a: TenantActor, id: string, lock = false) {
   throw notFound('Case not found');
 }
 
+
+/**
+ * Audit base for an action. A complainant's own actions are recorded without their identity or IP:
+ * audit readers (administrators, HR, auditors) must not learn who filed a confidential or anonymous case.
+ * Handlers' actions keep their name, so access to case files stays accountable.
+ */
+function caseAuditBase(a: TenantActor, role: string) {
+  return role === 'complainant' ? { ...a.auditBase, actorId: null, ip: undefined, metadata: { actor: 'complainant' } } : { ...a.auditBase, metadata: {} };
+}
+
 export async function caseRoutes(app: FastifyInstance) {
   const cipher: FieldCipher = app.deps.cipher;
   const enc = (s: string | null | undefined) => (s ? cipher.encrypt(s) : null);
@@ -68,11 +78,23 @@ export async function caseRoutes(app: FastifyInstance) {
       await requireFeature(db, a.tenantId, 'posh');
       const users = (await db.query(`SELECT id FROM users WHERE tenant_id=$1 AND status='active' AND id = ANY($2::uuid[])`, [a.tenantId, b.members.map((m) => m.userId)])).rows;
       if (users.length !== new Set(b.members.map((m) => m.userId)).size) throw badRequest('Every member must be an active user');
+      const prev = (await db.query<{ user_id: string }>('SELECT user_id FROM posh_committee_members WHERE tenant_id=$1', [a.tenantId])).rows.map((r) => r.user_id);
+      const next = b.members.map((m) => m.userId);
+      const added = next.filter((u) => !prev.includes(u)); const removed = prev.filter((u) => !next.includes(u));
+      // Committee members read every complaint: nobody can put themselves on it (two-person rule).
+      if (added.includes(a.user.userId)) throw forbidden('Another administrator must add you to the Internal Committee');
       await db.query('DELETE FROM posh_committee_members WHERE tenant_id=$1', [a.tenantId]);
       for (const m of b.members) await db.query('INSERT INTO posh_committee_members (tenant_id, user_id, role, added_by) VALUES ($1,$2,$3,$4)', [a.tenantId, m.userId, m.role, a.user.userId]);
       await db.query(`UPDATE posh_external_members SET until=current_date - 1 WHERE tenant_id=$1 AND until IS NULL`, [a.tenantId]);
       for (const x of b.external) await db.query('INSERT INTO posh_external_members (tenant_id, name, organization, since) VALUES ($1,$2,$3,$4)', [a.tenantId, x.name, x.organization, x.since]);
-      await audit(db, { ...a.auditBase, action: 'posh.committee_updated', category: 'security', metadata: { members: b.members.length, external: b.external.length } });
+      await audit(db, { ...a.auditBase, action: 'posh.committee_updated', category: 'security', metadata: { members: b.members.length, external: b.external.length, added, removed } });
+      // Members old and new learn of every change, so a temporary addition cannot go unnoticed.
+      if (added.length || removed.length) {
+        const names = async (ids: string[]) => (await db.query<{ n: string }>('SELECT display_name AS n FROM users WHERE id = ANY($1::uuid[]) ORDER BY display_name', [ids])).rows.map((r) => r.n).join(', ');
+        const body = [added.length ? `Added: ${await names(added)}.` : '', removed.length ? `Removed: ${await names(removed)}.` : ''].filter(Boolean).join(' ');
+        await notifyUsers(db, a.tenantId, [...new Set([...prev, ...next])].filter((u) => u !== a.user.userId),
+          { kind: 'cases.committee', title: `Internal Committee changed by ${a.user.displayName}`, body, link: '/cases', actionLabel: 'View committee' });
+      }
       return { ok: true };
     });
   });
@@ -120,7 +142,8 @@ export async function caseRoutes(app: FastifyInstance) {
       await notifyUsers(db, a.tenantId, to.filter((u) => u !== a.user.userId), { kind: `cases.${b.kind}`, title: `New ${b.kind === 'posh' ? 'POSH complaint' : 'grievance'} ${ref(b.kind, n)}`,
         body: 'Open HRMS to view it. Keep it confidential.', link: `/cases?case=${id}`, actionLabel: 'Open case' });
       // Audit: metadata only — never the narrative.
-      await audit(db, { ...a.auditBase, action: `cases.${b.kind}_filed`, category: 'data', targetType: 'case', targetId: id, metadata: { number: ref(b.kind, n), category: b.category, anonymous: b.anonymous, late } });
+      const base = caseAuditBase(a, 'complainant');
+      await audit(db, { ...base, action: `cases.${b.kind}_filed`, category: 'data', targetType: 'case', targetId: id, metadata: { ...base.metadata, number: ref(b.kind, n), category: b.category, anonymous: b.anonymous, late } });
       reply.code(201); return { id, reference: ref(b.kind, n) };
     });
   });
@@ -162,7 +185,8 @@ export async function caseRoutes(app: FastifyInstance) {
         WHERE v.tenant_id=$1 AND v.case_id=$2 ORDER BY v.at`, [a.tenantId, id])).rows
         .filter((v) => role === 'handler' || v.visible_to_complainant)
         .map(({ text_enc, ...v }) => ({ ...v, text: dec(text_enc), actor: role === 'complainant' && v.actor !== 'Complainant' ? (c.kind === 'posh' ? 'Internal Committee' : 'HR') : v.actor }));
-      await audit(db, { ...a.auditBase, action: 'cases.viewed', category: 'access', targetType: 'case', targetId: id, metadata: { role } });
+      const base = caseAuditBase(a, role);
+      await audit(db, { ...base, action: 'cases.viewed', category: 'access', targetType: 'case', targetId: id, metadata: { ...base.metadata, role } });
       return {
         id: row.id, kind: row.kind, reference: ref(row.kind, row.number), category: row.category, status: row.status, anonymous: row.anonymous, role, version: row.version,
         complainantName: row.complainant_name, respondentName: role === 'handler' ? row.respondent_name : undefined, respondentText: role === 'handler' ? dec(row.respondent_text_enc) : undefined,
@@ -204,7 +228,8 @@ export async function caseRoutes(app: FastifyInstance) {
         if ((b.visibleToComplainant || b.toStatus) && c.complainant_user)
           await notifyUsers(db, a.tenantId, [c.complainant_user], { kind: 'cases.update', title: `Update on your case ${ref(c.kind, c.number)}`, body: 'Open HRMS to read it.', link: `/cases?case=${id}`, actionLabel: 'Open' });
       }
-      await audit(db, { ...a.auditBase, action: 'cases.event_added', category: 'data', targetType: 'case', targetId: id, metadata: { role, toStatus: b.toStatus ?? null, visibleToComplainant: b.visibleToComplainant } });
+      const base = caseAuditBase(a, role);
+      await audit(db, { ...base, action: 'cases.event_added', category: 'data', targetType: 'case', targetId: id, metadata: { ...base.metadata, role, toStatus: b.toStatus ?? null, visibleToComplainant: b.visibleToComplainant } });
       reply.code(201); return { ok: true };
     });
   });
@@ -238,7 +263,7 @@ export async function caseRoutes(app: FastifyInstance) {
       if (['closed', 'withdrawn'].includes(c.status)) throw conflict(`The case is ${c.status}`);
       await db.query(`UPDATE cases SET status='withdrawn', closed_at=now(), version=version+1 WHERE tenant_id=$1 AND id=$2`, [a.tenantId, id]);
       await db.query(`INSERT INTO case_events (tenant_id, case_id, type, text_enc, from_status, to_status, visible_to_complainant, actor_user) VALUES ($1,$2,'status',$3,$4,'withdrawn',true,$5)`, [a.tenantId, id, enc(reason), c.status, a.user.userId]);
-      await audit(db, { ...a.auditBase, action: 'cases.withdrawn', category: 'data', targetType: 'case', targetId: id });
+      await audit(db, { ...caseAuditBase(a, 'complainant'), action: 'cases.withdrawn', category: 'data', targetType: 'case', targetId: id });
       return { ok: true };
     });
   });

@@ -50,6 +50,10 @@ beforeAll(async () => {
 afterAll(async () => { await app.close(); });
 
 describe('training records', () => {
+  it('nobody records or revokes their own training', async () => {
+    expect((await train(T.users.hr!.employeeId!, course.PH!)).statusCode).toBe(403);
+  });
+
   it('computes expiry from the course, validates input, and scopes reading to the employee', async () => {
     expect((await emp.post('/api/v1/competency/courses', { code: 'X', name: 'Nope', kind: 'other' })).statusCode).toBe(403);
     expect((await train(empId, course.SAFETY!, addDays(today, 1))).statusCode).toBe(400);

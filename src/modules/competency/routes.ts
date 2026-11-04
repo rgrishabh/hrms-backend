@@ -141,6 +141,7 @@ export async function competencyRoutes(app: FastifyInstance) {
     }).parse(req.body);
     return a.tx(async (db) => {
       await requireFeature(db, a.tenantId, 'training');
+      notSelf(a, b.employeeId, 'record training'); // training is a prerequisite for authorizations: no self-certification
       await assertEmployee(db, a.tenantId, b.employeeId);
       if (b.completedOn > await orgToday(db, a.tenantId)) throw badRequest('Completion date cannot be in the future');
       const c = (await db.query<{ validity_months: number | null; status: string }>('SELECT validity_months, status FROM training_courses WHERE tenant_id=$1 AND id=$2', [a.tenantId, b.courseId])).rows[0];
@@ -161,6 +162,8 @@ export async function competencyRoutes(app: FastifyInstance) {
     const { reason } = Reason.parse(req.body);
     return a.tx(async (db) => {
       await requireFeature(db, a.tenantId, 'training');
+      const own = (await db.query<{ employee_id: string }>('SELECT employee_id FROM training_records WHERE tenant_id=$1 AND id=$2', [a.tenantId, id])).rows[0];
+      if (own) notSelf(a, own.employee_id, 'revoke training records');
       const r = await db.query(`UPDATE training_records SET status='revoked', revoked_reason=$3 WHERE tenant_id=$1 AND id=$2 AND status='active'`, [a.tenantId, id, reason]);
       if (!r.rowCount) throw notFound('Active training record not found');
       await audit(db, { ...a.auditBase, action: 'training.revoked', category: 'data', targetType: 'training_record', targetId: id, metadata: { reason } });

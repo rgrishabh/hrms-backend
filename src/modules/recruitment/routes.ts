@@ -212,7 +212,8 @@ export async function recruitmentRoutes(app: FastifyInstance) {
       if (!['draft', 'rejected'].includes(r.status)) throw conflict(`A ${r.status} requisition cannot be submitted`);
       await db.query(`UPDATE job_requisitions SET status='pending', version=version+1 WHERE tenant_id=$1 AND id=$2`, [a.tenantId, id]);
       const approvalId = await createApprovalRequest(db, a.tenantId, { entityType: 'job_requisition', entityId: id, requesterId: a.user.userId,
-        summary: `${reqNo(r.number)} ${r.title} — ${r.positions} position(s)`, steps: [{ kind: 'permission', permission: 'recruitment.approve' }] });
+        summary: `${reqNo(r.number)} ${r.title} — ${r.positions} position(s)`, steps: [{ kind: 'permission', permission: 'recruitment.approve' }],
+        excludeUserIds: [r.created_by] }); // whoever drafted it never approves it, even if someone else submits
       await audit(db, { ...a.auditBase, action: 'recruitment.requisition_submitted', targetType: 'job_requisition', targetId: id, metadata: { approvalId } });
       return { ok: true, approvalRequestId: approvalId };
     });
@@ -428,7 +429,8 @@ export async function recruitmentRoutes(app: FastifyInstance) {
         const panel = (await db.query<{ user_id: string; submitted_at: string | null }>(`SELECT p.user_id, u.display_name AS name, p.rating, p.recommendation, p.notes, p.submitted_at
           FROM interview_panel p JOIN users u ON u.id=p.user_id WHERE p.tenant_id=$1 AND p.interview_id=$2 ORDER BY u.display_name`, [a.tenantId, iv.id])).rows;
         const mine = panel.find((p) => p.user_id === a.user.userId);
-        const showAll = ap.access !== 'panel' || !!mine?.submitted_at;
+        // Anyone on this panel (even HR or the hiring manager) waits for their own submission; others with access see it all.
+        const showAll = mine ? !!mine.submitted_at : ap.access !== 'panel';
         interviews.push({ ...iv, panel: panel.map((p) => (showAll || p.user_id === a.user.userId ? p : { ...p, rating: null, recommendation: null, notes: null, hidden: !!p.submitted_at })) });
       }
       const offers = ap.access === 'panel' ? [] : (await db.query(`SELECT o.id, o.designation, o.employment_type, o.annual_ctc, o.joining_date::text, o.probation_months, o.status,
@@ -528,7 +530,7 @@ export async function recruitmentRoutes(app: FastifyInstance) {
       if (!r.rowCount) throw conflict('You already submitted feedback for this interview');
       const left = Number((await db.query<{ n: string }>('SELECT count(*) AS n FROM interview_panel WHERE tenant_id=$1 AND interview_id=$2 AND submitted_at IS NULL', [a.tenantId, id])).rows[0]!.n);
       if (left === 0) await db.query(`UPDATE interviews SET status='completed' WHERE tenant_id=$1 AND id=$2 AND status='scheduled'`, [a.tenantId, id]);
-      await audit(db, { ...a.auditBase, action: 'recruitment.feedback_submitted', targetType: 'interview', targetId: id, metadata: { rating: b.rating, recommendation: b.recommendation } });
+      await audit(db, { ...a.auditBase, action: 'recruitment.feedback_submitted', targetType: 'interview', targetId: id });  // no rating in the audit log: feedback stays blind to panel members who read audit history
       return { ok: true, interviewCompleted: left === 0 };
     });
   });
@@ -607,7 +609,8 @@ export async function recruitmentRoutes(app: FastifyInstance) {
       await db.query(`UPDATE job_offers SET status='pending' WHERE tenant_id=$1 AND id=$2`, [a.tenantId, id]);
       // The summary goes into notifications and email: no compensation figures in it.
       const approvalId = await createApprovalRequest(db, a.tenantId, { entityType: 'job_offer', entityId: id, requesterId: a.user.userId,
-        summary: `${fullName(cand)} — ${o.designation} (${reqNo(ap.req_number)})${o.above_budget ? ' · above budget' : ''}`, steps: [{ kind: 'permission', permission: 'recruitment.approve' }] });
+        summary: `${fullName(cand)} — ${o.designation} (${reqNo(ap.req_number)})${o.above_budget ? ' · above budget' : ''}`, steps: [{ kind: 'permission', permission: 'recruitment.approve' }],
+        excludeUserIds: [o.created_by] }); // whoever drafted the offer never approves it, even if someone else submits
       await audit(db, { ...a.auditBase, action: 'recruitment.offer_submitted', targetType: 'job_offer', targetId: id, metadata: { approvalId } });
       return { ok: true, approvalRequestId: approvalId };
     });

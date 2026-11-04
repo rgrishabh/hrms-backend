@@ -233,7 +233,8 @@ export async function leaveRoutes(app: FastifyInstance) {
       const steps: StepSpec[] = mgr.rows[0]?.user_id && mgr.rows[0].user_id !== a.user.userId
         ? [{ kind: 'user', userId: mgr.rows[0].user_id }] : [{ kind: 'permission', permission: 'leave.approve' }];
       const reqId = await createApprovalRequest(db, a.tenantId, { entityType: 'leave_request', entityId: id, requesterId: a.user.userId,
-        summary: `${r.type.name}: ${r.days.toFixed(1)} day(s), ${body.startDate}${body.endDate !== body.startDate ? ' to ' + body.endDate : ''}`, steps });
+        summary: `${r.type.name}: ${r.days.toFixed(1)} day(s), ${body.startDate}${body.endDate !== body.startDate ? ' to ' + body.endDate : ''}`, steps,
+        excludeUserIds: [r.employee.user_id] }); // leave applied on someone's behalf is never approved by that person
       await audit(db, { ...a.auditBase, action: 'leave.requested', targetType: 'leave_request', targetId: id,
         metadata: { employeeId: r.employee.id, type: r.type.code, startDate: body.startDate, endDate: body.endDate, days: r.days.toFixed(2), onBehalf: !!body.employeeId && body.employeeId !== a.user.employeeId } });
       reply.code(201); return { id, approvalRequestId: reqId, days: r.days.toFixed(2) };

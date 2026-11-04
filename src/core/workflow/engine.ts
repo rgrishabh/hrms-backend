@@ -30,15 +30,16 @@ export interface ApprovalHandler {
 
 /** Notify whoever can act on the request's active step (never the requester). */
 async function notifyActiveApprovers(db: Db, tenantId: string, requestId: string) {
-  const r = await db.query<{ summary: string; requester_id: string; entity_type: string; requester_name: string; approver_kind: string; approver_user_id: string | null; approver_permission: string | null }>(
-    `SELECT r.summary, r.requester_id, r.entity_type, u.display_name AS requester_name, s.approver_kind, s.approver_user_id, s.approver_permission
+  const r = await db.query<{ summary: string; requester_id: string; entity_type: string; requester_name: string; approver_kind: string; approver_user_id: string | null; approver_permission: string | null; blocked: string[] }>(
+    `SELECT r.summary, r.requester_id, r.entity_type, u.display_name AS requester_name, s.approver_kind, s.approver_user_id, s.approver_permission,
+            r.excluded_user_ids || coalesce((SELECT array_agg(p.acted_by) FROM approval_steps p WHERE p.tenant_id=r.tenant_id AND p.request_id=r.id AND p.acted_by IS NOT NULL), '{}') AS blocked
        FROM approval_requests r JOIN approval_steps s ON s.tenant_id=r.tenant_id AND s.request_id=r.id AND s.status='active'
        JOIN users u ON u.id=r.requester_id WHERE r.tenant_id=$1 AND r.id=$2 AND r.status='pending'`, [tenantId, requestId]);
   const step = r.rows[0];
   if (!step) return;
   const users = step.approver_kind === 'user' ? [step.approver_user_id!] : await usersWithPermission(db, tenantId, step.approver_permission!);
   const label = handlers.get(step.entity_type)?.label ?? 'Request';
-  await notifyUsers(db, tenantId, users.filter((u) => u !== step.requester_id), {
+  await notifyUsers(db, tenantId, users.filter((u) => u !== step.requester_id && !step.blocked.includes(u)), {
     kind: 'approval.requested', title: `${label} from ${step.requester_name} needs your approval`, body: step.summary, link: '/approvals', actionLabel: 'Review',
   });
 }
@@ -50,13 +51,16 @@ export interface Actor { userId: string; permissions: Set<string> }
 
 export async function createApprovalRequest(db: Db, tenantId: string, p: {
   entityType: string; entityId: string; requesterId: string; summary: string; steps: StepSpec[];
+  /** Others who must never act on it: the author when someone else submits, the employee it is about. */
+  excludeUserIds?: (string | null | undefined)[];
 }) {
   if (!handlers.has(p.entityType)) throw new Error(`No approval handler for ${p.entityType}`);
-  // Maker-checker: the requester is never an approver of their own request.
-  const steps = p.steps.filter((s) => !(s.kind === 'user' && s.userId === p.requesterId));
+  const excluded = [...new Set(p.excludeUserIds?.filter((u): u is string => !!u && u !== p.requesterId) ?? [])];
+  // Maker-checker: neither the requester nor an excluded party is ever an approver of the request.
+  const steps = p.steps.filter((s) => !(s.kind === 'user' && (s.userId === p.requesterId || excluded.includes(s.userId))));
   if (!steps.length) throw badRequest('No eligible approver is configured for this request');
-  const r = await db.query<{ id: string }>(`INSERT INTO approval_requests (tenant_id, entity_type, entity_id, requester_id, summary)
-    VALUES ($1,$2,$3,$4,$5) RETURNING id`, [tenantId, p.entityType, p.entityId, p.requesterId, p.summary]);
+  const r = await db.query<{ id: string }>(`INSERT INTO approval_requests (tenant_id, entity_type, entity_id, requester_id, summary, excluded_user_ids)
+    VALUES ($1,$2,$3,$4,$5,$6) RETURNING id`, [tenantId, p.entityType, p.entityId, p.requesterId, p.summary, excluded]);
   const id = r.rows[0]!.id;
   for (const [i, s] of steps.entries()) {
     await db.query(`INSERT INTO approval_steps (tenant_id, request_id, step_index, approver_kind, approver_user_id, approver_permission, status)
@@ -72,12 +76,15 @@ function canActOnStep(step: { approver_kind: string; approver_user_id: string | 
 
 export async function actOnRequest(db: Db, tenantId: string, requestId: string, actor: Actor,
   action: 'approve' | 'reject' | 'return', comment: string | undefined, audBase: { requestId: string; ip: string }) {
-  const rq = await db.query<{ id: string; entity_type: string; entity_id: string; requester_id: string; status: string; current_step: number }>(
-    'SELECT id, entity_type, entity_id, requester_id, status, current_step FROM approval_requests WHERE tenant_id=$1 AND id=$2 FOR UPDATE', [tenantId, requestId]);
+  const rq = await db.query<{ id: string; entity_type: string; entity_id: string; requester_id: string; status: string; current_step: number; excluded_user_ids: string[] }>(
+    'SELECT id, entity_type, entity_id, requester_id, status, current_step, excluded_user_ids FROM approval_requests WHERE tenant_id=$1 AND id=$2 FOR UPDATE', [tenantId, requestId]);
   const req = rq.rows[0];
   if (!req) throw notFound('Approval request not found');
   if (req.status !== 'pending') throw conflict(`This request is already ${req.status}`);
   if (req.requester_id === actor.userId) throw forbidden('You cannot approve or reject your own request');
+  if (req.excluded_user_ids.includes(actor.userId)) throw forbidden('You cannot act on a request you prepared or that concerns you');
+  const earlier = await db.query('SELECT 1 FROM approval_steps WHERE tenant_id=$1 AND request_id=$2 AND acted_by=$3', [tenantId, requestId, actor.userId]);
+  if (earlier.rowCount) throw forbidden('You already approved an earlier step; a different person must approve this one');
   if (action !== 'approve' && !comment?.trim()) throw badRequest('A comment is required when rejecting or returning a request');
   const st = await db.query<{ id: string; step_index: number; approver_kind: string; approver_user_id: string | null; approver_permission: string | null }>(
     `SELECT id, step_index, approver_kind, approver_user_id, approver_permission FROM approval_steps
@@ -139,8 +146,9 @@ export async function inbox(db: Db, tenantId: string, actor: Actor) {
       s.approver_kind, s.approver_permission
     FROM approval_requests r JOIN approval_steps s ON s.tenant_id=r.tenant_id AND s.request_id=r.id AND s.status='active'
     JOIN users u ON u.id=r.requester_id
-    WHERE r.tenant_id=$1 AND r.status='pending' AND r.requester_id <> $2
+    WHERE r.tenant_id=$1 AND r.status='pending' AND r.requester_id <> $2 AND NOT ($2 = ANY(r.excluded_user_ids))
       AND ((s.approver_kind='user' AND s.approver_user_id=$2) OR (s.approver_kind='permission' AND s.approver_permission = ANY($3)))
+      AND NOT EXISTS (SELECT 1 FROM approval_steps p WHERE p.tenant_id=r.tenant_id AND p.request_id=r.id AND p.acted_by=$2)
     ORDER BY r.created_at LIMIT 200`, [tenantId, actor.userId, [...actor.permissions]]);
   return r.rows;
 }

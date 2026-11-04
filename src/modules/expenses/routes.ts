@@ -270,7 +270,8 @@ export async function expenseRoutes(app: FastifyInstance) {
       if (mgr.rows[0]?.user_id && mgr.rows[0].user_id !== a.user.userId) steps.push({ kind: 'user', userId: mgr.rows[0].user_id });
       steps.push({ kind: 'permission', permission: 'expenses.approve' });
       const total = (await db.query<{ total: string }>('SELECT total FROM expense_claims WHERE tenant_id=$1 AND id=$2', [a.tenantId, id])).rows[0]!.total;
-      const reqId = await createApprovalRequest(db, a.tenantId, { entityType: 'expense_claim', entityId: id, requesterId: a.user.userId, summary: `${c.title}: ₹${total}`, steps });
+      const claimant = (await db.query<{ user_id: string | null }>('SELECT user_id FROM employees WHERE tenant_id=$1 AND id=$2', [a.tenantId, c.employee_id])).rows[0]?.user_id;
+      const reqId = await createApprovalRequest(db, a.tenantId, { entityType: 'expense_claim', entityId: id, requesterId: a.user.userId, summary: `${c.title}: ₹${total}`, steps, excludeUserIds: [claimant] });
       await audit(db, { ...a.auditBase, action: 'expenses.claim_submitted', targetType: 'expense_claim', targetId: id, metadata: { total, approvalRequestId: reqId } });
       return { ok: true, approvalRequestId: reqId };
     });
