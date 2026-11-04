@@ -11,6 +11,8 @@ export const PERMISSIONS = {
   'security.manage': 'Change security settings',
   'users.manage': 'Manage user accounts and role assignments',
   'audit.read': 'View audit history',
+  'approvals.delegations': "Hand over someone's approvals to a colleague (e.g. for an unplanned absence)",
+  'approvals.escalations': 'Decide approvals escalated because the approver did not respond and has no manager to take them',
   // organization & employees
   'org.read': 'View legal entities, branches and departments',
   'org.manage': 'Manage legal entities, branches and departments',
@@ -120,7 +122,7 @@ export const SYSTEM_ROLES: readonly RoleDefinition[] = [
     'policies.read', 'policies.manage', 'policies.publish',
     'recruitment.requisition', 'recruitment.read', 'recruitment.manage', 'recruitment.approve', 'recruitment.compensation',
     'lifecycle.read', 'lifecycle.manage', 'payroll.read', 'grievance.manage', 'posh.admin', 'performance.manage', 'assets.manage',
-    'overtime.read', 'overtime.approve', 'overtime.manage', 'field_duty.read', 'field_duty.approve', 'field_duty.manage', 'travel.read', 'loans.read', 'profile.approve') },
+    'overtime.read', 'overtime.approve', 'overtime.manage', 'field_duty.read', 'field_duty.approve', 'field_duty.manage', 'travel.read', 'loans.read', 'profile.approve', 'approvals.delegations', 'approvals.escalations') },
   { key: 'hr_executive', name: 'HR Executive', scope: 'tenant', permissions: P(...SELF, 'org.read', 'employees.read', 'employees.manage',
     'attendance.read', 'attendance.recalculate', 'attendance.approve', 'leave.read', 'leave.approve', 'documents.read', 'documents.manage', 'training.manage', 'policies.read', 'policies.manage',
     'recruitment.requisition', 'recruitment.read', 'recruitment.manage', 'lifecycle.read', 'lifecycle.manage', 'overtime.read', 'field_duty.read', 'field_duty.approve', 'profile.approve') },

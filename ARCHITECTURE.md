@@ -61,7 +61,7 @@ The data model still carries `tenant_id` on every table, with row-level security
 ## Other services
 
 - **Attendance:** immutable events → pure, versioned daily calculation (`modules/attendance/calc.ts`). Rules are in [docs/ATTENDANCE.md](docs/ATTENDANCE.md).
-- **Approvals:** reusable engine (`core/workflow/engine.ts`) with sequential steps, user- or permission-based approvers, and maker-checker.
+- **Approvals:** reusable engine (`core/workflow/engine.ts`) with sequential steps, user- or permission-based approvers, maker-checker, delegation while away and time-based escalation (docs/APPROVALS.md).
 - **Audit:** `audit_logs` is written in the same transaction as each change. Security failures (e.g. a rejected setup link) are written in their own transaction so they survive rollbacks.
 - **Background jobs:** `core/jobs`. A per-minute scheduler in every app instance claims (job, period) rows in `job_runs` (unique key → exactly once), runs them in organization-scoped transactions, retries failures, and recovers runs abandoned by crashed processes. Jobs are gated by modules and idempotent. Admins see history and can Run now (Settings → Scheduled jobs).
 - **Health:** `/health/live` (process) and `/health/ready` (database reachable, no pending or unknown migrations, installation bootstrapped). Neither reveals internals.

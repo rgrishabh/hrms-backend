@@ -99,6 +99,7 @@ Base path `/api/v1`. JSON in and out. Each installation serves one organization;
 | GET `/approvals/inbox`, `/approvals/mine`, `/approvals/:id` | session | |
 | POST `/approvals/:id/act` | current-step approver (never the requester) | `{action: approve|reject|return, comment}` (comment required unless approving) |
 | POST `/approvals/:id/cancel` | requester | |
+| GET / POST `/approvals/delegations`, POST `/approvals/delegations/:id/revoke`, GET `/approvals/delegates` | session (HR for others: `approvals.delegations`) | Hand over approvals while away; see docs/APPROVALS.md |
 | **Dashboard** | | |
 | GET `/dashboard` | session | `{today, sections, lists}`: tiles grouped as `me` (own leave balances, own training due), `team` (managers without organization-wide access: reporting chain size and today's attendance), `org` (headcount, joiners/leavers this month, latest payroll run), `today` (organization attendance today), `attention` (missing punches, open probation reviews, claims to reimburse, open positions, training / authorizations / documents expiring, open grievances); lists `on_leave_today` and `holidays`. Each block follows the permission and module of the screen it links to (`href`) |
 | **Reports** (see REPORTS.md) | | |

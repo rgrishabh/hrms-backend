@@ -367,6 +367,13 @@ export async function generateDemo(c: pg.Client | pg.PoolClient, opts: { passwor
     say(`personal details: ${done} of ${emps.length} employees complete`);
   }
 
+  // ---- approvals: the water laboratory manager is away this week, so the quality manager approves for her;
+  // requests left with one person for 3 days also go to that person's manager (or HR).
+  await q(`INSERT INTO tenant_settings (tenant_id, setting_key, setting_value, updated_by) VALUES ($1,'approvals.escalate_after_days','3',$2) ON CONFLICT DO NOTHING`, [tid, adminId]);
+  await q(`INSERT INTO approval_delegations (tenant_id, delegator_id, delegate_id, starts_on, ends_on, note, created_by) VALUES ($1,$2,$3,$4,$5,$6,$2)`,
+    [tid, uid('lab.manager'), uid('quality'), today, addDays(today, 4), 'At the NABL assessor training in Bengaluru']);
+  say('approvals: lab manager away, quality manager covering; escalation after 3 days');
+
   // ---- training & competency
   const course: Record<string, string> = {};
   for (const [code, name, kind, months] of [['INDUCTION', 'Laboratory induction', 'induction', null], ['CHEM-SAFETY', 'Chemical safety & spill response', 'safety', 12], ['QMS', 'ISO/IEC 17025 awareness', 'quality', 24],
