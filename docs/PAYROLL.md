@@ -72,3 +72,7 @@ Modules: `payroll` (components, salaries, runs, exports), `payroll.payslips` (em
 ## Not included
 
 Form 16 / 24Q / ECR file generation, investment declarations and proofs, loans and advances, bonus and gratuity calculators, multi-period arrears computation, payslip PDF (the browser print view is provided), and accounting journal export.
+
+## Overtime
+
+With module `overtime`, a computed run adds one `OT` earning line per employee for approved overtime taken as pay (arrears included), priced on the salary of the day worked at the rate the organization configures. Taxable; never PF wages; ESI contribution wages only if `overtime.esi_wages` says so. Unpriced overtime (settings missing, no salary that day) is a run warning. See docs/OVERTIME.md.

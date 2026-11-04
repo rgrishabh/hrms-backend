@@ -3,6 +3,7 @@ import { getSettingValue } from '../../core/settings/service.js';
 import { featureOn } from '../lifecycle/service.js';
 import { daysBetween } from '../attendance/time.js';
 import { calculate, CALC_VERSION, RULE_PARAMS, type Component, type RuleKind, type CalcInput } from './calc.js';
+import { overtimeForRun } from '../overtime/service.js';
 
 export function periodBounds(period: string) {
   const [y, m] = period.split('-').map(Number) as [number, number];
@@ -52,6 +53,9 @@ export async function computeRun(db: Db, tenantId: string, runId: string) {
   const expect = (await getSettingValue<string>(db, tenantId, 'payroll.expected_statutory')).split(',').map((s) => s.trim()).filter(Boolean) as RuleKind[];
   const statutoryOn = await featureOn(db, tenantId, 'payroll.statutory');
   const attendanceOn = await featureOn(db, tenantId, 'attendance');
+  const overtimeOn = await featureOn(db, tenantId, 'overtime');
+  // A recompute starts clean: overtime this run picked up before is offered to it again.
+  await db.query('UPDATE overtime_claims SET payroll_run_id=NULL WHERE tenant_id=$1 AND payroll_run_id=$2', [tenantId, runId]);
   const emps = (await db.query<EmpForPay>(`SELECT e.id, e.employee_code, trim(e.first_name||' '||coalesce(e.last_name,'')) AS name, e.date_of_joining::text, e.exit_date::text,
       b.state AS branch_state, s.pf_excluded, s.tax_regime, s.pt_state
     FROM employees e JOIN branches b ON b.tenant_id=e.tenant_id AND b.id=e.branch_id LEFT JOIN employee_statutory s ON s.tenant_id=e.tenant_id AND s.employee_id=e.id
@@ -86,11 +90,17 @@ export async function computeRun(db: Db, tenantId: string, runId: string) {
       'SELECT kind, label, amount::text, taxable FROM payroll_adjustments WHERE tenant_id=$1 AND run_id=$2 AND employee_id=$3 ORDER BY created_at', [tenantId, runId, e.id])).rows;
     lop = Math.max(0, lop + adj.filter((a) => a.kind === 'lop_days').reduce((s, a) => s + Number(a.amount), 0));
     const paidDays = Math.max(0, employed - lop);
+    const adjustments = adj.filter((a) => a.kind !== 'lop_days').map((a) => ({ kind: a.kind as 'earning' | 'deduction', label: a.label, amount: Number(a.amount), taxable: a.taxable }));
+    if (overtimeOn) {
+      const ot = await overtimeForRun(db, tenantId, runId, e.id, p.end, components);
+      if (ot.adjustment) adjustments.push(ot.adjustment);
+      warnings.push(...ot.warnings);
+    }
     const regime = (e.tax_regime ?? 'new') as 'new' | 'old';
     const ptState = e.pt_state ?? e.branch_state ?? null;
     const input: CalcInput = {
       month: p.month, daysInPeriod: p.days, paidDays, components, amounts: sal.amounts,
-      adjustments: adj.filter((a) => a.kind !== 'lop_days').map((a) => ({ kind: a.kind as 'earning' | 'deduction', label: a.label, amount: Number(a.amount), taxable: a.taxable })),
+      adjustments,
       statutory: { pfExcluded: !!e.pf_excluded, regime, ptState },
       rules: { pf: await cached('pf', 'IN'), esi: await cached('esi', 'IN'), pt: ptState ? await cached('pt', ptState) : undefined, lwf: ptState ? await cached('lwf', ptState) : undefined, tds: await cached('tds', regime) },
       expect: statutoryOn ? expect : [],
