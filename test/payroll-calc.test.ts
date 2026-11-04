@@ -121,3 +121,25 @@ describe('F-5 ESI coverage', () => {
     expect(line(calculate(input({ amounts: { BASIC: 20000 }, esiCoverageAmounts: { BASIC: 25000 } })), 'ESI_EE')).toBeUndefined();
   });
 });
+
+describe('F-6 mid-month salary segments', () => {
+  it('splits by calendar days, with lines summed per component', () => {
+    const r = calculate(base({ amounts: { BASIC: 30000 }, components: [comp('BASIC', { esi_wage: false, taxable: false })], rules: {}, expect: [], paidDays: 30,
+      segments: [{ amounts: { BASIC: 30000 }, paidDays: 19, days: 19 }, { amounts: { BASIC: 60000 }, paidDays: 11, days: 11 }] }));
+    expect(line(r, 'BASIC')).toBe(19000 + 22000);
+    expect(r.gross).toBe(41000);
+  });
+  it('a percent component follows the segment it belongs to; a non-prorated one is shared by days', () => {
+    const c = [comp('BASIC', { position: 1 }), comp('HRA', { calc: 'percent', base_codes: ['BASIC'], position: 2 }), comp('FLAT', { prorate: false, position: 3 })];
+    const r = calculate(base({ components: c, rules: {}, expect: [], amounts: {}, paidDays: 30,
+      segments: [{ amounts: { BASIC: 30000, HRA: 50, FLAT: 3000 }, paidDays: 15, days: 15 }, { amounts: { BASIC: 30000, HRA: 40, FLAT: 6000 }, paidDays: 15, days: 15 }] }));
+    expect(line(r, 'BASIC')).toBe(30000);
+    expect(line(r, 'HRA')).toBe(7500 + 6000);
+    expect(line(r, 'FLAT')).toBe(1500 + 3000);
+  });
+  it('a single segment gives the same result as no segments', () => {
+    const plain = calculate(base({ paidDays: 25.5 }));
+    const seg = calculate(base({ paidDays: 25.5, segments: [{ amounts: base().amounts, paidDays: 25.5, days: 30 }] }));
+    expect(seg).toEqual(plain);
+  });
+});

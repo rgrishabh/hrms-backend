@@ -34,6 +34,7 @@ Modules: `payroll` (components, salaries, runs, exports), `payroll.payslips` (em
 1. **Create** a run for a legal entity and month (one regular run per entity and month) and **compute** it. Every active or leaving employee of the entity with an active salary is included.
    - **Employed days** = days in the month between joining and exit.
    - **Loss of pay** (LOP) comes from calculated attendance: absent = 1, unresolved missing punch = 1 (setting `payroll.missing_punch_is_lop`), a half day = 0.5 for the half not worked, whether or not leave covers the other half, unpaid leave = its fraction (also on a day otherwise worked or on field duty). Field duty (`on_duty`) is paid. Days without calculated attendance are paid and reported as warnings.
+   - **Salary changes within a month** are split by calendar days: each approved salary pays the days it covers, and loss of pay falls on the stretch where it happened. Non-prorated components are shared by days. Days before an employee's first salary are unpaid and flagged.
    - **Paid days** = employed days − LOP. Proration = paid days / calendar days of the month.
    - **Loan instalments** (module `advances_loans`, docs/ADVANCES_LOANS.md) are deducted after everything else, never taking net pay below zero; a full-and-final run deducts the whole balance.
 2. **Adjust:** add one-off earnings/deductions (arrears, allowances, recoveries) and LOP corrections. Any change sends the run back to draft, so it must be recomputed.

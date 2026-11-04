@@ -1,7 +1,7 @@
 import type { Db } from '../../db/tx.js';
 import { getSettingValue } from '../../core/settings/service.js';
 import { featureOn } from '../lifecycle/service.js';
-import { daysBetween } from '../attendance/time.js';
+import { addDays, daysBetween } from '../attendance/time.js';
 import { calculate, CALC_VERSION, RULE_PARAMS, type Component, type RuleKind, type CalcInput } from './calc.js';
 import { plannedRecoveries, applyRecoveries } from '../loans/service.js';
 import { overtimeForRun } from '../overtime/service.js';
@@ -53,6 +53,32 @@ export async function lossOfPay(db: Db, tenantId: string, employeeId: string, fr
   return { lop, missingPunch, uncalculated: Math.max(0, daysBetween(from, to) + 1 - rows.length) };
 }
 
+/**
+ * The approved salaries in force over [from, to], oldest first, each with the stretch it covers. A later approval with the
+ * same effective date has already superseded the earlier one. Days before the first salary belong to no stretch.
+ */
+export async function salaryVersions(db: Db, tenantId: string, employeeId: string, from: string, to: string) {
+  const rows = (await db.query<{ id: string; amounts: Record<string, number>; effective_from: string }>(`SELECT id, amounts, effective_from::text FROM employee_salaries
+    WHERE tenant_id=$1 AND employee_id=$2 AND status='active' AND effective_from <= $3::date ORDER BY effective_from`, [tenantId, employeeId, to])).rows;
+  const inPeriod = rows.filter((s, x) => s.effective_from > from || !rows[x + 1] || rows[x + 1]!.effective_from > from);
+  return inPeriod.map((s, x) => ({ id: s.id, amounts: s.amounts, start: s.effective_from > from ? s.effective_from : from,
+    end: inPeriod[x + 1] ? addDays(inPeriod[x + 1]!.effective_from, -1) : to }));
+}
+
+/**
+ * Paid days per stretch: its days less its loss of pay, then the manual loss-of-pay adjustment. Added days come off the
+ * latest stretch first, and reversed days go back there first, never beyond the loss of pay it had.
+ */
+export function paidPerStretch(stretches: { days: number; lop: number }[], adjustment: number) {
+  const paid = stretches.map((s) => Math.max(0, s.days - s.lop));
+  let left = adjustment;
+  for (let x = stretches.length - 1; x >= 0 && left !== 0; x--) {
+    const move = left > 0 ? Math.min(left, paid[x]!) : -Math.min(-left, stretches[x]!.days - paid[x]!);
+    paid[x]! -= move; left -= move;
+  }
+  return paid;
+}
+
 interface EmpForPay { id: string; employee_code: string; name: string; date_of_joining: string; exit_date: string | null; branch_state: string; pf_excluded: boolean | null; tax_regime: string | null; pt_state: string | null }
 
 /** (Re)computes every item of a draft/computed run. Deterministic for the same inputs. */
@@ -85,24 +111,30 @@ export async function computeRun(db: Db, tenantId: string, runId: string) {
     return ruleCache.get(k) as never;
   };
   for (const e of emps) {
-    const sal = (await db.query<{ id: string; amounts: Record<string, number> }>(`SELECT id, amounts FROM employee_salaries WHERE tenant_id=$1 AND employee_id=$2 AND status='active'
-      AND effective_from <= $3::date ORDER BY effective_from DESC LIMIT 1`, [tenantId, e.id, p.end])).rows[0];
-    if (!sal) continue; // not on payroll
     const from = e.date_of_joining > p.start ? e.date_of_joining : p.start;
     const to = e.exit_date && e.exit_date < p.end ? e.exit_date : p.end;
+    const versions = await salaryVersions(db, tenantId, e.id, from, to);
+    if (!versions.length) continue; // not on payroll
     const employed = daysBetween(from, to) + 1;
     const warnings: string[] = [];
-    let lop = 0;
+    if (versions[0]!.start > from) warnings.push(`no salary before ${versions[0]!.start}: earlier days are unpaid`);
+    // Loss of pay falls on the stretch where it happened; each stretch is paid at its own rate.
+    const stretches = versions.map((v) => ({ ...v, days: daysBetween(v.start, v.end) + 1, lop: 0 }));
     if (attendanceOn) {
-      const l = await lossOfPay(db, tenantId, e.id, from, to);
-      lop = l.lop;
-      if (l.missingPunch) warnings.push(`${l.missingPunch} unresolved missing-punch day(s)`);
-      if (l.uncalculated) warnings.push(`attendance not calculated for ${l.uncalculated} day(s) — paid`);
+      let missingPunch = 0; let uncalculated = 0;
+      for (const v of stretches) {
+        const l = await lossOfPay(db, tenantId, e.id, v.start, v.end);
+        v.lop = l.lop; missingPunch += l.missingPunch; uncalculated += l.uncalculated;
+      }
+      if (missingPunch) warnings.push(`${missingPunch} unresolved missing-punch day(s)`);
+      if (uncalculated) warnings.push(`attendance not calculated for ${uncalculated} day(s) — paid`);
     }
     const adj = (await db.query<{ kind: 'earning' | 'deduction' | 'lop_days'; label: string; amount: string; taxable: boolean }>(
       'SELECT kind, label, amount::text, taxable FROM payroll_adjustments WHERE tenant_id=$1 AND run_id=$2 AND employee_id=$3 ORDER BY created_at', [tenantId, runId, e.id])).rows;
-    lop = Math.max(0, lop + adj.filter((a) => a.kind === 'lop_days').reduce((s, a) => s + Number(a.amount), 0));
-    const paidDays = Math.max(0, employed - lop);
+    const lopAdjustment = adj.filter((a) => a.kind === 'lop_days').reduce((s, a) => s + Number(a.amount), 0);
+    const lop = Math.max(0, stretches.reduce((t, v) => t + v.lop, 0) + lopAdjustment);
+    const paid = paidPerStretch(stretches, lopAdjustment);
+    const paidDays = paid.reduce((t, d) => t + d, 0);
     const adjustments = adj.filter((a) => a.kind !== 'lop_days').map((a) => ({ kind: a.kind as 'earning' | 'deduction', label: a.label, amount: Number(a.amount), taxable: a.taxable }));
     if (overtimeOn) {
       const ot = await overtimeForRun(db, tenantId, runId, e.id, p.end, components);
@@ -116,7 +148,8 @@ export async function computeRun(db: Db, tenantId: string, runId: string) {
     const esiCover = (await db.query<{ amounts: Record<string, number> }>(`SELECT amounts FROM employee_salaries WHERE tenant_id=$1 AND employee_id=$2 AND status='active' AND effective_from <= $4::date
       ORDER BY (effective_from <= $3::date) DESC, CASE WHEN effective_from <= $3::date THEN effective_from END DESC, effective_from ASC LIMIT 1`, [tenantId, e.id, cpStart, p.end])).rows[0];
     const input: CalcInput = {
-      month: p.month, esiCoverageAmounts: esiCover?.amounts, daysInPeriod: p.days, paidDays, components, amounts: sal.amounts,
+      month: p.month, esiCoverageAmounts: esiCover?.amounts, daysInPeriod: p.days, paidDays, components, amounts: stretches[stretches.length - 1]!.amounts,
+      ...(stretches.length > 1 ? { segments: stretches.map((v, x) => ({ amounts: v.amounts, paidDays: paid[x]!, days: v.days, from: v.start })) } : {}),
       adjustments,
       statutory: { pfExcluded: !!e.pf_excluded, regime, ptState },
       rules: { pf: await cached('pf', 'IN'), esi: await cached('esi', 'IN'), pt: ptState ? await cached('pt', ptState) : undefined, lwf: ptState ? await cached('lwf', ptState) : undefined, tds: await cached('tds', regime) },
@@ -135,7 +168,7 @@ export async function computeRun(db: Db, tenantId: string, runId: string) {
     warnings.push(...r.warnings);
     await db.query(`INSERT INTO payroll_items (tenant_id, run_id, employee_id, salary_id, days_in_period, employed_days, lop_days, paid_days, lines, gross, deductions, net, employer_cost, warnings, hold, calc_version)
       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16)`,
-      [tenantId, runId, e.id, sal.id, p.days, employed, lop, paidDays, JSON.stringify(r.lines), r.gross, r.deductions, r.net, r.employerCost, JSON.stringify(warnings), r.net < 0, CALC_VERSION]);
+      [tenantId, runId, e.id, stretches[stretches.length - 1]!.id, p.days, employed, lop, paidDays, JSON.stringify(r.lines), r.gross, r.deductions, r.net, r.employerCost, JSON.stringify(warnings), r.net < 0, CALC_VERSION]);
     totals.employees++; totals.gross += r.gross; totals.deductions += r.deductions; totals.net += r.net; totals.employerCost += r.employerCost; if (r.net < 0) totals.held++;
     warningCount += warnings.length;
   }

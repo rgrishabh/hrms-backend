@@ -7,7 +7,7 @@ import { z } from 'zod';
  * is missing the deduction is NOT guessed — a warning is raised instead.
  * CALC_VERSION changes whenever results for the same inputs would change.
  */
-export const CALC_VERSION = 3;
+export const CALC_VERSION = 4;
 
 const pct = z.number().min(0).max(100);
 const money = z.number().min(0).max(1e9);
@@ -32,6 +32,7 @@ export interface Adjustment {
   esiWage?: boolean;
 }
 export interface Line { code: string; name: string; kind: 'earning' | 'deduction' | 'employer'; amount: number; basis?: string }
+export interface SalarySegment { amounts: Record<string, number>; paidDays: number; days: number; from?: string }
 export interface CalcInput {
   month: number;                         // 1..12
   daysInPeriod: number; paidDays: number; // proration = paidDays / daysInPeriod
@@ -40,6 +41,11 @@ export interface CalcInput {
   adjustments: Adjustment[];
   statutory: { pfExcluded: boolean; regime: 'new' | 'old'; ptState: string | null };
   rules: { pf?: PfParams; esi?: EsiParams; pt?: PtParams; lwf?: LwfParams; tds?: TdsParams };
+  /**
+   * A salary change within the period: each stretch at its own rate, by calendar days. `paidDays` is that stretch's share
+   * of the period's paid days and `days` its length. Without it, `amounts` and `paidDays` apply to the whole period.
+   */
+  segments?: SalarySegment[];
   /** Salary at the start of the ESI contribution period, which decides cover for the whole period. Default: `amounts`. */
   esiCoverageAmounts?: Record<string, number>;
   /** Which kinds the deployment expects (warn when the rule is missing). */
@@ -62,14 +68,17 @@ export function progressiveTax(income: Decimal, slabs: { upTo: number | null; ra
   return tax;
 }
 
-/** Each component's amount for a salary, fixed components scaled by `factor` where they prorate; percents follow their base. */
-function componentAmounts(comps: Component[], amounts: Record<string, number>, factor: Decimal, warnings: string[] = []) {
+/**
+ * Each component's amount for a salary: fixed components scaled by `factor` where they prorate, and by `share` (this
+ * salary's part of the period when it changed mid-way) where they do not; percents follow their base.
+ */
+function componentAmounts(comps: Component[], amounts: Record<string, number>, factor: Decimal, warnings: string[] = [], share = new Decimal(1)) {
   const amount = new Map<string, Decimal>();
   for (const c of comps) {
     const v = amounts[c.code];
     if (v == null) continue;
     let a: Decimal;
-    if (c.calc === 'fixed') a = new Decimal(v).times(c.prorate ? factor : 1);
+    if (c.calc === 'fixed') a = new Decimal(v).times(c.prorate ? factor : share);
     else {
       const missing = c.base_codes.filter((b) => !amount.has(b));
       if (missing.length) warnings.push(`${c.code}: base ${missing.join(', ')} not in this salary`);
@@ -96,11 +105,19 @@ function annualTax(income: Decimal, t: TdsParams) {
 
 export function calculate(i: CalcInput): CalcResult {
   const warnings: string[] = [];
-  const factor = i.daysInPeriod > 0 ? new Decimal(i.paidDays).div(i.daysInPeriod) : new Decimal(0);
   const comps = [...i.components].sort((a, b) => (a.calc === b.calc ? a.position - b.position : a.calc === 'fixed' ? -1 : 1));
-  const amount = componentAmounts(comps, i.amounts, factor, warnings);
+  const segments = i.segments ?? [{ amounts: i.amounts, paidDays: i.paidDays, days: 1 }];
+  const totalDays = segments.reduce((t, s) => t + s.days, 0);
+  const amount = new Map<string, Decimal>();
+  for (const seg of segments) {
+    const factor = i.daysInPeriod > 0 ? new Decimal(seg.paidDays).div(i.daysInPeriod) : new Decimal(0);
+    const segWarnings: string[] = [];
+    for (const [code, a] of componentAmounts(comps, seg.amounts, factor, segWarnings, new Decimal(seg.days).div(totalDays))) amount.set(code, (amount.get(code) ?? new Decimal(0)).plus(a));
+    for (const w of segWarnings) if (!warnings.includes(w)) warnings.push(w);
+  }
+  const changedOn = segments.slice(1).map((s) => s.from).filter(Boolean).join(', ');
   const lines: Line[] = [];
-  for (const c of comps) { const a = amount.get(c.code); if (a) lines.push({ code: c.code, name: c.name, kind: c.kind, amount: n(a) }); }
+  for (const c of comps) { const a = amount.get(c.code); if (a) lines.push({ code: c.code, name: c.name, kind: c.kind, amount: n(a), ...(changedOn ? { basis: `Salary changed on ${changedOn}, split by days` } : {}) }); }
   for (const [idx, a] of i.adjustments.entries()) lines.push({ code: a.code ?? `ADJ${idx + 1}`, name: a.label, kind: a.kind, amount: n(r0(new Decimal(a.amount))), ...(a.basis ? { basis: a.basis } : {}) });
 
   const sum = (pred: (c: Component) => boolean) => comps.filter((c) => c.kind === 'earning' && pred(c)).reduce((s, c) => s.plus(amount.get(c.code) ?? 0), new Decimal(0));
@@ -131,7 +148,7 @@ export function calculate(i: CalcInput): CalcResult {
   }
   // ESI
   if (!i.rules.esi) missingRule('esi', 'ESI');
-  else if (esiWage.gt(0) && esiFullWage(comps, i.esiCoverageAmounts ?? i.amounts).lte(i.rules.esi.wageThreshold)) {
+  else if (esiWage.gt(0) && esiFullWage(comps, i.esiCoverageAmounts ?? segments[segments.length - 1]!.amounts).lte(i.rules.esi.wageThreshold)) {
     const e = i.rules.esi; const rnd = e.rounding === 'up' ? up0 : r0;
     lines.push({ code: 'ESI_EE', name: 'ESI (employee)', kind: 'deduction', amount: n(rnd(esiContribution.times(e.employeeRate).div(100))), basis: `ESI wages ${n(esiContribution)}` });
     lines.push({ code: 'ESI_ER', name: 'ESI (employer)', kind: 'employer', amount: n(rnd(esiContribution.times(e.employerRate).div(100))) });

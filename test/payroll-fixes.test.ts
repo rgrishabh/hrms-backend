@@ -82,3 +82,47 @@ describe('F-5 ESI contribution periods through a run', () => {
     expect(lineOf(await itemOf(p, sep, J), 'ESI_EE')).toBe(300);
   });
 });
+
+describe('F-6 salary change within the month', () => {
+  let W: TenantFixture; let p: Client; let e: string;
+  beforeAll(async () => {
+    W = await createTenant();
+    p = await Client.login(app, W.host, W.users.payroll!.email);
+    e = W.users.employee!.employeeId!;
+    await seedComponents(W);
+    await activeSalary(W, e, '2024-01-01', { BASIC: 30000 });
+    await activeSalary(W, e, '2026-09-20', { BASIC: 60000 });
+  });
+
+  it('an increment on the 20th pays 19 days at the old rate and 11 at the new', async () => {
+    const id = await createRun(p, W, '2026-09');
+    await compute(p, id);
+    const i = await itemOf(p, id, e);
+    expect(lineOf(i, 'BASIC')).toBe(19000 + 22000);
+    expect(i!.paid_days).toBe('30.00');
+    expect(i!.lines.find((l) => l.code === 'BASIC')!.basis).toMatch(/2026-09-20/);
+  });
+
+  it('loss of pay lands on the days it happened', async () => {
+    await day(W, e, '2026-08-05', 'absent');
+    await activeSalary(W, e, '2026-08-20', { BASIC: 62000 });
+    const id = await createRun(p, W, '2026-08');
+    await compute(p, id);
+    const i = await itemOf(p, id, e);
+    // 31 days: 19 at 30000 less one absent day = 18/31 × 30000; 12 at 62000 = 12/31 × 62000.
+    expect(lineOf(i, 'BASIC')).toBe(Math.round(18 / 31 * 30000) + Math.round(12 / 31 * 62000));
+    expect(i!.lop_days).toBe('1.00');
+    expect(i!.paid_days).toBe('30.00');
+  });
+
+  it('days before the first salary are unpaid and flagged', async () => {
+    const o = W.users.other!.employeeId!;
+    await activeSalary(W, o, '2026-07-11', { BASIC: 31000 });
+    const id = await createRun(p, W, '2026-07');
+    await compute(p, id);
+    const i = await itemOf(p, id, o);
+    expect(lineOf(i, 'BASIC')).toBe(21000);
+    expect(i!.paid_days).toBe('21.00');
+    expect(i!.warnings.join(' ')).toMatch(/2026-07-11/);
+  });
+});
