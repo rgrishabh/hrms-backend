@@ -196,7 +196,7 @@ export async function generateDemo(c: pg.Client | pg.PoolClient, opts: { passwor
   say('leave: CL/SL/EL/LWP with accruals to date (example policy — set your own)');
   // approved leave history, written as the approval flow writes it: request, ledger debit, attendance recalculated (on_leave)
   const typeId = Object.fromEntries((await q<{ code: string; id: string }>('SELECT code, id FROM leave_types WHERE tenant_id=$1', [tid])).rows.map((r) => [r.code, r.id]));
-  let leaveDays = 0;
+  let leaveDays = 0; let leaveRequests = 0;
   for (const l of leavePlan) {
     const branch = (await q<{ branch_id: string }>('SELECT branch_id FROM employees WHERE id=$1', [l.e.id])).rows[0]!.branch_id;
     const days = countDays(l.start, l.end, 'full', 'full', await nonWorkingDates(db, tid, branch, l.start, l.end), false).days.toNumber();
@@ -207,9 +207,9 @@ export async function generateDemo(c: pg.Client | pg.PoolClient, opts: { passwor
     await q(`INSERT INTO leave_ledger (tenant_id, employee_id, leave_type_id, leave_year, entry_type, days, request_id, reference, note, created_by)
       VALUES ($1,$2,$3,$4,'consumption',$5,$6,$7,$8,$9)`, [tid, l.e.id, typeId[l.code], year, -days, rid, `request:${rid}:consume`, `Leave ${l.start} to ${l.end}`, uid('hr.head')]);
     await recalculateRange(db, tid, l.e.id, l.start, l.end);
-    leaveDays += days;
+    leaveDays += days; leaveRequests++;
   }
-  say(`leave history: ${leavePlan.length} approved requests, ${leaveDays} days`);
+  say(`leave history: ${leaveRequests} approved requests, ${leaveDays} days`);
 
   // ---- expenses
   const cat: Record<string, string> = {};
