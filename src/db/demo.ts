@@ -99,7 +99,7 @@ export async function generateDemo(c: pg.Client | pg.PoolClient, opts: { passwor
   say('organization: 3 branches, 11 departments, general shift, national holidays');
 
   // ---- employees (personas first, then staff)
-  type Emp = { id: string; code: string; first: string; last: string; dept: string; grade: string; userId: string | null; joined: string };
+  type Emp = { id: string; code: string; first: string; last: string; dept: string; grade: string; userId: string | null; joined: string; branch: string };
   const emps: Emp[] = [];
   let n = 0;
   const mkEmp = async (first: string, last: string, deptCode: string, designation: string, grade: string, manager: string | null, branchCode: string, joined: string, type = 'permanent') => {
@@ -112,7 +112,7 @@ export async function generateDemo(c: pg.Client | pg.PoolClient, opts: { passwor
       [tid, code, first, last, email, `+91 9${int(100000000, 999999999)}`, le, branch[branchCode], dept[deptCode], designation, grade, type, manager, joined,
         type === 'probation' ? addDays(joined, 180) : null, type === 'probation' ? null : addDays(joined, 180), addDays(joined, -int(22, 40) * 365)])).rows[0]!.id;
     await q(`INSERT INTO shift_assignments (tenant_id, employee_id, shift_id, effective_from) VALUES ($1,$2,$3,$4)`, [tid, id, shift, joined]);
-    const e = { id, code, first, last, dept: deptCode, grade, userId: null, joined };
+    const e = { id, code, first, last, dept: deptCode, grade, userId: null, joined, branch: branchCode };
     emps.push(e);
     return e;
   };
@@ -332,6 +332,39 @@ export async function generateDemo(c: pg.Client | pg.PoolClient, opts: { passwor
       if (first === prev) await q(`INSERT INTO loan_recoveries (tenant_id, loan_id, source, amount, reference, recorded_by) VALUES ($1,$2,'repayment',$3,'Cash receipt (demo)',$4)`, [tid, lid, inst, uid('payroll')]);
     }
     say('advances and loans: a salary advance and a loan, both paid out and being recovered');
+  }
+
+  // ---- personal details: most people have filled in contacts, addresses, education and nominees; a few have not yet
+  // (Reports → Missing personal details). The analyst has no PF nominee yet: adding one goes to HR for approval.
+  {
+    const HOME = [['Kolhapur', 'Maharashtra', '416003'], ['Nagpur', 'Maharashtra', '440010'], ['Mysuru', 'Karnataka', '570009'], ['Indore', 'Madhya Pradesh', '452001'],
+      ['Kochi', 'Kerala', '682016'], ['Lucknow', 'Uttar Pradesh', '226010'], ['Nashik', 'Maharashtra', '422005'], ['Hubballi', 'Karnataka', '580020']] as const;
+    const PIN: Record<string, string> = { PUN: '411045', NMB: '400703', BLR: '560037' };
+    const LEVEL_BY_DEPT: Record<string, [string, string, string]> = {
+      WATER: ['postgraduate', 'M.Sc. Analytical Chemistry', 'Savitribai Phule Pune University'], AIR: ['graduate', 'B.E. Environmental Engineering', 'Visvesvaraya Technological University'],
+      SOIL: ['postgraduate', 'M.Sc. Agricultural Chemistry', 'Mahatma Phule Krishi Vidyapeeth'], FOOD: ['postgraduate', 'M.Sc. Food Technology', 'University of Mumbai'],
+      MICRO: ['postgraduate', 'M.Sc. Microbiology', 'Bangalore University'], INST: ['graduate', 'B.Tech. Instrumentation', 'University of Mumbai'],
+      FIELD: ['diploma', 'Diploma in Chemical Technology', 'MSBTE'], QA: ['postgraduate', 'M.Sc. Chemistry', 'Savitribai Phule Pune University'],
+      HR: ['postgraduate', 'MBA (Human Resources)', 'Symbiosis International University'], FIN: ['graduate', 'B.Com.', 'University of Mumbai'], IT: ['graduate', 'B.E. Computer Engineering', 'Savitribai Phule Pune University'],
+    };
+    let done = 0;
+    for (const e of emps) {
+      if (e.id === joiner.id || (!personaIds.has(e.id) && rnd() < 0.12)) continue;
+      const b = BRANCHES.find((x) => x.code === e.branch)!;
+      const spouse = `${pick([...FIRST_F, ...FIRST_M])} ${e.last}`;
+      await q(`INSERT INTO employee_emergency_contacts (tenant_id, employee_id, position, name, relationship, phone) VALUES ($1,$2,1,$3,$4,$5),($1,$2,2,$6,'Parent',$7)`,
+        [tid, e.id, spouse, pick(['Spouse', 'Sibling']), `+91 9${int(100000000, 999999999)}`, `${pick(FIRST_M)} ${e.last}`, `+91 9${int(100000000, 999999999)}`]);
+      const [hc, hs, hp] = pick(HOME);
+      await q(`INSERT INTO employee_addresses (tenant_id, employee_id, kind, line1, line2, city, state, postal_code) VALUES ($1,$2,'current',$3,$4,$5,$6,$7),($1,$2,'permanent',$8,NULL,$9,$10,$11)`,
+        [tid, e.id, `Flat ${int(1, 12)}0${int(1, 4)}, ${pick(['Sai', 'Shree', 'Green', 'Lake', 'Palm'])} ${pick(['Residency', 'Heights', 'Apartments', 'Enclave'])}`, pick(['Main Road', 'Station Road', 'Link Road']),
+          b.city, b.state, PIN[e.branch], `${int(2, 180)}, ${pick(['Shivaji', 'Gandhi', 'Nehru', 'Tilak'])} Nagar`, hc, hs, hp]);
+      const [level, qual, uni] = LEVEL_BY_DEPT[e.dept]!;
+      await q(`INSERT INTO employee_education (tenant_id, employee_id, level, qualification, institution, university, year_of_passing, score) VALUES ($1,$2,$3,$4,$5,$6,$7,$8)`,
+        [tid, e.id, level, qual, `${pick(['Fergusson', 'Ruia', 'St. Joseph\'s', 'Modern', 'Wadia'])} College`, uni, Number(e.joined.slice(0, 4)) - int(1, 4), `${int(62, 84)}%`]);
+      if (e !== personas.analyst) await q(`INSERT INTO employee_nominees (tenant_id, employee_id, purpose, name, relationship, share_percent) VALUES ($1,$2,'pf',$3,'Spouse',100),($1,$2,'gratuity',$3,'Spouse',100)`, [tid, e.id, spouse]);
+      done++;
+    }
+    say(`personal details: ${done} of ${emps.length} employees complete`);
   }
 
   // ---- training & competency
