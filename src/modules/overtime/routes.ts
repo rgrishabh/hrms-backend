@@ -12,7 +12,7 @@ import { teamEmployeeIds } from '../attendance/service.js';
 import { addDays } from '../attendance/time.js';
 import { orgToday } from '../competency/service.js';
 import { insertLedgerEntry } from '../leave/jobs.js';
-import { leaveYearOf, yearStartMonth, balanceOf } from '../leave/service.js';
+import { leaveYearOf, yearClosed, yearStartMonth, balanceOf } from '../leave/service.js';
 import { overtimePaySettings, compOffType, compOffDays } from './service.js';
 import type { Db } from '../../db/tx.js';
 
@@ -83,7 +83,10 @@ export async function overtimeRoutes(app: FastifyInstance) {
         if (!t) throw conflict('Compensatory off is no longer offered (no leave type configured); return the claim so it can be taken as pay');
         days = compOffDays(c.minutes, await getSettingValue<number>(db, tenantId, 'overtime.comp_off_day_minutes'));
         if (days <= 0) throw conflict('Too little overtime for compensatory off; return the claim so it can be taken as pay');
-        const year = leaveYearOf(await orgToday(db, tenantId), await yearStartMonth(db, tenantId));
+        // The day worked decides the leave year, unless that year is closed: its balance can no longer be taken.
+        const startMonth = await yearStartMonth(db, tenantId);
+        const workYear = leaveYearOf(c.work_date, startMonth);
+        const year = await yearClosed(db, tenantId, workYear) ? leaveYearOf(await orgToday(db, tenantId), startMonth) : workYear;
         await insertLedgerEntry(db, tenantId, { empId: c.employee_id, typeId: t.id, year, entryType: 'adjustment', days: new Decimal(days),
           reference: `overtime:${id}:credit`, note: `Compensatory off for overtime on ${c.work_date}`, actorId });
       }

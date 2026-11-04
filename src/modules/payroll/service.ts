@@ -32,7 +32,8 @@ async function rule(db: Db, tenantId: string, kind: RuleKind, scope: string, at:
  * Loss-of-pay days from calculated attendance within [from, to]:
  * absent 1; missing punch 1 (setting); half day 0.5 for the half that was not worked, whatever covers the other half
  * (attendance only reports half_day alongside leave when the other half was NOT completed; a worked half gives present);
- * unpaid leave its fraction, also on a half_day or on a day otherwise worked or on field duty. Field duty (on_duty) is paid.
+ * unpaid leave its fraction, also on a half_day, on a day otherwise worked or on field duty, and on a weekly off or holiday
+ * when the leave type counts it. Field duty (on_duty) is paid.
  * Days without a calculated row are paid but reported.
  */
 export async function lossOfPay(db: Db, tenantId: string, employeeId: string, from: string, to: string) {
@@ -47,8 +48,8 @@ export async function lossOfPay(db: Db, tenantId: string, employeeId: string, fr
     else if (r.status === 'missing_punch') { missingPunch++; if (missingIsLop) lop += 1; }
     else if (r.status === 'half_day') lop += 0.5 + (r.paid === false ? lf : 0);
     else if (r.status === 'on_leave' && r.paid === false) lop += lf || 1;
-    // A worked (or on-duty) day that includes half a day of unpaid leave loses that half.
-    else if ((r.status === 'present' || r.status === 'on_duty') && lf > 0 && r.paid === false) lop += lf;
+    // A worked (or on-duty) day that includes half a day of unpaid leave loses that half; so does an off day the unpaid leave counts.
+    else if (['present', 'on_duty', 'weekly_off', 'holiday'].includes(r.status) && lf > 0 && r.paid === false) lop += lf;
   }
   return { lop, missingPunch, uncalculated: Math.max(0, daysBetween(from, to) + 1 - rows.length) };
 }

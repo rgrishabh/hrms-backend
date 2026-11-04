@@ -95,3 +95,71 @@ describe('F-2 year-end carry-forward', () => {
     expect((await w.hr.post('/api/v1/leave/year-end', { leaveYear: Y })).json().repaired).toBe(0);
   });
 });
+
+describe('accruals (AUDIT 4.2)', () => {
+  const Y = 2024;
+  const type = async (w: World, o: Record<string, unknown>) => (await w.hr.post('/api/v1/leave/types', typeBody({ code: 'EL', name: 'Earned', accrualMethod: 'monthly', ...o }))).json().id as string;
+
+  it('monthly accrual stops at the cap and does not back-fill capped months', async () => {
+    const w = await world();
+    const el = await type(w, { annualEntitlement: 12, maxBalance: 2 });
+    expect((await w.hr.post('/api/v1/leave/accruals', { leaveYear: Y, throughMonth: 4 })).statusCode).toBe(200);
+    expect((await balanceOf(w.emp, 'EL', Y)).balance).toBe('2.00');   // months 3 and 4 hit the cap
+    await w.hr.post('/api/v1/leave/adjustments', { employeeId: w.empId, leaveTypeId: el, leaveYear: Y, days: -2, note: 'Room freed by fixture' });
+    await w.hr.post('/api/v1/leave/accruals', { leaveYear: Y, throughMonth: 5 });
+    expect((await balanceOf(w.emp, 'EL', Y)).balance).toBe('1.00');   // only month 5, not 3 and 4 again
+  });
+
+  it('a monthly entitlement adds up to the year exactly', async () => {
+    const w = await world();
+    await type(w, { annualEntitlement: 20 });
+    await w.hr.post('/api/v1/leave/accruals', { leaveYear: Y, throughMonth: 12 });
+    expect((await balanceOf(w.emp, 'EL', Y)).balance).toBe('20.00');
+  });
+
+  it('re-running accruals credits nothing new and reports it as already credited', async () => {
+    const w = await world();
+    await type(w, { annualEntitlement: 12 });
+    await w.hr.post('/api/v1/leave/accruals', { leaveYear: Y, throughMonth: 3 });
+    const again = (await w.hr.post('/api/v1/leave/accruals', { leaveYear: Y, throughMonth: 3 })).json();
+    expect(again.credited).toBe(0);
+    expect(again.alreadyCredited).toBeGreaterThan(0);
+    expect((await balanceOf(w.emp, 'EL', Y)).balance).toBe('3.00');
+  });
+
+  it('an annual credit is prorated for a known exit date in the year', async () => {
+    const w = await world();
+    await w.hr.post('/api/v1/leave/types', typeBody({ code: 'AL', name: 'Annual', annualEntitlement: 12 }));
+    await ownerQuery(`UPDATE employees SET exit_date='${Y}-06-15', status='on_notice' WHERE id=$1`, [w.empId]);
+    await w.hr.post('/api/v1/leave/accruals', { leaveYear: Y });
+    expect((await balanceOf(w.emp, 'AL', Y)).balance).toBe('6.00');   // January to June
+  });
+});
+
+describe('leave and comp-off (AUDIT 4.2)', () => {
+  it('leave managers cannot change their own balance', async () => {
+    const w = await world();
+    const cl = (await w.hr.post('/api/v1/leave/types', typeBody({ code: 'CL', name: 'Casual' }))).json().id;
+    const r = await w.hr.post('/api/v1/leave/adjustments', { employeeId: w.T.users.hr!.employeeId, leaveTypeId: cl, leaveYear: 2024, days: 5, note: 'Self-credit attempt' });
+    expect(r.statusCode).toBe(403);
+    expect((await w.hr.post('/api/v1/leave/adjustments', { employeeId: w.empId, leaveTypeId: cl, leaveYear: 2024, days: 5, note: 'For someone else' })).statusCode).toBe(201);
+  });
+
+  it('a cancelled comp-off credit does not count as leave used', async () => {
+    const w = await world();
+    const co = (await w.hr.post('/api/v1/leave/types', typeBody({ code: 'COFF', name: 'Comp off', accrualMethod: 'none' }))).json().id;
+    await ownerQuery(`INSERT INTO leave_ledger (tenant_id, employee_id, leave_type_id, leave_year, entry_type, days, reference) VALUES ($1,$2,$3,2024,'adjustment',1,'overtime:x:credit'),($1,$2,$3,2024,'reversal',-1,'overtime:x:reverse')`,
+      [w.T.id, w.empId, co]);
+    const b = await balanceOf(w.emp, 'COFF', 2024);
+    expect(Number(b.balance)).toBe(0);
+    expect(Number(b.used)).toBe(0);
+  });
+
+  it('a cancelled leave request still nets out of used', async () => {
+    const w = await world();
+    const cl = (await w.hr.post('/api/v1/leave/types', typeBody({ code: 'CL', name: 'Casual' }))).json().id;
+    await ownerQuery(`INSERT INTO leave_ledger (tenant_id, employee_id, leave_type_id, leave_year, entry_type, days, reference) VALUES ($1,$2,$3,2024,'consumption',-2,'c1'),($1,$2,$3,2024,'reversal',2,'c1r'),($1,$2,$3,2024,'consumption',-1,'c2')`,
+      [w.T.id, w.empId, cl]);
+    expect(Number((await balanceOf(w.emp, 'CL', 2024)).used)).toBe(1);
+  });
+});

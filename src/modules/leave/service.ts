@@ -124,17 +124,17 @@ export function assertApplicable(t: LeaveType, e: EmployeeLite, onDate: string) 
 
 /** Approved leave per date for one employee over a range (for attendance calculation). */
 export async function approvedLeaveByDate(db: Db, tenantId: string, employeeId: string, from: string, to: string) {
-  const r = await db.query<{ start_date: string; end_date: string; start_half: StartHalf; end_half: EndHalf; code: string }>(
-    `SELECT r.start_date, r.end_date, r.start_half, r.end_half, t.code FROM leave_requests r
+  const r = await db.query<{ start_date: string; end_date: string; start_half: StartHalf; end_half: EndHalf; code: string; charged_off: boolean }>(
+    `SELECT r.start_date, r.end_date, r.start_half, r.end_half, t.code, (t.count_non_working_days AND NOT t.paid) AS charged_off FROM leave_requests r
        JOIN leave_types t ON t.tenant_id=r.tenant_id AND t.id=r.leave_type_id
       WHERE r.tenant_id=$1 AND r.employee_id=$2 AND r.status='approved' AND r.start_date <= $4 AND r.end_date >= $3`, [tenantId, employeeId, from, to]);
-  const map = new Map<string, { fraction: number; code: string }>();
+  const map = new Map<string, { fraction: number; code: string; chargedOnOffDay: boolean }>();
   for (const req of r.rows) {
     for (const d of dateRange(req.start_date > from ? req.start_date : from, req.end_date < to ? req.end_date : to)) {
       const f = dateFraction(d, req);
       if (f > 0) {
         const prev = map.get(d);
-        map.set(d, { fraction: Math.min(1, (prev?.fraction ?? 0) + f), code: prev && prev.code !== req.code ? `${prev.code}+${req.code}` : req.code });
+        map.set(d, { fraction: Math.min(1, (prev?.fraction ?? 0) + f), code: prev && prev.code !== req.code ? `${prev.code}+${req.code}` : req.code, chargedOnOffDay: req.charged_off });
       }
     }
   }

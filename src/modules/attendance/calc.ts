@@ -34,8 +34,10 @@ import { zonedToInstant, addDays, minutesBetween } from './time.js';
  *    place of the day's first punch if that was an in, a corrected out of the last punch if that was an out. Punches of
  *    unknown direction count as the direction pairing would give them. A correction filling a gap removes nothing, and
  *    the latest approved correction of a direction wins.
+ *  - (v5) Unpaid leave of a type that counts non-working days covers the weekly off or holiday it spans: the day keeps
+ *    its status and records the leave, so payroll charges the day the leave ledger already debited.
  */
-export const CALC_VERSION = 4;
+export const CALC_VERSION = 5;
 
 export interface ShiftPolicy {
   id: string;
@@ -66,7 +68,7 @@ export interface DayInput {
   minGapSeconds: number;
   overtimeEnabled: boolean;
   /** Approved leave covering this date (fraction 0.5 or 1). */
-  leave?: { fraction: number; code: string } | null;
+  leave?: { fraction: number; code: string; chargedOnOffDay?: boolean } | null;
   /** Approved field duty covering this date (fraction 0.5 or 1). */
   duty?: { fraction: number } | null;
 }
@@ -169,7 +171,8 @@ export function calculateDay(input: DayInput): DayResult {
 
   if (dayType !== 'working') {
     result.status = dayType;
-    // Leave over a weekly off / holiday does not change the day (counted by the leave type's rules).
+    // Leave over a weekly off / holiday does not change the day; only unpaid leave that counts the day is recorded on it.
+    if (input.leave?.chargedOnOffDay && input.leave.fraction > 0) { result.leaveFraction = input.leave.fraction >= 1 ? 1 : 0.5; result.leaveTypeCode = input.leave.code; }
     if (kept.length) {
       exceptions.push('worked_on_' + dayType);
       if (input.overtimeEnabled) result.overtimeMinutes = worked;

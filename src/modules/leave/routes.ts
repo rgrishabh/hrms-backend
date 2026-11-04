@@ -197,7 +197,7 @@ export async function leaveRoutes(app: FastifyInstance) {
       const rows = await db.query(`SELECT t.id, t.code, t.name, t.paid, t.requires_balance, t.annual_entitlement, t.accrual_method, t.allow_half_day,
           coalesce((SELECT sum(days) FROM leave_ledger l WHERE l.tenant_id=t.tenant_id AND l.employee_id=$2 AND l.leave_type_id=t.id AND l.leave_year=$3),0)::text AS balance,
           coalesce((SELECT sum(days) FROM leave_requests r WHERE r.tenant_id=t.tenant_id AND r.employee_id=$2 AND r.leave_type_id=t.id AND r.leave_year=$3 AND r.status='pending'),0)::text AS pending,
-          coalesce((SELECT -sum(days) FROM leave_ledger l WHERE l.tenant_id=t.tenant_id AND l.employee_id=$2 AND l.leave_type_id=t.id AND l.leave_year=$3 AND l.entry_type IN ('consumption','reversal')),0)::text AS used
+          coalesce((SELECT -sum(days) FROM leave_ledger l WHERE l.tenant_id=t.tenant_id AND l.employee_id=$2 AND l.leave_type_id=t.id AND l.leave_year=$3 AND (l.entry_type='consumption' OR (l.entry_type='reversal' AND l.days > 0))),0)::text AS used
         FROM leave_types t WHERE t.tenant_id=$1 AND t.status='active'
           AND (cardinality(t.applicable_employment_types)=0 OR $4 = ANY(t.applicable_employment_types)) ORDER BY t.code`,
         [a.tenantId, employeeId, year, e.employment_type]);
@@ -360,6 +360,7 @@ export async function leaveRoutes(app: FastifyInstance) {
     return a.tx(async (db) => {
       await requireFeature(db, a.tenantId, 'leave');
       if (!(await loadEmployee(db, a.tenantId, body.employeeId))) throw notFound('Employee not found');
+      if (body.employeeId === a.user.employeeId) throw forbidden('You cannot adjust your own leave balance; ask another HR administrator');
       await loadType(db, a.tenantId, body.leaveTypeId);
       if (await yearClosed(db, a.tenantId, body.leaveYear)) throw conflict(`The ${body.leaveYear} leave year is closed; adjust the current year instead`);
       const ref = `${body.entryType}:${crypto.randomUUID()}`;

@@ -3,6 +3,10 @@ import type { FastifyInstance } from 'fastify';
 import { makeApp, createTenant, Client, ownerQuery, PASSWORD, type TenantFixture } from './helpers.js';
 import { hashPassword } from '../src/core/crypto/index.js';
 import { compOffDays } from '../src/modules/overtime/service.js';
+import pg from 'pg';
+import { TEST_OWNER_URL } from './env.js';
+import { createApprovalRequest } from '../src/core/workflow/engine.js';
+import type { Db } from '../src/db/tx.js';
 
 // Pay settings here are TEST FIXTURES, not statutory values.
 let app: FastifyInstance; let T: TenantFixture;
@@ -135,5 +139,29 @@ describe('overtime', () => {
     expect((await set('overtime.quarter_cap_hours', 1)).statusCode).toBe(200);
     expect((await claim(emp, D4, 60, 'pay')).statusCode).toBe(201);           // exactly 1 h
     expect((await claim(emp, D3, 30, 'pay')).json().error.message).toMatch(/limit of 1 hours for the quarter/);
+  });
+});
+
+describe('comp-off leave year (AUDIT 4.2)', () => {
+  beforeAll(async () => { expect((await set('overtime.quarter_cap_hours', 500)).statusCode).toBe(200); });
+  const approvedYear = async (workDate: string) => {
+    const [cl] = await ownerQuery<{ id: string }>(`INSERT INTO overtime_claims (tenant_id, employee_id, work_date, minutes, recorded_minutes, payout, reason, created_by)
+      VALUES ($1,$2,$3,480,480,'comp_off','Fixture claim',$4) RETURNING id`, [T.id, empId, workDate, T.users.employee!.id]);
+    const c = new pg.Client({ connectionString: TEST_OWNER_URL });
+    await c.connect();
+    await c.query(`SELECT set_config('app.platform_bypass','on',false)`);
+    await createApprovalRequest(c as unknown as Db, T.id, { entityType: 'overtime_claim', entityId: cl!.id, requesterId: T.users.employee!.id, summary: 'Fixture', steps: [{ kind: 'permission', permission: 'overtime.approve' }] });
+    await c.end();
+    await approve(hr, cl!.id);
+    return (await ownerQuery<{ leave_year: number }>(`SELECT leave_year FROM leave_ledger WHERE tenant_id=$1 AND reference=$2`, [T.id, `overtime:${cl!.id}:credit`]))[0]!.leave_year;
+  };
+
+  it('is credited to the leave year of the work date', async () => {
+    expect(await approvedYear('2025-12-20')).toBe(2025);
+  });
+
+  it('or to the current year when that year is already closed', async () => {
+    await ownerQuery(`INSERT INTO leave_year_closures (tenant_id, leave_year) VALUES ($1,2024)`, [T.id]);
+    expect(await approvedYear('2024-12-20')).toBe(Number(today.slice(0, 4)));
   });
 });

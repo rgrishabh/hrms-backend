@@ -39,11 +39,19 @@ async function capped(db: Db, tenantId: string, t: LeaveType, empId: string, yea
   return Decimal.max(0, Decimal.min(amount, room));
 }
 
+/** Credit for the k-th month: the rounded running total less the one before it, so rounding never accumulates. */
+export function monthlyCredit(annualEntitlement: Decimal.Value, k: number) {
+  const upTo = (m: number) => new Decimal(annualEntitlement).times(m).div(12).toDecimalPlaces(2, Decimal.ROUND_HALF_UP);
+  return upTo(k).minus(upTo(k - 1));
+}
+
 /**
  * Accrue entitlements for a leave year, up to `throughMonth` (1–12 within the year).
- * annual:  full entitlement once; joiners within the year get it pro-rated by remaining
- *          whole months (joining month counts), rounded DOWN to 0.5 day.
- * monthly: entitlement/12 (2 dp) for each month the employee was employed in.
+ * annual:  full entitlement once; a joiner or a known leaver within the year gets it pro-rated by the
+ *          months employed (a part month counts), rounded DOWN to 0.5 day.
+ * monthly: a twelfth for each month the employee was employed in, so twelve months add up to the
+ *          entitlement exactly. A month that hits max_balance stays skipped when room appears later:
+ *          the cap limits accrual, it does not defer it.
  * Idempotent: each credit has a unique ledger reference.
  */
 export async function runAccruals(db: Db, tenantId: string, year: number, throughMonth: number, actorId: string | null) {
@@ -60,20 +68,27 @@ export async function runAccruals(db: Db, tenantId: string, year: number, throug
       if (t.applicable_employment_types.length && !t.applicable_employment_types.includes(e.employment_type)) continue;
       if (t.accrual_method === 'annual') {
         let amount = ent;
-        if (e.date_of_joining > yStart) {
-          let remaining = 0;
-          for (let k = 1; k <= 12; k++) if (monthEnd(year, startMonth, k) >= e.date_of_joining) remaining++;
-          amount = ent.times(remaining).div(12).times(2).floor().div(2);
+        const partYear = e.date_of_joining > yStart || (!!e.exit_date && e.exit_date < yEnd);
+        if (partYear) {
+          let months = 0;
+          for (let k = 1; k <= 12; k++) if (monthEnd(year, startMonth, k) >= e.date_of_joining && (!e.exit_date || monthStart(year, startMonth, k) <= e.exit_date)) months++;
+          amount = ent.times(months).div(12).times(2).floor().div(2);
         }
         amount = await capped(db, tenantId, t, e.id, year, amount);
         (await credit(db, tenantId, { empId: e.id, typeId: t.id, year, entryType: 'accrual', days: amount, reference: `accrual:${t.id}:${e.id}:${year}`,
-          note: e.date_of_joining > yStart ? 'Annual entitlement (pro-rated for joining date)' : 'Annual entitlement', actorId })) ? credited++ : skipped++;
+          note: partYear ? 'Annual entitlement (pro-rated for months employed)' : 'Annual entitlement', actorId })) ? credited++ : skipped++;
       } else {
-        const perMonth = ent.div(12).toDecimalPlaces(2);
-        for (let k = 1; k <= Math.min(12, throughMonth); k++) {
+        const through = Math.min(12, throughMonth);
+        const done = (await db.query<{ through_month: number }>(`SELECT through_month FROM leave_accrual_progress WHERE tenant_id=$1 AND employee_id=$2 AND leave_type_id=$3 AND leave_year=$4`,
+          [tenantId, e.id, t.id, year])).rows[0]?.through_month ?? 0;
+        await db.query(`INSERT INTO leave_accrual_progress (tenant_id, employee_id, leave_type_id, leave_year, through_month) VALUES ($1,$2,$3,$4,$5)
+          ON CONFLICT (tenant_id, employee_id, leave_type_id, leave_year) DO UPDATE SET through_month=greatest(leave_accrual_progress.through_month, EXCLUDED.through_month), updated_at=now()`,
+          [tenantId, e.id, t.id, year, through]);
+        for (let k = 1; k <= through; k++) {
           const ms = monthStart(year, startMonth, k); const me = monthEnd(year, startMonth, k);
           if (e.date_of_joining > me || (e.exit_date && e.exit_date < ms)) continue;
-          const amount = await capped(db, tenantId, t, e.id, year, perMonth);
+          if (k <= done) { skipped++; continue; }
+          const amount = await capped(db, tenantId, t, e.id, year, monthlyCredit(ent, k));
           (await credit(db, tenantId, { empId: e.id, typeId: t.id, year, entryType: 'accrual', days: amount, reference: `accrual:${t.id}:${e.id}:${year}-m${k}`,
             note: `Monthly accrual ${ms.slice(0, 7)}`, actorId })) ? credited++ : skipped++;
         }

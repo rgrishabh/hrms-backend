@@ -393,3 +393,30 @@ describe('F-12 held pay', () => {
     expect((await f.post(`/api/v1/payroll/runs/${o}/items/${e}/release`, { reason: 'Too early' })).statusCode).toBe(409);
   });
 });
+
+describe('sandwiched unpaid leave', () => {
+  let W: TenantFixture; let p: Client;
+  beforeAll(async () => {
+    W = await createTenant();
+    p = await Client.login(app, W.host, W.users.payroll!.email);
+    await seedComponents(W);
+    await ownerQuery(`INSERT INTO leave_types (tenant_id, code, name, paid, requires_balance, accrual_method, count_non_working_days) VALUES ($1,'SLWP','Sandwich unpaid',false,false,'none',true)`, [W.id]);
+  });
+
+  it('a weekly off the leave type counts as leave is loss of pay when that leave is unpaid', async () => {
+    const e = W.users.employee!.employeeId!;
+    await activeSalary(W, e, '2024-01-01', { BASIC: 30000 });
+    await day(W, e, '2026-03-07', 'on_leave', { leaveFraction: 1, code: 'SLWP' });
+    await day(W, e, '2026-03-08', 'weekly_off', { leaveFraction: 1, code: 'SLWP', dayType: 'weekly_off' });
+    await day(W, e, '2026-03-09', 'on_leave', { leaveFraction: 1, code: 'SLWP' });
+    const id = await createRun(p, W, '2026-03');
+    await compute(p, id);
+    expect((await itemOf(p, id, e))!.lop_days).toBe('3.00');
+  });
+
+  it('the attendance engine records it on the off day, only for a type that counts it', () => {
+    const off = (leave: DayInput['leave']) => calculateDay({ workDate: '2026-03-08', timezone: 'Asia/Kolkata', shift: null, dayType: 'weekly_off', employment: { joiningDate: '2020-01-01', exitDate: null }, punches: [], minGapSeconds: 60, overtimeEnabled: false, leave });
+    expect(off({ fraction: 1, code: 'SLWP', chargedOnOffDay: true })).toMatchObject({ status: 'weekly_off', leaveFraction: 1, leaveTypeCode: 'SLWP' });
+    expect(off({ fraction: 1, code: 'CL' })).toMatchObject({ status: 'weekly_off', leaveFraction: 0 });
+  });
+});
