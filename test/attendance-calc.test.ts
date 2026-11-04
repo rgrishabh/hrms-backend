@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { calculateDay, type ShiftPolicy, type Punch, type DayInput } from '../src/modules/attendance/calc.js';
-import { zonedToInstant, localDate, tzOffsetMinutes } from '../src/modules/attendance/time.js';
+import { zonedToInstant, localDate, tzOffsetMinutes, todaysPunches } from '../src/modules/attendance/time.js';
 
 const TZ = 'Asia/Kolkata';
 const GEN: ShiftPolicy = { id: 'gen', code: 'GEN', startTime: '09:30', endTime: '18:00', breakMinutes: 30, graceMinutes: 10,
@@ -143,5 +143,21 @@ describe('calculateDay', () => {
       expect(calculateDay(day({ punches: [p('2026-03-10', '14:00'), p('2026-03-10', '15:00')] })).status).toBe('absent');
       expect(calculateDay(day({})).status).toBe('absent');
     });
+  });
+});
+
+describe("today's punches on the clock-in card", () => {
+  const p = (direction: string, is_today: boolean) => ({ direction, is_today });
+  it("hides yesterday's finished day", () => {
+    expect(todaysPunches([p('in', false), p('out', false)])).toEqual([]);
+    expect(todaysPunches([p('in', false), p('out', false), p('in', true)])).toEqual([p('in', true)]);
+  });
+  it('keeps an overnight shift that started before midnight', () => {
+    expect(todaysPunches([p('out', false), p('in', false), p('out', true)])).toEqual([p('in', false), p('out', true)]);
+    expect(todaysPunches([p('in', false)])).toEqual([p('in', false)]);
+  });
+  it('shows all of today', () => {
+    expect(todaysPunches([p('in', true), p('out', true)])).toHaveLength(2);
+    expect(todaysPunches([])).toEqual([]);
   });
 });

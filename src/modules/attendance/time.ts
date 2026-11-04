@@ -63,3 +63,14 @@ export function* dateRange(from: string, to: string): Generator<string> {
 }
 
 export const minutesBetween = (a: Date, b: Date) => Math.floor((b.getTime() - a.getTime()) / 60000);
+
+/**
+ * The punches to show as "today" from a time-ordered list of recent punches flagged with is_today:
+ * today's punches, plus a still-open "in" from before midnight (an overnight shift), never yesterday's finished day.
+ */
+export function todaysPunches<T extends { direction: string; is_today: boolean }>(recent: T[]): T[] {
+  let first = recent.findIndex((e) => e.is_today);
+  if (first < 0) first = recent.length;
+  if (first > 0 && recent[first - 1]!.direction === 'in') first -= 1;
+  return recent.slice(first);
+}
