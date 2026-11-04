@@ -23,13 +23,17 @@ import { reconcileInstallation, SINGLE_ORG_SLUG } from '../config/installation.j
  *                             administrator must change it at first sign-in.
  *  3. --reset-admin <email>: recovery. Invalidates the current password and
  *     sessions of that administrator, unlocks the account, restores the
- *     administrator role, and issues new credentials (as per mode).
+ *     administrator role, and issues new credentials (as per mode). They also
+ *     become an owner when no other active owner exists, or with --make-owner,
+ *     which is how ownership is handed over: nobody in the app is above an owner.
  */
 export interface BootstrapOptions {
   admin: { email: string; displayName: string };
   mode: 'setup-link' | 'password';
   password?: string;
   resetAdmin?: boolean;
+  /** With resetAdmin: this person also becomes an owner. The only way to appoint one, since nobody in the app is above an owner. */
+  makeOwner?: boolean;
   linkHours?: number;
 }
 
@@ -93,6 +97,11 @@ export async function bootstrapInstallation(client: pg.Client | pg.PoolClient, e
       await client.query('UPDATE sessions SET revoked_at=now() WHERE user_id=$1 AND revoked_at IS NULL', [userId]);
       await client.query(`UPDATE admin_setup_tokens SET used_at=now() WHERE user_id=$1 AND used_at IS NULL`, [userId]);
       if (!user.is_admin) await client.query(`INSERT INTO user_roles (user_id, tenant_id, role_key) VALUES ($1,$2,'tenant_admin')`, [userId, tenantId]);
+      // Recovery leaves someone at the top: the hierarchy has nobody else to appoint an owner.
+      const ownerElsewhere = await client.query(`SELECT 1 FROM user_roles r JOIN users u ON u.id=r.user_id WHERE r.tenant_id=$1 AND r.role_key='owner' AND u.status='active' AND r.user_id <> $2 LIMIT 1`, [tenantId, userId]);
+      if (o.makeOwner || !ownerElsewhere.rowCount) {
+        await client.query(`INSERT INTO user_roles (user_id, tenant_id, role_key) SELECT $1,$2,'owner' WHERE NOT EXISTS (SELECT 1 FROM user_roles WHERE user_id=$1 AND role_key='owner')`, [userId, tenantId]);
+      }
       admin = 'reset';
     }
 
@@ -128,7 +137,7 @@ export function parseBootstrapArgs(argv: string[], env: NodeJS.ProcessEnv): Boot
     if (!a.startsWith('--')) throw new Error(`unexpected argument ${a}`);
     const key = a.slice(2);
     if (key === 'admin-password' || key === 'password') throw new Error('passwords are not accepted as flags; set BOOTSTRAP_ADMIN_PASSWORD from a secret store, or use the default setup-link mode');
-    if (key === 'reset-admin') { bools.add(key); continue; }
+    if (key === 'reset-admin' || key === 'make-owner') { bools.add(key); continue; }
     const v = argv[++i];
     if (v === undefined) throw new Error(`missing value for ${a}`);
     flags.set(key, v);
@@ -140,7 +149,7 @@ export function parseBootstrapArgs(argv: string[], env: NodeJS.ProcessEnv): Boot
   if (!['setup-link', 'password'].includes(mode)) throw new Error("--mode must be 'setup-link' or 'password'");
   return {
     admin: { email, displayName: get('admin-name') ?? 'Administrator' }, mode,
-    password: env.BOOTSTRAP_ADMIN_PASSWORD, resetAdmin: bools.has('reset-admin') || env.BOOTSTRAP_RESET_ADMIN === 'true',
+    password: env.BOOTSTRAP_ADMIN_PASSWORD, resetAdmin: bools.has('reset-admin') || env.BOOTSTRAP_RESET_ADMIN === 'true', makeOwner: bools.has('make-owner') || env.BOOTSTRAP_MAKE_OWNER === 'true',
     linkHours: get('link-hours') ? Number(get('link-hours')) : undefined,
   };
 }

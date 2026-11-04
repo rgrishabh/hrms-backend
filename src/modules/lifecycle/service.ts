@@ -1,3 +1,5 @@
+import { audit } from '../../core/audit/audit.js';
+import { anotherActiveOwner } from '../../core/policy/levels.js';
 import { revokeAllSessionsForUser } from '../../core/auth/session.js';
 import { reassignStepsOf } from '../../core/workflow/engine.js';
 import type { Db } from '../../db/tx.js';
@@ -64,6 +66,12 @@ export async function maybeCompleteChecklist(db: Db, tenantId: string, checklist
 export async function endAccess(db: Db, tenantId: string, employeeId: string) {
   const u = (await db.query<{ user_id: string | null }>('SELECT user_id FROM employees WHERE tenant_id=$1 AND id=$2', [tenantId, employeeId])).rows[0]?.user_id;
   if (!u) return false;
+  // The last owner cannot be cut off by a date or a separation: nobody else could ever recover the installation. HR sees it on the audit log.
+  const owner = await db.query(`SELECT 1 FROM user_roles WHERE tenant_id=$1 AND user_id=$2 AND role_key='owner'`, [tenantId, u]);
+  if (owner.rowCount && !(await anotherActiveOwner(db, tenantId, u))) {
+    await audit(db, { tenantId, actorId: null, actorType: 'system', action: 'user.end_access_refused_last_owner', category: 'security', targetType: 'user', targetId: u });
+    return false;
+  }
   await db.query(`UPDATE users SET status='disabled', updated_at=now() WHERE tenant_id=$1 AND id=$2 AND status <> 'disabled'`, [tenantId, u]);
   await revokeAllSessionsForUser(db, u);
   await reassignStepsOf(db, tenantId, u);

@@ -14,7 +14,7 @@ import { PageQuery, offsetOf, paged, Uuid } from '../../core/http/pagination.js'
 import type { PublicConfig } from '../../config/installation.js';
 import { SYSTEM_ROLES, SYSTEM_ROLE_MAP, PERMISSIONS, permissionFeature, roleGroup, assignableRoles, isOwnerRole, OWNER_ROLE_KEYS } from '../../core/auth/permissions.js';
 import { currentMode, isCollapsedMode } from '../../core/policy/mode.js';
-import { effectiveLevel, roleFloor, SALARY_LEVEL_MAX } from '../../core/policy/levels.js';
+import { anotherActiveOwner, effectiveLevel, roleFloor, SALARY_LEVEL_MAX } from '../../core/policy/levels.js';
 import { redact } from '../../core/audit/audit.js';
 import { hashPassword } from '../../core/crypto/index.js';
 import { getSettingValue } from '../../core/settings/service.js';
@@ -140,7 +140,7 @@ export async function tenantAdminRoutes(app: FastifyInstance, opts: { publicConf
     noRoleScreens();
     const a = tenantActorAny(req, 'users.manage', 'settings.read');
     // `grantable`: whether this user may grant or remove the role (the same rule assertMayGrant enforces).
-    const grantable = (key: string, perms: readonly string[]) => isAdministrator(a) || (!isOwnerRole(key) && perms.every((p) => a.user.permissions.has(p)));
+    const grantable = (key: string, perms: readonly string[]) => (roleFloor(key) === 0 || roleFloor(key) < a.user.salaryLevel) && (isAdministrator(a) || (!isOwnerRole(key) && perms.every((p) => a.user.permissions.has(p))));
     return a.tx(async (db) => {
       const counts = new Map((await db.query<{ role_key: string; n: number }>(`SELECT r.role_key, count(DISTINCT r.user_id)::int AS n FROM user_roles r JOIN users u ON u.id=r.user_id
         WHERE r.tenant_id=$1 AND u.status='active' GROUP BY r.role_key`, [a.tenantId])).rows.map((r) => [r.role_key, r.n]));
@@ -284,9 +284,9 @@ export async function tenantAdminRoutes(app: FastifyInstance, opts: { publicConf
    */
   const isAdministrator = (a: { user: { roles: string[] } }) => a.user.roles.some(isOwnerRole);
   /**
-   * What the mode and the salary hierarchy allow, whoever is asking. A role's floor counts as setting a level: nobody grants a role that
-   * would put someone above themselves, or raises their own. The one exception is an administrator appointing a fellow administrator,
-   * since an installation is bootstrapped with a single one (see DECISIONS.md).
+   * What the mode and the salary hierarchy allow, whoever is asking. A role change counts as setting a level: one that raises someone's
+   * effective level to the actor's own or above is refused, for everyone. Effective, not floor: changing roles can also lift a ceiling off
+   * a high stored level, and a removal can do that too. Only the bootstrap command works outside this (D40).
    */
   const assertRolesAllowed = async (db: import('../../db/tx.js').Db, a: { tenantId: string; user: { userId: string; roles: string[]; salaryLevel: number } }, targetId: string | null, roles: string[], prev: string[]) => {
     const mode = currentMode();
@@ -300,12 +300,16 @@ export async function tenantAdminRoutes(app: FastifyInstance, opts: { publicConf
       const other = await db.query(`SELECT 1 FROM user_roles r JOIN users u ON u.id=r.user_id WHERE r.tenant_id=$1 AND r.role_key = ANY($2) AND u.status='active' AND r.user_id IS DISTINCT FROM $3 LIMIT 1`, [a.tenantId, OWNER_ROLE_KEYS, targetId]);
       if (other.rowCount) throw conflict('A single-person organization has one owner');
     }
-    for (const r of added) {
-      const floor = roleFloor(r);
-      const peerAdmin = r === 'tenant_admin' && a.user.roles.some(isOwnerRole);
-      if (targetId === a.user.userId && floor > a.user.salaryLevel) throw forbidden('You cannot give yourself a role above your own salary level');
-      if (floor > 0 && floor >= a.user.salaryLevel && !peerAdmin) throw forbidden(`You cannot grant a role at or above your own salary level: ${r}`);
-    }
+    const stored = targetId ? (await db.query<{ l: number }>('SELECT salary_access_level AS l FROM users WHERE tenant_id=$1 AND id=$2', [a.tenantId, targetId])).rows[0]?.l ?? 0 : 0;
+    const before = targetId ? effectiveLevel(stored, prev) : 0;
+    const after = effectiveLevel(stored, roles);
+    if (after > before && after >= a.user.salaryLevel) throw forbidden('You cannot give anyone a salary level equal to or above your own, through a role or otherwise');
+  };
+  /** The one above: nobody changes the roles or status of someone at or above them, or clears their second factor. */
+  const assertBelowActor = async (db: import('../../db/tx.js').Db, a: { tenantId: string; user: { userId: string; salaryLevel: number } }, targetId: string, roles: string[]) => {
+    if (targetId === a.user.userId) return;
+    const stored = (await db.query<{ l: number }>('SELECT salary_access_level AS l FROM users WHERE tenant_id=$1 AND id=$2', [a.tenantId, targetId])).rows[0]?.l ?? 0;
+    if (effectiveLevel(stored, roles) >= a.user.salaryLevel) throw forbidden('You cannot change an account at or above your own salary level');
   };
   const assertMayGrant = async (db: import('../../db/tx.js').Db, a: { tenantId: string; user: { roles: string[]; permissions: Set<string> } }, roles: string[]) => {
     if (isAdministrator(a) || !roles.length) return;
@@ -355,6 +359,10 @@ export async function tenantAdminRoutes(app: FastifyInstance, opts: { publicConf
         throw conflict('You cannot disable yourself or remove your own administrator role');
       }
       await assertMayManage(db, a, prevRoles);
+      if (body.roles || body.status || body.resetMfa) await assertBelowActor(db, a, id, prevRoles);
+      // Someone must stay above everyone: nobody could appoint an administrator or produce a whole bank file otherwise. Recovery is the bootstrap command.
+      const losesOwner = prevRoles.includes('owner') && u.rows[0]!.status === 'active' && (body.status === 'disabled' || (!!body.roles && !body.roles.includes('owner')));
+      if (losesOwner && !(await anotherActiveOwner(db, a.tenantId, id))) throw conflict('This is the last active owner. Appoint another through the bootstrap command first.');
       if (body.roles) {
         await assertTenantRoles(db, a.tenantId, body.roles);
         await assertRolesAllowed(db, a, id, body.roles, prevRoles);

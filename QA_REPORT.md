@@ -68,3 +68,8 @@ Delegated: no decline path after an accepted offer (`recruitment/routes.ts:627`)
 | C-01 | Salary hierarchy | High | HR with stored level 99 and the employee role reads a senior payroll person's salary | The ceiling took the maximum over all roles, and the employee role's default of 89 lifted HR past its 59. Found by the matrix on its first real run | Employee and manager roles set no ceiling | `permission-matrix.test.ts`, `management-modes.test.ts` |
 | C-02 | Payroll | High | Release held pay after encryption | The guard trigger read `NEW.net`, a column the audit did not list as affected | Trigger replaced in `044`, check moved to the route | `payroll-fixes.test.ts` |
 
+## Batch D: policy corrections and auth
+
+| ID | Module | Severity | Steps | Root cause | Fix | Test |
+|---|---|---|---|---|---|---|
+| D-01 | Role grants | High | An administrator appoints a peer administrator; or removes a custom role from someone with a high stored level, lifting their ceiling above the actor | Only the role's floor was checked, with an exception for `tenant_admin` | Compare effective levels before and after, no exception. Nobody changes someone at or above them. Last owner protected, including in `endAccess` | `role-grants.test.ts` |

@@ -40,7 +40,7 @@ With several roles the highest floor and highest ceiling count. Employee and man
 - Designated senior payroll is a `payroll_manager` with a stored level such as 85.
 - Managers see no team salaries. `security.manager_team_salaries` turns that on, and the level cap still applies.
 - `PUT /tenant/users/:id/salary-level` changes a level. Nobody changes their own, sets a level at or above their own, or edits someone at or above them. Each change is audited.
-- Granting a role counts as setting a level, with one exception: an administrator may appoint another `tenant_admin` (D40).
+- A role change counts as setting a level: one that raises someone's effective level to the actor's own or above is refused, for everyone. Nobody changes the roles or status of someone at or above them. The last active owner stays, and only the bootstrap command works outside this (D40).
 
 ## Where the policy applies
 

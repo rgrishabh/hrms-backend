@@ -110,6 +110,21 @@ describe('bootstrap: first administrator via one-time setup link', () => {
     await expect(boot(A, envA, { resetAdmin: true, admin: { email: 'ghost@acme-labs.test', displayName: 'G' } })).rejects.toThrow(/no user ghost@/);
   });
 
+  it('--reset-admin leaves someone at the top, and --make-owner hands ownership over', async () => {
+    await q(A.owner, `DELETE FROM user_roles WHERE role_key='owner'`);
+    await boot(A, envA, { resetAdmin: true });
+    expect(await q(A.owner, `SELECT 1 FROM user_roles r JOIN users u ON u.id=r.user_id WHERE r.role_key='owner' AND u.email='owner@acme-labs.test'`)).toHaveLength(1);
+    const [t] = await q(A.owner, `SELECT id FROM tenants`) as { id: string }[];
+    await q(A.owner, `INSERT INTO users (tenant_id, email, display_name) VALUES ($1,'next@acme-labs.test','Next')`, [t!.id]);
+    await boot(A, envA, { resetAdmin: true, admin: { email: 'next@acme-labs.test', displayName: 'Next' } });
+    expect(await q(A.owner, `SELECT 1 FROM user_roles r JOIN users u ON u.id=r.user_id WHERE r.role_key='owner' AND u.email='next@acme-labs.test'`)).toHaveLength(0);
+    await boot(A, envA, { resetAdmin: true, makeOwner: true, admin: { email: 'next@acme-labs.test', displayName: 'Next' } });
+    expect(await q(A.owner, `SELECT 1 FROM user_roles r JOIN users u ON u.id=r.user_id WHERE r.role_key='owner' AND u.email='next@acme-labs.test'`)).toHaveLength(1);
+    await q(A.owner, `DELETE FROM user_roles WHERE user_id IN (SELECT id FROM users WHERE email='next@acme-labs.test')`);
+    await q(A.owner, `DELETE FROM admin_setup_tokens WHERE user_id IN (SELECT id FROM users WHERE email='next@acme-labs.test')`);
+    await q(A.owner, `DELETE FROM users WHERE email='next@acme-labs.test'`);
+  });
+
   it('refuses a database that holds more than one organization', async () => {
     await q(A.owner, `INSERT INTO tenants (slug, name) VALUES ('intruder','Intruder')`);
     await expect(boot(A, envA)).rejects.toThrow(/more than one organization/);

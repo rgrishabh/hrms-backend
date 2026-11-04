@@ -160,9 +160,11 @@ describe('authentication & session security', () => {
     const grantable = async (c: Client) => (await c.get('/api/v1/tenant/roles')).json().system
       .filter((r: { grantable: boolean }) => r.grantable).map((r: { key: string }) => r.key) as string[];
     const itMay = await grantable(itAdmin);
-    expect(itMay).toEqual(expect.arrayContaining(['employee', 'it_admin']));
-    for (const k of ['hr_admin', 'tenant_admin', 'payroll_manager']) expect(itMay).not.toContain(k);
-    expect(await grantable(admin)).toContain('tenant_admin');
+    expect(itMay).toEqual(expect.arrayContaining(['employee']));
+    for (const k of ['it_admin', 'hr_admin', 'tenant_admin', 'payroll_manager']) expect(itMay).not.toContain(k);
+    // Nobody grants a role at or above their own level, an administrator included (D40).
+    expect(await grantable(admin)).toContain('hr_admin');
+    expect(await grantable(admin)).not.toContain('tenant_admin');
   });
 
   it('an account created by an administrator must change its initial password at first sign-in', async () => {

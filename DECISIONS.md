@@ -189,7 +189,10 @@ A request is an approval request (`lab_authorization`) routed to holders of `com
 **PAN and Aadhaar:** reveal shows the last four characters. PAN is never decrypted by the API.
 
 ## D40 — Role grants count as setting a level
-**Decision:** nobody grants a role whose floor is at or above their own level, and nobody raises their own level through a role. Exception: an administrator may appoint another `tenant_admin` at the same level, because existing installations and handovers depend on it. This is a real relaxation of "nobody sets another's level at or above their own".
+**Context:** the first version let an administrator appoint another `tenant_admin` at the same level. That breaks a hard requirement: no one can set someone else's level equal to or above their own.
+**Decision:** a role change that raises someone's effective level to the actor's own or above is refused, for everyone. It is computed on the effective level, not the role's floor, because a change can also lift a ceiling off a high stored level, and a removal can too. Only someone strictly above appoints an administrator, and nobody in the app appoints an owner. Nobody changes the roles or status of someone at or above them, or clears their MFA.
+**Lockout:** the owner sits above `tenant_admin`, and `044` and bootstrap make sure one exists. The last active owner cannot lose the role or be disabled, by a person or by `endAccess`, which refuses and writes `user.end_access_refused_last_owner`. The bootstrap command is the only path outside the rule: `bootstrap --reset-admin --admin-email X` recovers an account and makes it an owner when no other active owner exists, and `--make-owner` hands ownership over.
+**Consequence:** a second `tenant_admin` needs the Owner. A separated last owner keeps a working login until the operator hands over, which the audit row surfaces.
 
 ## D41 — Encryption shape and aggregates
 **Decision:** one sealed blob per payroll item (`data_enc`), not one column per amount: a single decrypt per item, and the fields always change together. Numbers stay numbers inside; the API still gives strings with two decimals.
