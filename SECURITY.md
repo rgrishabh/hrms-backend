@@ -39,7 +39,7 @@ Report vulnerabilities privately to the repository owner. Do not open public iss
 ## Outstanding (must be done before production)
 
 1. ~~MFA for privileged roles~~ — implemented (TOTP). Still open: WebAuthn/passkeys; SSO via an external identity provider.
-2. **Secrets.** Load `DATABASE_URL` and `DATA_ENCRYPTION_KEY` from AWS Secrets Manager at task start. Plan KMS envelope encryption and key rotation for field encryption (the ciphertext has a `v1.` prefix to allow versioning).
+2. **Secrets.** Load `DATABASE_URL` from AWS Secrets Manager at task start. Field encryption uses a KMS-wrapped data key, with key ids in the ciphertext and a rotation command: see docs/DATA_SECURITY.md.
 4. **File uploads.** Not implemented. When added: type/size allow-lists, malware scanning, private S3 with tenant-prefixed keys and short-lived signed URLs.
 5. **Dependency and container scanning.** `npm audit` runs in CI. Add container image scanning (ECR/Trivy) once images are built.
 6. **Password policy.** A forced change exists for bootstrap administrators. Users created by admins don't have it yet. Add a breached-password check and a self-service password reset by email (needs the email module).

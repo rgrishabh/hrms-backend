@@ -9,7 +9,19 @@
 * `FEATURE_*` flags, one per module, with a registry entry (`envName`) each. New: `FEATURE_SALARY_ADVANCE` (split from loans), `FEATURE_COMP_OFF` (split from overtime), `FEATURE_ATTENDANCE_GEOFENCE` (location policy, plus branch geofences), `FEATURE_ATTENDANCE_SELFIE`, `FEATURE_PUSH_NOTIFICATIONS`.
 * `MFA_AVAILABLE`, `MFA_ENFORCED`, `MFA_METHODS`, `ORG_MANAGEMENT_MODE`, `VAPID_PUBLIC_KEY`, `VAPID_PRIVATE_KEY`, `VAPID_SUBJECT`.
 
+* `ORG_MANAGEMENT_MODE` is now enforced: `single`, `single_hr`, `multi`, with an `owner` role, one `buildSteps` route, self-approval on the record for the owner of the smaller modes, and delegation, reminders and escalation on the one-step HR route.
+* Data classification registry, salary hierarchy (`users.salary_access_level`, `PUT /tenant/users/:id/salary-level`), central L3 and L4 policy, masking with `?reveal=1`, audit rows for every reveal and export.
+* Hash-chained audit log: `GET /tenant/audit/chain`, `GET /tenant/audit/chain/verify`.
+* Application-level encryption of salary, payroll items, totals, adjustments and journal totals. `KMS_KEY_ID`, `DATA_KEY_CIPHERTEXT`, `DATA_KEY_CIPHERTEXT_PREVIOUS`, `DATA_ENCRYPTION_KEY_PREVIOUS`, the `rotate-keys` command, typed code migrations in the runner.
+* Aadhaar: encrypted, last four only, off until `security.aadhaar_collection` is on. `security.manager_team_salaries`.
+* `docs/DATA_SECURITY.md`.
+
 ### Removed
+
+* Plaintext columns: `employee_salaries.amounts`, `annual_ctc`; `payroll_items.lines`, `gross`, `deductions`, `net`, `employer_cost`, `warnings`; `payroll_runs.totals`; `payroll_adjustments.amount`, `note`; `accounting_exports.total`; `report_snapshots.rows`, `totals`.
+* Amounts in loan, travel and expense approval summaries and notifications, in audit metadata, and in loan and travel error messages. Existing rows are scrubbed, which cannot be undone.
+* Stored snapshots of `payroll_cost` and `department_overview`, which were made at their owner's level. They are deleted by the migration.
+* The `outstanding` field of `POST /loans/requests/:id/repayment`.
 
 * Renamed to the contract: `MAIL_TRANSPORT` (gone), `MAIL_FROM_ADDRESS` and `MAIL_FROM_NAME` (`BRAND_EMAIL_FROM`, display name `BRAND_PRODUCT_NAME`), `PRODUCT_NAME` (`BRAND_PRODUCT_NAME`), `BRAND_SHORT_NAME` (gone), `APP_URL` and `APP_EXTRA_DOMAINS` (`BRAND_DOMAIN`, `BRAND_EXTRA_DOMAINS`), `ORGANIZATION_NAME` and `ORGANIZATION_LEGAL_NAME` (`BRAND_NAME`, `BRAND_LEGAL_NAME`), `ORGANIZATION_COUNTRY`, `_TIMEZONE`, `_CURRENCY`, `_DATE_FORMAT` (`BRAND_*`), `ORGANIZATION_FY_START_MONTH` (`BRAND_FINANCIAL_YEAR_START`), `BRANDING_DIR` and `/branding/*` (fixed `/brand` mount, `/brand/*`), `SMTP_SECURE=true/false` (`tls`, `starttls`, `none`), `GET /api/v1/public/config` (`GET /api/v1/config/public`).
 * `ENABLED_MODULES` and `MFA_ENFORCEMENT`: the server refuses to start while they are set. Module key `advances_loans` is now `loans` and `salary_advance`.
@@ -18,6 +30,28 @@
 * `JOBS_ENABLED`: replaced by `PROCESS_ROLE=api|worker`. Only the worker runs the scheduler and sends email.
 
 ### Changed
+
+* **BREAKING for the frontend.** L4 fields are null with `masked: true` and `maskedFields` unless the request has `?reveal=1`:
+  - `GET /payroll/employees/:id/salaries`: `amounts`, `annual_ctc`. The person themselves may now call it.
+  - `GET /payroll/runs`: `totals`. With reveal, each run also has `excluded`.
+  - `GET /payroll/runs/:id`: `totals`; items' `gross`, `deductions`, `net`, `employer_cost`, `lines`, `warnings`; adjustments' `amount`, `note`. People out of reach are absent, and `excluded` counts them.
+  - `POST /payroll/runs/:id/compute`: `totals`.
+  - `GET /payroll/payslips/mine`, `/payslips/:id`: amounts, `lines`, `uan`, `pan`, `account`, `ifsc`.
+  - `GET /payroll/employees/:id/statutory`: `uan`, `pf_member_id`, `esi_ip_number`, `pan`, plus new `aadhaar`. The person themselves may now call it.
+  - `GET /payroll/fnf-suggestions/:id`: `salary`.
+  - `GET /employees/:id/bank-account`: `accountNumber` (new; full number on reveal), `accountHolder`, `ifsc`, `bankName`. `accountNumberMasked` stays. `/pending`: `accountHolder`, `ifsc`, `bankName`.
+  - `GET /loans/requests`, `/requests/:id`: `amount`, `installment_amount`, `outstanding`, `purpose`, and on detail `balance`, `schedule`, `recoveries`.
+  - `GET /reports/payroll_cost`, `/reports/department_overview`: money columns. Reports also return `excluded`, and notes say what was left out.
+  - `GET /accounting/sources`: runs' `totals`.
+  - Recruitment: `budget_ctc_max`, `expected_ctc`, offers' `annual_ctc`.
+* **BREAKING.** 403 `requires_higher_level` with `details.hiddenSubjects`: `/payroll/runs/:id/bank.csv`, `bank-released.csv`, `pf.csv`, `esi.csv`, `/expenses/batches/:id/export.csv`, `/accounting/payroll-runs/:id/journal`, `/export`.
+* **BREAKING.** Subjects out of reach answer 404 where a permission alone used to answer 200, on the L4 routes above, `/employees/:id/profile`, `/documents/:id/download` and document lists. Exports add an `x-excluded-subjects` header.
+* **BREAKING.** `GET /employees` and `/employees/:id` for directory readers no longer return `status`, `branch_id`, `branch_name` (L2). Someone in the manager chain gets `view: 'team'` with those, `reporting_manager_*` and `date_of_joining`.
+* **BREAKING.** Full employee readers below the subject, or without `employees.manage`, get `phone` and `date_of_birth` null with `masked: true`. `reason` on `GET /leave/requests` and `/attendance/regularizations` likewise. Payroll and auditor roles no longer read `/employees/:id/profile`.
+* `GET /auth/me` adds `mode`, `views`, `salaryLevel`, and `group` on each role. `GET /tenant/roles` adds `group`, and lists `owner`. `GET /tenant/users` adds `salary_access_level`, `effective_salary_level`.
+* `/tenant/roles*` answer 404 in `single` and `single_hr`. `POST /tenant/users` and `PATCH /tenant/users/:id` refuse roles outside the mode (400), a second owner in `single` (409), and roles at or above the caller's level (403).
+* Approval requests: `summary` has no amounts, and regularizations no reason. Approvals can be escalated from an HR step; the inbox can show the owner their own request in the smaller modes.
+* `tenant_admin` gains `employees.read`, `employees.bank.read`, `payroll.read`, `payroll.approve`, `loans.read` (D36). `DATA_ENCRYPTION_KEY` is optional when KMS is configured. The first administrator is also `owner`.
 
 * Off means absent: routes of a module that is off are not registered and answer 404, signed in or not. Pending approvals of that module leave the inbox and answer 404, and resume unchanged when the flag returns. Its settings, jobs, permissions, reports, snapshots, notifications, seed and demo data, and its fields on other records, are gone with it. Retention jobs still run.
 * `GET /api/v1/tenant/settings` no longer has `featureEnabled`; off settings are not listed. `/tenant/installation` lists only what is on.

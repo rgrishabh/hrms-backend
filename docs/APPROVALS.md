@@ -62,3 +62,21 @@ A request never waits on someone who cannot act:
 | POST `/approvals/delegations/:id/revoke` | the delegator, whoever set it up, the delegate, or HR | Ends it now |
 | GET `/approvals/delegates?q=` | `employees.directory` | Active accounts to choose from (never yourself) |
 | GET `/approvals/inbox` | session | Each item has `via` (null, delegation or escalation) and `on_behalf_of` |
+
+## Management modes
+
+`ORG_MANAGEMENT_MODE` decides the route when a request is created. It keeps those steps if the mode later moves up.
+
+| Mode | Route |
+|---|---|
+| `multi` | Manager, then the module's permission, as `buildSteps` sets out. Nobody decides their own |
+| `single_hr` | One step for HR or the Owner (`approvals.hr_step`). Anything HR raised or that concerns an HR person, and anything that moves money, goes to the Owner by name |
+| `single` | One step to the Owner by name |
+
+In the two smaller modes the Owner may decide their own request, and each such decision writes `approval.self_approved`.
+
+- A step addressed to the Owner keeps delegation and escalation.
+- The HR step can be delegated by any holder.
+- When the HR step is overdue it escalates to the Owner.
+- Reminders reach holders and delegates.
+

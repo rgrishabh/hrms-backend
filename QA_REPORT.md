@@ -60,3 +60,11 @@ Delegated: no decline path after an accepted offer (`recruitment/routes.ts:627`)
 ## Property-based tests
 
 `test/property-payroll.test.ts`, `test/property-leave.test.ts`, `test/property-loans.test.ts` (fast-check, generated rules and salaries): totals reconcile with lines; every line a whole rupee; determinism; more paid days never lower gross; a split at the same rate stays within a rupee; ESI cover independent of paid days; one-off TDS bounded, twelve months approach the annual tax; twelve accrual credits equal the entitlement exactly; counted leave days stay in the span and move in halves; EMI covers the amount with under n rupees to spare; the schedule repays exactly the amount.
+
+## Batch C: data policy
+
+| ID | Module | Severity | Steps | Root cause | Fix | Test |
+|---|---|---|---|---|---|---|
+| C-01 | Salary hierarchy | High | HR with stored level 99 and the employee role reads a senior payroll person's salary | The ceiling took the maximum over all roles, and the employee role's default of 89 lifted HR past its 59. Found by the matrix on its first real run | Employee and manager roles set no ceiling | `permission-matrix.test.ts`, `management-modes.test.ts` |
+| C-02 | Payroll | High | Release held pay after encryption | The guard trigger read `NEW.net`, a column the audit did not list as affected | Trigger replaced in `044`, check moved to the route | `payroll-fixes.test.ts` |
+

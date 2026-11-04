@@ -160,3 +160,44 @@ A request is an approval request (`lab_authorization`) routed to holders of `com
 **Scope:** settings rows and the `/org` lists; `evaluateFeatures` benefits through settings. Host resolution stays uncached, since a suspended organization must take effect at once. No personal data is cached.
 **Dependency:** `ioredis`, for its timeouts and reconnection, which a hand-written client would have to reproduce.
 
+## D36 — Management modes: one approval route, resolved at creation
+**Context:** the contract has three modes and needs one `buildSteps` in place of eight inline blocks. Collapsing to a group step would lose delegation and escalation, and a requester who is the only holder would stick.
+**Options:** a setting per module; collapse in each builder; `buildSteps` for the manager-first route plus a single collapse in `createApprovalRequest`.
+**Decision:** the third, so requests with no manager step (payroll, profile, probation, recruitment) collapse too. `single`: a user step to the owner. `single_hr`: a group step on `approvals.hr_step`, unless HR raised it, it concerns an HR holder, or it moves money, and then a user step to the owner. User steps keep delegation and escalation. `approvals.hr_step` alone among group steps may be delegated by a holder and escalates to the owner. Reminders and `reassignStranded` already cover group steps.
+**Self-approval:** `approval_requests.self_approver_id` names the one person who may decide their own, and each such decision writes `approval.self_approved`. Steps stay frozen at creation, so `hr_admin` and `hr_executive` keep the permission in `multi` for requests in flight.
+**Roles:** stored assignments never change with the mode, and `resolveRolePermissions` decides what they mean. Custom roles stay stored and unused outside `multi`.
+**Super-admin's permissions:** `tenant_admin` gains `employees.read`, `employees.bank.read`, `payroll.read`, `payroll.approve` and `loans.read`. This removes an earlier separation of duties, where the administrator could not read bank details. The product owner's rule says these salaries are visible to Super-admin, and it cannot be met otherwise.
+
+## D37 — Audit chain: serialized by a row lock held to commit
+**Context:** the requirement asks for per-tenant hashes set by a trigger under a serialized lock.
+**Options:** an advisory lock; a head row per tenant; assigning sequence numbers later in a background job.
+**Decision:** a head row, locked in the trigger and kept until commit, so sequence order is commit order and a rolled-back row leaves no gap.
+**Cost:** audited writes of one tenant run one at a time, and a long transaction that audits early (a scheduled report, a payroll compute) holds up the others. Two transactions that take the head and another row in opposite orders can deadlock, and Postgres aborts one with a 500. This was not load tested. Audit calls are mostly last in a transaction, which limits both.
+**Bulk reveal** writes one row per subject in one statement.
+
+## D38 — Payment and filing files are whole or refused
+**Context:** a preparer may be below someone in the run. A bank file without them pays short, and with them leaks.
+**Options:** leave them out with a warning; include them masked; refuse; a two-part file; a higher-level approver's token.
+**Decision:** refuse with 403 `requires_higher_level` and a count, and record `payroll.export_refused`. Someone above everyone in the file produces it. Bank, bank-released, PF, ESI, the reimbursement bank file and the journal follow this rule, because a filing or a journal that leaves people out is wrong in the same way. The salary register may be partial, because it pays nobody: it leaves people out and says how many in `x-excluded-subjects`.
+**Consequence:** someone must sit above everyone. Bootstrap makes the first administrator the Owner in every mode, and `044` does so for existing installations. Without that, two `tenant_admin`s at level 90 who are both on the payroll could never get a bank file.
+**Not gated:** approving a run. An approver below someone sees the register without them and `excluded` beside it.
+
+## D39 — Masked by default, with named need-to-know limits
+**Decision:** every L4 field is masked until `?reveal=1`, aggregates included, since a group of one is a salary. Exports count as a reveal and are audited per subject. A masked answer writes no audit row, because it carries no L4.
+**A manager on a loan's approval chain** sees that the request exists and not the amount, unless `security.manager_team_salaries` is on and they are above the subject. So by default a manager approves a loan without its figure, and finance sees it at the next step. This follows the rule as written. The product owner may want to revisit it.
+**Leave reasons:** L3 says self and HR, but a manager cannot decide a request without the reason. A manager reads it in their team list while the request is pending, and not after.
+**PAN and Aadhaar:** reveal shows the last four characters. PAN is never decrypted by the API.
+
+## D40 — Role grants count as setting a level
+**Decision:** nobody grants a role whose floor is at or above their own level, and nobody raises their own level through a role. Exception: an administrator may appoint another `tenant_admin` at the same level, because existing installations and handovers depend on it. This is a real relaxation of "nobody sets another's level at or above their own".
+
+## D41 — Encryption shape and aggregates
+**Decision:** one sealed blob per payroll item (`data_enc`), not one column per amount: a single decrypt per item, and the fields always change together. Numbers stay numbers inside; the API still gives strings with two decimals.
+**Aggregates:** the audit listed five to move to Node. Items 1, 2 and 5 had to move. Items 3 and 4 (loan balances) did not, since loans stay plaintext, and they were moved anyway as asked. A sixth, `net >= 0` in the release route and the guard trigger, was missing from the audit's list and moved too.
+**Row caps:** "with the existing row caps" cannot apply to input. 12,000 items would be cut at 5,000 and totals understated without any warning. Input is paged in full, and the cap applies to what is shown.
+**Small groups:** the sums only ever contain people the viewer can see, so one viewer's answers cannot be subtracted to find someone hidden. The risk left is a group total known from elsewhere, so a group with someone hidden and fewer than 3 visible has its amounts withheld. Comparing answers between two viewers with different levels is not addressed.
+
+## D42 — Finance checks when approvals collapse
+**Context:** the audit warned that collapsing removes the finance step, the only separation of duties on expenses, loans and advances.
+**Decision:** `single`: there is no second person, so the owner decides and it is on the audit log. `single_hr`: expenses, loans, advances, travel with a finance step, overtime pay, bank changes, salary changes, payroll and recruitment go to the owner, not to HR. Comp-off, leave, regularization, field duty, separation and profile changes go to HR or the owner.
+
