@@ -496,6 +496,88 @@ describe('permission matrix: named negatives', () => {
     expect(rows.map((x) => x.target_id).sort()).toEqual((r.json().items as { employee_id: string }[]).map((i) => i.employee_id).sort());
   });
 
+  describe('every read of an aggregate says whose records went into it', () => {
+    /** Exactly the people below seniorPayroll, plus themselves: the requirement is who, whose record, for every L4 read. */
+    const expected = () => PEOPLE.multi.filter((p) => p.level < 85 || p.key === 'seniorPayroll').map((p) => w.subjects[p.key]!.employeeId).sort();
+    const targets = async (agent: string, action: string) => (await ownerQuery<{ target_id: string; target_type: string }>(`SELECT target_id, target_type FROM audit_logs WHERE tenant_id=$1 AND action=$2 AND user_agent=$3`, [w.tenantId, action, agent]));
+    const q = `from=${PERIOD}&to=${PERIOD}`;
+    const cases: [string, string, string][] = [
+      ['payroll cost reveal', `/api/v1/reports/payroll_cost?${q}&reveal=1`, 'l4.reveal'],
+      ['payroll cost export', `/api/v1/reports/payroll_cost/export.csv?${q}`, 'l4.export'],
+      ['department overview reveal', `/api/v1/reports/department_overview?from=${PERIOD}-01&to=${PERIOD}-28&reveal=1`, 'l4.reveal'],
+      ['department overview export', `/api/v1/reports/department_overview/export.xlsx?from=${PERIOD}-01&to=${PERIOD}-28`, 'l4.export'],
+    ];
+    it.each(cases)('%s writes one row per subject', async (name, url, action) => {
+      const agent = `agg-${name.replace(/ /g, '-')}`;
+      const r = await w.clients.seniorPayroll!.req('GET', url, undefined, { 'user-agent': agent });
+      expect(r.statusCode, r.body).toBe(200);
+      const rows = await targets(agent, action);
+      expect(rows.map((x) => x.target_id).sort()).toEqual(expected());
+      expect(new Set(rows.map((x) => x.target_type))).toEqual(new Set(['employee']));
+      expect(r.body.includes('"subjects"')).toBe(false);
+    });
+
+    it('run lists and accounting sources name each person once, across runs', async () => {
+      for (const url of ['/api/v1/payroll/runs?reveal=1', '/api/v1/accounting/sources?reveal=1']) {
+        const agent = `agg-${url.length}`;
+        expect((await w.clients.seniorPayroll!.req('GET', url, undefined, { 'user-agent': agent })).statusCode).toBe(200);
+        const rows = await targets(agent, 'l4.reveal');
+        expect(rows.map((x) => x.target_id).sort(), url).toEqual(expected());
+      }
+    });
+
+    it('a masked aggregate carries no figure and writes no row', async () => {
+      const agent = 'agg-masked';
+      await w.clients.seniorPayroll!.req('GET', `/api/v1/reports/payroll_cost?${q}`, undefined, { 'user-agent': agent });
+      await w.clients.seniorPayroll!.req('GET', '/api/v1/payroll/runs', undefined, { 'user-agent': agent });
+      expect(await targets(agent, 'l4.reveal')).toEqual([]);
+    });
+
+    it('a group withheld for being small names nobody: nothing of theirs was read', async () => {
+      // A department holding one person below the auditor and one above: its amounts are withheld.
+      const agent = 'agg-withheld';
+      const s = w.subjects;
+      const [dep] = await ownerQuery<{ id: string }>(`INSERT INTO departments (tenant_id, code, name) VALUES ($1,'TINY','Tiny') RETURNING id`, [w.tenantId]);
+      await ownerQuery(`UPDATE employees SET department_id=$1 WHERE id = ANY($2)`, [dep!.id, [s.employee!.employeeId, s.owner!.employeeId]]);
+      try {
+        const r = await w.clients.auditor!.req('GET', `/api/v1/reports/payroll_cost?${q}&groupBy=department&reveal=1`, undefined, { 'user-agent': agent });
+        expect(r.statusCode, r.body).toBe(200);
+        expect(r.body.includes(s.employee!.figure)).toBe(false);
+        const rows = (await targets(agent, 'l4.reveal')).map((x) => x.target_id);
+        expect(rows).not.toContain(s.employee!.employeeId);
+        expect(rows).toContain(s.auditor!.employeeId);
+      } finally { await ownerQuery(`UPDATE employees SET department_id=NULL WHERE tenant_id=$1`, [w.tenantId]); }
+    });
+
+    it('the journal names each person, and a refused one writes no read', async () => {
+      const agent = 'agg-journal';
+      expect((await w.clients.seniorPayroll!.req('GET', `/api/v1/accounting/payroll-runs/${w.runId}/journal`, undefined, { 'user-agent': agent })).statusCode).toBe(403);
+      expect(await targets(agent, 'l4.read')).toEqual([]);
+      // Someone above the whole run with the accounting permission: the owner of a single-person organization.
+      const single = await build('single');
+      try {
+        const r = await single.clients.owner!.req('GET', `/api/v1/accounting/payroll-runs/${single.runId}/journal`, undefined, { 'user-agent': agent });
+        expect(r.statusCode, r.body).toBe(200);
+        const rows = await ownerQuery<{ target_id: string }>(`SELECT target_id FROM audit_logs WHERE tenant_id=$1 AND action='l4.read' AND user_agent=$2`, [single.tenantId, agent]);
+        expect(rows.map((x) => x.target_id).sort()).toEqual(Object.values(single.subjects).map((x) => x.employeeId).sort());
+      } finally { await single.app.close(); setStore(new LocalStore(w.root)); await rm(single.root, { recursive: true, force: true }); }
+    }, 60000);
+
+    it('opening or exporting a scheduled copy names the people in it', async () => {
+      const s = w.subjects;
+      const [saved] = await ownerQuery<{ id: string }>(`INSERT INTO saved_reports (tenant_id, owner_id, report_key, name, params) VALUES ($1,$2,'payroll_cost','Cost audit',$3) RETURNING id`, [w.tenantId, s.seniorPayroll!.userId, JSON.stringify({ from: PERIOD, to: PERIOD })]);
+      await ownerQuery(`INSERT INTO report_schedules (tenant_id, saved_report_id, frequency, recipient_ids, next_run_on, created_by) VALUES ($1,$2,'daily',$3,'2020-01-01',$4)`, [w.tenantId, saved!.id, [s.seniorPayroll!.userId], s.seniorPayroll!.userId]);
+      const { withTenant } = await import('../src/db/tx.js');
+      await inApp(w.app, () => withTenant(w.app.deps.pool, w.tenantId, (db) => runSchedules(db, w.tenantId, '2026-03-01')));
+      const [snap] = await ownerQuery<{ id: string }>(`SELECT id FROM report_snapshots WHERE tenant_id=$1 AND name='Cost audit'`, [w.tenantId]);
+      const c = w.clients.seniorPayroll!;
+      await c.req('GET', `/api/v1/reports/snapshots/${snap!.id}`, undefined, { 'user-agent': 'snap-read' });
+      expect((await targets('snap-read', 'l4.read')).map((x) => x.target_id).sort()).toEqual(expected());
+      await c.req('GET', `/api/v1/reports/snapshots/${snap!.id}/export.csv`, undefined, { 'user-agent': 'snap-export' });
+      expect((await targets('snap-export', 'l4.export')).map((x) => x.target_id).sort()).toEqual(expected());
+    });
+  });
+
   it('the reimbursement bank file is whole or refused too', async () => {
     const s = w.subjects;
     const [batch] = await ownerQuery<{ id: string }>(`INSERT INTO reimbursement_batches (tenant_id, status, total, claim_count, prepared_by, approved_by, approved_at) VALUES ($1,'approved',10,1,$2,$3,now()) RETURNING id`, [w.tenantId, s.finance!.userId, s.seniorPayroll!.userId]);
@@ -518,7 +600,7 @@ describe('permission matrix: named negatives', () => {
     expect(body.statusCode, body.body).toBe(200);
     const mine = PEOPLE.multi.filter((p) => p.level < 40 || p.key === 'payroll');
     expect(Number(body.json().totals.gross)).toBe(mine.reduce((t, p) => t + s[p.key]!.gross, 0));
-    const stored = await ownerQuery<{ id: string; recipient_ids: string[]; viewer_level: number; data_enc: string }>(`SELECT id, recipient_ids, viewer_level, data_enc FROM report_snapshots WHERE tenant_id=$1`, [w.tenantId]);
+    const stored = await ownerQuery<{ id: string; recipient_ids: string[]; viewer_level: number; data_enc: string }>(`SELECT id, recipient_ids, viewer_level, data_enc FROM report_snapshots WHERE tenant_id=$1 AND name='Cost'`, [w.tenantId]);
     expect(stored).toHaveLength(2);
     for (const x of stored) { expect(x.recipient_ids).toHaveLength(1); expect(x.data_enc.startsWith('v2.')).toBe(true); }
     // The higher copy is not the lower reader's to open.

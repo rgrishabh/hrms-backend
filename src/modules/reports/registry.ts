@@ -26,7 +26,7 @@ export type Params = Record<string, string | number>;
 export interface ReportCtx { db: Db; tenantId: string; today: string; /** null = whole organization */ team: string[] | null; has: (p: string) => boolean;
   /** Who is asking, for the L4 row filter, and whether they asked for the figures (`?reveal=1`, an export, a scheduled copy). */ viewer: PolicyViewer; reveal: boolean;
   /** Whether a module is usable (cross-module reports leave out the parts that are not). */ usable: (f: string) => boolean }
-export interface ReportResult { columns: Column[]; rows: Row[]; totals: Row | null; notes: string[]; /** People left out because they are above the viewer. */ excluded?: number }
+export interface ReportResult { columns: Column[]; rows: Row[]; totals: Row | null; notes: string[]; /** People left out because they are above the viewer. */ excluded?: number; /** Whose pay went into the figures shown: for the audit log, never sent to the client. */ subjects?: string[] }
 export interface ReportDef {
   key: string; name: string; description: string;
   category: 'People' | 'Time & leave' | 'Pay & expenses' | 'Training & competency' | 'Across modules';
@@ -336,7 +336,9 @@ async function sumPay(c: ReportCtx, groupSql: string, joins: string, where: stri
   const notes: string[] = [];
   if (hiddenAll.size) notes.push(`${hiddenAll.size} person(s) above your salary level are left out of these figures.`);
   if (withheld.length) notes.push(`Amounts withheld for groups too small to show once those people are left out: ${withheld.join(', ')}.`);
-  return { groups, hidden: hiddenAll.size, withheld: new Set(withheld), notes };
+  // Nobody's figure was read in a masked answer, or in a group whose amounts are withheld.
+  const subjects = c.reveal ? [...new Set([...groups.values()].filter((g) => !withheld.includes(g.grp)).flatMap((g) => [...g.employees]))] : [];
+  return { groups, hidden: hiddenAll.size, withheld: new Set(withheld), notes, subjects };
 }
 const money2 = (cents: number) => cents / 100;
 
@@ -353,7 +355,7 @@ const payrollCost: ReportDef = {
     const columns: Column[] = [{ key: 'grp', label, type: 'text' }, { key: 'employees', label: 'Employees', type: 'int' }, { key: 'gross', label: 'Gross', type: 'money' },
       { key: 'deductions', label: 'Deductions', type: 'money' }, { key: 'net', label: 'Net pay', type: 'money' }, { key: 'employer_cost', label: 'Employer cost', type: 'money' },
       { key: 'lop_days', label: 'Loss-of-pay days', type: 'number' }];
-    const { groups, hidden, withheld, notes } = await sumPay(c, g, `JOIN legal_entities rle ON rle.tenant_id=r.tenant_id AND rle.id=r.legal_entity_id
+    const { groups, hidden, withheld, notes, subjects } = await sumPay(c, g, `JOIN legal_entities rle ON rle.tenant_id=r.tenant_id AND rle.id=r.legal_entity_id
       LEFT JOIN departments d ON d.tenant_id=e.tenant_id AND d.id=e.department_id JOIN branches b ON b.tenant_id=e.tenant_id AND b.id=e.branch_id`,
       `pi.tenant_id=$1 AND r.status IN ('approved','finalized','paid') AND r.period BETWEEN $2 AND $3`, [c.tenantId, p.from, p.to]);
     const amounts = ['gross', 'deductions', 'net', 'employer_cost'];
@@ -366,7 +368,7 @@ const payrollCost: ReportDef = {
     const rows = list.filter((x) => x.employees.size).map((x) => row(x.grp, x.employees.size, x.lop, c.reveal && !withheld.has(x.grp) ? cents(x) : null));
     const totals = list.length ? row(null, everyone.size, list.filter((x) => !withheld.has(x.grp)).reduce((t, x) => t + x.lop, 0),
       c.reveal ? { gross: money2(sum('gross')), deductions: money2(sum('deductions')), net: money2(sum('net')), employerCost: money2(sum('employerCost')) } : null) : null;
-    return { columns, rows, totals, excluded: hidden, notes: [...notes, 'Approved, finalized and paid runs, including full and final settlements. Department and branch are each person’s current ones.'] };
+    return { columns, rows, totals, excluded: hidden, subjects, notes: [...notes, 'Approved, finalized and paid runs, including full and final settlements. Department and branch are each person’s current ones.'] };
   },
 };
 
@@ -496,10 +498,12 @@ const departmentOverview: ReportDef = {
     const payOn = c.usable('payroll') && c.has('payroll.read');
     const payCols: Column[] = [{ key: 'payroll_gross', label: 'Payroll gross', type: 'money' }, { key: 'employer_cost', label: 'Employer cost', type: 'money' }];
     let excluded = 0;
+    let subjects: string[] = [];
     if (payOn) {
       columns.push(...payCols);
       const pay = await sumPay(c, DEPT, EMP_JOINS, `pi.tenant_id=$1 AND r.status IN ('finalized','paid') AND r.period BETWEEN to_char($2::date,'YYYY-MM') AND to_char($3::date,'YYYY-MM')`, [c.tenantId, from, to]);
       excluded = pay.hidden;
+      subjects = pay.subjects;
       notes.push(...pay.notes);
       for (const g of pay.groups.values()) {
         if (!g.employees.size) continue;
@@ -519,7 +523,7 @@ const departmentOverview: ReportDef = {
     const totals: Row = { department: 'All departments' };
     for (const col of columns.slice(1)) if (col.type !== 'percent') totals[col.key] = sum(col.key);
     if (payOn && !c.reveal) { totals.payroll_gross = null; totals.employer_cost = null; totals.masked = true; totals.maskedFields = ['payroll_gross', 'employer_cost']; }
-    return { columns, rows: out, totals, notes, excluded };
+    return { columns, rows: out, totals, notes, excluded, subjects };
   },
 };
 

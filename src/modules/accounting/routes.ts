@@ -1,4 +1,4 @@
-import type { FastifyInstance, FastifyReply } from 'fastify';
+import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import { z } from 'zod';
 import { tenantActor, tenantActorAny, gateFeatures } from '../../core/http/context.js';
 import { audit } from '../../core/audit/audit.js';
@@ -7,9 +7,8 @@ import { Uuid } from '../../core/http/pagination.js';
 import { getSettingValue } from '../../core/settings/service.js';
 import { featureOn } from '../lifecycle/service.js';
 import { sealJson } from '../../core/crypto/index.js';
-import { l4RowFilter, policyViewer, refuseHigherLevel, wantsReveal } from '../../core/policy/salary.js';
+import { auditL4, l4RowFilter, policyViewer, readContext, refuseHigherLevel, wantsReveal } from '../../core/policy/salary.js';
 import { visibleRunTotals } from '../payroll/sealed.js';
-import { readDevice } from '../../core/http/context.js';
 import { payrollJournal, reimbursementJournal, toCsv, toTallyXml, type Journal } from './service.js';
 
 const KEY = /^(earning|deduction|employer_expense|employer_payable|expense):([A-Z0-9_]{1,30}|\*)$|^(net_pay|reimbursement_payable|travel_advance)$/;
@@ -69,13 +68,15 @@ export async function accountingRoutes(app: FastifyInstance) {
         FROM payroll_runs r JOIN legal_entities le ON le.tenant_id=r.tenant_id AND le.id=r.legal_entity_id
         WHERE r.tenant_id=$1 AND r.status IN ('finalized','paid') ORDER BY r.period DESC, r.created_at DESC LIMIT 60`, [a.tenantId])).rows;
       const runs = [];
+      const read = new Set<string>();
       for (const { totals_enc, ...r } of raw) {
         if (!totals_enc) { runs.push({ ...r, totals: null }); continue; }
         if (!reveal) { runs.push({ ...r, totals: null, masked: true as const, maskedFields: ['totals'] }); continue; }
-        const { excluded, ...totals } = await visibleRunTotals(db, a.tenantId, v, r.id);
+        const { excluded, subjects, ...totals } = await visibleRunTotals(db, a.tenantId, v, r.id);
+        subjects.forEach((x) => read.add(x));
         runs.push({ ...r, totals, excluded });
       }
-      if (reveal && raw.length) await audit(db, { ...a.auditBase, ...readDevice(req), action: 'l4.reveal', category: 'access', targetType: 'payroll_run', metadata: { path: 'accounting.sources', fields: ['totals'], runs: raw.length } });
+      await auditL4(db, readContext(req, a), 'reveal', 'accounting.sources', [...read].map((employeeId) => ({ employeeId, fields: ['totals'] })));
       const batches = await featureOn(db, a.tenantId, 'expenses') ? (await db.query(`SELECT b.id, b.status, b.total, b.claim_count, b.created_at, b.paid_at, b.payment_reference,
           ${last.replace('%s', `'reimbursement_batch'`).replace('%s', 'b.id')}
         FROM reimbursement_batches b WHERE b.tenant_id=$1 AND b.status IN ('approved','paid') ORDER BY b.created_at DESC LIMIT 60`, [a.tenantId])).rows : [];
@@ -83,7 +84,7 @@ export async function accountingRoutes(app: FastifyInstance) {
     });
   });
 
-  const load = async (req: { params: unknown }, a: ReturnType<typeof tenantActor>, kind: 'payroll_run' | 'reimbursement_batch') => {
+  const load = async (req: FastifyRequest, a: ReturnType<typeof tenantActor>, kind: 'payroll_run' | 'reimbursement_batch', read: 'read' | 'export') => {
     const { id } = z.object({ id: Uuid }).parse(req.params);
     return a.tx(async (db) => {
       if (kind === 'reimbursement_batch' && !(await featureOn(db, a.tenantId, 'expenses'))) throw conflict('Expenses are not in use');
@@ -92,6 +93,8 @@ export async function accountingRoutes(app: FastifyInstance) {
         const v = await policyViewer(db, a.tenantId, a.user);
         const hidden = await db.query<{ employee_id: string }>(`SELECT i.employee_id FROM payroll_items i JOIN employees e ON e.tenant_id=i.tenant_id AND e.id=i.employee_id WHERE i.tenant_id=$1 AND i.run_id=$2 AND NOT ${l4RowFilter(v, 'e')}`, [a.tenantId, id]);
         if (hidden.rowCount) throw refuseHigherLevel(hidden.rowCount!);
+        const everyone = await db.query<{ employee_id: string }>('SELECT employee_id FROM payroll_items WHERE tenant_id=$1 AND run_id=$2', [a.tenantId, id]);
+        await auditL4(db, readContext(req, a), read, 'accounting.journal', everyone.rows.map((x) => ({ employeeId: x.employee_id, fields: ['journal'] })));
       }
       return { id, j: kind === 'payroll_run' ? await payrollJournal(db, a.tenantId, id) : await reimbursementJournal(db, a.tenantId, id) };
     });
@@ -117,12 +120,12 @@ export async function accountingRoutes(app: FastifyInstance) {
     /** Preview: the voucher, its entries and any heads still to map. */
     app.get(`/${path}/:id/journal`, async (req) => {
       const a = tenantActor(req, 'accounting.export');
-      return (await load(req, a, kind)).j;
+      return (await load(req, a, kind, 'read')).j;
     });
     app.get(`/${path}/:id/export`, async (req, reply) => {
       const a = tenantActor(req, 'accounting.export');
       const { format } = z.object({ format: z.enum(['csv', 'tally_xml']).default('csv') }).parse(req.query);
-      const { id, j } = await load(req, a, kind);
+      const { id, j } = await load(req, a, kind, 'export');
       return exportFile(a, reply, kind, id, j, format);
     });
   }

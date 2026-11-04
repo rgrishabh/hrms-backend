@@ -308,13 +308,15 @@ export async function payrollRoutes(app: FastifyInstance) {
         FROM payroll_runs r JOIN legal_entities le ON le.tenant_id=r.tenant_id AND le.id=r.legal_entity_id LEFT JOIN employees e ON e.tenant_id=r.tenant_id AND e.id=r.employee_id
         JOIN users u ON u.id=r.created_by WHERE r.tenant_id=$1 ORDER BY r.period DESC, r.created_at DESC LIMIT 100`, [a.tenantId])).rows;
       const items = [];
+      const read = new Set<string>();
       for (const { totals_enc, ...r } of rows) {
         if (!totals_enc) { items.push({ ...r, totals: null }); continue; }
         if (!reveal) { items.push({ ...r, totals: null, masked: true as const, maskedFields: ['totals'] }); continue; }
-        const { excluded, ...totals } = await visibleRunTotals(db, a.tenantId, v, r.id);
+        const { excluded, subjects, ...totals } = await visibleRunTotals(db, a.tenantId, v, r.id);
+        subjects.forEach((x) => read.add(x));
         items.push({ ...r, totals, excluded });
       }
-      if (reveal) await audit(db, { ...a.auditBase, userAgent: readContext(req, a).userAgent, action: 'l4.reveal', category: 'access', targetType: 'payroll_run', metadata: { path: 'payroll.runs', fields: ['totals'], runs: rows.length } });
+      await auditL4(db, readContext(req, a), 'reveal', 'payroll.runs', [...read].map((employeeId) => ({ employeeId, fields: ['totals'] })));
       return { items };
     });
   });
@@ -352,8 +354,8 @@ export async function payrollRoutes(app: FastifyInstance) {
       await db.query('UPDATE payroll_runs SET computed_by=$3 WHERE tenant_id=$1 AND id=$2', [a.tenantId, id, a.user.userId]);
       await audit(db, { ...a.auditBase, action: 'payroll.run_computed', targetType: 'payroll_run', targetId: id, metadata: { warnings: res.warnings } });
       if (!wantsReveal(req)) return { totals: null, warnings: res.warnings, masked: true, maskedFields: ['totals'] };
-      const { excluded, ...totals } = await visibleRunTotals(db, a.tenantId, await policyViewer(db, a.tenantId, a.user), id);
-      await audit(db, { ...a.auditBase, userAgent: readContext(req, a).userAgent, action: 'l4.reveal', category: 'access', targetType: 'payroll_run', targetId: id, metadata: { path: 'payroll.compute', fields: ['totals'] } });
+      const { excluded, subjects, ...totals } = await visibleRunTotals(db, a.tenantId, await policyViewer(db, a.tenantId, a.user), id);
+      await auditL4(db, readContext(req, a), 'reveal', 'payroll.compute', subjects.map((employeeId) => ({ employeeId, fields: ['totals'] })));
       return { totals, warnings: res.warnings, excluded };
     });
   });
@@ -381,7 +383,7 @@ export async function payrollRoutes(app: FastifyInstance) {
       if (!reveal) return { ...maskFields({ ...run, totals: openTotals(totals_enc) }, ['totals']), items, adjustments, attendanceLocked: locked, excluded };
       // Bulk reveal for the person working the run: one audit row for each person in it.
       await auditL4(db, readContext(req, a), 'reveal', 'payroll.run', shown.map((r) => ({ employeeId: r.employee_id, fields: ITEM_FIELDS })));
-      const totals = totals_enc ? await visibleRunTotals(db, a.tenantId, v, id).then(({ excluded: _e, ...t }) => t) : null;
+      const totals = totals_enc ? await visibleRunTotals(db, a.tenantId, v, id).then(({ excluded: _e, subjects: _s, ...t }) => t) : null;
       return { ...run, totals, items, adjustments, attendanceLocked: locked, excluded };
     });
   });

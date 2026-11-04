@@ -128,7 +128,7 @@ export async function runSchedules(db: Db, tenantId: string, today: string) {
       const store = async (result: typeof r, to: string[], level: number | null) => {
         const snap = (await db.query<{ id: string }>(`INSERT INTO report_snapshots (tenant_id, schedule_id, owner_id, report_key, name, params, scope, columns, data_enc, notes, row_count, recipient_ids, viewer_level, expires_at)
           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13, now() + make_interval(days => $14)) RETURNING id`,
-          [tenantId, s.id, owner.userId, s.report_key, s.name, JSON.stringify(result.params), result.scope, JSON.stringify(result.columns), sealJson({ rows: result.rows, totals: result.totals }),
+          [tenantId, s.id, owner.userId, s.report_key, s.name, JSON.stringify(result.params), result.scope, JSON.stringify(result.columns), sealJson({ rows: result.rows, totals: result.totals, subjects: result.subjects ?? [] }),
            JSON.stringify(result.notes), result.rows.length, to, level, RETAIN_DAYS])).rows[0]!.id;
         await notifyUsers(db, tenantId, to, { kind: 'reports.ready', title: `Report ready: ${s.name}`, body: `${def.name} · ${result.rows.length} row(s). Sign in to open it.`,
           link: `/reports?snapshot=${snap}`, actionLabel: 'Open report', dedupeKey: `report:${snap}` });

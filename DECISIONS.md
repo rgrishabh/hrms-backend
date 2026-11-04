@@ -173,7 +173,7 @@ A request is an approval request (`lab_authorization`) routed to holders of `com
 **Options:** an advisory lock; a head row per tenant; assigning sequence numbers later in a background job.
 **Decision:** a head row, locked in the trigger and kept until commit, so sequence order is commit order and a rolled-back row leaves no gap.
 **Cost:** audited writes of one tenant run one at a time, and a long transaction that audits early (a scheduled report, a payroll compute) holds up the others. Two transactions that take the head and another row in opposite orders can deadlock, and Postgres aborts one with a 500. This was not load tested. Audit calls are mostly last in a transaction, which limits both.
-**Bulk reveal** writes one row per subject in one statement.
+**Bulk reveal** writes one row per subject in one statement. So do aggregates, since the requirement is whose record: a report, run total or journal writes a row for each person whose figure went into it (never one who was left out or whose group was withheld), each person once per request. A 1,000-person report writes 1,000 rows under the lock; see the measurements in the next paragraph.
 
 ## D38 — Payment and filing files are whole or refused
 **Context:** a preparer may be below someone in the run. A bank file without them pays short, and with them leaks.

@@ -51,14 +51,16 @@ export const openTotals = (token: string | null) => (token ? openJson<Totals>(to
 const round = (n: number) => Math.round(n * 100) / 100;
 
 /** A run's totals over the people this viewer can see, with how many were left out. */
-export async function visibleRunTotals(db: Db, tenantId: string, v: PolicyViewer, runId: string): Promise<Totals & { excluded: number }> {
-  const rows = (await db.query<{ data_enc: string; hold: boolean; visible: boolean }>(`SELECT i.data_enc, i.hold, ${l4RowFilter(v, 'e')} AS visible
+export async function visibleRunTotals(db: Db, tenantId: string, v: PolicyViewer, runId: string): Promise<Totals & { excluded: number; subjects: string[] }> {
+  const rows = (await db.query<{ employee_id: string; data_enc: string; hold: boolean; visible: boolean }>(`SELECT i.employee_id, i.data_enc, i.hold, ${l4RowFilter(v, 'e')} AS visible
     FROM payroll_items i JOIN employees e ON e.tenant_id=i.tenant_id AND e.id=i.employee_id WHERE i.tenant_id=$1 AND i.run_id=$2`, [tenantId, runId])).rows;
   const t = { employees: 0, gross: 0, deductions: 0, net: 0, employerCost: 0, held: 0, excluded: 0 };
+  const subjects: string[] = [];
   for (const r of rows) {
     if (!r.visible) { t.excluded++; continue; }
     const d = openItem(r.data_enc);
+    subjects.push(r.employee_id);
     t.employees++; t.gross += d.gross; t.deductions += d.deductions; t.net += d.net; t.employerCost += d.employerCost; if (d.net < 0) t.held++;
   }
-  return { ...t, gross: round(t.gross), deductions: round(t.deductions), net: round(t.net), employerCost: round(t.employerCost) };
+  return { ...t, gross: round(t.gross), deductions: round(t.deductions), net: round(t.net), employerCost: round(t.employerCost), subjects };
 }

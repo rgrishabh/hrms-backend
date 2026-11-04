@@ -3,7 +3,7 @@ import { z } from 'zod';
 import { only } from '../../core/features/routes.js';
 import { tenantActor, requireFeature, readDevice, type TenantActor } from '../../core/http/context.js';
 import { openJson } from '../../core/crypto/index.js';
-import { wantsReveal } from '../../core/policy/salary.js';
+import { auditL4, readContext, wantsReveal } from '../../core/policy/salary.js';
 import { audit } from '../../core/audit/audit.js';
 import { badRequest, conflict, notFound } from '../../core/http/errors.js';
 import { csv } from '../../core/http/csv.js';
@@ -189,7 +189,7 @@ export async function reportRoutes(app: FastifyInstance) {
       // Sealed for one reader at one level. Someone whose level has since dropped no longer gets it.
       if (stored.viewer_level !== null && stored.viewer_level > a.user.salaryLevel) throw notFound('Report not found');
       const { data_enc, ...meta } = stored;
-      const s = { ...meta, ...openJson<{ rows: Row[]; totals: Row | null }>(data_enc) };
+      const s = { ...meta, ...openJson<{ rows: Row[]; totals: Row | null; subjects?: string[] }>(data_enc) };
       const mine = scopeOf(def, viewer(a));
       if (!mine || (s.scope === 'all' && mine !== 'all')) throw notFound('Report not found');
       if (def.feature) await requireFeature(db, a.tenantId, def.feature);
@@ -197,11 +197,16 @@ export async function reportRoutes(app: FastifyInstance) {
       return snapshotForReader(def, s, a.has, (f) => !!features.get(f)?.usable);
     });
   }
+  /** Whose pay this reader has just received. A reader who has since lost the pay columns received none. */
+  const auditSnapshot = (req: FastifyRequest, a: TenantActor, s: { report_key: string; columns: Column[]; subjects?: string[] }, kind: 'read' | 'export') => {
+    if (!REPORT_MAP.get(s.report_key)?.l4 || !s.columns.some((c) => c.key === 'gross' || c.key === 'payroll_gross')) return Promise.resolve();
+    return a.tx((db) => auditL4(db, readContext(req, a), kind, `reports.snapshot.${s.report_key}`, (s.subjects ?? []).map((employeeId) => ({ employeeId, fields: ['pay'] }))));
+  };
   only(app, 'reports.advanced').get('/snapshots/:id', async (req) => {
     const a = tenantActor(req);
     const { id } = z.object({ id: Uuid }).parse(req.params);
     const s = await loadSnapshot(a, id);
-    if (REPORT_MAP.get(s.report_key)?.l4) await a.tx((db) => audit(db, { ...a.auditBase, userAgent: readDevice(req).userAgent, action: 'l4.read', category: 'access', targetType: 'report_snapshot', targetId: id, metadata: { report: s.report_key, rows: s.rows.length } }));
+    await auditSnapshot(req, a, s, 'read');
     return { id: s.id, key: s.report_key, name: s.name, params: s.params, scope: s.scope, columns: s.columns, rows: s.rows, totals: s.totals, notes: s.notes, generatedAt: s.generated_at };
   });
   for (const format of ['csv', 'xlsx'] as const) app.get(`/snapshots/:id/export.${format}`, async (req, reply) => {
@@ -209,6 +214,7 @@ export async function reportRoutes(app: FastifyInstance) {
     const { id } = z.object({ id: Uuid }).parse(req.params);
     const s = await loadSnapshot(a, id);
     await a.tx((db) => audit(db, { ...a.auditBase, action: 'reports.exported', category: 'access', targetType: 'report_snapshot', targetId: id, metadata: { report: s.report_key, rows: s.rows.length, format } }));
+    await auditSnapshot(req, a, s, 'export');
     const name = `${s.report_key}-${new Date(s.generated_at).toISOString().slice(0, 10)}`;
     return format === 'csv' ? sendCsv(reply, name, s.columns, s.rows, s.totals) : sendXlsx(reply, name, s.name, s.columns, s.rows, s.totals);
   });
@@ -226,8 +232,8 @@ export async function reportRoutes(app: FastifyInstance) {
     const key = reportKey(req);
     const a = tenantActor(req);
     const reveal = wantsReveal(req);
-    const { def, ...r } = await a.tx((db) => runReport(db, a.tenantId, key, req.query, viewer(a), { reveal }));
-    if (def.l4 && reveal) await a.tx((db) => audit(db, { ...a.auditBase, userAgent: readDevice(req).userAgent, action: 'l4.reveal', category: 'access', targetType: 'report', targetId: def.key, metadata: { params: r.params, excluded: r.excluded ?? 0 } }));
+    const { def, subjects, ...r } = await a.tx((db) => runReport(db, a.tenantId, key, req.query, viewer(a), { reveal }));
+    if (def.l4 && reveal) await a.tx((db) => auditL4(db, readContext(req, a), 'reveal', `reports.${def.key}`, (subjects ?? []).map((employeeId) => ({ employeeId, fields: ['pay'] }))));
     return { key: def.key, name: def.name, generatedAt: new Date().toISOString(), ...r };
   });
 
@@ -235,7 +241,8 @@ export async function reportRoutes(app: FastifyInstance) {
   for (const format of ['csv', 'xlsx'] as const) app.get(`/:key/export.${format}`, async (req, reply) => {
     const key = reportKey(req);
     const a = tenantActor(req);
-    const { def, params, today, columns, rows, totals, scope, excluded } = await a.tx((db) => runReport(db, a.tenantId, key, req.query, viewer(a), { reveal: true }));
+    const { def, params, today, columns, rows, totals, scope, excluded, subjects } = await a.tx((db) => runReport(db, a.tenantId, key, req.query, viewer(a), { reveal: true }));
+    if (def.l4) await a.tx((db) => auditL4(db, readContext(req, a), 'export', `reports.${def.key}`, (subjects ?? []).map((employeeId) => ({ employeeId, fields: ['pay'] }))));
     await a.tx((db) => audit(db, { ...a.auditBase, userAgent: readDevice(req).userAgent, action: 'reports.exported', category: 'access', targetType: 'report', targetId: def.key, metadata: { params, scope, rows: rows.length, format, excluded: excluded ?? 0 } }));
     reply.header('x-excluded-subjects', String(excluded ?? 0));
     return format === 'csv' ? sendCsv(reply, `${def.key}-${today}`, columns, rows, totals) : sendXlsx(reply, `${def.key}-${today}`, def.name, columns, rows, totals);

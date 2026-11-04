@@ -79,7 +79,7 @@ PAN and Aadhaar never leave the server whole: reveal shows the last four charact
 
 ## Audit
 
-Each reveal and each export writes a row: who (`actor_id`), whose record (`target_id`), which fields and path (`change_metadata`), when, `ip`, and device (`user_agent`). Actions are `l4.reveal`, `l4.read`, `l4.export`. A masked answer carries no figure and writes no row. Aggregates write one row against the report or run, since they have no single subject.
+Each reveal and each export writes a row: who (`actor_id`), whose record (`target_id`), which fields and path (`change_metadata`), when, `ip`, and device (`user_agent`). Actions are `l4.reveal`, `l4.read`, `l4.export`. A masked answer carries no figure and writes no row. Aggregates write one row per person whose figure went into them, once per request: report reveals and exports, run totals, accounting sources, journals, and opening or exporting a scheduled copy. A person left out, or in a group whose amounts were withheld, gets none.
 
 Changes to L3 and L4 record field names, not values.
 
