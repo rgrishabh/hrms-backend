@@ -36,7 +36,7 @@ describe('scheduler', () => {
     await ownerQuery(`INSERT INTO sessions (token_hash, csrf_hash, user_id, tenant_id, expires_at) VALUES ('old-'||gen_random_uuid(),'x',$1,$2, now() - interval '30 days')`, [T.users.employee!.id, T.id]);
     await tick(app.deps.pool, quiet, at(today, '23:00'));
     const runs = await runsOf(T.id);
-    expect(runs.map((r) => `${r.job_key}:${r.status}`)).toEqual(['approvals.reminder:succeeded', 'attendance.close_day:succeeded', 'leave.accrual:succeeded', 'sessions.cleanup:succeeded']);
+    expect(runs.map((r) => `${r.job_key}:${r.status}`)).toEqual(['approvals.escalation:succeeded', 'approvals.reminder:succeeded', 'attendance.close_day:succeeded', 'leave.accrual:succeeded', 'sessions.cleanup:succeeded']);
     const close = runs.find((r) => r.job_key === 'attendance.close_day')!;
     expect(close).toMatchObject({ period_key: today, result: { date: addDays(today, -1) } });
     const days = await ownerQuery(`SELECT 1 FROM attendance_daily WHERE tenant_id=$1 AND work_date=$2`, [T.id, addDays(today, -1)]);
@@ -44,15 +44,15 @@ describe('scheduler', () => {
     expect(runs.find((r) => r.job_key === 'leave.accrual')!.result.credited).toBe(4);
     expect(runs.find((r) => r.job_key === 'sessions.cleanup')!.result.deleted).toBeGreaterThanOrEqual(1);
     await tick(app.deps.pool, quiet, at(today, '23:30'));
-    expect((await runsOf(T.id)).length).toBe(4); // nothing re-runs within the same period
+    expect((await runsOf(T.id)).length).toBe(5); // nothing re-runs within the same period
   });
 
   it('two instances ticking at the same moment still run each job exactly once', async () => {
     const U = await createTenant();
     const [a, b] = await Promise.all([tick(app.deps.pool, quiet, at(today, '23:00')), tick(app.deps.pool, quiet, at(today, '23:00'))]);
     const mine = [...a, ...b].filter((r) => r.tenantId === U.id);
-    expect(mine.map((r) => r.job).sort()).toEqual(['approvals.reminder', 'attendance.close_day', 'leave.accrual', 'sessions.cleanup']);
-    expect((await runsOf(U.id)).length).toBe(4);
+    expect(mine.map((r) => r.job).sort()).toEqual(['approvals.escalation', 'approvals.reminder', 'attendance.close_day', 'leave.accrual', 'sessions.cleanup']);
+    expect((await runsOf(U.id)).length).toBe(5);
   });
 
   it('does not run before the scheduled time', async () => {
