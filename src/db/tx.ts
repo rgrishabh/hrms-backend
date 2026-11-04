@@ -26,17 +26,36 @@ export async function withPlatformBypass<T>(pool: Pool, fn: (db: Db) => Promise<
   });
 }
 
+interface TxHooks { committed: (() => Promise<void>)[]; ended: (() => void)[] }
+const hooks = new WeakMap<object, TxHooks>();
+
+/**
+ * Run `fn` once this connection's transaction has committed, and `end` when it is over either way. Outside
+ * `withTenant`/`withPlatformBypass` (a task's own connection), `fn` runs at once: there is no commit to wait for here.
+ */
+export function afterCommit(db: Db, fn: () => Promise<void>, end?: () => void) {
+  const h = hooks.get(db);
+  if (!h) { void fn(); end?.(); return; }
+  h.committed.push(fn);
+  if (end) h.ended.push(end);
+}
+
 async function runTx<T>(pool: Pool, fn: (db: Db) => Promise<T>): Promise<T> {
   const client = await pool.connect();
+  const h: TxHooks = { committed: [], ended: [] };
+  hooks.set(client, h);
   try {
     await client.query('BEGIN');
     const result = await fn(client);
     await client.query('COMMIT');
+    for (const run of h.committed) await run();
     return result;
   } catch (err) {
     await client.query('ROLLBACK').catch(() => undefined);
     throw err;
   } finally {
+    hooks.delete(client);
+    for (const end of h.ended) end();
     client.release();
   }
 }

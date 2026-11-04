@@ -1,6 +1,7 @@
 import type { Db } from '../../db/tx.js';
 import { SETTINGS_MAP, type DeploymentLimits } from './registry.js';
 import { badRequest } from '../http/errors.js';
+import { cached, invalidate } from '../cache/index.js';
 
 let limits: DeploymentLimits = { sessionTtlHours: 12 };
 export function setDeploymentLimits(l: DeploymentLimits) { limits = l; }
@@ -23,24 +24,25 @@ export interface EffectiveSetting {
 }
 
 /**
- * Resolve the effective value. Read through the DB each time (cheap, indexed):
- * there is no cross-process cache to invalidate, so saved changes apply to the
- * next request on every instance without restarts.
+ * Resolve the effective value. The stored rows may come from the shared cache (core/cache), which a write invalidates when it
+ * commits, so saved changes apply to the next request on every instance without restarts. Without Redis: the database.
  */
 export async function resolveSetting(db: Db, tenantId: string, key: string, branchId?: string | null): Promise<EffectiveSetting> {
   const d = SETTINGS_MAP.get(key);
   if (!d) throw new Error(`Unknown setting ${key}`);
-  const plat = await db.query<{ setting_value: unknown }>('SELECT setting_value FROM platform_settings WHERE setting_key=$1', [key]);
-  const rows = await db.query<{ scope_type: string; scope_id: string | null; setting_value: unknown; version: number }>(
-    `SELECT scope_type, scope_id, setting_value, version FROM tenant_settings
-      WHERE tenant_id=$1 AND setting_key=$2 AND (scope_type='tenant' OR (scope_type='branch' AND scope_id=$3))`,
-    [tenantId, key, branchId ?? null]);
-  const tenantRow = rows.rows.find((r) => r.scope_type === 'tenant');
-  const branchRow = d.scopes.includes('branch') ? rows.rows.find((r) => r.scope_type === 'branch') : undefined;
+  const { platform, rows } = await cached(db, tenantId, 'settings', `${key}:${branchId ?? ''}`, async () => ({
+    platform: (await db.query<{ setting_value: unknown }>('SELECT setting_value FROM platform_settings WHERE setting_key=$1', [key])).rows,
+    rows: (await db.query<{ scope_type: string; scope_id: string | null; setting_value: unknown; version: number }>(
+      `SELECT scope_type, scope_id, setting_value, version FROM tenant_settings
+        WHERE tenant_id=$1 AND setting_key=$2 AND (scope_type='tenant' OR (scope_type='branch' AND scope_id=$3))`,
+      [tenantId, key, branchId ?? null])).rows,
+  }));
+  const tenantRow = rows.find((r) => r.scope_type === 'tenant');
+  const branchRow = d.scopes.includes('branch') ? rows.find((r) => r.scope_type === 'branch') : undefined;
 
   const res: EffectiveSetting = { key, value: d.default, source: 'default', defaultValue: d.default };
   if (key in deploymentDefaults) { res.defaultValue = deploymentDefaults[key]; res.value = deploymentDefaults[key]; res.source = 'deployment'; }
-  if (plat.rows[0]) { res.platformValue = plat.rows[0].setting_value; res.value = plat.rows[0].setting_value; res.source = 'platform'; }
+  if (platform[0]) { res.platformValue = platform[0].setting_value; res.value = platform[0].setting_value; res.source = 'platform'; }
   if (tenantRow) { res.tenantValue = tenantRow.setting_value; res.value = tenantRow.setting_value; res.source = 'tenant'; res.version = tenantRow.version; }
   if (branchRow) { res.branchValue = branchRow.setting_value; res.value = branchRow.setting_value; res.source = 'branch'; }
   // Stored values are re-validated on read; anything invalid (e.g. schema tightened) falls back safely.
@@ -101,6 +103,7 @@ export async function writeSetting(db: Db, tenantId: string, w: SettingWrite, ac
     await db.query(`INSERT INTO tenant_settings (tenant_id, setting_key, scope_type, scope_id, setting_value, updated_by)
       VALUES ($1,$2,$3,$4,$5,$6)`, [tenantId, w.key, w.scope, scopeId, JSON.stringify(parsed.data), actorId]);
   }
+  invalidate(db, tenantId, 'settings');
   return { definition: d, previous: prev?.setting_value, value: parsed.data };
 }
 
@@ -109,5 +112,6 @@ export async function clearSetting(db: Db, tenantId: string, key: string, scope:
   const r = await db.query<{ setting_value: unknown }>(
     `DELETE FROM tenant_settings WHERE tenant_id=$1 AND setting_key=$2 AND scope_type=$3 AND scope_id IS NOT DISTINCT FROM $4
      RETURNING setting_value`, [tenantId, key, scope, scope === 'branch' ? branchId ?? null : null]);
+  invalidate(db, tenantId, 'settings');
   return r.rows[0]?.setting_value;
 }

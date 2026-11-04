@@ -4,6 +4,7 @@
 
 ### Added
 
+* `REDIS_URL`: optional cache for settings and organization lookups, invalidated on write. Without it, or with it down, the app reads the database.
 * `BRAND_LOGO_DARK_URL`, `BRAND_FONT_FAMILY`, `BRAND_LOCALE`, `S3_ENDPOINT` for MinIO, CORS limited to `BRAND_DOMAIN`. Amounts in messages follow `BRAND_CURRENCY` and `BRAND_LOCALE`; payslips carry the brand.
 * `FEATURE_*` flags, one per module, with a registry entry (`envName`) each. New: `FEATURE_SALARY_ADVANCE` (split from loans), `FEATURE_COMP_OFF` (split from overtime), `FEATURE_ATTENDANCE_GEOFENCE` (location policy, plus branch geofences), `FEATURE_ATTENDANCE_SELFIE`, `FEATURE_PUSH_NOTIFICATIONS`.
 * `MFA_AVAILABLE`, `MFA_ENFORCED`, `MFA_METHODS`, `ORG_MANAGEMENT_MODE`, `VAPID_PUBLIC_KEY`, `VAPID_PRIVATE_KEY`, `VAPID_SUBJECT`.

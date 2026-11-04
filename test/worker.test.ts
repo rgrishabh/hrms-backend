@@ -23,7 +23,7 @@ const TSX = ['--import', 'tsx'];
 describe('initRuntime', () => {
   it('sets up everything a process needs without any HTTP server', () => {
     const dir = mkdtempSync(path.join(os.tmpdir(), 'hrms-rt-'));
-    initRuntime(loadEnv({ ...baseEnv, SMTP_HOST: 'mail.example.test', SMTP_SECURE: 'none', BRAND_EMAIL_FROM: 'x@example.test', STORAGE_DRIVER: 'local', STORAGE_PATH: dir }));
+    initRuntime(loadEnv({ ...baseEnv, SMTP_HOST: 'mail.example.test', SMTP_SECURE: 'none', BRAND_EMAIL_FROM: 'x@example.test', STORAGE_DRIVER: 'local', STORAGE_PATH: dir }), { warn: () => undefined });
     expect(getMailer()).not.toBeNull();
     expect(getFrom()).toContain('x@example.test');
     expect(getStore()?.driver).toBe('local');
@@ -31,7 +31,7 @@ describe('initRuntime', () => {
   });
 
   it('registers approval handlers even if no route plugin ever ran', async () => {
-    initRuntime(loadEnv(baseEnv));
+    initRuntime(loadEnv(baseEnv), { warn: () => undefined });
     const T: TenantFixture = await createTenant();
     const pool = createPool(baseEnv.DATABASE_URL.replace('hrms_test_single_b', 'hrms_test'), 2);
     await expect(withTenant(pool, T.id, (db) => createApprovalRequest(db, T.id, { entityType: 'travel_request', entityId: T.id, requesterId: T.users.employee!.id, summary: 's',

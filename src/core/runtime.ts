@@ -9,6 +9,7 @@ import { setEmailBrand } from './notify/service.js';
 import { createMailer, getMailer, setMailer } from './notify/mailer.js';
 import { createStore, getStore, setStore } from './storage/index.js';
 import { registerAllApprovalHandlers } from './workflow/handlers.js';
+import { createRedisCache, getCache, setCache } from './cache/index.js';
 
 export interface RuntimeOverrides {
   /** Tests: keep an injected mailer instead of building one from env. */
@@ -17,7 +18,14 @@ export interface RuntimeOverrides {
   pushOverride?: boolean;
 }
 
-export interface Runtime { publicConfig: PublicConfig; features: ReadonlySet<string> }
+export interface Runtime {
+  publicConfig: PublicConfig;
+  features: ReadonlySet<string>;
+  /** Closes what this runtime opened. */
+  close: () => Promise<void>;
+}
+
+type RuntimeLog = { warn: (o: object, m?: string) => void };
 
 /** MFA_AVAILABLE and MFA_ENFORCED onto the existing floor. A minimal mapping: the auth flows behind them come with their own batch. */
 const mfaFloorOf = (env: Pick<Env, 'MFA_AVAILABLE' | 'MFA_ENFORCED'>): MfaLevel => (env.MFA_AVAILABLE && env.MFA_ENFORCED ? 'all' : 'off');
@@ -26,7 +34,7 @@ const mfaFloorOf = (env: Pick<Env, 'MFA_AVAILABLE' | 'MFA_ENFORCED'>): MfaLevel 
  * Everything both processes need before doing any work: the API (buildApp) and the worker (worker.ts).
  * Validates the module set, so an invalid configuration stops either process.
  */
-export function initRuntime(env: Env, overrides: RuntimeOverrides = {}): Runtime {
+export function initRuntime(env: Env, log: RuntimeLog, overrides: RuntimeOverrides = {}): Runtime {
   setDeploymentLimits({ sessionTtlHours: env.SESSION_TTL_HOURS });
   setMfaFloor(mfaFloorOf(env));
   setDeploymentDefaults({ 'general.timezone': env.BRAND_TIMEZONE, 'general.date_format': env.BRAND_DATE_FORMAT });
@@ -45,5 +53,13 @@ export function initRuntime(env: Env, overrides: RuntimeOverrides = {}): Runtime
   if (!overrides.pushOverride) setPushSender(createPushSender(env));
   setPushConfigured(!!getPushSender());
   registerAllApprovalHandlers();
-  return { publicConfig, features: env.enabledFeatures };
+  const cache = env.REDIS_URL ? createRedisCache(env.REDIS_URL, log) : null;
+  setCache(cache);
+  return {
+    publicConfig, features: env.enabledFeatures,
+    async close() {
+      if (cache) await cache.close();
+      if (getCache() === cache) setCache(null);
+    },
+  };
 }

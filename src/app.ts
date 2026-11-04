@@ -63,7 +63,9 @@ export async function buildApp(deps: AppDeps): Promise<FastifyInstance> {
   });
   app.decorate('deps', deps);
   // Deployment configuration is validated here; an invalid module set stops the process.
-  const { publicConfig, features } = initRuntime(env, deps);
+  const runtime = initRuntime(env, app.log, deps);
+  const { publicConfig, features } = runtime;
+  app.addHook('onClose', () => runtime.close());
   // Each app's requests see its own feature set. Reading the body leaves the async context, hence the second hook.
   app.addHook('onRequest', (_req, _reply, done) => { withFeatures(features, done); });
   app.addHook('preValidation', (_req, _reply, done) => { withFeatures(features, done); });

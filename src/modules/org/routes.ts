@@ -1,5 +1,6 @@
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
+import { cached, invalidate } from '../../core/cache/index.js';
 import { tenantActor, tenantActorAny } from '../../core/http/context.js';
 import { audit } from '../../core/audit/audit.js';
 import { notFound } from '../../core/http/errors.js';
@@ -17,11 +18,11 @@ export async function orgRoutes(app: FastifyInstance) {
   app.get('/', async (req) => {
     // Directory users need branch/department names for filters; full management needs org.manage.
     const a = tenantActorAny(req, 'org.read', 'employees.directory');
-    return a.tx(async (db) => ({
+    return a.tx((db) => cached(db, a.tenantId, 'org', 'lists', async () => ({
       legalEntities: (await db.query('SELECT id, name, cin, gstin, state_code, status FROM legal_entities WHERE tenant_id=$1 ORDER BY name', [a.tenantId])).rows,
       branches: (await db.query('SELECT id, legal_entity_id, code, name, state, city, status FROM branches WHERE tenant_id=$1 ORDER BY name', [a.tenantId])).rows,
       departments: (await db.query('SELECT id, code, name, parent_id, status FROM departments WHERE tenant_id=$1 ORDER BY name', [a.tenantId])).rows,
-    }));
+    })));
   });
 
   const upsert = <B extends z.ZodTypeAny>(entity: string, table: string, schema: B,
@@ -34,6 +35,7 @@ export async function orgRoutes(app: FastifyInstance) {
       return a.tx(async (db) => {
         const r = await db.query<{ id: string }>(`INSERT INTO ${table} (tenant_id, ${keys.join(',')}) VALUES ($1, ${keys.map((_, i) => `$${i + 2}`).join(',')}) RETURNING id`,
           [a.tenantId, ...Object.values(c)]);
+        invalidate(db, a.tenantId, 'org');
         await audit(db, { ...a.auditBase, action: `org.${entity}_created`, targetType: entity, targetId: r.rows[0]!.id, metadata: c });
         reply.code(201); return { id: r.rows[0]!.id };
       });
@@ -47,6 +49,7 @@ export async function orgRoutes(app: FastifyInstance) {
         const prev = await db.query(`SELECT ${keys.join(',')} FROM ${table} WHERE tenant_id=$1 AND id=$2 FOR UPDATE`, [a.tenantId, id]);
         if (!prev.rowCount) throw notFound();
         await db.query(`UPDATE ${table} SET ${keys.map((k, i) => `${k}=$${i + 3}`).join(',')} WHERE tenant_id=$1 AND id=$2`, [a.tenantId, id, ...Object.values(c)]);
+        invalidate(db, a.tenantId, 'org');
         await audit(db, { ...a.auditBase, action: `org.${entity}_updated`, targetType: entity, targetId: id, metadata: { from: prev.rows[0], to: c } });
         return { ok: true };
       });

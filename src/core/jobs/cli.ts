@@ -18,7 +18,7 @@ if (process.argv[1] && fileURLToPath(import.meta.url) === path.resolve(process.a
   const [cmd, job] = process.argv.slice(2);
   const env = loadEnv({ ...process.env, PROCESS_ROLE: 'worker' });
   const log = pino({ level: env.LOG_LEVEL, base: { role: 'cli' } });
-  const { features } = initRuntime(env);
+  const { features, close } = initRuntime(env, log);
   const pool = createPool(env.DATABASE_URL, 2);
   withFeatures(features, async () => {
     if (cmd === 'tick') log.info({ ran: await tick(pool, log) }, 'tick finished');
@@ -26,5 +26,5 @@ if (process.argv[1] && fileURLToPath(import.meta.url) === path.resolve(process.a
       const tenants = await withPlatformBypass(pool, (db) => db.query<{ id: string }>(`SELECT id FROM tenants WHERE status='active'`));
       for (const t of tenants.rows) log.info(await runNow(pool, log, t.id, job, null), 'job finished');
     } else { log.error(`usage: cli.js tick | run <${[...JOB_MAP.keys()].join('|')}>`); process.exitCode = 2; }
-  }).catch((e: Error) => { log.error(e.message); process.exitCode = 1; }).finally(() => pool.end());
+  }).catch((e: Error) => { log.error(e.message); process.exitCode = 1; }).finally(async () => { await close(); await pool.end(); });
 }

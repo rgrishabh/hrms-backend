@@ -169,7 +169,7 @@ describe('feature flags', () => {
 
   it('MFA flags: enforced needs available, methods are a subset, production defaults are on', () => {
     expect(problems({ MFA_AVAILABLE: 'false', MFA_ENFORCED: 'true' })).toMatch(/MFA_ENFORCED=true is invalid with MFA_AVAILABLE=false/);
-    expect(problems({ MFA_METHODS: 'totp,sms-otp' })).toMatch(/MFA_METHODS/);
+    expect(problems({ MFA_METHODS: 'totp,carrier-pigeon' })).toMatch(/MFA_METHODS/);
     expect(loadEnv(base).MFA_AVAILABLE).toBe(false);
     expect(loadEnv(prod)).toMatchObject({ MFA_AVAILABLE: true, MFA_ENFORCED: false, MFA_METHODS: ['totp', 'email'] });
   });

@@ -152,3 +152,11 @@ A request is an approval request (`lab_authorization`) routed to holders of `com
 **Brand assets and SSRF:** an https logo is a URL for the browser and mail client. Nothing on the server fetches it, and a test watches `fetch` to keep it so. `/brand/*` serves only images found on the fixed mount at startup.
 **Old variables other than the three the contract names** (`APP_URL`, `ORGANIZATION_*`, and so on) are ignored, not refused, since the contract's merge order has the deployment repo move first and extra variables must stay harmless.
 
+## D35 — Redis cache: invalidate by generation, after commit
+**Context:** `REDIS_URL` is optional and must never change an answer. Settings are written inside transactions and read on every request, on several instances.
+**Options:** delete keys on write; delete after commit; a generation counter per organization and namespace, part of every key, bumped after commit.
+**Decision:** generations, with `afterCommit` added to the transaction helper. Deleting keys loses to a reader that loaded the old row just before the commit and stores it just after. With generations that reader writes under the old counter, where nobody looks. A transaction that wrote bypasses the cache for its own reads. Entries live 60 s, which bounds the one remaining gap: a process that dies between commit and bump, or a Redis unreachable for the bump.
+**Failure:** commands time out at 250 ms and are not queued while disconnected, and any error means the database answers. A slow Redis costs at most that wait per lookup, and warnings are limited to one a minute without the URL.
+**Scope:** settings rows and the `/org` lists; `evaluateFeatures` benefits through settings. Host resolution stays uncached, since a suspended organization must take effect at once. No personal data is cached.
+**Dependency:** `ioredis`, for its timeouts and reconnection, which a hand-written client would have to reproduce.
+

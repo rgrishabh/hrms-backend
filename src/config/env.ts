@@ -33,6 +33,9 @@ const schema = z.object({
   DATABASE_CA_FILE: z.string().optional(),
   DATABASE_POOL_MAX: z.coerce.number().int().min(1).max(200).default(20),
 
+  // Optional cache for config and lookups. Without it the app reads the database: slower, still correct.
+  REDIS_URL: z.string().regex(/^rediss?:\/\//, 'must be a redis:// or rediss:// URL').optional(),
+
   // ---- security
   LOG_LEVEL: z.enum(['fatal', 'error', 'warn', 'info', 'debug', 'trace', 'silent']).default('info'),
   /** Login/password attempts per client IP per minute (account lockout is enforced separately). */
