@@ -9,6 +9,7 @@ import { setEmailBrand } from './notify/service.js';
 import { createMailer, getMailer, setMailer } from './notify/mailer.js';
 import { createStore, getStore, setStore } from './storage/index.js';
 import { registerAllApprovalHandlers } from './workflow/handlers.js';
+import { setDataCipher, type FieldCipher } from './crypto/index.js';
 import { createRedisCache, getCache, setCache } from './cache/index.js';
 
 export interface RuntimeOverrides {
@@ -16,6 +17,8 @@ export interface RuntimeOverrides {
   mailerOverride?: boolean;
   storeOverride?: boolean;
   pushOverride?: boolean;
+  /** Loaded before this runs (core/crypto/keys): payroll, reports and jobs read through it. */
+  cipher?: FieldCipher;
 }
 
 export interface Runtime {
@@ -35,6 +38,7 @@ const mfaFloorOf = (env: Pick<Env, 'MFA_AVAILABLE' | 'MFA_ENFORCED'>): MfaLevel 
  * Validates the module set, so an invalid configuration stops either process.
  */
 export function initRuntime(env: Env, log: RuntimeLog, overrides: RuntimeOverrides = {}): Runtime {
+  if (overrides.cipher) setDataCipher(overrides.cipher);
   setDeploymentLimits({ sessionTtlHours: env.SESSION_TTL_HOURS });
   setMfaFloor(mfaFloorOf(env));
   setDeploymentDefaults({ 'general.timezone': env.BRAND_TIMEZONE, 'general.date_format': env.BRAND_DATE_FORMAT });

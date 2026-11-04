@@ -1,6 +1,8 @@
 import type { Pool } from '../../db/pool.js';
 import { withPlatformBypass, type Db } from '../../db/tx.js';
-import { SYSTEM_ROLES } from '../auth/permissions.js';
+import { SYSTEM_ROLES, resolveRolePermissions } from '../auth/permissions.js';
+import { currentMode } from '../policy/mode.js';
+import { scrubAmounts } from '../policy/text.js';
 import { allOff, isModuleEnabled } from '../features/state.js';
 import { getFrom, getMailer } from './mailer.js';
 import { renderEmail, type EmailBrand } from './templates.js';
@@ -39,7 +41,9 @@ const KIND_FEATURES: readonly (readonly [string, string])[] = [
 ];
 export const featureOfKind = (kind: string) => KIND_FEATURES.find(([prefix]) => kind.startsWith(prefix))?.[1];
 
-export async function notifyUsers(db: Db, tenantId: string, userIds: string[], msg: NotifyMessage) {
+export async function notifyUsers(db: Db, tenantId: string, userIds: string[], message: NotifyMessage) {
+  // These copies are plaintext and go by email: no figure gets through, whoever wrote the message.
+  const msg = { ...message, title: scrubAmounts(message.title), body: message.body == null ? message.body : scrubAmounts(message.body) };
   const ids = [...new Set(userIds)].filter(Boolean);
   const feature = msg.feature ?? featureOfKind(msg.kind);
   if (!ids.length || allOff(feature)) return { inApp: 0, emails: 0 };
@@ -69,10 +73,11 @@ export async function notifyUsers(db: Db, tenantId: string, userIds: string[], m
 
 /** Active users holding a permission through system or custom roles. */
 export async function usersWithPermission(db: Db, tenantId: string, permission: string): Promise<string[]> {
-  const systemRoles = SYSTEM_ROLES.filter((r) => (r.permissions as readonly string[]).includes(permission)).map((r) => r.key);
+  const mode = currentMode();
+  const systemRoles = SYSTEM_ROLES.filter((r) => (resolveRolePermissions(r.key, mode) as readonly string[]).includes(permission)).map((r) => r.key);
   const r = await db.query<{ id: string }>(`SELECT DISTINCT u.id FROM users u JOIN user_roles ur ON ur.user_id=u.id AND ur.tenant_id=u.tenant_id
     LEFT JOIN tenant_roles tr ON tr.tenant_id=ur.tenant_id AND tr.key=ur.role_key
-    WHERE u.tenant_id=$1 AND u.status='active' AND (ur.role_key = ANY($2) OR $3 = ANY(tr.permissions))`, [tenantId, systemRoles, permission]);
+    WHERE u.tenant_id=$1 AND u.status='active' AND (ur.role_key = ANY($2) OR ($4 AND $3 = ANY(tr.permissions)))`, [tenantId, systemRoles, permission, mode === 'multi']);
   return r.rows.map((x) => x.id);
 }
 

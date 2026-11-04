@@ -12,11 +12,18 @@ import { audit } from '../../core/audit/audit.js';
 import { badRequest, conflict, forbidden, notFound } from '../../core/http/errors.js';
 import { PageQuery, offsetOf, paged, Uuid } from '../../core/http/pagination.js';
 import type { PublicConfig } from '../../config/installation.js';
-import { SYSTEM_ROLES, SYSTEM_ROLE_MAP, PERMISSIONS, permissionFeature } from '../../core/auth/permissions.js';
+import { SYSTEM_ROLES, SYSTEM_ROLE_MAP, PERMISSIONS, permissionFeature, roleGroup, assignableRoles, isOwnerRole, OWNER_ROLE_KEYS } from '../../core/auth/permissions.js';
+import { currentMode, isCollapsedMode } from '../../core/policy/mode.js';
+import { effectiveLevel, roleFloor, SALARY_LEVEL_MAX } from '../../core/policy/levels.js';
+import { redact } from '../../core/audit/audit.js';
 import { hashPassword } from '../../core/crypto/index.js';
 import { getSettingValue } from '../../core/settings/service.js';
 import { revokeAllSessionsForUser } from '../../core/auth/session.js';
 import { PRIVILEGED_PERMISSIONS } from '../../core/auth/mfa.js';
+
+/** The modes without role screens answer 404 here, like any address that does not exist. */
+const noRoleScreens = () => { if (isCollapsedMode()) throw notFound(); };
+const isOwnerOrSuperAdmin = (a: { user: { roles: string[] } }) => a.user.roles.some(isOwnerRole);
 
 export async function tenantAdminRoutes(app: FastifyInstance, opts: { publicConfig: PublicConfig }) {
 
@@ -130,15 +137,16 @@ export async function tenantAdminRoutes(app: FastifyInstance, opts: { publicConf
 
   // ------------------------------------------------------------ users & roles
   app.get('/roles', async (req) => {
+    noRoleScreens();
     const a = tenantActorAny(req, 'users.manage', 'settings.read');
     // `grantable`: whether this user may grant or remove the role (the same rule assertMayGrant enforces).
-    const grantable = (key: string, perms: readonly string[]) => isAdministrator(a) || (key !== 'tenant_admin' && perms.every((p) => a.user.permissions.has(p)));
+    const grantable = (key: string, perms: readonly string[]) => isAdministrator(a) || (!isOwnerRole(key) && perms.every((p) => a.user.permissions.has(p)));
     return a.tx(async (db) => {
       const counts = new Map((await db.query<{ role_key: string; n: number }>(`SELECT r.role_key, count(DISTINCT r.user_id)::int AS n FROM user_roles r JOIN users u ON u.id=r.user_id
         WHERE r.tenant_id=$1 AND u.status='active' GROUP BY r.role_key`, [a.tenantId])).rows.map((r) => [r.role_key, r.n]));
       const visible = (perms: readonly string[]) => perms.filter((p) => !allOff(permissionFeature(p)));
       return {
-        system: SYSTEM_ROLES.map((r) => ({ key: r.key, name: r.name, permissions: visible(r.permissions), grantable: grantable(r.key, r.permissions), users: counts.get(r.key) ?? 0 })),
+        system: SYSTEM_ROLES.map((r) => ({ key: r.key, name: r.name, group: roleGroup(r.key), permissions: visible(r.key === 'owner' ? SYSTEM_ROLE_MAP.get('tenant_admin')!.permissions : r.permissions), grantable: grantable(r.key, r.permissions), users: counts.get(r.key) ?? 0 })),
         custom: (await db.query<{ key: string; name: string; permissions: string[] }>(`SELECT t.key, t.name, t.description, t.permissions, t.updated_at, u.display_name AS updated_by_name
             FROM tenant_roles t LEFT JOIN users u ON u.id=coalesce(t.updated_by, t.created_by) WHERE t.tenant_id=$1 ORDER BY t.name`, [a.tenantId])).rows
           .map((r) => ({ ...r, permissions: visible(r.permissions), grantable: grantable(r.key, r.permissions), users: counts.get(r.key) ?? 0, mfaRequired: r.permissions.some((p) => PRIVILEGED_PERMISSIONS.has(p)) })),
@@ -171,6 +179,7 @@ export async function tenantAdminRoutes(app: FastifyInstance, opts: { publicConf
   };
 
   app.post('/roles', async (req, reply) => {
+    noRoleScreens();
     const a = tenantActor(req, 'users.manage');
     const b = RoleBody.parse(req.body);
     checkPermissions(a, b.permissions, 'create');
@@ -189,6 +198,7 @@ export async function tenantAdminRoutes(app: FastifyInstance, opts: { publicConf
   });
 
   app.patch('/roles/:key', async (req) => {
+    noRoleScreens();
     const a = tenantActor(req, 'users.manage');
     const { key } = z.object({ key: z.string().regex(/^custom:[a-z0-9_]+$/, 'Built-in roles cannot be changed') }).parse(req.params);
     const b = RoleBody.partial().parse(req.body);
@@ -217,6 +227,7 @@ export async function tenantAdminRoutes(app: FastifyInstance, opts: { publicConf
   });
 
   app.delete('/roles/:key', async (req) => {
+    noRoleScreens();
     const a = tenantActor(req, 'users.manage');
     const { key } = z.object({ key: z.string().regex(/^custom:[a-z0-9_]+$/, 'Built-in roles cannot be deleted') }).parse(req.params);
     return a.tx(async (db) => {
@@ -237,13 +248,13 @@ export async function tenantAdminRoutes(app: FastifyInstance, opts: { publicConf
     return a.tx(async (db) => {
       const where = `u.tenant_id=$1 AND ($2::text IS NULL OR u.email ILIKE '%'||$2||'%' OR u.display_name ILIKE '%'||$2||'%')`;
       const total = Number((await db.query<{ n: string }>(`SELECT count(*) AS n FROM users u WHERE ${where}`, [a.tenantId, q.search ?? null])).rows[0]!.n);
-      const rows = await db.query(`SELECT u.id, u.email, u.display_name, u.status, u.last_login_at, u.locked_until > now() AS locked, u.mfa_enabled_at IS NOT NULL AS mfa_enabled,
+      const rows = await db.query<{ salary_access_level: number; roles: string[] } & Record<string, unknown>>(`SELECT u.id, u.email, u.display_name, u.status, u.salary_access_level, u.last_login_at, u.locked_until > now() AS locked, u.mfa_enabled_at IS NOT NULL AS mfa_enabled,
           coalesce(array_agg(r.role_key ORDER BY r.role_key) FILTER (WHERE r.role_key IS NOT NULL), '{}') AS roles,
           e.id AS employee_id, e.employee_code
         FROM users u LEFT JOIN user_roles r ON r.user_id=u.id AND r.tenant_id=u.tenant_id
         LEFT JOIN employees e ON e.tenant_id=u.tenant_id AND e.user_id=u.id
         WHERE ${where} GROUP BY u.id, e.id ORDER BY u.display_name LIMIT $3 OFFSET $4`, [a.tenantId, q.search ?? null, q.pageSize, offsetOf(q)]);
-      return paged(rows.rows, total, q);
+      return paged(rows.rows.map((r) => ({ ...r, effective_salary_level: effectiveLevel(r.salary_access_level, r.roles) })), total, q);
     });
   });
 
@@ -271,7 +282,31 @@ export async function tenantAdminRoutes(app: FastifyInstance, opts: { publicConf
    * (e.g. the IT administrator) may grant or remove only roles whose permissions they hold themselves, and may not
    * change an account that holds permissions they lack.
    */
-  const isAdministrator = (a: { user: { roles: string[] } }) => a.user.roles.includes('tenant_admin');
+  const isAdministrator = (a: { user: { roles: string[] } }) => a.user.roles.some(isOwnerRole);
+  /**
+   * What the mode and the salary hierarchy allow, whoever is asking. A role's floor counts as setting a level: nobody grants a role that
+   * would put someone above themselves, or raises their own. The one exception is an administrator appointing a fellow administrator,
+   * since an installation is bootstrapped with a single one (see DECISIONS.md).
+   */
+  const assertRolesAllowed = async (db: import('../../db/tx.js').Db, a: { tenantId: string; user: { userId: string; roles: string[]; salaryLevel: number } }, targetId: string | null, roles: string[], prev: string[]) => {
+    const mode = currentMode();
+    if (mode !== 'multi') {
+      const allowed = assignableRoles(mode);
+      const off = roles.filter((r) => !allowed.includes(r));
+      if (off.length) throw badRequest(`These roles do not exist in ${mode} mode: ${off.join(', ')}`);
+    }
+    const added = roles.filter((r) => !prev.includes(r));
+    if (mode === 'single' && added.some(isOwnerRole)) {
+      const other = await db.query(`SELECT 1 FROM user_roles r JOIN users u ON u.id=r.user_id WHERE r.tenant_id=$1 AND r.role_key = ANY($2) AND u.status='active' AND r.user_id IS DISTINCT FROM $3 LIMIT 1`, [a.tenantId, OWNER_ROLE_KEYS, targetId]);
+      if (other.rowCount) throw conflict('A single-person organization has one owner');
+    }
+    for (const r of added) {
+      const floor = roleFloor(r);
+      const peerAdmin = r === 'tenant_admin' && a.user.roles.some(isOwnerRole);
+      if (targetId === a.user.userId && floor > a.user.salaryLevel) throw forbidden('You cannot give yourself a role above your own salary level');
+      if (floor > 0 && floor >= a.user.salaryLevel && !peerAdmin) throw forbidden(`You cannot grant a role at or above your own salary level: ${r}`);
+    }
+  };
   const assertMayGrant = async (db: import('../../db/tx.js').Db, a: { tenantId: string; user: { roles: string[]; permissions: Set<string> } }, roles: string[]) => {
     if (isAdministrator(a) || !roles.length) return;
     const beyond = [...(await rolePermissions(db, a.tenantId, roles))].filter((p) => !a.user.permissions.has(p));
@@ -292,6 +327,7 @@ export async function tenantAdminRoutes(app: FastifyInstance, opts: { publicConf
       if (body.initialPassword.length < minLen) throw badRequest(`Password must be at least ${minLen} characters`);
       await assertTenantRoles(db, a.tenantId, body.roles);
       await assertMayGrant(db, a, body.roles);
+      await assertRolesAllowed(db, a, null, body.roles, []);
       // The administrator chose the initial password, so the person must replace it at first sign-in.
       const u = await db.query<{ id: string }>(`INSERT INTO users (tenant_id, email, display_name, password_hash, must_change_password) VALUES ($1,$2,$3,$4,true) RETURNING id`,
         [a.tenantId, body.email, body.displayName, await hashPassword(body.initialPassword)]);
@@ -315,18 +351,19 @@ export async function tenantAdminRoutes(app: FastifyInstance, opts: { publicConf
       const u = await db.query<{ status: string }>('SELECT status FROM users WHERE tenant_id=$1 AND id=$2 FOR UPDATE', [a.tenantId, id]);
       if (!u.rowCount) throw notFound('User not found');
       const prevRoles = (await db.query<{ role_key: string }>('SELECT role_key FROM user_roles WHERE tenant_id=$1 AND user_id=$2', [a.tenantId, id])).rows.map((r) => r.role_key);
-      if (id === a.user.userId && (body.status === 'disabled' || (body.roles && !body.roles.includes('tenant_admin') && prevRoles.includes('tenant_admin')))) {
+      if (id === a.user.userId && (body.status === 'disabled' || (body.roles && !body.roles.some(isOwnerRole) && prevRoles.some(isOwnerRole)))) {
         throw conflict('You cannot disable yourself or remove your own administrator role');
       }
       await assertMayManage(db, a, prevRoles);
       if (body.roles) {
         await assertTenantRoles(db, a.tenantId, body.roles);
+        await assertRolesAllowed(db, a, id, body.roles, prevRoles);
         const changed = [...body.roles.filter((r) => !prevRoles.includes(r)), ...prevRoles.filter((r) => !body.roles!.includes(r))];
         await assertMayGrant(db, a, changed);
         await db.query('DELETE FROM user_roles WHERE tenant_id=$1 AND user_id=$2', [a.tenantId, id]);
         for (const role of body.roles) await db.query(`INSERT INTO user_roles (user_id, tenant_id, role_key, granted_by) VALUES ($1,$2,$3,$4)`, [id, a.tenantId, role, a.user.userId]);
         const admins = await db.query<{ n: string }>(`SELECT count(DISTINCT r.user_id) AS n FROM user_roles r JOIN users u ON u.id=r.user_id
-          WHERE r.tenant_id=$1 AND r.role_key='tenant_admin' AND u.status='active'`, [a.tenantId]);
+          WHERE r.tenant_id=$1 AND r.role_key = ANY($2) AND u.status='active'`, [a.tenantId, OWNER_ROLE_KEYS]);
         if (Number(admins.rows[0]!.n) === 0) throw conflict('At least one active Tenant Administrator is required');
       }
       if (body.status) await db.query('UPDATE users SET status=$3, updated_at=now() WHERE tenant_id=$1 AND id=$2', [a.tenantId, id, body.status]);
@@ -345,6 +382,30 @@ export async function tenantAdminRoutes(app: FastifyInstance, opts: { publicConf
     });
   });
 
+  // ------------------------------------------------------------ salary hierarchy
+  /**
+   * A user's stored salary level. Nobody changes their own, sets someone's to their own level or above, or edits someone at or
+   * above them. The effective level can still end higher: it never falls below the floor of the person's roles.
+   */
+  app.put('/users/:id/salary-level', async (req) => {
+    const a = tenantActor(req, 'users.manage');
+    const { id } = z.object({ id: Uuid }).parse(req.params);
+    const { level } = z.object({ level: z.number().int().min(0).max(SALARY_LEVEL_MAX) }).parse(req.body);
+    if (id === a.user.userId) throw forbidden('You cannot change your own salary level');
+    return a.tx(async (db) => {
+      const u = (await db.query<{ salary_access_level: number }>('SELECT salary_access_level FROM users WHERE tenant_id=$1 AND id=$2 FOR UPDATE', [a.tenantId, id])).rows[0];
+      if (!u) throw notFound('User not found');
+      const roles = (await db.query<{ role_key: string }>('SELECT role_key FROM user_roles WHERE tenant_id=$1 AND user_id=$2', [a.tenantId, id])).rows.map((r) => r.role_key);
+      const before = effectiveLevel(u.salary_access_level, roles);
+      if (before >= a.user.salaryLevel) throw forbidden('You cannot change the salary level of someone at or above your own');
+      if (level >= a.user.salaryLevel) throw forbidden('You can only set a salary level below your own');
+      await db.query('UPDATE users SET salary_access_level=$3, updated_at=now() WHERE tenant_id=$1 AND id=$2', [a.tenantId, id, level]);
+      const after = effectiveLevel(level, roles);
+      await audit(db, { ...a.auditBase, action: 'user.salary_level_changed', category: 'security', targetType: 'user', targetId: id, metadata: { from: u.salary_access_level, to: level, effectiveFrom: before, effectiveTo: after } });
+      return { ok: true, level, effectiveLevel: after };
+    });
+  });
+
   // ------------------------------------------------------------ audit history
   app.get('/audit', async (req) => {
     const a = tenantActor(req, 'audit.read');
@@ -359,7 +420,33 @@ export async function tenantAdminRoutes(app: FastifyInstance, opts: { publicConf
           l.actor_type, coalesce(u.display_name, CASE WHEN l.actor_type='platform' THEN 'Platform operator' END) AS actor_name
         FROM audit_logs l LEFT JOIN users u ON u.id=l.actor_id AND u.tenant_id=l.tenant_id
         WHERE ${where} ORDER BY l.created_at DESC, l.id DESC LIMIT $6 OFFSET $7`, [...params, q.pageSize, offsetOf(q)]);
-      return paged(rows.rows, total, q);
+      // Old rows were cleaned when this was introduced; this keeps it so for anything restored from before that.
+      return paged(rows.rows.map((r) => ({ ...r, change_metadata: redact(r.change_metadata) })), total, q);
+    });
+  });
+
+  /** The hash chain itself, and whether it holds. Only the top of the organization: an audit reader does not audit the log. */
+  const chainActor = (req: Parameters<typeof tenantActor>[0]) => {
+    const a = tenantActor(req);
+    if (!isOwnerOrSuperAdmin(a)) throw forbidden();
+    return a;
+  };
+  app.get('/audit/chain', async (req) => {
+    const a = chainActor(req);
+    const q = PageQuery.parse(req.query);
+    return a.tx(async (db) => {
+      const total = Number((await db.query<{ n: string }>('SELECT count(*) AS n FROM audit_logs WHERE tenant_id=$1', [a.tenantId])).rows[0]!.n);
+      const rows = await db.query(`SELECT chain_seq, id, action, category, actor_id, actor_type, target_type, target_id, change_metadata, ip, user_agent, created_at, prev_hash, row_hash
+        FROM audit_logs WHERE tenant_id=$1 ORDER BY chain_seq DESC LIMIT $2 OFFSET $3`, [a.tenantId, q.pageSize, offsetOf(q)]);
+      return paged(rows.rows.map((r) => ({ ...r, change_metadata: redact(r.change_metadata) })), total, q);
+    });
+  });
+  app.get('/audit/chain/verify', async (req) => {
+    const a = chainActor(req);
+    return a.tx(async (db) => {
+      const r = (await db.query<{ ok: boolean; checked: string; broken_seq: string | null; reason: string | null }>('SELECT * FROM audit_chain_verify($1)', [a.tenantId])).rows[0]!;
+      await audit(db, { ...a.auditBase, action: 'audit.chain_verified', category: 'security', metadata: { ok: r.ok, checked: Number(r.checked) } });
+      return { ok: r.ok, checked: Number(r.checked), brokenAt: r.broken_seq === null ? null : Number(r.broken_seq), reason: r.reason };
     });
   });
 }

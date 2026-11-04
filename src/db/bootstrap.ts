@@ -82,6 +82,8 @@ export async function bootstrapInstallation(client: pg.Client | pg.PoolClient, e
         userId = (await client.query<{ id: string }>(`INSERT INTO users (tenant_id, email, display_name, password_hash, must_change_password)
           VALUES ($1,$2,$3,NULL,true) RETURNING id`, [tenantId, email, o.admin.displayName.trim() || 'Administrator'])).rows[0]!.id;
         await client.query(`INSERT INTO user_roles (user_id, tenant_id, role_key) VALUES ($1,$2,'tenant_admin'), ($1,$2,'employee')`, [userId, tenantId]);
+        // The first administrator is the Owner in every mode: someone has to sit above everyone, or nobody could ever produce a whole bank file.
+        await client.query(`INSERT INTO user_roles (user_id, tenant_id, role_key) VALUES ($1,$2,'owner')`, [userId, tenantId]);
         admin = 'created';
       }
     } else if (o.resetAdmin) {

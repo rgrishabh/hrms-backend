@@ -1,7 +1,9 @@
 import type { Pool } from '../../db/pool.js';
 import { withPlatformBypass, type Db } from '../../db/tx.js';
 import { randomToken, sha256 } from '../crypto/index.js';
-import { SYSTEM_ROLE_MAP, type Permission } from './permissions.js';
+import { SYSTEM_ROLE_MAP, resolveRolePermissions } from './permissions.js';
+import { currentMode } from '../policy/mode.js';
+import { effectiveLevel } from '../policy/levels.js';
 import { effectiveMfaLevel, mfaRequiredFor } from './mfa.js';
 
 export const SESSION_COOKIE = 'hrms_sid';
@@ -21,6 +23,8 @@ export interface SessionUser {
   csrfHash: string;
   roles: string[];
   permissions: Set<string>;
+  /** Effective salary level (core/policy/levels.ts). */
+  salaryLevel: number;
   employeeId: string | null;
   mustChangePassword: boolean;
   mfaEnabled: boolean;
@@ -47,8 +51,8 @@ export async function createSession(db: Db, userId: string, tenantId: string | n
  */
 export async function loadSession(pool: Pool, token: string, expectedTenantId: string | null): Promise<SessionUser | null> {
   return withPlatformBypass(pool, async (db) => {
-    const r = await db.query<{ id: string; user_id: string; tenant_id: string | null; csrf_hash: string; email: string; display_name: string; status: string; touch: boolean; must_change_password: boolean; mfa_on: boolean; mfa_ok: boolean }>(
-      `SELECT s.id, s.user_id, s.tenant_id, s.csrf_hash, u.email, u.display_name, u.status, u.must_change_password,
+    const r = await db.query<{ id: string; user_id: string; tenant_id: string | null; csrf_hash: string; email: string; display_name: string; status: string; touch: boolean; must_change_password: boolean; mfa_on: boolean; mfa_ok: boolean; salary_access_level: number }>(
+      `SELECT s.id, s.user_id, s.tenant_id, s.csrf_hash, u.email, u.display_name, u.status, u.must_change_password, u.salary_access_level,
               (u.mfa_enabled_at IS NOT NULL) AS mfa_on, (s.mfa_verified_at IS NOT NULL) AS mfa_ok,
               s.last_seen_at < now() - interval '5 minutes' AS touch
          FROM sessions s JOIN users u ON u.id = s.user_id
@@ -63,7 +67,7 @@ export async function loadSession(pool: Pool, token: string, expectedTenantId: s
       employeeId = e.rows[0]?.id ?? null;
     }
     return { sessionId: s.id, userId: s.user_id, tenantId: s.tenant_id, email: s.email, displayName: s.display_name,
-      csrfHash: s.csrf_hash, roles, permissions, employeeId, mustChangePassword: s.must_change_password,
+      csrfHash: s.csrf_hash, roles, permissions, salaryLevel: effectiveLevel(s.salary_access_level, roles), employeeId, mustChangePassword: s.must_change_password,
       mfaEnabled: s.mfa_on, mfaPending: s.mfa_on && !s.mfa_ok,
       mfaEnrollmentRequired: !s.mfa_on && !!s.tenant_id && mfaRequiredFor(roles, permissions, await effectiveMfaLevel(db, s.tenant_id)) };
   });
@@ -74,11 +78,11 @@ export async function loadPermissions(db: Db, userId: string, tenantId: string |
     `SELECT DISTINCT role_key FROM user_roles WHERE user_id = $1 AND tenant_id IS NOT DISTINCT FROM $2`, [userId, tenantId]);
   const roles = rr.rows.map((r) => r.role_key);
   const permissions = new Set<string>();
+  const mode = currentMode();
   const custom: string[] = [];
   for (const key of roles) {
-    const sys = SYSTEM_ROLE_MAP.get(key);
-    if (sys && tenantId) sys.permissions.forEach((p: Permission) => permissions.add(p));
-    else if (key.startsWith('custom:') && tenantId) custom.push(key);
+    if (SYSTEM_ROLE_MAP.has(key) && tenantId) resolveRolePermissions(key, mode).forEach((p) => permissions.add(p));
+    else if (key.startsWith('custom:') && tenantId && mode === 'multi') custom.push(key);
   }
   if (custom.length) {
     const cr = await db.query<{ permissions: string[] }>(`SELECT permissions FROM tenant_roles WHERE tenant_id=$1 AND key = ANY($2)`, [tenantId, custom]);

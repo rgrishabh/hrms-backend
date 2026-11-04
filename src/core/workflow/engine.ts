@@ -4,6 +4,9 @@ import { audit } from '../audit/audit.js';
 import { notifyUsers, usersWithPermission } from '../notify/service.js';
 import { allOff } from '../features/state.js';
 import { localDate } from '../../modules/attendance/time.js';
+import { currentMode, isCollapsedMode } from '../policy/mode.js';
+import { scrubAmounts } from '../policy/text.js';
+import { OWNER_ROLE_KEYS } from '../auth/permissions.js';
 
 /**
  * Reusable approval engine. Modules register a handler per entity type and
@@ -21,8 +24,14 @@ import { localDate } from '../../modules/attendance/time.js';
  *
  * Who may act on the active step:
  *   - a user step: the named approver; the person it was escalated to; an active delegate of either;
- *   - a permission step: anyone holding the permission (group steps are never delegated or escalated);
+ *   - a permission step: anyone holding the permission (group steps are not delegated or escalated, except the HR step above);
  * never the requester, an excluded party, or someone who (or whose delegate) decided an earlier step.
+ *
+ * Management modes (buildSteps): in `single` a request has one step, addressed to the owner by name. In `single_hr` it is one step for
+ * HR or the owner (the group permission `approvals.hr_step`), and anything HR raised, or that moves money, goes to the owner by name.
+ * A step for a name keeps delegation and escalation as it always had. The HR group step would have lost both, so it alone among group
+ * steps may be delegated by a holder, and escalates to the owner when overdue. The owner may decide their own request here: nobody is
+ * above them. It is recorded on the request as `self_approver_id`, and each such decision writes `approval.self_approved`.
  *
  * Nothing waits forever on someone who cannot act. A step for a disabled person, or a group step with no eligible holder,
  * goes to the fallback owner: holders of `approvals.escalations`. If nobody there can act either, the request is still
@@ -30,6 +39,11 @@ import { localDate } from '../../modules/attendance/time.js';
  */
 
 export type StepSpec = { kind: 'user'; userId: string } | { kind: 'permission'; permission: string };
+
+/** The one-step group of `single_hr`: HR or the owner. */
+export const HR_STEP_PERMISSION = 'approvals.hr_step';
+/** A step for any of these is the finance or payroll check of something that moves money or changes pay. */
+const MONEY_PERMISSIONS: ReadonlySet<string> = new Set(['payroll.approve', 'loans.approve', 'expenses.approve', 'expenses.pay', 'travel.approve', 'employees.bank.approve', 'recruitment.approve']);
 
 export interface ApprovalHandler {
   onApproved(db: Db, tenantId: string, entityId: string, actorId: string): Promise<void>;
@@ -63,6 +77,7 @@ export async function stepRecipients(db: Db, tenantId: string, step: ActiveStep,
   if (step.escalated_permission) for (const u of await usersWithPermission(db, tenantId, step.escalated_permission)) direct.add(u);
   const delegates = new Map<string, string>();   // delegate → delegator
   const people = [step.approver_kind === 'user' ? step.approver_user_id : null, step.escalated_to].filter((x): x is string => !!x);
+  if (step.approver_permission === HR_STEP_PERMISSION) people.push(...direct);
   if (people.length) {
     const d = await db.query<{ delegate_id: string; delegator_id: string }>(
       `SELECT d.delegate_id, d.delegator_id FROM approval_delegations d JOIN users u ON u.id=d.delegate_id AND u.status='active'
@@ -80,11 +95,13 @@ async function displayNames(db: Db, tenantId: string, ids: string[]) {
 
 /** People who may not act on a request: the requester, excluded parties, and whoever decided (or was represented on) an earlier step. */
 export async function blockedUsers(db: Db, tenantId: string, requestId: string) {
-  const r = await db.query<{ blocked: string[] }>(
-    `SELECT array_remove(r.excluded_user_ids || r.requester_id || coalesce((SELECT array_agg(p.acted_by) || array_agg(p.acted_for) FROM approval_steps p
+  const r = await db.query<{ blocked: string[]; self_approver_id: string | null }>(
+    `SELECT r.self_approver_id, array_remove(r.excluded_user_ids || r.requester_id || coalesce((SELECT array_agg(p.acted_by) || array_agg(p.acted_for) FROM approval_steps p
        WHERE p.tenant_id=r.tenant_id AND p.request_id=r.id AND p.acted_by IS NOT NULL), '{}'), NULL) AS blocked
        FROM approval_requests r WHERE r.tenant_id=$1 AND r.id=$2`, [tenantId, requestId]);
-  return new Set(r.rows[0]?.blocked ?? []);
+  const blocked = new Set(r.rows[0]?.blocked ?? []);
+  if (r.rows[0]?.self_approver_id) blocked.delete(r.rows[0].self_approver_id);
+  return blocked;
 }
 
 /** Notify whoever can act on the request's active step (never the requester), including delegates covering for the approver. */
@@ -134,15 +151,20 @@ export async function createApprovalRequest(db: Db, tenantId: string, p: {
   excludeUserIds?: (string | null | undefined)[];
 }) {
   if (!handlers.has(p.entityType)) throw new Error(`No approval handler for ${p.entityType}`);
-  const excluded = [...new Set(p.excludeUserIds?.filter((u): u is string => !!u && u !== p.requesterId) ?? [])];
+  const collapsedRoute = isCollapsedMode() ? await collapseSteps(db, tenantId, p) : null;
+  const selfApprover = collapsedRoute?.selfApprover ?? null;
+  const excluded = [...new Set(p.excludeUserIds?.filter((u): u is string => !!u && u !== p.requesterId && u !== selfApprover) ?? [])];
   const blocked = new Set([p.requesterId, ...excluded]);
-  const named = p.steps.flatMap((s) => (s.kind === 'user' ? [s.userId] : []));
+  if (selfApprover) blocked.delete(selfApprover);
+  const wanted = collapsedRoute?.steps ?? p.steps;
+  const named = wanted.flatMap((s) => (s.kind === 'user' ? [s.userId] : []));
   const active = new Set(named.length ? (await db.query<{ id: string }>(`SELECT id FROM users WHERE tenant_id=$1 AND id = ANY($2) AND status='active'`, [tenantId, named])).rows.map((u) => u.id) : []);
   // Maker-checker: neither the requester nor an excluded party is ever an approver of the request. A disabled account cannot act either.
-  const kept = p.steps.filter((s) => s.kind !== 'user' || (!blocked.has(s.userId) && active.has(s.userId)));
+  const kept = wanted.filter((s) => s.kind !== 'user' || (!blocked.has(s.userId) && active.has(s.userId)));
   const steps: StepSpec[] = kept.length ? kept : [{ kind: 'permission', permission: ESCALATION_PERMISSION }];
-  const r = await db.query<{ id: string }>(`INSERT INTO approval_requests (tenant_id, entity_type, entity_id, requester_id, summary, excluded_user_ids)
-    VALUES ($1,$2,$3,$4,$5,$6) RETURNING id`, [tenantId, p.entityType, p.entityId, p.requesterId, p.summary, excluded]);
+  // Summaries reach inboxes, notifications and email in plaintext: no figure, whoever wrote it.
+  const r = await db.query<{ id: string }>(`INSERT INTO approval_requests (tenant_id, entity_type, entity_id, requester_id, summary, excluded_user_ids, self_approver_id)
+    VALUES ($1,$2,$3,$4,$5,$6,$7) RETURNING id`, [tenantId, p.entityType, p.entityId, p.requesterId, scrubAmounts(p.summary), excluded, selfApprover]);
   const id = r.rows[0]!.id;
   const fallbackOpen = (await eligibleHolders(db, tenantId, ESCALATION_PERMISSION, blocked)).length > 0;
   let nobody = false;
@@ -156,6 +178,53 @@ export async function createApprovalRequest(db: Db, tenantId: string, p: {
   await notifyActiveApprovers(db, tenantId, id);
   if (nobody) await warnNoApprover(db, tenantId, id, p.entityType, p.requesterId);
   return id;
+}
+
+/** The organization's owner: the oldest active holder of an owner role. In `multi` this is the top Super-admin. */
+export async function ownerUserId(db: Db, tenantId: string) {
+  const r = await db.query<{ id: string }>(`SELECT u.id FROM users u JOIN user_roles ur ON ur.user_id=u.id AND ur.tenant_id=u.tenant_id
+    WHERE u.tenant_id=$1 AND u.status='active' AND ur.role_key = ANY($2) ORDER BY (ur.role_key='owner') DESC, u.created_at, u.id LIMIT 1`, [tenantId, OWNER_ROLE_KEYS]);
+  return r.rows[0]?.id ?? null;
+}
+
+/**
+ * The one step of a smaller mode, for any request. Money stays with the owner: expenses, loans, advances, travel and overtime pay are
+ * never decided by HR alone (see DECISIONS.md). So does anything HR raised or that is about an HR holder. A requester who is the only HR
+ * person therefore cannot strand their own request, and the owner's own request comes back to them, on the record.
+ */
+async function collapseSteps(db: Db, tenantId: string, p: { entityType: string; requesterId: string; steps: StepSpec[]; excludeUserIds?: (string | null | undefined)[] }) {
+  const owner = await ownerUserId(db, tenantId);
+  if (!owner) return null;
+  const parties = new Set([p.requesterId, ...(p.excludeUserIds ?? []).filter((u): u is string => !!u)]);
+  const selfApprover = parties.has(owner) ? owner : null;
+  const toOwner = { steps: [{ kind: 'user', userId: owner }] as StepSpec[], selfApprover };
+  if (currentMode() === 'single' || selfApprover) return toOwner;
+  if (p.entityType === 'overtime_claim' || p.steps.some((s) => s.kind === 'permission' && MONEY_PERMISSIONS.has(s.permission))) return toOwner;
+  const hr = new Set(await usersWithPermission(db, tenantId, HR_STEP_PERMISSION));
+  if ([...parties].some((u) => hr.has(u))) return toOwner;
+  return { steps: [{ kind: 'permission', permission: HR_STEP_PERMISSION }] as StepSpec[], selfApprover: null };
+}
+
+export interface RouteInput {
+  requesterId: string;
+  /** The employee's account, when they have one: they never decide their own request. */
+  subjectUserId?: string | null;
+  /** The employee's manager's account (active), when there is one. */
+  managerUserId?: string | null;
+  /** Steps after the manager's, in order. */
+  then?: readonly string[];
+  /** Only when no manager can decide it. */
+  ifNoManager?: readonly string[];
+}
+
+/**
+ * The approval route of a manager-first request, in one place. `multi`: the manager (unless they are the requester or the employee), then
+ * `then`, or `ifNoManager` when nobody manages them. The smaller modes collapse whatever this returns to one step in createApprovalRequest.
+ */
+export function buildSteps(r: RouteInput): StepSpec[] {
+  const mgr = r.managerUserId && r.managerUserId !== r.requesterId && r.managerUserId !== r.subjectUserId ? r.managerUserId : null;
+  return [...(mgr ? [{ kind: 'user', userId: mgr } as StepSpec] : []),
+    ...[...(r.then ?? []), ...(mgr ? [] : r.ifNoManager ?? [])].map((permission): StepSpec => ({ kind: 'permission', permission }))];
 }
 
 /** Holders of a permission who may act on a request with these people blocked. */
@@ -181,6 +250,7 @@ async function actingRole(db: Db, tenantId: string, step: ActiveStep, actor: Act
   if (step.approver_kind === 'user' && step.approver_user_id === actor.userId) return { via: null, forUser: null };
   if (step.escalated_to === actor.userId || (step.escalated_permission && actor.permissions.has(step.escalated_permission))) return { via: 'escalation', forUser: step.approver_user_id };
   const people = [step.approver_kind === 'user' ? step.approver_user_id : null, step.escalated_to].filter((x): x is string => !!x);
+  if (step.approver_permission === HR_STEP_PERMISSION) people.push(...await usersWithPermission(db, tenantId, HR_STEP_PERMISSION));
   if (!people.length) return null;
   const d = await db.query<{ delegator_id: string }>(
     `SELECT delegator_id FROM approval_delegations WHERE tenant_id=$1 AND delegate_id=$2 AND delegator_id = ANY($3) AND revoked_at IS NULL
@@ -190,14 +260,15 @@ async function actingRole(db: Db, tenantId: string, step: ActiveStep, actor: Act
 
 export async function actOnRequest(db: Db, tenantId: string, requestId: string, actor: Actor,
   action: 'approve' | 'reject' | 'return', comment: string | undefined, audBase: { requestId: string; ip: string }) {
-  const rq = await db.query<{ id: string; entity_type: string; entity_id: string; requester_id: string; status: string; current_step: number; excluded_user_ids: string[] }>(
-    'SELECT id, entity_type, entity_id, requester_id, status, current_step, excluded_user_ids FROM approval_requests WHERE tenant_id=$1 AND id=$2 FOR UPDATE', [tenantId, requestId]);
+  const rq = await db.query<{ id: string; entity_type: string; entity_id: string; requester_id: string; status: string; current_step: number; excluded_user_ids: string[]; self_approver_id: string | null }>(
+    'SELECT id, entity_type, entity_id, requester_id, status, current_step, excluded_user_ids, self_approver_id FROM approval_requests WHERE tenant_id=$1 AND id=$2 FOR UPDATE', [tenantId, requestId]);
   const req = rq.rows[0];
   if (!req) throw notFound('Approval request not found');
   assertEntityOn(req.entity_type);
   if (req.status !== 'pending') throw conflict(`This request is already ${req.status}`);
-  if (req.requester_id === actor.userId) throw forbidden('You cannot approve or reject your own request');
-  if (req.excluded_user_ids.includes(actor.userId)) throw forbidden('You cannot act on a request you prepared or that concerns you');
+  const selfDecision = req.self_approver_id === actor.userId;
+  if (req.requester_id === actor.userId && !selfDecision) throw forbidden('You cannot approve or reject your own request');
+  if (req.excluded_user_ids.includes(actor.userId) && !selfDecision) throw forbidden('You cannot act on a request you prepared or that concerns you');
   const blocked = await blockedUsers(db, tenantId, requestId);
   if (blocked.has(actor.userId)) throw forbidden('You already approved an earlier step; a different person must approve this one');
   if (action !== 'approve' && !comment?.trim()) throw badRequest('A comment is required when rejecting or returning a request');
@@ -240,6 +311,7 @@ export async function actOnRequest(db: Db, tenantId: string, requestId: string, 
       body: comment ? `${summary} — “${comment.slice(0, 300)}”` : summary, link: h.requesterLink ?? '/approvals', actionLabel: 'View', feature: h.feature,
     });
   }
+  if (selfDecision) await audit(db, { tenantId, actorId: actor.userId, action: 'approval.self_approved', category: 'security', targetType: req.entity_type, targetId: req.entity_id, metadata: { approvalRequestId: requestId, decision: stepStatus }, ...audBase });
   await audit(db, { tenantId, actorId: actor.userId, action: `approval.${stepStatus}`, targetType: req.entity_type, targetId: req.entity_id,
     metadata: { approvalRequestId: requestId, step: step.step_index, final, comment, ...(role.via ? { via: role.via, onBehalfOf: role.forUser } : {}) }, ...audBase });
   return { status: final ?? 'pending' };
@@ -269,6 +341,7 @@ export async function cancelRequest(db: Db, tenantId: string, requestId: string,
  */
 export async function inbox(db: Db, tenantId: string, actor: Actor, today?: string) {
   today ??= await orgToday(db, tenantId);
+  const coveringHr = await coveringHrStep(db, tenantId, actor.userId, today);
   const r = await db.query<{ id: string; approver_kind: string; approver_user_id: string | null; approver_permission: string | null; escalated_to: string | null;
     escalated_permission: string | null; delegated_by: string | null; delegated_by_name: string | null; approver_name: string | null }>(
     `SELECT r.id, r.entity_type, r.entity_id, r.summary, r.created_at, r.current_step, u.display_name AS requester_name,
@@ -281,19 +354,27 @@ export async function inbox(db: Db, tenantId: string, actor: Actor, today?: stri
         AND $4::date BETWEEN d.starts_on AND d.ends_on AND s.approver_kind='user' AND d.delegator_id IN (s.approver_user_id, s.escalated_to)
         ORDER BY (d.delegator_id = s.approver_user_id) DESC LIMIT 1) dl ON true
     LEFT JOIN users du ON du.id=dl.delegator_id
-    WHERE r.tenant_id=$1 AND r.status='pending' AND r.requester_id <> $2 AND NOT ($2 = ANY(r.excluded_user_ids)) AND NOT (r.entity_type = ANY($5))
+    WHERE r.tenant_id=$1 AND r.status='pending' AND ((r.requester_id <> $2 AND NOT ($2 = ANY(r.excluded_user_ids))) OR r.self_approver_id = $2) AND NOT (r.entity_type = ANY($5))
       AND ((s.approver_kind='user' AND (s.approver_user_id=$2 OR dl.delegator_id IS NOT NULL))
-        OR (s.approver_kind='permission' AND s.approver_permission = ANY($3))
+        OR (s.approver_kind='permission' AND (s.approver_permission = ANY($3) OR ($6 AND s.approver_permission = '${HR_STEP_PERMISSION}')))
         OR s.escalated_to=$2 OR s.escalated_permission = ANY($3))
       AND NOT EXISTS (SELECT 1 FROM approval_steps p WHERE p.tenant_id=r.tenant_id AND p.request_id=r.id AND p.acted_by IS NOT NULL
         AND (p.acted_by=$2 OR p.acted_for=$2 OR (dl.delegator_id IS NOT NULL AND s.approver_user_id IS DISTINCT FROM $2 AND p.acted_by=dl.delegator_id)))
-    ORDER BY r.created_at LIMIT 200`, [tenantId, actor.userId, [...actor.permissions], today, offEntityTypes()]);
+    ORDER BY r.created_at LIMIT 200`, [tenantId, actor.userId, [...actor.permissions], today, offEntityTypes(), coveringHr]);
   return r.rows.map(({ delegated_by, delegated_by_name, approver_name, ...x }) => {
     const mine = (x.approver_kind === 'permission' && actor.permissions.has(x.approver_permission!)) || x.approver_user_id === actor.userId;
     const escalated = !mine && (x.escalated_to === actor.userId || (!!x.escalated_permission && actor.permissions.has(x.escalated_permission)));
     const via = mine ? null : escalated ? 'escalation' : 'delegation';
     return { ...x, approver_name, via, on_behalf_of: via === 'escalation' ? approver_name : via === 'delegation' ? delegated_by_name : null, delegated_by: via === 'delegation' ? delegated_by : null };
   });
+}
+
+/** Whether this person covers today for someone who holds the HR step. */
+async function coveringHrStep(db: Db, tenantId: string, userId: string, today: string) {
+  const d = await db.query<{ delegator_id: string }>(`SELECT delegator_id FROM approval_delegations WHERE tenant_id=$1 AND delegate_id=$2 AND revoked_at IS NULL AND $3::date BETWEEN starts_on AND ends_on`, [tenantId, userId, today]);
+  if (!d.rowCount) return false;
+  const holders = new Set(await usersWithPermission(db, tenantId, HR_STEP_PERMISSION));
+  return d.rows.some((x) => holders.has(x.delegator_id));
 }
 
 export async function requestHistory(db: Db, tenantId: string, requestId: string) {
@@ -312,26 +393,28 @@ export const ESCALATION_PERMISSION = 'approvals.escalations';
 /**
  * Escalate active steps addressed to one person that have waited more than `days` days: to the approver's reporting
  * manager, or, when there is none who may act, to holders of `approvals.escalations`. Each step escalates once;
- * the original approver (and their delegate) can still act. Group steps are not escalated: reminders go to the group.
+ * the original approver (and their delegate) can still act. Group steps are not escalated, reminders go to the group, except the HR
+ * step of `single_hr`, the only route such a request has: it goes to the owner.
  */
 export async function escalateOverdue(db: Db, tenantId: string, days: number) {
-  const due = await db.query<{ id: string; request_id: string; approver_user_id: string; approver_name: string; summary: string; entity_type: string }>(
+  const due = await db.query<{ id: string; request_id: string; approver_user_id: string | null; approver_name: string | null; summary: string; entity_type: string }>(
     `SELECT s.id, s.request_id, s.approver_user_id, au.display_name AS approver_name, r.summary, r.entity_type
        FROM approval_steps s JOIN approval_requests r ON r.tenant_id=s.tenant_id AND r.id=s.request_id AND r.status='pending'
-       JOIN users au ON au.id=s.approver_user_id
-      WHERE s.tenant_id=$1 AND s.status='active' AND s.approver_kind='user' AND s.escalated_at IS NULL
+       LEFT JOIN users au ON au.id=s.approver_user_id
+      WHERE s.tenant_id=$1 AND s.status='active' AND (s.approver_kind='user' OR s.approver_permission='${HR_STEP_PERMISSION}') AND s.escalated_at IS NULL
         AND coalesce(s.activated_at, r.created_at) < now() - make_interval(days => $2) AND NOT (r.entity_type = ANY($3))
       ORDER BY coalesce(s.activated_at, r.created_at) FOR UPDATE OF s SKIP LOCKED`, [tenantId, days, offEntityTypes()]);
   let toManager = 0, toGroup = 0;
   for (const st of due.rows) {
     const blocked = await blockedUsers(db, tenantId, st.request_id);
-    const mgr = await activeManagerOf(db, tenantId, st.approver_user_id, blocked);
+    const owner = st.approver_user_id ? null : await ownerUserId(db, tenantId);
+    const mgr = st.approver_user_id ? await activeManagerOf(db, tenantId, st.approver_user_id, blocked) : owner && !blocked.has(owner) ? { user_id: owner, display_name: 'the owner' } : null;
     await db.query(`UPDATE approval_steps SET escalated_at=now(), escalated_to=$3, escalated_permission=$4 WHERE tenant_id=$1 AND id=$2`,
       [tenantId, st.id, mgr?.user_id ?? null, mgr ? null : ESCALATION_PERMISSION]);
     if (mgr) toManager++; else toGroup++;
     await notifyActiveApprovers(db, tenantId, st.request_id, { onlyEscalation: true });
     const label = handlers.get(st.entity_type)?.label ?? 'Request';
-    await notifyUsers(db, tenantId, [st.approver_user_id], { kind: 'approval.escalated', title: `${label} escalated to ${mgr ? mgr.display_name : 'HR'} after ${days} day(s)`,
+    if (st.approver_user_id) await notifyUsers(db, tenantId, [st.approver_user_id], { kind: 'approval.escalated', title: `${label} escalated to ${mgr ? mgr.display_name : 'HR'} after ${days} day(s)`,
       body: `${st.summary} — you can still decide it.`, link: '/approvals', actionLabel: 'Review', feature: handlers.get(st.entity_type)?.feature });
     await audit(db, { tenantId, actorId: null, actorType: 'system', action: 'approval.escalated', targetType: st.entity_type,
       metadata: { approvalRequestId: st.request_id, from: st.approver_user_id, to: mgr?.user_id ?? ESCALATION_PERMISSION, afterDays: days } });

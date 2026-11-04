@@ -13,6 +13,8 @@ import { AppError } from './core/http/errors.js';
 import type { AppDeps } from './core/http/context.js';
 import { initRuntime } from './core/runtime.js';
 import { withFeatures } from './core/features/state.js';
+import { withMode } from './core/policy/mode.js';
+import { LOG_REDACT_PATHS, logSerializers } from './core/logging.js';
 import type { FeatureRoute } from './core/features/routes.js';
 import { authRoutes, PASSWORD_CHANGE_ALLOWED } from './modules/auth.js';
 import { MFA_PENDING_ALLOWED, MFA_ENROLL_ALLOWED } from './core/auth/mfa.js';
@@ -54,7 +56,7 @@ export async function buildApp(deps: AppDeps): Promise<FastifyInstance> {
     logger: env.NODE_ENV === 'test' ? false : {
       level: env.LOG_LEVEL,
       // Never log credentials or session material.
-      redact: ['req.headers.cookie', 'req.headers.authorization', 'req.headers["x-device-key"]', 'req.headers["x-csrf-token"]', 'res.headers["set-cookie"]'],
+      redact: LOG_REDACT_PATHS, serializers: logSerializers,
     },
     // Fastify treats a bare number as "trust nothing", so a hop count is expressed as a function: believe that many hops.
     trustProxy: typeof env.TRUST_PROXY === 'number' ? ((hops: number) => (_addr: string, hop: number) => hop < hops)(env.TRUST_PROXY) : env.TRUST_PROXY,
@@ -67,8 +69,9 @@ export async function buildApp(deps: AppDeps): Promise<FastifyInstance> {
   const { publicConfig, features } = runtime;
   app.addHook('onClose', () => runtime.close());
   // Each app's requests see its own feature set. Reading the body leaves the async context, hence the second hook.
-  app.addHook('onRequest', (_req, _reply, done) => { withFeatures(features, done); });
-  app.addHook('preValidation', (_req, _reply, done) => { withFeatures(features, done); });
+  const inScope = (done: () => void) => withFeatures(features, () => withMode(env.ORG_MANAGEMENT_MODE, done));
+  app.addHook('onRequest', (_req, _reply, done) => { inScope(done); });
+  app.addHook('preValidation', (_req, _reply, done) => { inScope(done); });
   // What each route needs, for the test that goes through every flag.
   const featureRoutes: FeatureRoute[] = [];
   let mounting: readonly string[] | null = null;

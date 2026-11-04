@@ -8,7 +8,8 @@ import { AppError, badRequest, unauthorized } from '../core/http/errors.js';
 import { getSettingValue } from '../core/settings/service.js';
 import { allOff, evaluateFeatures } from '../core/features/state.js';
 import { requireTenantHost } from '../core/http/context.js';
-import { SYSTEM_ROLE_MAP, permissionFeature } from '../core/auth/permissions.js';
+import { roleGroup, viewsFor, SYSTEM_ROLE_MAP, permissionFeature } from '../core/auth/permissions.js';
+import { currentMode } from '../core/policy/mode.js';
 import type { PublicConfig } from '../config/installation.js';
 import { notifyUsers } from '../core/notify/service.js';
 
@@ -103,7 +104,7 @@ export async function authRoutes(app: FastifyInstance, opts: { publicConfig: Pub
     const token = req.cookies[SESSION_COOKIE]!;
     if (u.mfaPending) {
       return { user: { id: u.userId, email: u.email, displayName: u.displayName, employeeId: null }, passwordChangeRequired: u.mustChangePassword,
-        mfa: { enabled: true, pending: true, enrollmentRequired: false }, roles: [], permissions: [], csrfToken: deriveCsrf(token),
+        mfa: { enabled: true, pending: true, enrollmentRequired: false }, roles: [], permissions: [], mode: currentMode(), views: [], salaryLevel: 0, csrfToken: deriveCsrf(token),
         organization: { id: host.id, name: host.name }, preferences: null, capabilities: {} };
     }
     const { features, timezone, dateFormat, emailNotifications } = await withTenant(pool, u.tenantId, async (db) => ({
@@ -116,7 +117,9 @@ export async function authRoutes(app: FastifyInstance, opts: { publicConfig: Pub
       user: { id: u.userId, email: u.email, displayName: u.displayName, employeeId: u.employeeId },
       passwordChangeRequired: u.mustChangePassword,
       mfa: { enabled: u.mfaEnabled, pending: u.mfaPending, enrollmentRequired: u.mfaEnrollmentRequired },
-      roles: u.roles.map((k) => ({ key: k, name: SYSTEM_ROLE_MAP.get(k)?.name ?? k })),
+      roles: u.roles.map((k) => ({ key: k, name: SYSTEM_ROLE_MAP.get(k)?.name ?? k, group: roleGroup(k) })),
+      // One person may hold several roles: these are the views they can switch between.
+      mode: currentMode(), views: viewsFor(u.roles, (p) => u.permissions.has(p) && !allOff(permissionFeature(p)), u.employeeId), salaryLevel: u.salaryLevel,
       permissions: [...u.permissions].filter((p) => !allOff(permissionFeature(p))).sort(),
       csrfToken: deriveCsrf(token),
       organization: { id: host.id, name: host.name },

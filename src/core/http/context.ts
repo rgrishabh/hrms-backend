@@ -31,7 +31,13 @@ export interface TenantActor {
   has: (p: string) => boolean;
   /** Audit-entry defaults for this request. */
   auditBase: { tenantId: string; actorId: string; requestId: string; ip: string };
+  /** `?reveal=1`: the only way L4 fields come back unmasked. */
+  reveal: boolean;
+  userAgent?: string;
 }
+
+/** The device, for audit rows of L4 reads. */
+export const readDevice = (req: FastifyRequest) => ({ userAgent: typeof req.headers['user-agent'] === 'string' ? req.headers['user-agent'] : undefined });
 
 export function requireTenantHost(req: FastifyRequest) {
   if (req.ctx.host.kind !== 'tenant') throw new AppError(404, 'unknown_tenant', 'This address is not linked to an active organization');
@@ -51,6 +57,8 @@ export function tenantActor(req: FastifyRequest, ...perms: string[]): TenantActo
     tx: (fn) => withTenant(pool, tenant.id, fn),
     has: (p) => user.permissions.has(p),
     auditBase: { tenantId: tenant.id, actorId: user.userId, requestId: req.id, ip: req.ctx.ip },
+    reveal: (req.query as { reveal?: unknown } | undefined)?.reveal === '1',
+    userAgent: readDevice(req).userAgent,
   };
 }
 

@@ -3,6 +3,9 @@ import { loadEnv, type Env } from './config/env.js';
 import { createPool } from './db/pool.js';
 import { initRuntime, type Runtime } from './core/runtime.js';
 import { withFeatures } from './core/features/state.js';
+import { withMode } from './core/policy/mode.js';
+import { loadFieldCipher } from './core/crypto/keys.js';
+import { LOG_REDACT_PATHS, logSerializers } from './core/logging.js';
 import { unsafeDatabaseRole } from './core/db-role.js';
 import { Scheduler } from './core/jobs/scheduler.js';
 import { HEARTBEAT_INTERVAL_MS, heartbeatFile, writeHeartbeat, type Heartbeat } from './core/jobs/heartbeat.js';
@@ -20,12 +23,12 @@ try {
   process.exit(1);
 }
 
-const log = pino({ level: env.LOG_LEVEL, base: { role: 'worker' } });
+const log = pino({ level: env.LOG_LEVEL, base: { role: 'worker' }, redact: LOG_REDACT_PATHS, serializers: logSerializers });
 const pool = createPool(env.DATABASE_URL, env.DATABASE_POOL_MAX);
 
 let runtime: Runtime;
 try {
-  runtime = initRuntime(env, log);
+  runtime = initRuntime(env, log, { cipher: await loadFieldCipher(env) });
 } catch (e) {
   log.fatal(`Startup failed: ${(e as Error).message}`);
   process.exit(1);
@@ -51,7 +54,7 @@ const scheduler = new Scheduler(pool, log, env.JOBS_INTERVAL_SECONDS * 1000, {
 await writeBeat();
 const heartbeat = setInterval(() => { void writeBeat(); }, HEARTBEAT_INTERVAL_MS);
 // The whole loop runs with this deployment's feature set.
-withFeatures(runtime.features, () => { scheduler.start(); });
+withFeatures(runtime.features, () => withMode(env.ORG_MANAGEMENT_MODE, () => { scheduler.start(); }));
 // Timers of the scheduler are unref'd; this one keeps the process up until a signal.
 log.info({ intervalSeconds: env.JOBS_INTERVAL_SECONDS }, 'worker started');
 

@@ -11,7 +11,7 @@ import { SYSTEM_ROLES } from './permissions.js';
  */
 export type MfaLevel = 'off' | 'privileged' | 'all';
 const RANK: Record<MfaLevel, number> = { off: 0, privileged: 1, all: 2 };
-export const PRIVILEGED_ROLES: readonly string[] = ['tenant_admin', 'hr_admin', 'payroll_manager', 'it_admin'];
+export const PRIVILEGED_ROLES: readonly string[] = ['owner', 'tenant_admin', 'hr_admin', 'payroll_manager', 'it_admin'];
 /**
  * Permissions that only privileged system roles carry (configuration, access, bank details, payroll set-up).
  * An organization's own role carrying any of them counts as privileged too, so a custom role cannot avoid MFA.

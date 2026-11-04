@@ -1,7 +1,7 @@
 import { loadEnv, type Env } from './config/env.js';
 import { createPool } from './db/pool.js';
 import { withPlatformBypass } from './db/tx.js';
-import { FieldCipher } from './core/crypto/index.js';
+import { loadFieldCipher } from './core/crypto/keys.js';
 import { buildApp } from './app.js';
 import { reconcileInstallation } from './config/installation.js';
 import { unsafeDatabaseRole } from './core/db-role.js';
@@ -19,7 +19,7 @@ try {
 const pool = createPool(env.DATABASE_URL, env.DATABASE_POOL_MAX);
 let app: Awaited<ReturnType<typeof buildApp>>;
 try {
-  app = await buildApp({ env, pool, cipher: new FieldCipher(env.DATA_ENCRYPTION_KEY) });
+  app = await buildApp({ env, pool, cipher: await loadFieldCipher(env) });
 } catch (e) {
   console.error(`Startup failed: ${(e as Error).message}`);
   process.exit(1);
