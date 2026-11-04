@@ -5,6 +5,7 @@ import { addDays, dateRange, localDate, weekday, zonedToInstant } from './time.j
 import { notFound } from '../../core/http/errors.js';
 import { approvedLeaveByDate } from '../leave/service.js';
 import { approvedDutyByDate } from '../field-duty/service.js';
+import { scheduleFor } from './roster.js';
 
 export interface EventInput {
   employeeId: string | null;
@@ -76,10 +77,11 @@ export async function recalculateRange(db: Db, tenantId: string, employeeId: str
   const minGap = await getSettingValue<number>(db, tenantId, 'attendance.min_punch_gap_seconds');
   const overtimeEnabled = await getSettingValue<boolean>(db, tenantId, 'attendance.overtime_enabled');
 
-  const assignments = (await db.query(`SELECT a.effective_from, a.effective_to, ${SHIFT_COLS} FROM shift_assignments a
-      JOIN shifts s ON s.tenant_id=a.tenant_id AND s.id=a.shift_id
-     WHERE a.tenant_id=$1 AND a.employee_id=$2 AND a.effective_from <= $4 AND (a.effective_to IS NULL OR a.effective_to >= $3)
-     ORDER BY a.effective_from DESC, a.created_at DESC`, [tenantId, employeeId, from, to])).rows;
+  // The day's shift and whether it is a day off: override → rotating roster → fixed assignment (see roster.ts).
+  const plan = (await scheduleFor(db, tenantId, [employeeId], from, to)).get(employeeId)!;
+  const shiftIds = [...new Set([...plan.values()].map((p) => p.shiftId).filter((x): x is string => !!x))];
+  const shifts = new Map((shiftIds.length ? (await db.query(`SELECT ${SHIFT_COLS} FROM shifts s WHERE s.tenant_id=$1 AND s.id = ANY($2)`, [tenantId, shiftIds])).rows : [])
+    .map((r) => [r.id as string, toShift(r)]));
   const holidays = new Set((await db.query<{ holiday_date: string }>(`SELECT holiday_date FROM holidays WHERE tenant_id=$1
       AND (branch_id IS NULL OR branch_id=$2) AND NOT optional AND holiday_date BETWEEN $3 AND $4`, [tenantId, e.branch_id, from, to])).rows.map((r) => r.holiday_date));
   // Events span from (from − 1 day) to (to + 2 days) to cover overnight windows.
@@ -97,15 +99,16 @@ export async function recalculateRange(db: Db, tenantId: string, employeeId: str
   const rows: unknown[][] = [];
   for (const date of dateRange(from, to)) {
     if (locked.has(date)) { continue; }
-    const asg = assignments.find((a) => a.effective_from <= date && (a.effective_to === null || a.effective_to >= date));
-    const shift = asg ? toShift(asg) : null;
-    const dayType = holidays.has(date) ? 'holiday' : weeklyOffs.includes(weekday(date)) ? 'weekly_off' : 'working';
+    const p = plan.get(date)!;
+    const shift = p.shiftId ? shifts.get(p.shiftId) ?? null : null;
+    const off = p.off ?? weeklyOffs.includes(weekday(date));
+    const dayType = holidays.has(date) ? 'holiday' : off ? 'weekly_off' : 'working';
     const res = calculateDay({ workDate: date, timezone: tz, shift, dayType, punches, minGapSeconds: minGap, overtimeEnabled,
       employment: { joiningDate: e.date_of_joining, exitDate: e.exit_date }, leave: leaves.get(date) ?? null, duty: duties.get(date) ?? null });
     results.push({ ...res, locked: false });
     rows.push([date, res.shiftId, res.dayType, res.status, res.firstIn, res.lastOut, res.punchCount, res.workedMinutes, res.lateMinutes,
       res.earlyExitMinutes, res.overtimeMinutes, res.exceptions,
-      JSON.stringify({ timezone: tz, weeklyOffs, minGapSeconds: minGap, overtimeEnabled, shift: shift?.code ?? null }), res.leaveFraction, res.leaveTypeCode, res.dutyFraction]);
+      JSON.stringify({ timezone: tz, weeklyOffs, minGapSeconds: minGap, overtimeEnabled, shift: shift?.code ?? null, schedule: p.source, ...(p.pattern ? { roster: p.pattern } : {}) }), res.leaveFraction, res.leaveTypeCode, res.dutyFraction]);
   }
   if (rows.length) {
     const values: unknown[] = [tenantId, employeeId, CALC_VERSION];

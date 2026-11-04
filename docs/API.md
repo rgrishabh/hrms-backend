@@ -50,7 +50,11 @@ Base path `/api/v1`. JSON in and out. Each installation serves one organization;
 | GET/POST `/attendance/locks` | read / `attendance.lock` | Payroll period locks |
 | GET/POST `/attendance/regularizations` | attendance.self (mine) / attendance.read (all) | Request creates an approval |
 | GET/POST `/attendance/shifts`, PUT `/attendance/shifts/:id` | `attendance.configure` (write) | |
-| POST `/attendance/shift-assignments` | attendance.configure | Closes previous open assignment |
+| POST `/attendance/shift-assignments` | attendance.configure | Closes previous open assignment; ends any rotating roster from that day |
+| GET / POST `/attendance/roster-patterns`, PATCH `/attendance/roster-patterns/:id` | read: attendance.configure/read/team.read; write: attendance.configure | `{code, name, days: (shiftId|null)[]}`; days fixed once used |
+| POST `/attendance/roster-assignments`, POST `/attendance/roster-assignments/end` | attendance.configure | `{employeeIds, patternId, effectiveFrom, effectiveTo?, startDay}` / `{employeeIds, lastDay}`; recalculates up to today |
+| PUT `/attendance/roster-overrides`, DELETE `/attendance/roster-overrides/:employeeId/:date` | attendance.configure | `{employeeId, date, shiftId|null, reason}` |
+| GET `/attendance/roster?from&to&departmentId&search` | everyone (scoped: all / team / self) | At most 42 days; `{dates, shifts, items:[{id, code, name, department, days:[{date, shiftId, off, holiday, source, pattern, reason}]}], canEdit}` |
 | GET/POST `/attendance/holidays`, DELETE `/attendance/holidays/:id` | session / configure | |
 | GET/POST `/attendance/devices`, PATCH `/attendance/devices/:id`, POST `/attendance/devices/:id/rotate-key` | `attendance.devices.manage` | Key shown once |
 | GET `/attendance/device-mappings`, PUT `/attendance/device-mappings/:deviceUserId` | devices.manage | Mapping reprocesses unmapped events |
