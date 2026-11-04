@@ -206,3 +206,21 @@ export async function attendanceLocked(db: Db, tenantId: string, period: string)
   const r = await db.query(`SELECT 1 FROM attendance_period_locks WHERE tenant_id=$1 AND period_start <= $2::date AND period_end >= $3::date`, [tenantId, p.start, p.end]);
   return (r.rowCount ?? 0) > 0;
 }
+
+/**
+ * Why a run's stored result can no longer be finalized, or null: items are immutable after finalize, so what they were
+ * computed from must still be current. A lock recalculates the whole period, so a run computed before the lock is out of
+ * date; an F&F run has no lock, so the attendance of the leaver's own days is compared instead.
+ */
+export async function staleReason(db: Db, tenantId: string, run: { id: string; period: string; kind: string; employee_id: string | null; computed_at: Date | null }) {
+  if ((await db.query('SELECT 1 FROM payroll_items WHERE tenant_id=$1 AND run_id=$2 AND calc_version <> $3 LIMIT 1', [tenantId, run.id, CALC_VERSION])).rowCount) return 'The run was computed by an older version of the calculation';
+  if (!(await featureOn(db, tenantId, 'attendance'))) return null;
+  const p = periodBounds(run.period);
+  if (run.kind === 'regular') {
+    const late = await db.query(`SELECT 1 FROM attendance_period_locks WHERE tenant_id=$1 AND period_start <= $2::date AND period_end >= $3::date AND locked_at > $4`, [tenantId, p.start, p.end, run.computed_at]);
+    return late.rowCount ? `Attendance for ${run.period} was locked after this run was computed` : null;
+  }
+  const changed = await db.query(`SELECT 1 FROM attendance_daily d JOIN employees e ON e.tenant_id=d.tenant_id AND e.id=d.employee_id
+    WHERE d.tenant_id=$1 AND d.employee_id=$2 AND d.work_date BETWEEN $3::date AND least($4::date, coalesce(e.exit_date, $4::date)) AND d.calculated_at > $5 LIMIT 1`, [tenantId, run.employee_id, p.start, p.end, run.computed_at]);
+  return changed.rowCount ? 'Attendance changed after this run was computed' : null;
+}

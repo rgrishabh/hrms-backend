@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import type { FastifyInstance } from 'fastify';
 import { makeApp, createTenant, Client, ownerQuery, type TenantFixture } from './helpers.js';
-import { activeRule, activeSalary, compute, createRun, day, itemOf, lineOf, seedComponents } from './payroll-helpers.js';
+import { activeRule, activeSalary, approveEntity, compute, createRun, day, itemOf, lineOf, seedComponents } from './payroll-helpers.js';
 import { calculateDay, type DayInput } from '../src/modules/attendance/calc.js';
 
 const MODULES = 'default,payroll,payroll.payslips,payroll.statutory';
@@ -17,6 +17,20 @@ beforeAll(async () => {
   await ownerQuery(`INSERT INTO leave_types (tenant_id, code, name, paid, requires_balance, accrual_method) VALUES ($1,'CL','Casual',true,true,'annual'),($1,'LWP','Without pay',false,false,'none')`, [T.id]);
 });
 afterAll(async () => { await app.close(); });
+
+async function finance(W: TenantFixture) {
+  const email = `fin@${W.host}`;
+  const [u] = await ownerQuery<{ id: string }>(`INSERT INTO users (tenant_id, email, display_name, password_hash) SELECT tenant_id, $2, 'fin', password_hash FROM users WHERE id=$1 RETURNING id`, [W.users.payroll!.id, email]);
+  await ownerQuery(`INSERT INTO user_roles (user_id, tenant_id, role_key) VALUES ($1,$2,'finance_manager')`, [u!.id, W.id]);
+  return Client.login(app, W.host, email);
+}
+async function toApproved(p: Client, f: Client, runId: string) {
+  await p.post(`/api/v1/payroll/runs/${runId}/acknowledge-warnings`, { note: 'Fixture warnings' });
+  const s = await p.post(`/api/v1/payroll/runs/${runId}/submit`);
+  expect(s.statusCode, s.body).toBe(200);
+  const a = await approveEntity(f, runId);
+  expect(a.statusCode, a.body).toBe(200);
+}
 
 describe('F-1 half-day leave and loss of pay', () => {
   const dayInput = (o: Partial<DayInput>): DayInput => ({ workDate: '2026-01-05', timezone: 'Asia/Kolkata', shift: null, dayType: 'working', employment: { joiningDate: '2020-01-01', exitDate: null },
@@ -196,5 +210,63 @@ describe('F-3 full-and-final and regular runs never pay the same days', () => {
     expect(dup.statusCode).toBe(409);
     expect((await p.post(`/api/v1/payroll/runs/${fnf}/cancel`)).statusCode).toBe(200);
     expect((await p.post('/api/v1/payroll/runs', { period: '2026-07', legalEntityId: W.legalEntityId, kind: 'fnf', employeeId: id })).statusCode).toBe(201);
+  });
+});
+
+describe('F-7 finalize refuses a stale result', () => {
+  let W: TenantFixture; let p: Client; let f: Client; let e: string;
+  beforeAll(async () => {
+    W = await createTenant();
+    p = await Client.login(app, W.host, W.users.payroll!.email);
+    f = await finance(W);
+    e = W.users.employee!.employeeId!;
+    await seedComponents(W);
+    await activeSalary(W, e, '2024-01-01', { BASIC: 30000 });
+  });
+
+  it('a run computed before attendance was locked must be reopened and recomputed', async () => {
+    const id = await createRun(p, W, '2026-02');
+    await compute(p, id);
+    expect((await itemOf(p, id, e))!.lop_days).toBe('0.00');
+    await toApproved(p, f, id);
+    expect((await p.post('/api/v1/attendance/locks', { periodStart: '2026-02-01', periodEnd: '2026-02-28' })).statusCode).toBe(201);
+    const stale = await p.post(`/api/v1/payroll/runs/${id}/finalize`);
+    expect(stale.statusCode).toBe(409);
+    expect(stale.json().error.message).toMatch(/recompute|reopen/i);
+    expect((await p.post(`/api/v1/payroll/runs/${id}/reopen`)).statusCode).toBe(200);
+    expect((await p.get(`/api/v1/payroll/runs/${id}`)).json().status).toBe('draft');
+    await compute(p, id);
+    expect(Number((await itemOf(p, id, e))!.lop_days)).toBeGreaterThan(0);
+    await toApproved(p, f, id);
+    const ok = await p.post(`/api/v1/payroll/runs/${id}/finalize`);
+    expect(ok.statusCode, ok.body).toBe(200);
+  });
+
+  it('a run computed by an older calculation version must be recomputed', async () => {
+    expect((await p.post('/api/v1/attendance/locks', { periodStart: '2026-03-01', periodEnd: '2026-03-31' })).statusCode).toBe(201);
+    const id = await createRun(p, W, '2026-03');
+    await compute(p, id);
+    await toApproved(p, f, id);
+    await ownerQuery(`UPDATE payroll_items SET calc_version=1 WHERE run_id=$1`, [id]);
+    expect((await p.post(`/api/v1/payroll/runs/${id}/finalize`)).statusCode).toBe(409);
+  });
+
+  it('an F&F run needs recomputing when the attendance behind it changed', async () => {
+    const o = W.users.other!.employeeId!;
+    await activeSalary(W, o, '2024-01-01', { BASIC: 30000 });
+    await ownerQuery(`UPDATE employees SET exit_date='2026-04-10', status='on_notice' WHERE id=$1`, [o]);
+    await ownerQuery(`INSERT INTO separations (tenant_id, employee_id, kind, reason, notice_date, notice_days_required, requested_lwd, approved_lwd, status, initiated_by)
+      VALUES ($1,$2,'resignation','Fixture','2026-03-01',30,'2026-04-10','2026-04-10','approved',$3)`, [W.id, o, W.users.hr!.id]);
+    const id = await createRun(p, W, '2026-04', { kind: 'fnf', employeeId: o });
+    await compute(p, id);
+    await toApproved(p, f, id);
+    await ownerQuery(`INSERT INTO attendance_daily (tenant_id, employee_id, work_date, day_type, status, calc_version, calculated_at) VALUES ($1,$2,'2026-04-06','working','absent',3,now() + interval '1 minute')`, [W.id, o]);
+    expect((await p.post(`/api/v1/payroll/runs/${id}/finalize`)).statusCode).toBe(409);
+  });
+
+  it('only an approved run can be reopened, by someone who manages payroll', async () => {
+    const id = await createRun(p, W, '2026-05');
+    expect((await p.post(`/api/v1/payroll/runs/${id}/reopen`)).statusCode).toBe(409);
+    expect((await f.post(`/api/v1/payroll/runs/${id}/reopen`)).statusCode).toBe(403);
   });
 });

@@ -48,6 +48,8 @@ Modules: `payroll` (components, salaries, runs, exports), `payroll.payslips` (em
 - Bank file: full account numbers only with `employees.bank.read`, otherwise masked.
 - PF and ESI contribution files: inputs to the portal formats. Check them against the current ECR / ESI upload specification before uploading.
 
+**Stale results:** finalize refuses a run computed before attendance was locked, computed by an older calculation version, or (F&F) computed before the leaver's attendance last changed. `POST /payroll/runs/:id/reopen` takes an approved run back to draft to recompute and approve again.
+
 **F&F:** an `fnf` run for one leaver with an approved separation, one per leaver unless cancelled. A leaver's salary for the month is paid once: an open F&F run takes them out of the regular run (a computed regular run goes back to draft). If the regular run was already submitted or later, the F&F run pays only its adjustments, with no second PT or LWF.
 - `GET /fnf-suggestions/:employeeId` shows notice shortfall, leave balances and the salary as inputs.
 - Encashment, notice recovery and gratuity amounts are entered as adjustments after HR confirms them against policy and law.

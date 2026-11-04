@@ -11,7 +11,7 @@ import { notifyUsers } from '../../core/notify/service.js';
 import { orgToday } from '../competency/service.js';
 import type { Db } from '../../db/tx.js';
 import { RULE_PARAMS, type RuleKind } from './calc.js';
-import { attendanceLocked, computeRun, periodBounds } from './service.js';
+import { attendanceLocked, computeRun, periodBounds, staleReason } from './service.js';
 import { balancesAt } from '../leave/service.js';
 import { csv } from '../../core/http/csv.js';
 import { xlsx, XLSX_TYPE } from '../../core/http/xlsx.js';
@@ -27,8 +27,8 @@ const ComponentBody = z.object({
 }).refine((c) => c.calc !== 'percent' || c.baseCodes.length > 0, { message: 'Percent components need base components', path: ['baseCodes'] });
 
 async function loadRun(db: Db, a: TenantActor, id: string, lock = false) {
-  const r = (await db.query<{ id: string; period: string; legal_entity_id: string; kind: string; employee_id: string | null; status: string; created_by: string; warnings: number; warnings_acknowledged: boolean }>(
-    `SELECT id, period, legal_entity_id, kind, employee_id, status, created_by, warnings, warnings_acknowledged FROM payroll_runs WHERE tenant_id=$1 AND id=$2${lock ? ' FOR UPDATE' : ''}`, [a.tenantId, id])).rows[0];
+  const r = (await db.query<{ id: string; period: string; legal_entity_id: string; kind: string; employee_id: string | null; status: string; created_by: string; warnings: number; warnings_acknowledged: boolean; computed_at: Date | null }>(
+    `SELECT id, period, legal_entity_id, kind, employee_id, status, created_by, warnings, warnings_acknowledged, computed_at FROM payroll_runs WHERE tenant_id=$1 AND id=$2${lock ? ' FOR UPDATE' : ''}`, [a.tenantId, id])).rows[0];
   if (!r) throw notFound('Payroll run not found');
   return r;
 }
@@ -388,6 +388,8 @@ export async function payrollRoutes(app: FastifyInstance) {
       const r = await loadRun(db, a, id, true);
       if (r.status !== 'approved') throw conflict('Only an approved run can be finalized');
       if (r.kind === 'regular' && !(await attendanceLocked(db, a.tenantId, r.period))) throw conflict(`Lock attendance for ${r.period} before finalizing payroll`);
+      const stale = await staleReason(db, a.tenantId, r);
+      if (stale) throw conflict(`${stale}. Reopen the run, recompute it and send it for approval again.`);
       await db.query(`UPDATE payroll_runs SET status='finalized', finalized_at=now() WHERE tenant_id=$1 AND id=$2`, [a.tenantId, id]);
       // Loans whose last instalment was in this run are now fully recovered.
       if (await featureOn(db, a.tenantId, 'advances_loans')) await closeRepaid(db, a.tenantId, (await db.query<{ employee_id: string }>(`SELECT employee_id FROM payroll_items WHERE tenant_id=$1 AND run_id=$2`, [a.tenantId, id])).rows.map((x) => x.employee_id));
@@ -396,6 +398,19 @@ export async function payrollRoutes(app: FastifyInstance) {
       await notifyUsers(db, a.tenantId, users, { kind: 'payroll.payslip', title: `Your payslip for ${r.period} is available`, body: 'Open HRMS to view or print it.', link: '/payslips', actionLabel: 'View payslip', dedupeKey: `payslip:${id}` });
       await audit(db, { ...a.auditBase, action: 'payroll.run_finalized', targetType: 'payroll_run', targetId: id, metadata: { payslips: users.length } });
       return { ok: true, payslips: users.length };
+    });
+  });
+
+  /** Back to draft from approved, for a result that is out of date: it is recomputed and approved again. */
+  app.post('/runs/:id/reopen', async (req) => {
+    const a = tenantActor(req, 'payroll.manage');
+    const { id } = z.object({ id: Uuid }).parse(req.params);
+    return a.tx(async (db) => {
+      const r = await loadRun(db, a, id, true);
+      if (r.status !== 'approved') throw conflict('Only an approved run can be reopened');
+      await db.query(`UPDATE payroll_runs SET status='draft', approved_at=NULL WHERE tenant_id=$1 AND id=$2`, [a.tenantId, id]);
+      await audit(db, { ...a.auditBase, action: 'payroll.run_reopened', targetType: 'payroll_run', targetId: id });
+      return { ok: true };
     });
   });
 

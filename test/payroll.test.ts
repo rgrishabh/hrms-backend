@@ -124,6 +124,13 @@ describe('payroll run', () => {
     await approve(fin, runId);
     expect((await pay.post(`/api/v1/payroll/runs/${runId}/finalize`)).json().error.message).toMatch(/Lock attendance/);
     await ownerQuery(`INSERT INTO attendance_period_locks (tenant_id, period_start, period_end, locked_by) VALUES ($1,'2026-09-01','2026-09-30',$2)`, [T.id, T.users.payroll!.id]);
+    // The result predates the lock, so it has to be recomputed and approved again.
+    expect((await pay.post(`/api/v1/payroll/runs/${runId}/finalize`)).json().error.message).toMatch(/Reopen the run/);
+    expect((await pay.post(`/api/v1/payroll/runs/${runId}/reopen`)).statusCode).toBe(200);
+    expect((await pay.post(`/api/v1/payroll/runs/${runId}/compute`)).statusCode).toBe(200);
+    await pay.post(`/api/v1/payroll/runs/${runId}/acknowledge-warnings`, { note: 'ESI not applicable at this branch — confirmed with consultant' });
+    expect((await pay.post(`/api/v1/payroll/runs/${runId}/submit`)).statusCode).toBe(200);
+    await approve(fin, runId);
     expect((await pay.post(`/api/v1/payroll/runs/${runId}/finalize`)).json()).toMatchObject({ ok: true, payslips: 1 });
     await expect(ownerQuery(`UPDATE payroll_items SET net=0 WHERE run_id=$1`, [runId])).rejects.toThrow(/finalized and cannot be changed/);
     expect((await pay.post(`/api/v1/payroll/runs/${runId}/adjustments`, { employeeId: empId, kind: 'earning', label: 'Too late', amount: 1 })).statusCode).toBe(409);
