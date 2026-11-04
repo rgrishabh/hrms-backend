@@ -65,7 +65,7 @@ export async function loadSession(pool: Pool, token: string, expectedTenantId: s
     return { sessionId: s.id, userId: s.user_id, tenantId: s.tenant_id, email: s.email, displayName: s.display_name,
       csrfHash: s.csrf_hash, roles, permissions, employeeId, mustChangePassword: s.must_change_password,
       mfaEnabled: s.mfa_on, mfaPending: s.mfa_on && !s.mfa_ok,
-      mfaEnrollmentRequired: !s.mfa_on && !!s.tenant_id && mfaRequiredFor(roles, await effectiveMfaLevel(db, s.tenant_id)) };
+      mfaEnrollmentRequired: !s.mfa_on && !!s.tenant_id && mfaRequiredFor(roles, permissions, await effectiveMfaLevel(db, s.tenant_id)) };
   });
 }
 

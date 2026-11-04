@@ -15,6 +15,7 @@ import { SYSTEM_ROLES, SYSTEM_ROLE_MAP, PERMISSIONS } from '../../core/auth/perm
 import { hashPassword } from '../../core/crypto/index.js';
 import { getSettingValue } from '../../core/settings/service.js';
 import { revokeAllSessionsForUser } from '../../core/auth/session.js';
+import { PRIVILEGED_PERMISSIONS } from '../../core/auth/mfa.js';
 
 export async function tenantAdminRoutes(app: FastifyInstance, opts: { publicConfig: PublicConfig }) {
 
@@ -130,12 +131,101 @@ export async function tenantAdminRoutes(app: FastifyInstance, opts: { publicConf
     const a = tenantActorAny(req, 'users.manage', 'settings.read');
     // `grantable`: whether this user may grant or remove the role (the same rule assertMayGrant enforces).
     const grantable = (key: string, perms: readonly string[]) => isAdministrator(a) || (key !== 'tenant_admin' && perms.every((p) => a.user.permissions.has(p)));
-    return a.tx(async (db) => ({
-      system: SYSTEM_ROLES.map((r) => ({ key: r.key, name: r.name, permissions: r.permissions, grantable: grantable(r.key, r.permissions) })),
-      custom: (await db.query<{ key: string; name: string; permissions: string[] }>('SELECT key, name, permissions FROM tenant_roles WHERE tenant_id=$1 ORDER BY name', [a.tenantId])).rows
-        .map((r) => ({ ...r, grantable: grantable(r.key, r.permissions) })),
-      permissions: Object.entries(PERMISSIONS).map(([key, label]) => ({ key, label })),
-    }));
+    return a.tx(async (db) => {
+      const counts = new Map((await db.query<{ role_key: string; n: number }>(`SELECT r.role_key, count(DISTINCT r.user_id)::int AS n FROM user_roles r JOIN users u ON u.id=r.user_id
+        WHERE r.tenant_id=$1 AND u.status='active' GROUP BY r.role_key`, [a.tenantId])).rows.map((r) => [r.role_key, r.n]));
+      return {
+        system: SYSTEM_ROLES.map((r) => ({ key: r.key, name: r.name, permissions: r.permissions, grantable: grantable(r.key, r.permissions), users: counts.get(r.key) ?? 0 })),
+        custom: (await db.query<{ key: string; name: string; permissions: string[] }>(`SELECT t.key, t.name, t.description, t.permissions, t.updated_at, u.display_name AS updated_by_name
+            FROM tenant_roles t LEFT JOIN users u ON u.id=coalesce(t.updated_by, t.created_by) WHERE t.tenant_id=$1 ORDER BY t.name`, [a.tenantId])).rows
+          .map((r) => ({ ...r, grantable: grantable(r.key, r.permissions), users: counts.get(r.key) ?? 0, mfaRequired: r.permissions.some((p) => PRIVILEGED_PERMISSIONS.has(p)) })),
+        permissions: Object.entries(PERMISSIONS).map(([key, label]) => ({ key, label, privileged: PRIVILEGED_PERMISSIONS.has(key) })),
+        // Whether this user may create and edit roles, and with which permissions (an administrator: any).
+        canManage: a.has('users.manage'), maxPermissions: isAdministrator(a) ? null : [...a.user.permissions].filter((p) => p in PERMISSIONS),
+      };
+    });
+  });
+
+  // ------------------------------------------------------------ the organization's own roles
+  // Anyone with users.manage may define roles, but only from permissions they hold themselves (an administrator: any),
+  // the same limit as granting roles. Changing a role's permissions signs its holders out so it applies at once.
+  const RoleBody = z.object({
+    name: z.string().trim().min(2).max(60),
+    description: z.string().trim().max(300).optional().nullable(),
+    permissions: z.array(z.string()).min(1).max(Object.keys(PERMISSIONS).length).transform((p) => [...new Set(p)].sort()),
+  });
+  const checkPermissions = (a: { user: { roles: string[]; permissions: Set<string> } }, perms: string[], verb: string) => {
+    const unknown = perms.filter((p) => !(p in PERMISSIONS));
+    if (unknown.length) throw badRequest(`Unknown permission: ${unknown.join(', ')}`);
+    if (isAdministrator(a)) return;
+    const beyond = perms.filter((p) => !a.user.permissions.has(p));
+    if (beyond.length) throw forbidden(`Only an administrator can ${verb} a role with permissions you do not have yourself: ${beyond.map((p) => PERMISSIONS[p as keyof typeof PERMISSIONS]).join('; ')}`);
+  };
+  const checkName = async (db: import('../../db/tx.js').Db, tenantId: string, name: string, exceptKey?: string) => {
+    if (SYSTEM_ROLES.some((r) => r.name.toLowerCase() === name.toLowerCase())) throw conflict(`"${name}" is the name of a built-in role; choose another`);
+    const dup = await db.query('SELECT 1 FROM tenant_roles WHERE tenant_id=$1 AND lower(name)=lower($2) AND key IS DISTINCT FROM $3', [tenantId, name, exceptKey ?? null]);
+    if (dup.rowCount) throw conflict(`A role named "${name}" already exists`);
+  };
+
+  app.post('/roles', async (req, reply) => {
+    const a = tenantActor(req, 'users.manage');
+    const b = RoleBody.parse(req.body);
+    checkPermissions(a, b.permissions, 'create');
+    const out = await a.tx(async (db) => {
+      await checkName(db, a.tenantId, b.name);
+      const base = `custom:${b.name.toLowerCase().normalize('NFKD').replace(/[^a-z0-9]+/g, '_').replace(/^_+|_+$/g, '').slice(0, 40) || 'role'}`;
+      let key = base;
+      for (let i = 2; (await db.query('SELECT 1 FROM tenant_roles WHERE tenant_id=$1 AND key=$2', [a.tenantId, key])).rowCount; i++) key = `${base}_${i}`;
+      await db.query(`INSERT INTO tenant_roles (tenant_id, key, name, description, permissions, created_by, updated_by) VALUES ($1,$2,$3,$4,$5,$6,$6)`,
+        [a.tenantId, key, b.name, b.description || null, b.permissions, a.user.userId]);
+      await audit(db, { ...a.auditBase, action: 'role.created', category: 'security', targetType: 'role', targetId: key, metadata: { name: b.name, permissions: b.permissions } });
+      return { key };
+    });
+    reply.code(201);
+    return out;
+  });
+
+  app.patch('/roles/:key', async (req) => {
+    const a = tenantActor(req, 'users.manage');
+    const { key } = z.object({ key: z.string().regex(/^custom:[a-z0-9_]+$/, 'Built-in roles cannot be changed') }).parse(req.params);
+    const b = RoleBody.partial().parse(req.body);
+    return a.tx(async (db) => {
+      const cur = (await db.query<{ name: string; description: string | null; permissions: string[] }>('SELECT name, description, permissions FROM tenant_roles WHERE tenant_id=$1 AND key=$2 FOR UPDATE',
+        [a.tenantId, key])).rows[0];
+      if (!cur) throw notFound('Role not found');
+      checkPermissions(a, cur.permissions, 'change');                 // someone who couldn't grant the role can't edit it
+      if (b.permissions) checkPermissions(a, b.permissions, 'change');
+      if (b.name && b.name !== cur.name) await checkName(db, a.tenantId, b.name, key);
+      const added = b.permissions ? b.permissions.filter((p) => !cur.permissions.includes(p)) : [];
+      const removed = b.permissions ? cur.permissions.filter((p) => !b.permissions!.includes(p)) : [];
+      await db.query(`UPDATE tenant_roles SET name=coalesce($3,name), description=CASE WHEN $4::boolean THEN $5 ELSE description END, permissions=coalesce($6,permissions),
+          updated_by=$7, updated_at=now() WHERE tenant_id=$1 AND key=$2`,
+        [a.tenantId, key, b.name ?? null, b.description !== undefined, b.description || null, b.permissions ?? null, a.user.userId]);
+      let signedOut = 0;
+      if (added.length || removed.length) {
+        const holders = (await db.query<{ user_id: string }>('SELECT DISTINCT user_id FROM user_roles WHERE tenant_id=$1 AND role_key=$2', [a.tenantId, key])).rows;
+        for (const h of holders) await revokeAllSessionsForUser(db, h.user_id);
+        signedOut = holders.length;
+      }
+      await audit(db, { ...a.auditBase, action: 'role.updated', category: 'security', targetType: 'role', targetId: key,
+        metadata: { name: b.name && b.name !== cur.name ? { from: cur.name, to: b.name } : undefined, added, removed, holdersSignedOut: signedOut } });
+      return { ok: true, holdersSignedOut: signedOut };
+    });
+  });
+
+  app.delete('/roles/:key', async (req) => {
+    const a = tenantActor(req, 'users.manage');
+    const { key } = z.object({ key: z.string().regex(/^custom:[a-z0-9_]+$/, 'Built-in roles cannot be deleted') }).parse(req.params);
+    return a.tx(async (db) => {
+      const cur = (await db.query<{ name: string; permissions: string[] }>('SELECT name, permissions FROM tenant_roles WHERE tenant_id=$1 AND key=$2 FOR UPDATE', [a.tenantId, key])).rows[0];
+      if (!cur) throw notFound('Role not found');
+      checkPermissions(a, cur.permissions, 'delete');
+      const n = Number((await db.query<{ n: string }>('SELECT count(DISTINCT user_id) AS n FROM user_roles WHERE tenant_id=$1 AND role_key=$2', [a.tenantId, key])).rows[0]!.n);
+      if (n) throw conflict(`${n} ${n === 1 ? 'person has' : 'people have'} this role; remove it from them first`);
+      await db.query('DELETE FROM tenant_roles WHERE tenant_id=$1 AND key=$2', [a.tenantId, key]);
+      await audit(db, { ...a.auditBase, action: 'role.deleted', category: 'security', targetType: 'role', targetId: key, metadata: { name: cur.name, permissions: cur.permissions } });
+      return { ok: true };
+    });
   });
 
   app.get('/users', async (req) => {

@@ -123,7 +123,7 @@ export async function mfaRoutes(app: FastifyInstance, opts: { publicConfig: Publ
     const { u, tenantId, base } = actor(req);
     const body = z.object({ password: z.string().min(1), code: Code }).parse(req.body);
     return withTenant(pool, tenantId, async (db) => {
-      if (mfaRequiredFor(u.roles, await effectiveMfaLevel(db, tenantId))) throw forbidden('Your role requires two-factor authentication; it cannot be turned off');
+      if (mfaRequiredFor(u.roles, u.permissions, await effectiveMfaLevel(db, tenantId))) throw forbidden('Your role requires two-factor authentication; it cannot be turned off');
       const pw = (await db.query<{ password_hash: string | null }>('SELECT password_hash FROM users WHERE tenant_id=$1 AND id=$2', [tenantId, u.userId])).rows[0];
       if (!(await verifyPassword(body.password, pw?.password_hash ?? null))) throw badRequest('Password is incorrect');
       if (!(await checkCode(db, u.userId, body.code))) throw new AppError(400, 'mfa_invalid', 'That code is not valid');
