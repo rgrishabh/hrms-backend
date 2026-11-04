@@ -79,6 +79,20 @@ export function paidPerStretch(stretches: { days: number; lop: number }[], adjus
   return paid;
 }
 
+/**
+ * Which run pays a leaver's salary for the month. If a regular run has already committed it (submitted or later), that
+ * run does and this returns true. If a regular run has them in a computed result that can still change, the F&F run takes
+ * over and the regular run must be recomputed, which leaves them out.
+ */
+async function settleWithRegularRun(db: Db, tenantId: string, legalEntityId: string, period: string, employeeId: string) {
+  const regular = (await db.query<{ id: string; status: string }>(`SELECT r.id, r.status FROM payroll_runs r JOIN payroll_items i ON i.tenant_id=r.tenant_id AND i.run_id=r.id AND i.employee_id=$4
+    WHERE r.tenant_id=$1 AND r.legal_entity_id=$2 AND r.period=$3 AND r.kind='regular' AND r.status <> 'cancelled' FOR UPDATE OF r`, [tenantId, legalEntityId, period, employeeId])).rows[0];
+  if (!regular) return false;
+  if (['pending', 'approved', 'finalized', 'paid'].includes(regular.status)) return true;
+  await db.query(`UPDATE payroll_runs SET status='draft' WHERE tenant_id=$1 AND id=$2 AND status='computed'`, [tenantId, regular.id]);
+  return false;
+}
+
 interface EmpForPay { id: string; employee_code: string; name: string; date_of_joining: string; exit_date: string | null; branch_state: string; pf_excluded: boolean | null; tax_regime: string | null; pt_state: string | null }
 
 /** (Re)computes every item of a draft/computed run. Deterministic for the same inputs. */
@@ -99,8 +113,12 @@ export async function computeRun(db: Db, tenantId: string, runId: string) {
       b.state AS branch_state, s.pf_excluded, s.tax_regime, s.pt_state
     FROM employees e JOIN branches b ON b.tenant_id=e.tenant_id AND b.id=e.branch_id LEFT JOIN employee_statutory s ON s.tenant_id=e.tenant_id AND s.employee_id=e.id
     WHERE e.tenant_id=$1 AND e.legal_entity_id=$2 AND e.date_of_joining <= $4::date AND (e.exit_date IS NULL OR e.exit_date >= $3::date)
-      AND e.status IN ('active','on_notice','exited') AND ($5::uuid IS NULL OR e.id=$5) ORDER BY e.employee_code`,
-    [tenantId, run.legal_entity_id, p.start, p.end, run.kind === 'fnf' ? run.employee_id : null])).rows;
+      AND e.status IN ('active','on_notice','exited') AND ($5::uuid IS NULL OR e.id=$5)
+      -- A leaver's month belongs to their F&F run, unless that run has left the salary to this one (its item has no salary).
+      AND ($7 <> 'regular' OR NOT EXISTS (SELECT 1 FROM payroll_runs f LEFT JOIN payroll_items fi ON fi.tenant_id=f.tenant_id AND fi.run_id=f.id AND fi.employee_id=e.id
+        WHERE f.tenant_id=e.tenant_id AND f.kind='fnf' AND f.employee_id=e.id AND f.period=$6 AND f.status <> 'cancelled' AND (fi.id IS NULL OR fi.salary_id IS NOT NULL)))
+      ORDER BY e.employee_code`,
+    [tenantId, run.legal_entity_id, p.start, p.end, run.kind === 'fnf' ? run.employee_id : null, run.period, run.kind])).rows;
   await db.query('DELETE FROM payroll_items WHERE tenant_id=$1 AND run_id=$2', [tenantId, runId]);
   const totals = { employees: 0, gross: 0, deductions: 0, net: 0, employerCost: 0, held: 0 };
   let warningCount = 0;
@@ -120,7 +138,9 @@ export async function computeRun(db: Db, tenantId: string, runId: string) {
     if (versions[0]!.start > from) warnings.push(`no salary before ${versions[0]!.start}: earlier days are unpaid`);
     // Loss of pay falls on the stretch where it happened; each stretch is paid at its own rate.
     const stretches = versions.map((v) => ({ ...v, days: daysBetween(v.start, v.end) + 1, lop: 0 }));
-    if (attendanceOn) {
+    const inRegularRun = run.kind === 'fnf' && await settleWithRegularRun(db, tenantId, run.legal_entity_id, run.period, e.id);
+    if (inRegularRun) warnings.push(`salary for ${run.period} is in the regular run: this run pays its adjustments only`);
+    if (attendanceOn && !inRegularRun) {
       let missingPunch = 0; let uncalculated = 0;
       for (const v of stretches) {
         const l = await lossOfPay(db, tenantId, e.id, v.start, v.end);
@@ -132,8 +152,8 @@ export async function computeRun(db: Db, tenantId: string, runId: string) {
     const adj = (await db.query<{ kind: 'earning' | 'deduction' | 'lop_days'; label: string; amount: string; taxable: boolean }>(
       'SELECT kind, label, amount::text, taxable FROM payroll_adjustments WHERE tenant_id=$1 AND run_id=$2 AND employee_id=$3 ORDER BY created_at', [tenantId, runId, e.id])).rows;
     const lopAdjustment = adj.filter((a) => a.kind === 'lop_days').reduce((s, a) => s + Number(a.amount), 0);
-    const lop = Math.max(0, stretches.reduce((t, v) => t + v.lop, 0) + lopAdjustment);
-    const paid = paidPerStretch(stretches, lopAdjustment);
+    const lop = inRegularRun ? 0 : Math.max(0, stretches.reduce((t, v) => t + v.lop, 0) + lopAdjustment);
+    const paid = inRegularRun ? stretches.map(() => 0) : paidPerStretch(stretches, lopAdjustment);
     const paidDays = paid.reduce((t, d) => t + d, 0);
     const adjustments = adj.filter((a) => a.kind !== 'lop_days').map((a) => ({ kind: a.kind as 'earning' | 'deduction', label: a.label, amount: Number(a.amount), taxable: a.taxable }));
     if (overtimeOn) {
@@ -149,6 +169,7 @@ export async function computeRun(db: Db, tenantId: string, runId: string) {
       ORDER BY (effective_from <= $3::date) DESC, CASE WHEN effective_from <= $3::date THEN effective_from END DESC, effective_from ASC LIMIT 1`, [tenantId, e.id, cpStart, p.end])).rows[0];
     const input: CalcInput = {
       month: p.month, esiCoverageAmounts: esiCover?.amounts, daysInPeriod: p.days, paidDays, components, amounts: stretches[stretches.length - 1]!.amounts,
+      supplementary: inRegularRun,
       ...(stretches.length > 1 ? { segments: stretches.map((v, x) => ({ amounts: v.amounts, paidDays: paid[x]!, days: v.days, from: v.start })) } : {}),
       adjustments,
       statutory: { pfExcluded: !!e.pf_excluded, regime, ptState },
@@ -168,7 +189,7 @@ export async function computeRun(db: Db, tenantId: string, runId: string) {
     warnings.push(...r.warnings);
     await db.query(`INSERT INTO payroll_items (tenant_id, run_id, employee_id, salary_id, days_in_period, employed_days, lop_days, paid_days, lines, gross, deductions, net, employer_cost, warnings, hold, calc_version)
       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16)`,
-      [tenantId, runId, e.id, stretches[stretches.length - 1]!.id, p.days, employed, lop, paidDays, JSON.stringify(r.lines), r.gross, r.deductions, r.net, r.employerCost, JSON.stringify(warnings), r.net < 0, CALC_VERSION]);
+      [tenantId, runId, e.id, inRegularRun ? null : stretches[stretches.length - 1]!.id, p.days, employed, lop, paidDays, JSON.stringify(r.lines), r.gross, r.deductions, r.net, r.employerCost, JSON.stringify(warnings), r.net < 0, CALC_VERSION]);
     totals.employees++; totals.gross += r.gross; totals.deductions += r.deductions; totals.net += r.net; totals.employerCost += r.employerCost; if (r.net < 0) totals.held++;
     warningCount += warnings.length;
   }

@@ -7,7 +7,7 @@ import { z } from 'zod';
  * is missing the deduction is NOT guessed — a warning is raised instead.
  * CALC_VERSION changes whenever results for the same inputs would change.
  */
-export const CALC_VERSION = 4;
+export const CALC_VERSION = 5;
 
 const pct = z.number().min(0).max(100);
 const money = z.number().min(0).max(1e9);
@@ -46,6 +46,11 @@ export interface CalcInput {
    * of the period's paid days and `days` its length. Without it, `amounts` and `paidDays` apply to the whole period.
    */
   segments?: SalarySegment[];
+  /**
+   * A run paying only adjustments because another run of the month holds the salary: no salary lines, no second PT or LWF,
+   * and `amounts` is only the base the year's tax on one-offs is worked out from.
+   */
+  supplementary?: boolean;
   /** Salary at the start of the ESI contribution period, which decides cover for the whole period. Default: `amounts`. */
   esiCoverageAmounts?: Record<string, number>;
   /** Which kinds the deployment expects (warn when the rule is missing). */
@@ -95,6 +100,11 @@ function esiFullWage(comps: Component[], amounts: Record<string, number>) {
   return comps.filter((c) => c.kind === 'earning' && c.esi_wage).reduce((s, c) => s.plus(full.get(c.code) ?? 0), new Decimal(0));
 }
 
+function taxableFullMonth(comps: Component[], amounts: Record<string, number>) {
+  const full = componentAmounts(comps, amounts, new Decimal(1));
+  return comps.filter((c) => c.kind === 'earning' && c.taxable).reduce((s, c) => s.plus(full.get(c.code) ?? 0), new Decimal(0));
+}
+
 /** The year's tax on an annual taxable income: slabs, rebate at or under the limit, then cess. */
 function annualTax(income: Decimal, t: TdsParams) {
   const taxable = Decimal.max(0, income.minus(t.standardDeduction));
@@ -109,7 +119,7 @@ export function calculate(i: CalcInput): CalcResult {
   const segments = i.segments ?? [{ amounts: i.amounts, paidDays: i.paidDays, days: 1 }];
   const totalDays = segments.reduce((t, s) => t + s.days, 0);
   const amount = new Map<string, Decimal>();
-  for (const seg of segments) {
+  for (const seg of i.supplementary ? [] : segments) {
     const factor = i.daysInPeriod > 0 ? new Decimal(seg.paidDays).div(i.daysInPeriod) : new Decimal(0);
     const segWarnings: string[] = [];
     for (const [code, a] of componentAmounts(comps, seg.amounts, factor, segWarnings, new Decimal(seg.days).div(totalDays))) amount.set(code, (amount.get(code) ?? new Decimal(0)).plus(a));
@@ -154,7 +164,8 @@ export function calculate(i: CalcInput): CalcResult {
     lines.push({ code: 'ESI_ER', name: 'ESI (employer)', kind: 'employer', amount: n(rnd(esiContribution.times(e.employerRate).div(100))) });
   }
   // Professional tax (state)
-  if (!i.statutory.ptState) { if (i.expect.includes('pt')) warnings.push('PT: no state for this employee'); }
+  if (i.supplementary) { /* charged once for the month, with the salary */ }
+  else if (!i.statutory.ptState) { if (i.expect.includes('pt')) warnings.push('PT: no state for this employee'); }
   else if (!i.rules.pt) missingRule('pt', `PT (${i.statutory.ptState})`);
   else {
     const mm = String(i.month).padStart(2, '0');
@@ -163,7 +174,7 @@ export function calculate(i: CalcInput): CalcResult {
     if (pt > 0) lines.push({ code: 'PT', name: `Professional tax (${i.statutory.ptState})`, kind: 'deduction', amount: pt });
   }
   // LWF (state, specific months)
-  if (i.rules.lwf && i.rules.lwf.months.includes(i.month)) {
+  if (!i.supplementary && i.rules.lwf && i.rules.lwf.months.includes(i.month)) {
     if (i.rules.lwf.employee > 0) lines.push({ code: 'LWF_EE', name: 'Labour welfare fund (employee)', kind: 'deduction', amount: i.rules.lwf.employee });
     if (i.rules.lwf.employer > 0) lines.push({ code: 'LWF_ER', name: 'Labour welfare fund (employer)', kind: 'employer', amount: i.rules.lwf.employer });
   }
@@ -173,9 +184,11 @@ export function calculate(i: CalcInput): CalcResult {
   if (!i.rules.tds) missingRule('tds', `TDS (${i.statutory.regime} regime)`);
   else {
     const t = i.rules.tds;
-    const regular = annualTax(taxableMonthly.times(12), t);
-    const withOneOff = annualTax(taxableMonthly.times(12).plus(taxableOneOff), t);
-    const monthly = r0(regular.tax.div(12).plus(withOneOff.tax.minus(regular.tax)));
+    const regularMonthly = i.supplementary ? taxableFullMonth(comps, i.amounts) : taxableMonthly;
+    const regular = annualTax(regularMonthly.times(12), t);
+    const withOneOff = annualTax(regularMonthly.times(12).plus(taxableOneOff), t);
+    const extra = withOneOff.tax.minus(regular.tax);
+    const monthly = r0(i.supplementary ? extra : regular.tax.div(12).plus(extra));
     if (monthly.gt(0)) lines.push({ code: 'TDS', name: 'Income tax (TDS)', kind: 'deduction', amount: n(monthly), basis: `projected taxable ${n(r0(withOneOff.taxable))}` });
   }
 

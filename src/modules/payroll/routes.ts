@@ -265,6 +265,10 @@ export async function payrollRoutes(app: FastifyInstance) {
       if (b.kind === 'fnf') {
         const sep = await db.query(`SELECT 1 FROM separations WHERE tenant_id=$1 AND employee_id=$2 AND status IN ('approved','completed')`, [a.tenantId, b.employeeId]);
         if (!sep.rowCount) throw conflict('F&F needs an approved separation');
+        // One settlement per leaver: the employee row serializes two people creating it at once.
+        await db.query('SELECT 1 FROM employees WHERE tenant_id=$1 AND id=$2 FOR UPDATE', [a.tenantId, b.employeeId]);
+        const existing = await db.query<{ period: string }>(`SELECT period FROM payroll_runs WHERE tenant_id=$1 AND kind='fnf' AND employee_id=$2 AND status <> 'cancelled' LIMIT 1`, [a.tenantId, b.employeeId]);
+        if (existing.rowCount) throw conflict(`This employee already has an F&F run for ${existing.rows[0]!.period}; cancel it before creating another`);
       }
       const id = (await db.query<{ id: string }>(`INSERT INTO payroll_runs (tenant_id, legal_entity_id, period, kind, employee_id, created_by) VALUES ($1,$2,$3,$4,$5,$6) RETURNING id`,
         [a.tenantId, b.legalEntityId, b.period, b.kind, b.employeeId ?? null, a.user.userId])).rows[0]!.id;

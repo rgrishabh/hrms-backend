@@ -126,3 +126,75 @@ describe('F-6 salary change within the month', () => {
     expect(i!.warnings.join(' ')).toMatch(/2026-07-11/);
   });
 });
+
+describe('F-3 full-and-final and regular runs never pay the same days', () => {
+  let W: TenantFixture; let p: Client;
+  const leaver = async (who: string, lwd: string) => {
+    const id = W.users[who]!.employeeId!;
+    await activeSalary(W, id, '2024-01-01', { BASIC: 30000 });
+    await ownerQuery(`UPDATE employees SET exit_date=$2, status='on_notice' WHERE id=$1`, [id, lwd]);
+    await ownerQuery(`INSERT INTO separations (tenant_id, employee_id, kind, reason, notice_date, notice_days_required, requested_lwd, approved_lwd, status, initiated_by)
+      VALUES ($1,$2,'resignation','Fixture','2025-01-01',30,$3,$3,'approved',$4)`, [W.id, id, lwd, W.users.hr!.id]);
+    return id;
+  };
+  beforeAll(async () => {
+    W = await createTenant();
+    p = await Client.login(app, W.host, W.users.payroll!.email);
+    await seedComponents(W, [{ code: 'FLAT', taxable: false, esi: false }]);
+    await activeRule(W, 'pt', 'Maharashtra', { slabs: [{ upTo: null, amount: 200 }] });
+    await activeRule(W, 'lwf', 'Maharashtra', { employee: 12, employer: 36, months: [3, 6] });
+  });
+
+  it('an open F&F run takes the leaver out of the regular run for that month', async () => {
+    const id = await leaver('employee', '2026-03-15');
+    const fnf = await createRun(p, W, '2026-03', { kind: 'fnf', employeeId: id });
+    await compute(p, fnf);
+    expect(lineOf(await itemOf(p, fnf, id), 'BASIC')).toBe(Math.round(15 / 31 * 30000));
+    const reg = await createRun(p, W, '2026-03');
+    await compute(p, reg);
+    expect(await itemOf(p, reg, id)).toBeUndefined();
+  });
+
+  it('computing F&F sends a computed regular run back to be recomputed without the leaver', async () => {
+    const id = await leaver('other', '2026-04-10');
+    const reg = await createRun(p, W, '2026-04');
+    await compute(p, reg);
+    expect(await itemOf(p, reg, id)).toBeTruthy();
+    const fnf = await createRun(p, W, '2026-04', { kind: 'fnf', employeeId: id });
+    await compute(p, fnf);
+    expect((await p.get(`/api/v1/payroll/runs/${reg}`)).json().status).toBe('draft');
+    expect((await p.post(`/api/v1/payroll/runs/${reg}/submit`)).statusCode).toBe(409);
+    await compute(p, reg);
+    expect(await itemOf(p, reg, id)).toBeUndefined();
+  });
+
+  it('when the regular run has the salary, F&F pays only its adjustments and no second PT or LWF', async () => {
+    const id = await leaver('manager', '2026-06-10');
+    const reg = await createRun(p, W, '2026-06');
+    await compute(p, reg);
+    const first = await itemOf(p, reg, id);
+    expect(first!.paid_days).toBe('10.00');
+    await p.post(`/api/v1/payroll/runs/${reg}/acknowledge-warnings`, { note: 'Fixture warnings' });
+    expect((await p.post(`/api/v1/payroll/runs/${reg}/submit`)).statusCode).toBe(200);
+    const fnf = await createRun(p, W, '2026-06', { kind: 'fnf', employeeId: id });
+    expect((await p.post(`/api/v1/payroll/runs/${fnf}/adjustments`, { employeeId: id, kind: 'earning', label: 'Leave encashment', amount: 5000 })).statusCode).toBe(201);
+    await compute(p, fnf);
+    const i = await itemOf(p, fnf, id);
+    expect(i!.paid_days).toBe('0.00');
+    expect(i!.gross).toBe('5000.00');
+    expect(lineOf(i, 'BASIC')).toBeUndefined();
+    expect(lineOf(i, 'PT')).toBeUndefined();
+    expect(lineOf(i, 'LWF_EE')).toBeUndefined();
+    expect(i!.warnings.join(' ')).toMatch(/regular run/);
+  });
+
+  it('allows one F&F run per employee until it is cancelled', async () => {
+    const id = W.users.hr!.employeeId!;
+    await leaver('hr', '2026-07-10');
+    const fnf = await createRun(p, W, '2026-07', { kind: 'fnf', employeeId: id });
+    const dup = await p.post('/api/v1/payroll/runs', { period: '2026-07', legalEntityId: W.legalEntityId, kind: 'fnf', employeeId: id });
+    expect(dup.statusCode).toBe(409);
+    expect((await p.post(`/api/v1/payroll/runs/${fnf}/cancel`)).statusCode).toBe(200);
+    expect((await p.post('/api/v1/payroll/runs', { period: '2026-07', legalEntityId: W.legalEntityId, kind: 'fnf', employeeId: id })).statusCode).toBe(201);
+  });
+});
