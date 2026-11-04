@@ -8,6 +8,7 @@ import {
   EmployeeInput, COLS, DIRECTORY_SELECT, FULL_SELECT, FROM_JOINS, EMPLOYEE_STATUSES,
   insertEmployee, validateReferences, findDuplicates,
 } from './service.js';
+import { profileRoutes } from './profile.js';
 
 const ListQuery = PageQuery.extend({
   search: z.string().trim().max(100).optional(),
@@ -25,6 +26,7 @@ const BankBody = z.object({
 
 export async function employeeRoutes(app: FastifyInstance) {
   const { cipher } = app.deps;
+  await profileRoutes(app);
 
   app.get('/', async (req) => {
     const a = tenantActorAny(req, 'employees.read', 'employees.directory');

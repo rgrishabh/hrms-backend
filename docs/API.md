@@ -37,6 +37,9 @@ Base path `/api/v1`. JSON in and out. Each installation serves one organization;
 | POST `/employees/import` | employees.manage | `{dryRun, rows[]}` (≤ 2000), all-or-nothing |
 | GET `/employees/:id/history` | employees.read | Field-level change history |
 | GET/PUT `/employees/:id/bank-account` | `employees.bank.read` (or self) / `employees.bank.manage` | Masked view (audited) / encrypted update |
+| GET `/employees/:id/profile` | profile.self (own) / employees.read | Personal details `{sections: {contacts, addresses, nominees, education, experience}, pending, missing, edit}`; see EMPLOYEE_RECORD.md |
+| PUT `/employees/:id/profile/:section` | employees.manage / profile.self (own) | Replace a section `{items, note?}`: applied (200), or for the employee's own nominees, education and employment history a change for HR approval (202 `{changeId, approvalId}`) |
+| GET `/employees/profile-changes/:id` · POST `/employees/profile-changes/:id/withdraw` | employee / profile.approve / employees.read · employee | Proposed change with the section as it is now · withdraw while pending |
 | **Attendance** | | |
 | POST `/attendance/punch` | `attendance.self` + module | `{channel, idempotencyKey, direction?, latitude?, longitude?}` |
 | GET `/attendance/me?from&to`, `/attendance/me/today` | attendance.self | Own days + raw events |

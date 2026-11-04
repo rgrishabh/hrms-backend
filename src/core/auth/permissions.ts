@@ -19,6 +19,8 @@ export const PERMISSIONS = {
   'employees.manage': 'Create and update employee records',
   'employees.bank.read': 'View masked bank details',
   'employees.bank.manage': 'Update bank details',
+  'profile.self': 'Keep your own personal details up to date (nominee, education and employment history changes need HR approval)',
+  'profile.approve': "Approve employees' changes to their nominees, education and employment history",
   // attendance
   'attendance.self': 'Clock in/out and view own attendance',
   'attendance.team.read': 'View attendance of reporting team',
@@ -104,7 +106,7 @@ export type Permission = keyof typeof PERMISSIONS;
 export const ALL_PERMISSIONS = Object.keys(PERMISSIONS) as Permission[];
 
 const P = (...p: Permission[]) => p;
-const SELF = P('attendance.self', 'employees.directory', 'leave.self', 'documents.self', 'expenses.self', 'competency.self', 'policies.self', 'lifecycle.self', 'payslips.self', 'cases.self', 'performance.self', 'assets.self', 'overtime.self', 'field_duty.self', 'travel.self', 'loans.self');
+const SELF = P('attendance.self', 'employees.directory', 'leave.self', 'documents.self', 'expenses.self', 'competency.self', 'policies.self', 'lifecycle.self', 'payslips.self', 'cases.self', 'performance.self', 'assets.self', 'overtime.self', 'field_duty.self', 'travel.self', 'loans.self', 'profile.self');
 
 export interface RoleDefinition { key: string; name: string; scope: 'tenant'; permissions: readonly Permission[] }
 
@@ -118,10 +120,10 @@ export const SYSTEM_ROLES: readonly RoleDefinition[] = [
     'policies.read', 'policies.manage', 'policies.publish',
     'recruitment.requisition', 'recruitment.read', 'recruitment.manage', 'recruitment.approve', 'recruitment.compensation',
     'lifecycle.read', 'lifecycle.manage', 'payroll.read', 'grievance.manage', 'posh.admin', 'performance.manage', 'assets.manage',
-    'overtime.read', 'overtime.approve', 'overtime.manage', 'field_duty.read', 'field_duty.approve', 'field_duty.manage', 'travel.read', 'loans.read') },
+    'overtime.read', 'overtime.approve', 'overtime.manage', 'field_duty.read', 'field_duty.approve', 'field_duty.manage', 'travel.read', 'loans.read', 'profile.approve') },
   { key: 'hr_executive', name: 'HR Executive', scope: 'tenant', permissions: P(...SELF, 'org.read', 'employees.read', 'employees.manage',
     'attendance.read', 'attendance.recalculate', 'attendance.approve', 'leave.read', 'leave.approve', 'documents.read', 'documents.manage', 'training.manage', 'policies.read', 'policies.manage',
-    'recruitment.requisition', 'recruitment.read', 'recruitment.manage', 'lifecycle.read', 'lifecycle.manage', 'overtime.read', 'field_duty.read', 'field_duty.approve') },
+    'recruitment.requisition', 'recruitment.read', 'recruitment.manage', 'lifecycle.read', 'lifecycle.manage', 'overtime.read', 'field_duty.read', 'field_duty.approve', 'profile.approve') },
   { key: 'payroll_manager', name: 'Payroll Manager', scope: 'tenant', permissions: P(...SELF, 'org.read', 'employees.read', 'employees.bank.read', 'payroll.read', 'payroll.manage', 'payroll.statutory',
     'attendance.read', 'attendance.lock', 'leave.read', 'documents.read', 'expenses.read', 'expenses.pay', 'overtime.read', 'field_duty.read', 'travel.read', 'loans.read', 'loans.manage', 'accounting.export') },
   { key: 'finance_manager', name: 'Finance Manager', scope: 'tenant', permissions: P(...SELF, 'org.read', 'recruitment.compensation', 'payroll.read', 'payroll.approve', 'payroll.statutory', 'expenses.read', 'expenses.approve', 'expenses.pay', 'expenses.manage', 'travel.read', 'travel.approve', 'travel.manage', 'loans.read', 'loans.approve', 'accounting.export', 'accounting.configure') },
