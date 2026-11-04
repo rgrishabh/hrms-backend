@@ -12,8 +12,8 @@ Source: `apps/api/src/modules/attendance/calc.ts` (pure function) and `service.t
 | Input | Source | Override levels |
 |---|---|---|
 | Timezone | `general.timezone` (default Asia/Kolkata) | tenant, branch |
-| Shift | Latest `shift_assignments` row effective on the date | — |
-| Day type | Non-optional holiday (tenant-wide or the employee's branch) → `holiday`; weekday in `attendance.weekly_offs` → `weekly_off`; else `working` | weekly offs: tenant, branch |
+| Shift | A one-day roster override, else the rotating roster the employee follows on the date, else the latest `shift_assignments` row effective on the date (see **Rotating rosters**) | — |
+| Day type | Non-optional holiday (tenant-wide or the employee's branch) → `holiday`; a rostered day off (roster or override) → `weekly_off`; on dates without a roster, weekday in `attendance.weekly_offs` → `weekly_off`; else `working` | weekly offs: tenant, branch |
 | Repeat-punch gap | `attendance.min_punch_gap_seconds` (default 60) | tenant |
 | Overtime | `attendance.overtime_enabled` (default off) + shift `overtime_after_minutes` | tenant |
 
@@ -44,6 +44,33 @@ Source: `apps/api/src/modules/attendance/calc.ts` (pure function) and `service.t
 
 Shift, holiday and settings changes do **not** recalculate automatically. HR recalculates the affected range.
 
+## Rotating rosters
+
+For laboratories and instrument rooms that run around the clock or in rotating shifts. Code: `modules/attendance/roster.ts` (schedule) and `roster-routes.ts`. Tests: `test/rosters.test.ts`.
+
+**Pattern.** A pattern is a cycle of 1 to 56 days. Each day is a shift or a day off, for example `GEN GEN NIGHT NIGHT off off`. Its days are fixed once anyone has followed it, so past results stay explainable; to change a rotation, create a new pattern and move people to it. The name and status can always change.
+
+**Assignment.** Employees follow a pattern from a date. They start on a chosen day of the cycle, so crews can be staggered: in a 14-day two-shift pattern, crew B starts on day 8. Each new roster ends the previous one the day before it starts, and withdraws any that hadn't started yet. A fixed shift assignment ends the roster from its first day. **End roster** returns people to their fixed shift.
+
+**One-day override.** HR can set a single day to a different shift or to a day off, with a reason: a swap, cover for someone sick, or an extra day off. An override beats the roster, and it can be removed.
+
+**Precedence for each date:** override, then roster, then fixed shift assignment.
+- On a date covered by a roster or an override, the roster decides the days off. The weekly-off setting doesn't apply, so a Sunday can be a working day.
+- Non-optional holidays still apply.
+- On a rostered day off, the day is read in the window of the last shift worked before it in the cycle. Punches on a day off still count, and a night crew's off day uses the night window.
+
+**Leave** uses the same schedule. Leave on a rostered day off isn't charged, and leave on a rostered working Sunday is.
+
+**Recalculation.** Assigning, ending or overriding recalculates the affected days up to today, and locked periods are never touched. Changes can reach back at most 31 days and never into a locked period.
+
+**Roster view:** `GET /attendance/roster`, at most 42 days.
+- People with `attendance.read` or `attendance.configure` see everyone.
+- Managers with `attendance.team.read` see their reporting team and themselves.
+- Everyone else sees only themselves.
+- Each cell shows the shift, or a day off, and whether a holiday, roster or override decided it.
+
+Not built: employee-initiated swap requests with approval.
+
 ## Corrections (regularization)
 
 An employee requests in and/or out times for a date within `attendance.regularization_window_days` (default 7). It can't be a future date or a locked date, and times must fall on or next to the work date. Routing: the employee's reporting manager (if they have a login), otherwise anyone with `attendance.approve`. On approval, new `regularization` events are added (original punches are kept) and the date is recalculated.
@@ -54,5 +81,5 @@ An employee requests in and/or out times for a date within `attendance.regulariz
 
 ## Known limitations
 
-- Different shifts on consecutive days can make punch windows overlap or leave a gap (e.g. NIGHT then GEN the next day). The punch is counted in both overlapping windows. Rotating rosters will need explicit window boundaries.
+- Different shifts on consecutive days can make punch windows overlap or leave a gap (e.g. NIGHT then GEN the next day). The punch is counted in both overlapping windows. This also applies at a roster's shift changes (e.g. NIGHT followed by MORN); patterns normally put a day off between them.
 - The `attendance.close_day` job (daily 01:30) materializes the previous day for everyone; between its runs, days with no events show as "Not calculated".

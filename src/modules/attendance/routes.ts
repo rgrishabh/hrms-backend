@@ -11,6 +11,7 @@ import type { Db } from '../../db/tx.js';
 import { employeeTimezone, lockedDates, recalcForEvent, recalculateRange, recordEvent, teamEmployeeIds } from './service.js';
 import { daysBetween, localDate, addDays, zonedToInstant, todaysPunches } from './time.js';
 import { evaluateFeatures } from '../../core/features/state.js';
+import { rosterRoutes, endRosters } from './roster-routes.js';
 
 const TimeOfDay = z.string().regex(/^([01]\d|2[0-3]):[0-5]\d$/, 'Use HH:MM (24-hour)');
 const ShiftBody = z.object({
@@ -34,6 +35,7 @@ async function assertCanViewEmployee(db: Db, a: TenantActor, employeeId: string)
 
 export async function attendanceRoutes(app: FastifyInstance) {
   gateFeatures(app, 'attendance');
+  await rosterRoutes(app);
   // Regularization approval effects.
   registerApprovalHandler('attendance_regularization', {
     feature: 'attendance.regularization', label: 'Attendance correction', requesterLink: '/attendance/me',
@@ -295,6 +297,8 @@ export async function attendanceRoutes(app: FastifyInstance) {
       const s = await db.query(`SELECT 1 FROM shifts WHERE tenant_id=$1 AND id=$2 AND status='active'`, [a.tenantId, body.shiftId]);
       if (!s.rowCount) throw badRequest('Shift not found or inactive');
       if ((await lockedDates(db, a.tenantId, body.effectiveFrom, body.effectiveFrom)).size) throw conflict('Cannot change shifts starting inside a locked period');
+      // A fixed shift from this day replaces any rotating roster they follow from then on.
+      await endRosters(db, a.tenantId, body.employeeIds, addDays(body.effectiveFrom, -1));
       for (const empId of body.employeeIds) {
         // Close any open-ended or overlapping earlier assignment the day before the new one starts.
         await db.query(`UPDATE shift_assignments SET effective_to = $3::date - 1 WHERE tenant_id=$1 AND employee_id=$2
