@@ -1,4 +1,4 @@
-import type { FastifyInstance, FastifyReply } from 'fastify';
+import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import { z } from 'zod';
 import { withPlatformBypass, withTenant } from '../db/tx.js';
 import { hashPassword, verifyPassword, sha256 } from '../core/crypto/index.js';
@@ -41,7 +41,15 @@ export async function authRoutes(app: FastifyInstance, opts: { publicConfig: Pub
     return publicConfig;
   });
 
-  app.post('/auth/login', { config: { rateLimit: { max: env.AUTH_RATE_LIMIT_PER_MINUTE, timeWindow: '1 minute' } } }, async (req, reply) => {
+  // Per address (route config) and per account (preHandler, once the body is parsed): spreading guesses over many
+  // addresses does not get more of them, and the hashing cost of each attempt stays bounded for any one account.
+  const accountLimit = app.createRateLimit({ max: env.AUTH_ACCOUNT_RATE_LIMIT_PER_MINUTE, timeWindow: '1 minute',
+    keyGenerator: (req) => `login:${req.headers.host ?? ''}:${String((req.body as { email?: unknown } | null)?.email ?? '').trim().toLowerCase()}` });
+  const perAccount = async (req: FastifyRequest) => {
+    const r = await accountLimit(req);
+    if (!r.isAllowed && r.isExceeded) throw new AppError(429, 'rate_limited', 'Too many requests. Please slow down.');
+  };
+  app.post('/auth/login', { config: { rateLimit: { max: env.AUTH_RATE_LIMIT_PER_MINUTE, timeWindow: '1 minute' } }, preHandler: perAccount }, async (req, reply) => {
     const body = LoginBody.parse(req.body);
     const tenant = requireTenantHost(req);
     const tenantId = tenant.id;

@@ -1,3 +1,4 @@
+import { isIP } from 'node:net';
 import { z } from 'zod';
 
 /**
@@ -39,9 +40,22 @@ const schema = z.object({
   // sign-in and password endpoints have their own strict limits (AUTH_RATE_LIMIT_PER_MINUTE).
   RATE_LIMIT_PER_MINUTE: z.coerce.number().int().min(60).max(100000).default(3000),
   AUTH_RATE_LIMIT_PER_MINUTE: z.coerce.number().int().min(1).max(10000).default(20),
+  // Sign-in attempts on one account per minute, whatever address they come from.
+  AUTH_ACCOUNT_RATE_LIMIT_PER_MINUTE: z.coerce.number().int().min(1).max(10000).default(10),
   SESSION_TTL_HOURS: z.coerce.number().int().min(1).max(24 * 30).default(12),
   COOKIE_SECURE: bool('true'),
-  TRUST_PROXY: bool('false'),
+  // Whose X-Forwarded-For to believe: false, a number of proxy hops in front of the app, or comma-separated proxy
+  // addresses/CIDRs. Trusting every hop would let a client choose its own address, so `true` means one hop.
+  TRUST_PROXY: z.string().default('false').transform((v, ctx): false | number | string[] => {
+    const t = v.trim();
+    if (t === 'false' || t === '0' || t === '') return false;
+    if (t === 'true') return 1;
+    if (/^[0-9]+$/.test(t)) return Number(t);
+    const list = t.split(',').map((x) => x.trim()).filter(Boolean);
+    if (list.every((x) => isIP(x.split('/')[0]!) !== 0)) return list;
+    ctx.addIssue({ code: 'custom', message: 'Use false, a number of proxy hops, or comma-separated proxy addresses or CIDRs' });
+    return z.NEVER;
+  }),
   /** base64-encoded 32-byte key for field-level encryption (bank account numbers). */
   DATA_ENCRYPTION_KEY: z.string().refine((v) => Buffer.from(v, 'base64').length === 32,
     'DATA_ENCRYPTION_KEY must be base64 of exactly 32 bytes (generate: openssl rand -base64 32)'),

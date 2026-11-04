@@ -72,7 +72,8 @@ export async function buildApp(deps: AppDeps): Promise<FastifyInstance> {
       // Never log credentials or session material.
       redact: ['req.headers.cookie', 'req.headers.authorization', 'req.headers["x-device-key"]', 'req.headers["x-csrf-token"]', 'res.headers["set-cookie"]'],
     },
-    trustProxy: env.TRUST_PROXY,
+    // Fastify treats a bare number as "trust nothing", so a hop count is expressed as a function: believe that many hops.
+    trustProxy: typeof env.TRUST_PROXY === 'number' ? ((hops: number) => (_addr: string, hop: number) => hop < hops)(env.TRUST_PROXY) : env.TRUST_PROXY,
     genReqId: () => randomUUID(),
     bodyLimit: 1024 * 1024,
   });

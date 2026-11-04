@@ -97,3 +97,9 @@ A request is an approval request (`lab_authorization`) routed to holders of `com
 **Options:** require two holders of `employees.bank.manage`; add an approve permission; use `payroll.approve`.
 **Decision:** new `employees.bank.approve`, held by HR Admin and Finance Manager. Every change including the first entry goes through approval, and the proposer and the employee are excluded. The employee is told when it is proposed and when it applies.
 **Reason:** it works out of the box where one HR admin exists, and it keeps Payroll Manager, who runs the bank file, out of both sides.
+
+## D27 — `TRUST_PROXY` is a hop count; per-account login limit in process
+**Context:** F-15. `TRUST_PROXY=true` made Fastify take the leftmost `X-Forwarded-For`, which the client controls, so per-IP limits and audit addresses could be forged.
+**Options:** remove `true`; treat `true` as one hop; hop count or CIDR list.
+**Decision:** `false`, a hop count, or a list of proxy addresses/CIDRs. `true` is kept and means one hop, so existing deployments with one proxy (ALB, Caddy) become correct without a config change. A deployment with more proxies in front must set the real count. Fastify treats a bare number as trust-nothing, because a hop count cannot check the immediate peer, so the app must not be reachable directly when a count is used; a CIDR list is stricter where proxy addresses are known. New `AUTH_ACCOUNT_RATE_LIMIT_PER_MINUTE` (default 10) limits sign-in attempts per account across addresses; it refuses before any password hash runs.
+**Limits:** the counter is per process until a shared store exists, so N instances allow N times the limit. A forged address no longer locks anyone out faster, but a known email can still be locked by the existing failure lockout. Not tested behind a live ALB.
