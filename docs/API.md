@@ -82,6 +82,11 @@ Base path `/api/v1`. JSON in and out. Each installation serves one organization;
 | **SMS** (module `notifications.sms`; see SMS.md) | | |
 | GET `/sms/templates` · PUT / DELETE `/sms/templates/:kind` | settings.manage | DLT templates per notification kind `{dltTemplateId, text, enabled}` |
 | GET `/sms/outbox?status` · POST `/sms/test {phone, kind}` | settings.manage | Recent SMS (numbers masked); send a template now to check the provider |
+| **Advanced reporting** (module `reports.advanced`; see REPORTS.md) | | |
+| GET / POST `/reports/saved` · DELETE `/reports/saved/:id` | can run the report | My saved reports `{reportKey, name, params}` |
+| GET `/reports/saved/:id/recipients` | owner | Who may receive it (organization-wide access) |
+| PUT / DELETE `/reports/saved/:id/schedule` | owner | `{frequency, weekday?, dayOfMonth?, period, recipientIds, enabled}`; recipients need organization-wide access |
+| GET `/reports/snapshots` · `/reports/snapshots/:id` · `/reports/snapshots/:id/export.csv` | recipient with access | Scheduled reports sent to me |
 | **Overtime** (module `overtime`; see OVERTIME.md) | | |
 | GET `/overtime/eligible` | overtime.self | My days with recorded overtime still to claim, and the payout options |
 | POST `/overtime/claims` | overtime.self | Claim `{workDate, minutes, payout, reason}` → manager, then HR approval |

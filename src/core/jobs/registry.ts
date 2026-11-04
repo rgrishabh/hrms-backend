@@ -11,6 +11,7 @@ import { recruitmentRetention } from '../../modules/recruitment/routes.js';
 import { lifecycleDaily } from '../../modules/lifecycle/routes.js';
 import { caseDeadlines } from '../../modules/cases/routes.js';
 import { assetsDaily } from '../../modules/assets/routes.js';
+import { runSchedules } from '../../modules/reports/service.js';
 
 /**
  * Background jobs. Schedules are in the organization's timezone (general.timezone).
@@ -184,6 +185,15 @@ export const JOBS: readonly JobDefinition[] = [
     feature: 'assets',
     runPermission: 'assets.manage',
     run: (db, tenantId, ctx) => assetsDaily(db, tenantId, ctx.localDate),
+  },
+  {
+    key: 'reports.scheduled',
+    name: 'Scheduled reports',
+    description: 'Runs saved reports that are due, as their owners, and tells the recipients the report is ready in HRMS (no report data goes by email). Removes copies older than 90 days.',
+    schedule: { kind: 'daily', at: '06:30' },
+    feature: 'reports.advanced',
+    runPermission: 'settings.manage',
+    run: (db, tenantId, ctx) => runSchedules(db, tenantId, ctx.localDate),
   },
   {
     key: 'sessions.cleanup',
