@@ -65,6 +65,11 @@ Base path `/api/v1`. JSON in and out. Each installation serves one organization;
 | POST `/field-duty/requests` | field_duty.self / manage | Request `{startDate, endDate, dayPart, purpose, place, clientName?, reference?, reason}`, or record it for an employee (`employeeId`, manage). Manager approves, then HR if `field_duty.hr_approval` is on |
 | GET `/field-duty/requests?scope=mine\|team\|all&status&on&from&to` · GET `/field-duty/requests/:id` | field_duty.self / team.read / read | List / detail |
 | POST `/field-duty/requests/:id/withdraw` · `/cancel` · `/report` | employee / field_duty.manage | Withdraw pending; cancel approved (employee before it starts, HR until the dates are locked); report the outcome once started |
+| **Accounting exports** (module `accounting_exports`; see ACCOUNTING_EXPORTS.md) | | |
+| GET / PUT `/accounting/ledger-map` | accounting.export / accounting.configure | Ledger names per head (`{entries:[{key, ledger}]}`; empty ledger removes); `heads` lists what to map |
+| GET `/accounting/sources` | accounting.export | Finalized/paid runs and approved/paid batches with their last export |
+| GET `/accounting/payroll-runs/:id/journal` · `/reimbursement-batches/:id/journal` | accounting.export | Voucher preview with `missing` heads and `balanced` |
+| GET `/accounting/payroll-runs/:id/export?format=csv\|tally_xml` · `/reimbursement-batches/:id/export` | accounting.export | Download (refused while heads are unmapped); logged and audited |
 | **Overtime** (module `overtime`; see OVERTIME.md) | | |
 | GET `/overtime/eligible` | overtime.self | My days with recorded overtime still to claim, and the payout options |
 | POST `/overtime/claims` | overtime.self | Claim `{workDate, minutes, payout, reason}` → manager, then HR approval |

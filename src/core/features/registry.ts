@@ -67,7 +67,7 @@ export const FEATURES: readonly FeatureDefinition[] = [
   f({ key: 'expenses', name: 'Expenses & reimbursements', description: 'Claims with receipts, manager + finance approval, duplicate checks, payment batches with maker-checker.', category: 'payroll_finance', availability: 'available', dependencies: ['core.employees'] }),
   f({ key: 'travel', name: 'Travel management', description: 'Travel requests and advances.', category: 'payroll_finance', availability: 'planned', dependencies: ['expenses'] }),
   f({ key: 'advances_loans', name: 'Advances and loans', description: 'Salary/travel advances and repayment schedules.', category: 'payroll_finance', availability: 'planned', dependencies: ['payroll'] }),
-  f({ key: 'accounting_exports', name: 'Accounting exports', description: 'Ledger exports for payroll and reimbursements.', category: 'payroll_finance', availability: 'planned', dependencies: ['payroll'] }),
+  f({ key: 'accounting_exports', name: 'Accounting exports', description: 'Payroll and reimbursement journals for the accounts, mapped to your ledgers (CSV or Tally XML).', category: 'payroll_finance', availability: 'available', dependencies: ['payroll'] }),
 
   // ---- Talent & lab
   f({ key: 'recruitment', name: 'Recruitment', description: 'Approved requisitions, candidates with consent and retention, interview pipeline with panel feedback, approved offers, hire into employee records.', category: 'talent', availability: 'available', dependencies: ['core.employees'] }),
