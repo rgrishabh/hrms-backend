@@ -10,7 +10,7 @@ Module key `leave` (enabled by `ENABLED_MODULES=default`). Code: `apps/api/src/m
 |---|---|
 | Leave year | 12 months starting in the month set by the `leave.year_start_month` setting (default January). Identified by the calendar year it starts in (Apr 2026–Mar 2027 = 2026). A request cannot span two leave years |
 | Leave type | Code and name; paid or unpaid; half days allowed; *needs a balance* (off for leave without pay); accrual `annual`, `monthly` or `none`; entitlement per year; carry-forward cap; maximum balance; count weekly offs and holidays inside the range ("sandwich"); minimum notice; maximum days per request; eligible after N days of service; applicable employment types; active or inactive |
-| Ledger | Append-only `leave_ledger`. Balance = sum of entries for (employee, type, year). Entry types: `opening`, `accrual`, `consumption`, `reversal`, `adjustment`, `carry_forward`, `lapse`. Every entry has a unique reference, so jobs are idempotent. The database role can't update or delete entries |
+| Ledger | Append-only `leave_ledger`. Balance = sum of entries for (employee, type, year). Entry types: `opening`, `accrual`, `consumption`, `reversal`, `adjustment`, `carry_forward`, `carry_out`, `lapse`. Every entry has a unique reference, so jobs are idempotent. The database role can't update or delete entries |
 | Available | balance − days of **pending** requests (reserved) |
 
 ## Counting days
@@ -52,7 +52,7 @@ On approval, the balance is re-checked, a `consumption` entry is written, and at
 | Job | Behaviour |
 |---|---|
 | Accruals `POST /leave/accruals {leaveYear, throughMonth}` | **Annual:** the full entitlement once. Joiners within the year get it pro-rated by remaining whole months (joining month counts), rounded **down** to 0.5. **Monthly:** entitlement ÷ 12 (2 decimals) per month employed, up to `throughMonth`. Never exceeds the type's maximum balance. Re-running credits nothing twice |
-| Year-end `POST /leave/year-end {leaveYear}` | Refused while requests of that year are pending. For each positive closing balance: carries `min(balance, carry_forward_max)` into the next year (`carry_forward`) and lapses the rest (`lapse`). Idempotent |
+| Year-end `POST /leave/year-end {leaveYear}` | Refused until the leave year has ended and while its requests are pending. For each positive closing balance: moves `min(balance, carry_forward_max, room under max_balance)` to the next year (`carry_out` in the closed year, `carry_forward` in the next) and lapses the rest (`lapse`), so the closed year ends at zero. A closed year takes no more balance-tracked leave, accruals or adjustments. A second call carries nothing; on a year closed before `carry_out` existed it writes the missing closing entries and reports `repaired` and `overspent` (balances left negative, for HR to resolve). Cancelling approved leave of a closed year credits the closed year, so HR adjusts the current year if the days should return |
 | Adjustment `POST /leave/adjustments` | Manual ± days (multiples of 0.5) as `adjustment` or `opening` (migration from a previous system), with a required note. Audited |
 
 The `leave.accrual` background job runs on the 1st of every month at 02:00 (catching up later in the month if the app was down) and credits annual entitlements once per year and monthly accruals up to the current month. Year-end is **not** automatic: it's an HR decision, run from the Administration tab.

@@ -44,6 +44,19 @@ export async function yearStartMonth(db: Db, tenantId: string) {
   return getSettingValue<number>(db, tenantId, 'leave.year_start_month');
 }
 
+export async function yearClosed(db: Db, tenantId: string, year: number) {
+  return ((await db.query('SELECT 1 FROM leave_year_closures WHERE tenant_id=$1 AND leave_year=$2', [tenantId, year])).rowCount ?? 0) > 0;
+}
+
+/** Balance per active leave type in the leave year of `asOf` (a year's balance already includes what was carried into it). */
+export async function balancesAt(db: Db, tenantId: string, employeeId: string, asOf: string) {
+  const leaveYear = leaveYearOf(asOf, await yearStartMonth(db, tenantId));
+  const items = (await db.query<{ code: string; name: string; paid: boolean; balance: string }>(`SELECT t.code, t.name, t.paid, coalesce(sum(l.days),0)::text AS balance FROM leave_types t
+    LEFT JOIN leave_ledger l ON l.tenant_id=t.tenant_id AND l.leave_type_id=t.id AND l.employee_id=$2 AND l.leave_year=$3
+    WHERE t.tenant_id=$1 AND t.status='active' GROUP BY t.code, t.name, t.paid ORDER BY t.code`, [tenantId, employeeId, leaveYear])).rows;
+  return { leaveYear, items };
+}
+
 export interface EmployeeLite { id: string; branch_id: string; employment_type: string; date_of_joining: string; exit_date: string | null; status: string; user_id: string | null }
 
 export async function loadEmployee(db: Db, tenantId: string, employeeId: string): Promise<EmployeeLite | null> {

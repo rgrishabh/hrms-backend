@@ -13,6 +13,7 @@ import { orgToday } from '../competency/service.js';
 import { daysBetween } from '../attendance/time.js';
 import type { Db } from '../../db/tx.js';
 import { openAssets } from '../assets/routes.js';
+import { balancesAt } from '../leave/service.js';
 import { OWNERS, OWNER_PERMISSION, type Owner, canActOnTask, createChecklist, featureOn, loadEmp, maybeCompleteChecklist, taskAssignees } from './service.js';
 
 const ON = 'core.onboarding';
@@ -357,9 +358,7 @@ export async function lifecycleRoutes(app: FastifyInstance) {
         WHERE s.tenant_id=$1 AND s.id=$2`, [a.tenantId, id])).rows[0]!;
       const checklist = (await db.query<{ id: string }>(`SELECT id FROM checklists WHERE tenant_id=$1 AND separation_id=$2 ORDER BY created_at DESC LIMIT 1`, [a.tenantId, id])).rows[0];
       // Leave balances at exit (input to F&F; encashment rules are decided in payroll).
-      const leave = hr ? (await db.query(`SELECT t.code, t.name, coalesce(sum(l.days),0)::text AS balance FROM leave_types t
-        LEFT JOIN leave_ledger l ON l.tenant_id=t.tenant_id AND l.leave_type_id=t.id AND l.employee_id=$2 WHERE t.tenant_id=$1 AND t.status='active' GROUP BY t.code, t.name ORDER BY t.code`,
-        [a.tenantId, emp.id])).rows : [];
+      const leave = hr ? (await balancesAt(db, a.tenantId, emp.id, s.approved_lwd ?? s.requested_lwd)).items : [];
       return { ...s, exit_interview: hr ? s.exit_interview : undefined, employee: { id: emp.id, name: emp.name, status: emp.status },
         checklist: checklist ? await checklistDetail(db, a, checklist.id) : null, leaveBalances: leave };
     });

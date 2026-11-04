@@ -6,13 +6,14 @@ import { audit } from '../../core/audit/audit.js';
 import { badRequest, conflict, forbidden, notFound } from '../../core/http/errors.js';
 import { IsoDate, PageQuery, offsetOf, paged, Uuid } from '../../core/http/pagination.js';
 import { createApprovalRequest, registerApprovalHandler, type StepSpec } from '../../core/workflow/engine.js';
+import { orgToday } from '../../core/workflow/engine.js';
 import type { Db } from '../../db/tx.js';
 import { EMPLOYMENT_TYPES } from '../employees/service.js';
 import { lockedDates, recalculateRange, teamEmployeeIds, employeeTimezone } from '../attendance/service.js';
 import { localDate, daysBetween, addDays } from '../attendance/time.js';
 import {
   LEAVE_TYPE_COLS, type LeaveType, type StartHalf, type EndHalf, leaveYearOf, leaveYearBounds, yearStartMonth, loadEmployee,
-  nonWorkingDates, countDays, balanceOf, assertApplicable,
+  nonWorkingDates, countDays, balanceOf, assertApplicable, yearClosed,
 } from './service.js';
 import { runAccruals, runYearEnd, insertLedgerEntry } from './jobs.js';
 
@@ -77,6 +78,8 @@ async function evaluateRequest(db: Db, a: TenantActor, body: z.infer<typeof Requ
     const { end } = leaveYearBounds(year, startMonth);
     throw badRequest(`Leave cannot span two leave years. Apply up to ${end} and separately from ${addDays(end, 1)}.`);
   }
+  // A closed year's days have moved on; spending them there would spend them twice. Unpaid leave has no balance to protect.
+  if (t.requires_balance && await yearClosed(db, a.tenantId, year)) throw conflict(`The ${year} leave year is closed; ${t.name} can no longer be taken in it`);
   const { tz } = await employeeTimezone(db, a.tenantId, e.id);
   const today = localDate(new Date(), tz);
   if (body.startDate >= today && t.min_notice_days > 0 && daysBetween(today, body.startDate) < t.min_notice_days && !a.has('leave.manage')) {
@@ -331,7 +334,7 @@ export async function leaveRoutes(app: FastifyInstance) {
     const body = z.object({ leaveYear: z.number().int().min(2000).max(2100) }).parse(req.body);
     return a.tx(async (db) => {
       await requireFeature(db, a.tenantId, 'leave');
-      const r = await runYearEnd(db, a.tenantId, body.leaveYear, a.user.userId);
+      const r = await runYearEnd(db, a.tenantId, body.leaveYear, a.user.userId, await orgToday(db, a.tenantId));
       await audit(db, { ...a.auditBase, action: 'leave.year_closed', category: 'data', metadata: r });
       return r;
     });
@@ -346,6 +349,7 @@ export async function leaveRoutes(app: FastifyInstance) {
       await requireFeature(db, a.tenantId, 'leave');
       if (!(await loadEmployee(db, a.tenantId, body.employeeId))) throw notFound('Employee not found');
       await loadType(db, a.tenantId, body.leaveTypeId);
+      if (await yearClosed(db, a.tenantId, body.leaveYear)) throw conflict(`The ${body.leaveYear} leave year is closed; adjust the current year instead`);
       const ref = `${body.entryType}:${crypto.randomUUID()}`;
       await insertLedgerEntry(db, a.tenantId, { empId: body.employeeId, typeId: body.leaveTypeId, year: body.leaveYear, entryType: body.entryType,
         days: new Decimal(body.days), reference: ref, note: body.note, actorId: a.user.userId });

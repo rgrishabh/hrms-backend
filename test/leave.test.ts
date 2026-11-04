@@ -198,7 +198,7 @@ describe('year-end', () => {
     await hr2.post(`/api/v1/leave/requests/${p.id}/cancel`);
     const r = (await hr2.post('/api/v1/leave/year-end', { leaveYear: Y })).json();
     expect(r.balancesProcessed).toBeGreaterThan(0);
-    expect((await balance(emp2, 'EL', Y)).balance).toBe('10.00');       // 15 − 5 lapsed
+    expect((await balance(emp2, 'EL', Y)).balance).toBe('0.00');        // 15 − 5 lapsed − 10 carried out: nothing stays behind
     expect((await balance(emp2, 'EL', Y + 1)).balance).toBe('10.00');   // carried
     expect((await hr2.post('/api/v1/leave/year-end', { leaveYear: Y })).json().balancesProcessed).toBe(0); // idempotent
   });

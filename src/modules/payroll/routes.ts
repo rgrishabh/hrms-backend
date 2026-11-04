@@ -12,6 +12,7 @@ import { orgToday } from '../competency/service.js';
 import type { Db } from '../../db/tx.js';
 import { RULE_PARAMS, type RuleKind } from './calc.js';
 import { attendanceLocked, computeRun, periodBounds } from './service.js';
+import { balancesAt } from '../leave/service.js';
 import { csv } from '../../core/http/csv.js';
 import { xlsx, XLSX_TYPE } from '../../core/http/xlsx.js';
 
@@ -523,10 +524,9 @@ export async function payrollRoutes(app: FastifyInstance) {
       const s = (await db.query<{ shortfall_days: number; waive_shortfall: boolean; lwd: string; kind: string }>(`SELECT shortfall_days, waive_shortfall, coalesce(approved_lwd, requested_lwd)::text AS lwd, kind
         FROM separations WHERE tenant_id=$1 AND employee_id=$2 AND status IN ('approved','completed') ORDER BY created_at DESC LIMIT 1`, [a.tenantId, employeeId])).rows[0];
       if (!s) throw notFound('No approved separation');
-      const leave = (await db.query(`SELECT t.code, t.name, t.paid, coalesce(sum(l.days),0)::text AS balance FROM leave_types t
-        LEFT JOIN leave_ledger l ON l.tenant_id=t.tenant_id AND l.leave_type_id=t.id AND l.employee_id=$2 WHERE t.tenant_id=$1 AND t.status='active' GROUP BY t.code, t.name, t.paid`, [a.tenantId, employeeId])).rows;
+      const leave = await balancesAt(db, a.tenantId, employeeId, s.lwd);
       const sal = (await db.query<{ amounts: Record<string, number> }>(`SELECT amounts FROM employee_salaries WHERE tenant_id=$1 AND employee_id=$2 AND status='active' ORDER BY effective_from DESC LIMIT 1`, [a.tenantId, employeeId])).rows[0];
-      return { lastWorkingDay: s.lwd, kind: s.kind, noticeShortfallDays: s.waive_shortfall ? 0 : s.shortfall_days, shortfallWaived: s.waive_shortfall, leaveBalances: leave, salary: sal?.amounts ?? null,
+      return { lastWorkingDay: s.lwd, kind: s.kind, noticeShortfallDays: s.waive_shortfall ? 0 : s.shortfall_days, shortfallWaived: s.waive_shortfall, leaveYear: leave.leaveYear, leaveBalances: leave.items, salary: sal?.amounts ?? null,
         note: 'Leave encashment, notice recovery and gratuity depend on your policies, appointment terms and applicable law; enter confirmed amounts as adjustments.',
         period: periodBounds(s.lwd.slice(0, 7)).start.slice(0, 7), today: await orgToday(db, a.tenantId) };
     });
