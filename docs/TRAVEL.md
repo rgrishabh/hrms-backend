@@ -58,6 +58,6 @@ Paying advances, recording returns and closing a trip need `expenses.pay` (finan
 
 ## Not included
 
-- **Per-diem and mileage rates, and travel classes by grade.** These are the organization's policy. Enter them in the estimate and check them at approval.
+- **Travel classes by grade** (who may fly, hotel caps). These are checked at approval. Per-diem and mileage rates are in Expenses (docs/EXPENSES.md → Allowances): the trip form can quote the per diem for the trip, and the trip's claim prices allowances from the rates and keeps per diem within the trip's days.
 - **Bookings** (tickets, hotels), **multi-currency** and **corporate cards**.
 - **Recovery through payroll.** Unspent advance is returned by the employee and recorded by finance. Payroll recovery belongs to the advances and loans module.
