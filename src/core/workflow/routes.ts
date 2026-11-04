@@ -1,8 +1,8 @@
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
-import { tenantActor } from '../http/context.js';
+import { tenantActor, tenantActorAny } from '../http/context.js';
 import { Uuid } from '../http/pagination.js';
-import { actOnRequest, cancelRequest, inbox, requestHistory } from './engine.js';
+import { actOnRequest, cancelRequest, inbox, reassignRequest, requestHistory, ESCALATION_PERMISSION } from './engine.js';
 import { notFound, forbidden } from '../http/errors.js';
 import { delegationRoutes } from './delegations.js';
 
@@ -34,6 +34,16 @@ export async function approvalRoutes(app: FastifyInstance) {
         (await db.query('SELECT 1 FROM approval_steps WHERE tenant_id=$1 AND request_id=$2 AND (approver_user_id=$3 OR acted_by=$3 OR acted_for=$3 OR escalated_to=$3)', [a.tenantId, id, a.user.userId])).rowCount;
       if (!involved) throw forbidden();
       return { ...rq, steps };
+    });
+  });
+
+  app.post('/:id/reassign', async (req) => {
+    const a = tenantActorAny(req, ESCALATION_PERMISSION, 'users.manage');
+    const { id } = z.object({ id: Uuid }).parse(req.params);
+    const b = z.object({ userId: Uuid, reason: z.string().trim().min(5).max(500) }).parse(req.body);
+    return a.tx(async (db) => {
+      await reassignRequest(db, a.tenantId, id, a.user.userId, b.userId, b.reason, { requestId: req.id, ip: req.ip });
+      return { ok: true };
     });
   });
 

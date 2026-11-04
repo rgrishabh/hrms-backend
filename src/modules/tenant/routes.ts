@@ -1,3 +1,4 @@
+import { reassignStepsOf } from '../../core/workflow/engine.js';
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import { tenantActor, tenantActorAny, requireFeature } from '../../core/http/context.js';
@@ -333,6 +334,7 @@ export async function tenantAdminRoutes(app: FastifyInstance, opts: { publicConf
         await db.query(`UPDATE users SET mfa_secret_enc=NULL, mfa_pending_secret_enc=NULL, mfa_enabled_at=NULL, mfa_recovery_hashes='{}', mfa_last_step=NULL
           WHERE tenant_id=$1 AND id=$2`, [a.tenantId, id]);
       }
+      if (body.status === 'disabled') await reassignStepsOf(db, a.tenantId, id);
       // Role or status changes take effect immediately: existing sessions are revoked.
       if (body.status === 'disabled' || body.roles || body.resetMfa) await revokeAllSessionsForUser(db, id);
       await audit(db, { ...a.auditBase, action: 'user.updated', category: 'security', targetType: 'user', targetId: id,

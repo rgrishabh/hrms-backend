@@ -22,6 +22,10 @@ import { localDate } from '../../modules/attendance/time.js';
  *   - a user step: the named approver; the person it was escalated to; an active delegate of either;
  *   - a permission step: anyone holding the permission (group steps are never delegated or escalated);
  * never the requester, an excluded party, or someone who (or whose delegate) decided an earlier step.
+ *
+ * Nothing waits forever on someone who cannot act. A step for a disabled person, or a group step with no eligible holder,
+ * goes to the fallback owner: holders of `approvals.escalations`. If nobody there can act either, the request is still
+ * created and administrators are warned; holders of `users.manage` or `approvals.escalations` can reassign it.
  */
 
 export type StepSpec = { kind: 'user'; userId: string } | { kind: 'permission'; permission: string };
@@ -119,18 +123,41 @@ export async function createApprovalRequest(db: Db, tenantId: string, p: {
 }) {
   if (!handlers.has(p.entityType)) throw new Error(`No approval handler for ${p.entityType}`);
   const excluded = [...new Set(p.excludeUserIds?.filter((u): u is string => !!u && u !== p.requesterId) ?? [])];
-  // Maker-checker: neither the requester nor an excluded party is ever an approver of the request.
-  const steps = p.steps.filter((s) => !(s.kind === 'user' && (s.userId === p.requesterId || excluded.includes(s.userId))));
-  if (!steps.length) throw badRequest('No eligible approver is configured for this request');
+  const blocked = new Set([p.requesterId, ...excluded]);
+  const named = p.steps.flatMap((s) => (s.kind === 'user' ? [s.userId] : []));
+  const active = new Set(named.length ? (await db.query<{ id: string }>(`SELECT id FROM users WHERE tenant_id=$1 AND id = ANY($2) AND status='active'`, [tenantId, named])).rows.map((u) => u.id) : []);
+  // Maker-checker: neither the requester nor an excluded party is ever an approver of the request. A disabled account cannot act either.
+  const kept = p.steps.filter((s) => s.kind !== 'user' || (!blocked.has(s.userId) && active.has(s.userId)));
+  const steps: StepSpec[] = kept.length ? kept : [{ kind: 'permission', permission: ESCALATION_PERMISSION }];
   const r = await db.query<{ id: string }>(`INSERT INTO approval_requests (tenant_id, entity_type, entity_id, requester_id, summary, excluded_user_ids)
     VALUES ($1,$2,$3,$4,$5,$6) RETURNING id`, [tenantId, p.entityType, p.entityId, p.requesterId, p.summary, excluded]);
   const id = r.rows[0]!.id;
+  const fallbackOpen = (await eligibleHolders(db, tenantId, ESCALATION_PERMISSION, blocked)).length > 0;
+  let nobody = false;
   for (const [i, s] of steps.entries()) {
-    await db.query(`INSERT INTO approval_steps (tenant_id, request_id, step_index, approver_kind, approver_user_id, approver_permission, status, activated_at)
-      VALUES ($1,$2,$3,$4,$5,$6,$7, CASE WHEN $7='active' THEN now() END)`, [tenantId, id, i, s.kind, s.kind === 'user' ? s.userId : null, s.kind === 'permission' ? s.permission : null, i === 0 ? 'active' : 'waiting']);
+    const open = s.kind === 'user' || (await eligibleHolders(db, tenantId, s.permission, blocked)).length > 0;
+    if (!open && !fallbackOpen) nobody = true;
+    await db.query(`INSERT INTO approval_steps (tenant_id, request_id, step_index, approver_kind, approver_user_id, approver_permission, status, activated_at, escalated_at, escalated_permission)
+      VALUES ($1,$2,$3,$4,$5,$6,$7, CASE WHEN $7='active' THEN now() END, CASE WHEN $8::text IS NOT NULL THEN now() END, $8)`,
+      [tenantId, id, i, s.kind, s.kind === 'user' ? s.userId : null, s.kind === 'permission' ? s.permission : null, i === 0 ? 'active' : 'waiting', !open && fallbackOpen ? ESCALATION_PERMISSION : null]);
   }
   await notifyActiveApprovers(db, tenantId, id);
+  if (nobody) await warnNoApprover(db, tenantId, id, p.entityType, p.requesterId);
   return id;
+}
+
+/** Holders of a permission who may act on a request with these people blocked. */
+async function eligibleHolders(db: Db, tenantId: string, permission: string, blocked: Set<string>) {
+  return (await usersWithPermission(db, tenantId, permission)).filter((u) => !blocked.has(u));
+}
+
+/** Nobody can act on this request as things stand: administrators and the requester are told, and it is on record. */
+async function warnNoApprover(db: Db, tenantId: string, requestId: string, entityType: string, requesterId: string) {
+  const label = handlers.get(entityType)?.label ?? 'Request';
+  const admins = await usersWithPermission(db, tenantId, 'users.manage');
+  await notifyUsers(db, tenantId, [...new Set([...admins, requesterId])], { kind: 'approval.no_approver', title: `${label} has nobody who can approve it`,
+    body: 'Nobody eligible holds the permission it needs. An administrator can reassign it, or grant the permission to someone else.', link: '/approvals', actionLabel: 'Open' });
+  await audit(db, { tenantId, actorId: null, actorType: 'system', action: 'approval.no_eligible_approver', targetType: entityType, metadata: { approvalRequestId: requestId } });
 }
 
 type Role = { via: null | 'delegation' | 'escalation'; forUser: string | null };
@@ -240,9 +267,9 @@ export async function inbox(db: Db, tenantId: string, actor: Actor, today?: stri
         ORDER BY (d.delegator_id = s.approver_user_id) DESC LIMIT 1) dl ON true
     LEFT JOIN users du ON du.id=dl.delegator_id
     WHERE r.tenant_id=$1 AND r.status='pending' AND r.requester_id <> $2 AND NOT ($2 = ANY(r.excluded_user_ids))
-      AND ((s.approver_kind='user' AND (s.approver_user_id=$2 OR s.escalated_to=$2 OR dl.delegator_id IS NOT NULL))
+      AND ((s.approver_kind='user' AND (s.approver_user_id=$2 OR dl.delegator_id IS NOT NULL))
         OR (s.approver_kind='permission' AND s.approver_permission = ANY($3))
-        OR s.escalated_permission = ANY($3))
+        OR s.escalated_to=$2 OR s.escalated_permission = ANY($3))
       AND NOT EXISTS (SELECT 1 FROM approval_steps p WHERE p.tenant_id=r.tenant_id AND p.request_id=r.id AND p.acted_by IS NOT NULL
         AND (p.acted_by=$2 OR p.acted_for=$2 OR (dl.delegator_id IS NOT NULL AND s.approver_user_id IS DISTINCT FROM $2 AND p.acted_by=dl.delegator_id)))
     ORDER BY r.created_at LIMIT 200`, [tenantId, actor.userId, [...actor.permissions], today]);
@@ -283,11 +310,7 @@ export async function escalateOverdue(db: Db, tenantId: string, days: number) {
   let toManager = 0, toGroup = 0;
   for (const st of due.rows) {
     const blocked = await blockedUsers(db, tenantId, st.request_id);
-    const m = await db.query<{ user_id: string; display_name: string }>(
-      `SELECT mu.id AS user_id, mu.display_name FROM employees e JOIN employees m ON m.tenant_id=e.tenant_id AND m.id=e.reporting_manager_id
-         JOIN users mu ON mu.id=m.user_id AND mu.status='active'
-        WHERE e.tenant_id=$1 AND e.user_id=$2 LIMIT 1`, [tenantId, st.approver_user_id]);
-    const mgr = m.rows[0] && m.rows[0].user_id !== st.approver_user_id && !blocked.has(m.rows[0].user_id) ? m.rows[0] : null;
+    const mgr = await activeManagerOf(db, tenantId, st.approver_user_id, blocked);
     await db.query(`UPDATE approval_steps SET escalated_at=now(), escalated_to=$3, escalated_permission=$4 WHERE tenant_id=$1 AND id=$2`,
       [tenantId, st.id, mgr?.user_id ?? null, mgr ? null : ESCALATION_PERMISSION]);
     if (mgr) toManager++; else toGroup++;
@@ -299,4 +322,73 @@ export async function escalateOverdue(db: Db, tenantId: string, days: number) {
       metadata: { approvalRequestId: st.request_id, from: st.approver_user_id, to: mgr?.user_id ?? ESCALATION_PERMISSION, afterDays: days } });
   }
   return { escalated: due.rowCount ?? 0, toManager, toGroup };
+}
+
+/** The person's reporting manager, if they have an active account and may act with these people blocked. */
+async function activeManagerOf(db: Db, tenantId: string, userId: string, blocked: Set<string>) {
+  const m = await db.query<{ user_id: string; display_name: string }>(
+    `SELECT mu.id AS user_id, mu.display_name FROM employees e JOIN employees m ON m.tenant_id=e.tenant_id AND m.id=e.reporting_manager_id
+       JOIN users mu ON mu.id=m.user_id AND mu.status='active'
+      WHERE e.tenant_id=$1 AND e.user_id=$2 LIMIT 1`, [tenantId, userId]);
+  return m.rows[0] && m.rows[0].user_id !== userId && !blocked.has(m.rows[0].user_id) ? m.rows[0] : null;
+}
+
+/**
+ * A user's account was disabled: steps waiting on them go to their manager, or to the fallback owner. Runs in the same
+ * transaction as the disable. Delegations stop mattering because the step no longer depends on this person.
+ */
+export async function reassignStepsOf(db: Db, tenantId: string, userId: string) {
+  const steps = await db.query<{ id: string; request_id: string; status: string; entity_type: string; requester_id: string }>(
+    `SELECT s.id, s.request_id, s.status, r.entity_type, r.requester_id FROM approval_steps s JOIN approval_requests r ON r.tenant_id=s.tenant_id AND r.id=s.request_id AND r.status='pending'
+      WHERE s.tenant_id=$1 AND s.status IN ('active','waiting')
+        AND (s.escalated_to=$2 OR (s.approver_user_id=$2 AND s.escalated_to IS NULL AND s.escalated_permission IS NULL)) FOR UPDATE OF s`, [tenantId, userId]);
+  for (const st of steps.rows) {
+    const blocked = await blockedUsers(db, tenantId, st.request_id);
+    const mgr = await activeManagerOf(db, tenantId, userId, blocked);
+    await db.query(`UPDATE approval_steps SET escalated_at=now(), escalated_to=$3, escalated_permission=$4 WHERE tenant_id=$1 AND id=$2`, [tenantId, st.id, mgr?.user_id ?? null, mgr ? null : ESCALATION_PERMISSION]);
+    if (!mgr && !(await eligibleHolders(db, tenantId, ESCALATION_PERMISSION, blocked)).length) await warnNoApprover(db, tenantId, st.request_id, st.entity_type, st.requester_id);
+    if (st.status === 'active') await notifyActiveApprovers(db, tenantId, st.request_id, { onlyEscalation: true });
+    await audit(db, { tenantId, actorId: null, actorType: 'system', action: 'approval.reassigned', targetType: st.entity_type,
+      metadata: { approvalRequestId: st.request_id, from: userId, to: mgr?.user_id ?? ESCALATION_PERMISSION, reason: 'approver_disabled' } });
+  }
+  return steps.rowCount ?? 0;
+}
+
+/**
+ * Active group steps whose holders have all gone (left, or lost the role) since the request was made: to the fallback
+ * owner, or a warning when nobody is there either. Unlike timed escalation this is not optional, so it always runs.
+ */
+export async function reassignStranded(db: Db, tenantId: string) {
+  const steps = await db.query<{ id: string; request_id: string; approver_permission: string; entity_type: string; requester_id: string }>(
+    `SELECT s.id, s.request_id, s.approver_permission, r.entity_type, r.requester_id FROM approval_steps s JOIN approval_requests r ON r.tenant_id=s.tenant_id AND r.id=s.request_id AND r.status='pending'
+      WHERE s.tenant_id=$1 AND s.status='active' AND s.approver_kind='permission' AND s.escalated_at IS NULL FOR UPDATE OF s SKIP LOCKED`, [tenantId]);
+  let moved = 0;
+  for (const st of steps.rows) {
+    const blocked = await blockedUsers(db, tenantId, st.request_id);
+    if ((await eligibleHolders(db, tenantId, st.approver_permission, blocked)).length) continue;
+    await db.query(`UPDATE approval_steps SET escalated_at=now(), escalated_permission=$3 WHERE tenant_id=$1 AND id=$2`, [tenantId, st.id, ESCALATION_PERMISSION]);
+    if (!(await eligibleHolders(db, tenantId, ESCALATION_PERMISSION, blocked)).length) await warnNoApprover(db, tenantId, st.request_id, st.entity_type, st.requester_id);
+    await notifyActiveApprovers(db, tenantId, st.request_id, { onlyEscalation: true });
+    await audit(db, { tenantId, actorId: null, actorType: 'system', action: 'approval.reassigned', targetType: st.entity_type,
+      metadata: { approvalRequestId: st.request_id, to: ESCALATION_PERMISSION, reason: 'no_eligible_holder' } });
+    moved++;
+  }
+  return moved;
+}
+
+/** An administrator hands the active step to a named person, who can then decide it. It stays on the record. */
+export async function reassignRequest(db: Db, tenantId: string, requestId: string, actorId: string, targetUserId: string, reason: string, audBase: { requestId: string; ip: string }) {
+  const req = (await db.query<{ entity_type: string; status: string }>('SELECT entity_type, status FROM approval_requests WHERE tenant_id=$1 AND id=$2 FOR UPDATE', [tenantId, requestId])).rows[0];
+  if (!req) throw notFound('Approval request not found');
+  if (req.status !== 'pending') throw conflict(`This request is already ${req.status}`);
+  const blocked = await blockedUsers(db, tenantId, requestId);
+  if (blocked.has(actorId)) throw forbidden('You cannot reassign a request you prepared, that concerns you, or that you already decided');
+  if (targetUserId === actorId) throw badRequest('Reassign it to someone else: taking it yourself would let you choose your own approver');
+  if (blocked.has(targetUserId)) throw badRequest('That person cannot act on this request');
+  const target = await db.query(`SELECT 1 FROM users WHERE tenant_id=$1 AND id=$2 AND status='active'`, [tenantId, targetUserId]);
+  if (!target.rowCount) throw badRequest('Choose an active user');
+  const u = await db.query(`UPDATE approval_steps SET escalated_at=now(), escalated_to=$3, escalated_permission=NULL WHERE tenant_id=$1 AND request_id=$2 AND status='active'`, [tenantId, requestId, targetUserId]);
+  if (!u.rowCount) throw conflict('This request has no active step');
+  await notifyActiveApprovers(db, tenantId, requestId, { onlyEscalation: true });
+  await audit(db, { tenantId, actorId, action: 'approval.reassigned', targetType: req.entity_type, metadata: { approvalRequestId: requestId, to: targetUserId, reason }, ...audBase });
 }

@@ -12,7 +12,7 @@ import { lifecycleDaily } from '../../modules/lifecycle/routes.js';
 import { caseDeadlines } from '../../modules/cases/routes.js';
 import { assetsDaily } from '../../modules/assets/routes.js';
 import { runSchedules } from '../../modules/reports/service.js';
-import { escalateOverdue, stepRecipients, blockedUsers } from '../workflow/engine.js';
+import { escalateOverdue, reassignStranded, stepRecipients, blockedUsers } from '../workflow/engine.js';
 
 /**
  * Background jobs. Schedules are in the organization's timezone (general.timezone).
@@ -109,9 +109,10 @@ export const JOBS: readonly JobDefinition[] = [
     schedule: { kind: 'daily', at: '10:00' },
     runPermission: 'settings.manage',
     async run(db, tenantId) {
+      const stranded = await reassignStranded(db, tenantId);
       const days = await getSettingValue<number>(db, tenantId, 'approvals.escalate_after_days');
-      if (!days) return { skipped: 'escalation turned off' };
-      return escalateOverdue(db, tenantId, days);
+      if (!days) return { skipped: 'escalation turned off', stranded };
+      return { ...(await escalateOverdue(db, tenantId, days)), stranded };
     },
   },
   {

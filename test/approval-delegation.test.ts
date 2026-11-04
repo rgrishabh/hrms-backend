@@ -113,7 +113,8 @@ describe('escalation', () => {
   const run = async () => (await admin.post('/api/v1/tenant/jobs/approvals.escalation/run')).json();
   const age = (id: string, days: number) => ownerQuery(`UPDATE approval_steps SET activated_at = now() - make_interval(days => $2) WHERE request_id=$1 AND status='active'`, [id, days]);
 
-  it('is off by default', async () => {
+  it('can be turned off', async () => {
+    expect((await admin.put('/api/v1/tenant/settings/approvals.escalate_after_days', { value: 0 })).statusCode).toBe(200);
     const id = await create('other', [{ kind: 'user', userId: T.users.employee!.id }]);
     await age(id, 10);
     expect((await run()).result).toMatchObject({ skipped: 'escalation turned off' });

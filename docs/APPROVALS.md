@@ -31,7 +31,7 @@ An approver who will be away hands their approvals to a colleague for a period, 
 
 ## Escalation
 
-The setting **Escalate unanswered approvals after (days)** (`approvals.escalate_after_days`) controls escalation. It defaults to 0, which means off.
+The setting **Escalate unanswered approvals after (days)** (`approvals.escalate_after_days`) controls escalation. It defaults to 5 days; 0 turns it off.
 
 The `approvals.escalation` job runs daily at 10:00. When a step addressed to one person has been active for longer than the setting, the job sends it on:
 - to the approver's **reporting manager**, when they have an active account and may act on the request;
@@ -42,7 +42,16 @@ Escalation details:
 - The original approver can still decide it, and is told who it went to.
 - A delegate of the original approver, or of the person it escalated to, can act too.
 - The decision is recorded with `via: escalation`.
-- **Group steps are not escalated.** Their daily reminders (`notifications.approval_reminder_days`) keep going to the whole group.
+- **Group steps are not escalated on time.** Their daily reminders (`notifications.approval_reminder_days`) keep going to the whole group.
+
+## When nobody can act
+
+A request never waits on someone who cannot act:
+- A step for a **disabled** person goes to the fallback owner when the request is made. When an account is disabled, including at exit, its pending steps go to that person's manager, or the fallback owner.
+- A **group step with no eligible holder** (the only holder is the requester or an excluded person, or nobody holds it) goes to the fallback owner, at creation and in the daily `approvals.escalation` job.
+- The **fallback owner** is holders of `approvals.escalations` (HR Administrator).
+- If the fallback owner cannot act either, the request is still created. Administrators and the requester are notified (`approval.no_approver`) and it is audited.
+- Holders of `users.manage` or `approvals.escalations` can **reassign** the active step to a named active person: `POST /approvals/:id/reassign {userId, reason}`. Not to themselves, the requester, or an excluded person.
 
 ## API
 

@@ -5,7 +5,7 @@ import { tenantActor, tenantActorAny, requireFeature, type TenantActor, gateFeat
 import { audit } from '../../core/audit/audit.js';
 import { badRequest, conflict, forbidden, notFound } from '../../core/http/errors.js';
 import { IsoDate, PageQuery, offsetOf, paged, Uuid } from '../../core/http/pagination.js';
-import { createApprovalRequest, registerApprovalHandler, cancelRequest, type StepSpec } from '../../core/workflow/engine.js';
+import { createApprovalRequest, registerApprovalHandler, cancelRequest, reassignStepsOf, type StepSpec } from '../../core/workflow/engine.js';
 import { notifyUsers, usersWithPermission } from '../../core/notify/service.js';
 import { getSettingValue } from '../../core/settings/service.js';
 import { revokeAllSessionsForUser } from '../../core/auth/session.js';
@@ -33,6 +33,7 @@ async function endAccess(db: Db, tenantId: string, employeeId: string) {
   if (!u) return false;
   await db.query(`UPDATE users SET status='disabled', updated_at=now() WHERE tenant_id=$1 AND id=$2 AND status <> 'disabled'`, [tenantId, u]);
   await revokeAllSessionsForUser(db, u);
+  await reassignStepsOf(db, tenantId, u);
   return true;
 }
 
