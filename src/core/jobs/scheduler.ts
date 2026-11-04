@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto';
 import type { Pool } from '../../db/pool.js';
 import { withPlatformBypass, withTenant } from '../../db/tx.js';
 import { getSettingValue } from '../settings/service.js';
-import { evaluateFeatures } from '../features/state.js';
+import { allOff, evaluateFeatures } from '../features/state.js';
 import { JOBS, JOB_MAP, duePeriod, jobActive, type JobDefinition } from './registry.js';
 import { deliverOutbox, deliverPushOutbox } from '../notify/service.js';
 
@@ -97,7 +97,10 @@ export async function runQueued(pool: Pool, log: Log, tenantId: string, now: Dat
   const ran: { tenantId: string; job: string; period: string; status: string }[] = [];
   for (const q of claimed) {
     const job = JOB_MAP.get(q.job_key);
-    if (!job) continue;
+    if (!job || (!job.retention && allOff(job.feature))) {
+      await withTenant(pool, tenantId, (db) => db.query(`UPDATE job_runs SET status='failed', finished_at=now(), error='Its module is off' WHERE tenant_id=$1 AND id=$2`, [tenantId, q.id]));
+      continue;
+    }
     const r = await execute(pool, log, tenantId, q.id, job, date, date, q.triggered_by);
     ran.push({ tenantId, job: job.key, period: date, status: r.status });
   }

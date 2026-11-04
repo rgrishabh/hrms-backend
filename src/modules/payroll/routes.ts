@@ -1,4 +1,5 @@
 import type { FastifyInstance } from 'fastify';
+import { only } from '../../core/features/routes.js';
 import { closeRepaid, enabledLoanKinds } from '../loans/service.js';
 import { featureOn } from '../lifecycle/service.js';
 import { z } from 'zod';
@@ -147,7 +148,7 @@ export async function payrollRoutes(app: FastifyInstance) {
   });
 
   // ------------------------------------------------------------ employee statutory details
-  app.get('/employees/:id/statutory', async (req) => {
+  only(app, 'payroll.statutory').get('/employees/:id/statutory', async (req) => {
     const a = tenantActorAny(req, 'payroll.read', 'payroll.manage');
     const { id } = z.object({ id: Uuid }).parse(req.params);
     return a.tx(async (db) => {
@@ -156,7 +157,7 @@ export async function payrollRoutes(app: FastifyInstance) {
       return s ? { ...s, pan: s.pan_last4 ? `XXXXXX${s.pan_last4}` : null } : { uan: null, pf_member_id: null, pf_excluded: false, esi_ip_number: null, pan: null, tax_regime: 'new', pt_state: null };
     });
   });
-  app.put('/employees/:id/statutory', async (req) => {
+  only(app, 'payroll.statutory').put('/employees/:id/statutory', async (req) => {
     const a = tenantActor(req, 'payroll.manage');
     const { id } = z.object({ id: Uuid }).parse(req.params);
     // Only what is sent changes: an omitted field keeps its value, null clears it.
@@ -186,7 +187,7 @@ export async function payrollRoutes(app: FastifyInstance) {
   });
 
   // ------------------------------------------------------------ statutory rule register
-  app.get('/statutory-rules', async (req) => {
+  only(app, 'payroll.statutory').get('/statutory-rules', async (req) => {
     const a = tenantActorAny(req, 'payroll.read', 'payroll.statutory');
     return a.tx(async (db) => {
       await requireFeature(db, a.tenantId, 'payroll.statutory');
@@ -204,7 +205,7 @@ export async function payrollRoutes(app: FastifyInstance) {
     if (['pf', 'esi'].includes(b.kind) && b.scope !== 'IN') throw badRequest('PF and ESI rules are national: scope IN');
     return p.data;
   }
-  app.post('/statutory-rules', async (req, reply) => {
+  only(app, 'payroll.statutory').post('/statutory-rules', async (req, reply) => {
     const a = tenantActor(req, 'payroll.statutory');
     const b = RuleBody.parse(req.body);
     const params = checkRule(b);
@@ -216,7 +217,7 @@ export async function payrollRoutes(app: FastifyInstance) {
       reply.code(201); return { id };
     });
   });
-  app.put('/statutory-rules/:id', async (req) => {
+  only(app, 'payroll.statutory').put('/statutory-rules/:id', async (req) => {
     const a = tenantActor(req, 'payroll.statutory');
     const { id } = z.object({ id: Uuid }).parse(req.params);
     const b = RuleBody.parse(req.body);
@@ -231,7 +232,7 @@ export async function payrollRoutes(app: FastifyInstance) {
     });
   });
   /** A second person checks the values against the cited source and activates the rule. */
-  app.post('/statutory-rules/:id/verify', async (req) => {
+  only(app, 'payroll.statutory').post('/statutory-rules/:id/verify', async (req) => {
     const a = tenantActor(req, 'payroll.statutory');
     const { id } = z.object({ id: Uuid }).parse(req.params);
     return a.tx(async (db) => {
@@ -248,7 +249,7 @@ export async function payrollRoutes(app: FastifyInstance) {
       return { ok: true };
     });
   });
-  app.post('/statutory-rules/:id/retire', async (req) => {
+  only(app, 'payroll.statutory').post('/statutory-rules/:id/retire', async (req) => {
     const a = tenantActor(req, 'payroll.statutory');
     const { id } = z.object({ id: Uuid }).parse(req.params);
     return a.tx(async (db) => {
@@ -551,7 +552,7 @@ export async function payrollRoutes(app: FastifyInstance) {
   });
 
   // ------------------------------------------------------------ payslips
-  app.get('/payslips/mine', async (req) => {
+  only(app, 'payroll.payslips').get('/payslips/mine', async (req) => {
     const a = tenantActor(req, 'payslips.self');
     if (!a.user.employeeId) return { items: [] };
     return a.tx(async (db) => {
@@ -560,7 +561,7 @@ export async function payrollRoutes(app: FastifyInstance) {
         WHERE i.tenant_id=$1 AND i.employee_id=$2 AND r.status IN ('finalized','paid') AND NOT i.hold ORDER BY r.period DESC`, [a.tenantId, a.user.employeeId])).rows };
     });
   });
-  app.get('/payslips/:id', async (req) => {
+  only(app, 'payroll.payslips').get('/payslips/:id', async (req) => {
     const a = tenantActor(req);
     const { id } = z.object({ id: Uuid }).parse(req.params);
     return a.tx(async (db) => {

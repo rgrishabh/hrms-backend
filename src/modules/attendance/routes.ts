@@ -1,4 +1,5 @@
 import type { FastifyInstance } from 'fastify';
+import { only } from '../../core/features/routes.js';
 import { createHash } from 'node:crypto';
 import { z } from 'zod';
 import { tenantActor, tenantActorAny, requireFeature, type TenantActor, gateFeatures } from '../../core/http/context.js';
@@ -68,7 +69,7 @@ export async function attendanceRoutes(app: FastifyInstance) {
     idempotencyKey: z.string().min(8).max(100), latitude: z.number().min(-90).max(90).optional(), longitude: z.number().min(-180).max(180).optional(),
     selfieId: Uuid.optional(),
   });
-  app.post('/punch', { config: { rateLimit: { max: 12, timeWindow: '1 minute' } } }, async (req) => {
+  only(app, 'attendance.web', 'attendance.mobile').post('/punch', { config: { rateLimit: { max: 12, timeWindow: '1 minute' } } }, async (req) => {
     const a = tenantActor(req, 'attendance.self');
     const body = PunchBody.parse(req.body);
     const employeeId = a.user.employeeId;
@@ -122,7 +123,7 @@ export async function attendanceRoutes(app: FastifyInstance) {
   // ------------------------------------------------------------ check-in selfie (feature attendance.selfie)
   const MAX_SELFIE_BYTES = 5 * 1024 * 1024;
   /** multipart/form-data, one image from the camera. Returns the id to send with the clock-in. Unused ones go at the next retention run. */
-  app.post('/selfies', { config: { rateLimit: { max: 12, timeWindow: '1 minute' } } }, async (req, reply) => {
+  only(app, 'attendance.selfie').post('/selfies', { config: { rateLimit: { max: 12, timeWindow: '1 minute' } } }, async (req, reply) => {
     const a = tenantActor(req, 'attendance.self');
     const employeeId = a.user.employeeId;
     if (!employeeId) throw badRequest('Your account is not linked to an employee record');
@@ -151,7 +152,7 @@ export async function attendanceRoutes(app: FastifyInstance) {
   });
 
   /** The person themselves, or whoever may see their attendance. Looking at someone else's photo is audited. */
-  app.get('/selfies/:id', async (req, reply) => {
+  only(app, 'attendance.selfie').get('/selfies/:id', async (req, reply) => {
     const a = tenantActor(req);
     const { id } = z.object({ id: Uuid }).parse(req.params);
     const s = await a.tx(async (db) => {
@@ -167,13 +168,13 @@ export async function attendanceRoutes(app: FastifyInstance) {
   });
 
   // ------------------------------------------------------------ geofences (feature attendance.geofence)
-  app.get('/geofences', async (req) => {
+  only(app, 'attendance.geofence').get('/geofences', async (req) => {
     const a = tenantActorAny(req, 'attendance.configure', 'attendance.read');
     return a.tx(async (db) => ({ items: (await db.query(`SELECT g.branch_id, b.name AS branch_name, g.latitude, g.longitude, g.radius_m, g.updated_at
       FROM branch_geofences g JOIN branches b ON b.tenant_id=g.tenant_id AND b.id=g.branch_id WHERE g.tenant_id=$1 ORDER BY b.name`, [a.tenantId])).rows }));
   });
 
-  app.put('/geofences/:branchId', async (req) => {
+  only(app, 'attendance.geofence').put('/geofences/:branchId', async (req) => {
     const a = tenantActor(req, 'attendance.configure');
     const { branchId } = z.object({ branchId: Uuid }).parse(req.params);
     const b = z.object({ latitude: z.number().min(-90).max(90), longitude: z.number().min(-180).max(180), radiusMeters: z.number().int().min(10).max(100000) }).parse(req.body);
@@ -186,7 +187,7 @@ export async function attendanceRoutes(app: FastifyInstance) {
     });
   });
 
-  app.delete('/geofences/:branchId', async (req) => {
+  only(app, 'attendance.geofence').delete('/geofences/:branchId', async (req) => {
     const a = tenantActor(req, 'attendance.configure');
     const { branchId } = z.object({ branchId: Uuid }).parse(req.params);
     return a.tx(async (db) => {
@@ -313,7 +314,7 @@ export async function attendanceRoutes(app: FastifyInstance) {
   // ------------------------------------------------------------ regularization
   const RegBody = z.object({ workDate: IsoDate, requestedIn: z.iso.datetime({ offset: true }).optional(), requestedOut: z.iso.datetime({ offset: true }).optional(),
     reason: z.string().trim().min(5).max(1000) }).refine((b) => b.requestedIn || b.requestedOut, 'Provide an in time, an out time, or both');
-  app.post('/regularizations', async (req, reply) => {
+  only(app, 'attendance.regularization').post('/regularizations', async (req, reply) => {
     const a = tenantActor(req, 'attendance.self');
     const body = RegBody.parse(req.body);
     const employeeId = a.user.employeeId;
@@ -344,7 +345,7 @@ export async function attendanceRoutes(app: FastifyInstance) {
     });
   });
 
-  app.get('/regularizations', async (req) => {
+  only(app, 'attendance.regularization').get('/regularizations', async (req) => {
     const a = tenantActorAny(req, 'attendance.self', 'attendance.read');
     const q = PageQuery.extend({ scope: z.enum(['mine', 'all']).default('mine'), status: z.string().max(20).optional() }).parse(req.query);
     if (q.scope === 'all' && !a.has('attendance.read')) throw forbidden();
@@ -362,7 +363,7 @@ export async function attendanceRoutes(app: FastifyInstance) {
   });
 
   // ------------------------------------------------------------ shifts
-  app.get('/shifts', async (req) => {
+  only(app, 'shifts').get('/shifts', async (req) => {
     const a = tenantActorAny(req, 'attendance.configure', 'attendance.read', 'attendance.self');
     return a.tx(async (db) => (await requireFeature(db, a.tenantId, 'shifts'), { items: (await db.query(`SELECT id, code, name, start_time::text, end_time::text, break_minutes, grace_minutes, early_exit_grace_minutes,
       half_day_min_minutes, full_day_min_minutes, overtime_after_minutes, status, end_time <= start_time AS overnight FROM shifts WHERE tenant_id=$1 ORDER BY code`, [a.tenantId])).rows }));
@@ -370,7 +371,7 @@ export async function attendanceRoutes(app: FastifyInstance) {
 
   const shiftCols = (s: z.infer<typeof ShiftBody>) => [s.code, s.name, s.startTime, s.endTime, s.breakMinutes, s.graceMinutes, s.earlyExitGraceMinutes,
     s.halfDayMinMinutes, s.fullDayMinMinutes, s.overtimeAfterMinutes, s.status];
-  app.post('/shifts', async (req, reply) => {
+  only(app, 'shifts').post('/shifts', async (req, reply) => {
     const a = tenantActor(req, 'attendance.configure');
     const body = ShiftBody.parse(req.body);
     return a.tx(async (db) => {
@@ -382,7 +383,7 @@ export async function attendanceRoutes(app: FastifyInstance) {
     });
   });
 
-  app.put('/shifts/:id', async (req) => {
+  only(app, 'shifts').put('/shifts/:id', async (req) => {
     const a = tenantActor(req, 'attendance.configure');
     const { id } = z.object({ id: Uuid }).parse(req.params);
     const body = ShiftBody.parse(req.body);
@@ -398,7 +399,7 @@ export async function attendanceRoutes(app: FastifyInstance) {
     });
   });
 
-  app.post('/shift-assignments', async (req) => {
+  only(app, 'shifts').post('/shift-assignments', async (req) => {
     const a = tenantActor(req, 'attendance.configure');
     const body = z.object({ employeeIds: z.array(Uuid).min(1).max(1000), shiftId: Uuid, effectiveFrom: IsoDate, effectiveTo: IsoDate.nullable().optional() }).parse(req.body);
     if (body.effectiveTo && body.effectiveTo < body.effectiveFrom) throw badRequest('effectiveTo must be on or after effectiveFrom');
@@ -423,7 +424,7 @@ export async function attendanceRoutes(app: FastifyInstance) {
   });
 
   // ------------------------------------------------------------ holidays
-  app.get('/holidays', async (req) => {
+  only(app, 'holidays').get('/holidays', async (req) => {
     const a = tenantActor(req);
     const q = z.object({ year: z.coerce.number().int().min(2000).max(2100) }).parse(req.query);
     return a.tx(async (db) => (await requireFeature(db, a.tenantId, 'holidays'), { items: (await db.query(`SELECT h.id, h.holiday_date, h.name, h.optional, h.branch_id, b.name AS branch_name
@@ -431,7 +432,7 @@ export async function attendanceRoutes(app: FastifyInstance) {
       WHERE h.tenant_id=$1 AND extract(year FROM h.holiday_date)=$2 ORDER BY h.holiday_date`, [a.tenantId, q.year])).rows }));
   });
 
-  app.post('/holidays', async (req, reply) => {
+  only(app, 'holidays').post('/holidays', async (req, reply) => {
     const a = tenantActor(req, 'attendance.configure');
     const body = z.object({ holidayDate: IsoDate, name: z.string().trim().min(2).max(120), branchId: Uuid.nullable().optional(), optional: z.boolean().default(false) }).parse(req.body);
     return a.tx(async (db) => {
@@ -444,7 +445,7 @@ export async function attendanceRoutes(app: FastifyInstance) {
     });
   });
 
-  app.delete('/holidays/:id', async (req) => {
+  only(app, 'holidays').delete('/holidays/:id', async (req) => {
     const a = tenantActor(req, 'attendance.configure');
     const { id } = z.object({ id: Uuid }).parse(req.params);
     return a.tx(async (db) => {
@@ -459,7 +460,7 @@ export async function attendanceRoutes(app: FastifyInstance) {
   });
 
   // ------------------------------------------------------------ biometric devices (management)
-  app.get('/devices', async (req) => {
+  only(app, 'attendance.biometric').get('/devices', async (req) => {
     const a = tenantActorAny(req, 'attendance.devices.manage', 'attendance.configure');
     return a.tx(async (db) => ({ items: (await db.query(`SELECT d.id, d.serial_number, d.name, d.adapter_key, d.status, d.last_sync_at, d.last_clock_drift_seconds,
         d.last_error, d.api_key_prefix, b.name AS branch_name, d.branch_id,
@@ -467,7 +468,7 @@ export async function attendanceRoutes(app: FastifyInstance) {
       FROM attendance_devices d JOIN branches b ON b.tenant_id=d.tenant_id AND b.id=d.branch_id WHERE d.tenant_id=$1 ORDER BY d.name`, [a.tenantId])).rows }));
   });
 
-  app.post('/devices', async (req, reply) => {
+  only(app, 'attendance.biometric').post('/devices', async (req, reply) => {
     const a = tenantActor(req, 'attendance.devices.manage');
     const body = z.object({ branchId: Uuid, serialNumber: z.string().trim().min(3).max(64), name: z.string().trim().min(2).max(100),
       adapterKey: z.enum(['generic_push_v1']) }).parse(req.body);
@@ -485,7 +486,7 @@ export async function attendanceRoutes(app: FastifyInstance) {
     });
   });
 
-  app.post('/devices/:id/rotate-key', async (req) => {
+  only(app, 'attendance.biometric').post('/devices/:id/rotate-key', async (req) => {
     const a = tenantActor(req, 'attendance.devices.manage');
     const { id } = z.object({ id: Uuid }).parse(req.params);
     return a.tx(async (db) => {
@@ -497,7 +498,7 @@ export async function attendanceRoutes(app: FastifyInstance) {
     });
   });
 
-  app.patch('/devices/:id', async (req) => {
+  only(app, 'attendance.biometric').patch('/devices/:id', async (req) => {
     const a = tenantActor(req, 'attendance.devices.manage');
     const { id } = z.object({ id: Uuid }).parse(req.params);
     const body = z.object({ status: z.enum(['active', 'disabled', 'replaced']).optional(), branchId: Uuid.optional(), name: z.string().trim().min(2).max(100).optional() }).parse(req.body);
@@ -511,14 +512,14 @@ export async function attendanceRoutes(app: FastifyInstance) {
     });
   });
 
-  app.get('/device-mappings', async (req) => {
+  only(app, 'attendance.biometric').get('/device-mappings', async (req) => {
     const a = tenantActor(req, 'attendance.devices.manage');
     return a.tx(async (db) => ({ items: (await db.query(`SELECT m.device_user_id, m.employee_id, e.employee_code, trim(e.first_name||' '||coalesce(e.last_name,'')) AS name
       FROM device_user_mappings m JOIN employees e ON e.tenant_id=m.tenant_id AND e.id=m.employee_id WHERE m.tenant_id=$1 ORDER BY m.device_user_id`, [a.tenantId])).rows }));
   });
 
   /** Map a device enrolment id to an employee and re-process any events that were waiting in the unmapped queue. */
-  app.put('/device-mappings/:deviceUserId', async (req) => {
+  only(app, 'attendance.biometric').put('/device-mappings/:deviceUserId', async (req) => {
     const a = tenantActor(req, 'attendance.devices.manage');
     const { deviceUserId } = z.object({ deviceUserId: z.string().min(1).max(64) }).parse(req.params);
     const body = z.object({ employeeId: Uuid }).parse(req.body);
@@ -541,7 +542,7 @@ export async function attendanceRoutes(app: FastifyInstance) {
     });
   });
 
-  app.get('/device-events/unmapped', async (req) => {
+  only(app, 'attendance.biometric').get('/device-events/unmapped', async (req) => {
     const a = tenantActor(req, 'attendance.devices.manage');
     return a.tx(async (db) => ({ items: (await db.query(`SELECT ev.id, ev.device_user_id, ev.event_time, ev.device_time, ev.direction, ev.received_at, d.name AS device_name, d.serial_number
       FROM attendance_events ev LEFT JOIN attendance_devices d ON d.tenant_id=ev.tenant_id AND d.id=ev.device_id

@@ -146,3 +146,13 @@ export const SYSTEM_ROLES: readonly RoleDefinition[] = [
 ];
 
 export const SYSTEM_ROLE_MAP: ReadonlyMap<string, RoleDefinition> = new Map(SYSTEM_ROLES.map((r) => [r.key, r]));
+
+/** Which module a permission belongs to, by its name; longer prefixes win. Anything not listed belongs to an always-on part of the product. */
+const PERMISSION_FEATURES: readonly (readonly [string, readonly string[]])[] = [
+  ['attendance.devices.', ['attendance.biometric']], ['attendance.approve', ['attendance.regularization']], ['attendance.', ['attendance']], ['documents.', ['core.documents']],
+  ['expenses.', ['expenses']], ['performance.', ['performance']], ['assets.', ['assets']], ['cases.', ['grievance', 'posh']], ['grievance.', ['grievance']], ['posh.', ['posh']],
+  ['payslips.', ['payroll.payslips']], ['payroll.statutory', ['payroll.statutory']], ['payroll.', ['payroll']], ['lifecycle.', ['core.onboarding', 'core.offboarding']],
+  ['recruitment.', ['recruitment']], ['policies.', ['core.policies']], ['training.', ['training']], ['competency.', ['lab.competency']], ['overtime.', ['overtime']],
+  ['field_duty.', ['field_duty']], ['travel.', ['travel']], ['loans.', ['loans', 'salary_advance']], ['accounting.', ['accounting_exports']], ['leave.', ['leave']],
+];
+export const permissionFeature = (permission: string) => PERMISSION_FEATURES.find(([prefix]) => permission.startsWith(prefix))?.[1];

@@ -6,9 +6,9 @@ import { createSession, deriveCsrf, revokeSession, revokeAllSessionsForUser, SES
 import { audit } from '../core/audit/audit.js';
 import { AppError, badRequest, unauthorized } from '../core/http/errors.js';
 import { getSettingValue } from '../core/settings/service.js';
-import { evaluateFeatures } from '../core/features/state.js';
+import { allOff, evaluateFeatures } from '../core/features/state.js';
 import { requireTenantHost } from '../core/http/context.js';
-import { SYSTEM_ROLE_MAP } from '../core/auth/permissions.js';
+import { SYSTEM_ROLE_MAP, permissionFeature } from '../core/auth/permissions.js';
 import type { PublicConfig } from '../config/installation.js';
 import { notifyUsers } from '../core/notify/service.js';
 
@@ -118,7 +118,7 @@ export async function authRoutes(app: FastifyInstance, opts: { publicConfig: Pub
       passwordChangeRequired: u.mustChangePassword,
       mfa: { enabled: u.mfaEnabled, pending: u.mfaPending, enrollmentRequired: u.mfaEnrollmentRequired },
       roles: u.roles.map((k) => ({ key: k, name: SYSTEM_ROLE_MAP.get(k)?.name ?? k })),
-      permissions: [...u.permissions].sort(),
+      permissions: [...u.permissions].filter((p) => !allOff(permissionFeature(p))).sort(),
       csrfToken: deriveCsrf(token),
       organization: { id: host.id, name: host.name },
       preferences: { timezone, dateFormat, emailNotifications },

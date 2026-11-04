@@ -7,6 +7,7 @@ import { withTenant, type Db } from '../../db/tx.js';
 import { assertFeatureUsable, evaluateFeatures } from '../features/state.js';
 import type { FieldCipher } from '../crypto/index.js';
 import type { Env } from '../../config/env.js';
+import type { FeatureRoute } from '../features/routes.js';
 
 export interface RequestContext {
   requestId: string;
@@ -17,7 +18,7 @@ export interface RequestContext {
 
 declare module 'fastify' {
   interface FastifyRequest { ctx: RequestContext }
-  interface FastifyInstance { deps: AppDeps }
+  interface FastifyInstance { deps: AppDeps; featureRoutes: readonly FeatureRoute[] }
 }
 
 export interface AppDeps { env: Env; pool: Pool; cipher: FieldCipher; /** Tests: keep an injected mailer instead of building one from env. */ mailerOverride?: boolean; storeOverride?: boolean; pushOverride?: boolean }

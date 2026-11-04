@@ -1,10 +1,14 @@
 import type { FastifyInstance } from 'fastify';
+import { only } from '../../core/features/routes.js';
 import { z } from 'zod';
 import { tenantActor, requireFeature } from '../../core/http/context.js';
 import { getPushSender, isAllowedEndpoint } from '../../core/notify/push.js';
 import { audit } from '../../core/audit/audit.js';
+import { currentFeatures } from '../../core/features/state.js';
 import { PageQuery, offsetOf, paged, Uuid, QueryBool } from '../../core/http/pagination.js';
 import { badRequest, notFound } from '../../core/http/errors.js';
+
+const enabledFeatures = () => [...currentFeatures()];
 
 /** A user's own in-app notifications. Every query is scoped to (organization, user). */
 export async function notificationRoutes(app: FastifyInstance) {
@@ -12,11 +16,11 @@ export async function notificationRoutes(app: FastifyInstance) {
     const a = tenantActor(req);
     const q = PageQuery.extend({ unread: QueryBool.optional() }).parse(req.query);
     return a.tx(async (db) => {
-      const params = [a.tenantId, a.user.userId, q.unread ?? false];
-      const where = `tenant_id=$1 AND user_id=$2 AND (NOT $3 OR read_at IS NULL)`;
+      const params = [a.tenantId, a.user.userId, q.unread ?? false, enabledFeatures()];
+      const where = `tenant_id=$1 AND user_id=$2 AND (NOT $3 OR read_at IS NULL) AND (feature IS NULL OR feature = ANY($4))`;
       const total = Number((await db.query<{ n: string }>(`SELECT count(*) AS n FROM notifications WHERE ${where}`, params)).rows[0]!.n);
       const rows = await db.query(`SELECT id, kind, title, body, link, read_at, created_at FROM notifications WHERE ${where}
-        ORDER BY created_at DESC LIMIT $4 OFFSET $5`, [...params, q.pageSize, offsetOf(q)]);
+        ORDER BY created_at DESC LIMIT $5 OFFSET $6`, [...params, q.pageSize, offsetOf(q)]);
       return paged(rows.rows, total, q);
     });
   });
@@ -24,14 +28,14 @@ export async function notificationRoutes(app: FastifyInstance) {
   app.get('/unread-count', async (req) => {
     const a = tenantActor(req);
     return a.tx(async (db) => ({ unread: Number((await db.query<{ n: string }>(
-      `SELECT count(*) AS n FROM notifications WHERE tenant_id=$1 AND user_id=$2 AND read_at IS NULL`, [a.tenantId, a.user.userId])).rows[0]!.n) }));
+      `SELECT count(*) AS n FROM notifications WHERE tenant_id=$1 AND user_id=$2 AND read_at IS NULL AND (feature IS NULL OR feature = ANY($3))`, [a.tenantId, a.user.userId, enabledFeatures()])).rows[0]!.n) }));
   });
 
   app.post('/:id/read', async (req) => {
     const a = tenantActor(req);
     const { id } = z.object({ id: Uuid }).parse(req.params);
     return a.tx(async (db) => {
-      const r = await db.query(`UPDATE notifications SET read_at=coalesce(read_at, now()) WHERE tenant_id=$1 AND user_id=$2 AND id=$3`, [a.tenantId, a.user.userId, id]);
+      const r = await db.query(`UPDATE notifications SET read_at=coalesce(read_at, now()) WHERE tenant_id=$1 AND user_id=$2 AND id=$3 AND (feature IS NULL OR feature = ANY($4))`, [a.tenantId, a.user.userId, id, enabledFeatures()]);
       if (!r.rowCount) throw notFound();
       return { ok: true };
     });
@@ -39,8 +43,8 @@ export async function notificationRoutes(app: FastifyInstance) {
 
   app.post('/read-all', async (req) => {
     const a = tenantActor(req);
-    return a.tx(async (db) => ({ updated: (await db.query(`UPDATE notifications SET read_at=now() WHERE tenant_id=$1 AND user_id=$2 AND read_at IS NULL`,
-      [a.tenantId, a.user.userId])).rowCount }));
+    return a.tx(async (db) => ({ updated: (await db.query(`UPDATE notifications SET read_at=now() WHERE tenant_id=$1 AND user_id=$2 AND read_at IS NULL AND (feature IS NULL OR feature = ANY($3))`,
+      [a.tenantId, a.user.userId, enabledFeatures()])).rowCount }));
   });
 
   // ------------------------------------------------------------ web push (feature notifications.push)
@@ -48,7 +52,7 @@ export async function notificationRoutes(app: FastifyInstance) {
   const Subscribe = z.object({ endpoint: z.url().max(1000), keys: z.object({ p256dh: PushKey.max(200), auth: PushKey.max(100) }) });
 
   /** The application server key a browser needs to subscribe. */
-  app.get('/push/public-key', async (req) => {
+  only(app, 'notifications.push').get('/push/public-key', async (req) => {
     const a = tenantActor(req);
     return a.tx(async (db) => {
       await requireFeature(db, a.tenantId, 'notifications.push');
@@ -56,7 +60,7 @@ export async function notificationRoutes(app: FastifyInstance) {
     });
   });
 
-  app.post('/push/subscribe', async (req, reply) => {
+  only(app, 'notifications.push').post('/push/subscribe', async (req, reply) => {
     const a = tenantActor(req);
     const b = Subscribe.parse(req.body);
     if (!isAllowedEndpoint(b.endpoint)) throw badRequest('This is not a browser push service');
@@ -72,7 +76,7 @@ export async function notificationRoutes(app: FastifyInstance) {
     });
   });
 
-  app.post('/push/unsubscribe', async (req) => {
+  only(app, 'notifications.push').post('/push/unsubscribe', async (req) => {
     const a = tenantActor(req);
     const b = z.object({ endpoint: z.string().max(1000) }).parse(req.body);
     return a.tx(async (db) => {

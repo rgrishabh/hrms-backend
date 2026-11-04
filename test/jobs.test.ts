@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import type { FastifyInstance } from 'fastify';
-import { makeApp, createTenant, Client, ownerQuery, type TenantFixture, flags } from './helpers.js';
+import { makeApp, createTenant, Client, ownerQuery, type TenantFixture, flags, inApp } from './helpers.js';
 import { tick } from '../src/core/jobs/scheduler.js';
 import { JOB_MAP, duePeriod, nextRun } from '../src/core/jobs/registry.js';
 import { addDays, localDate } from '../src/modules/attendance/time.js';
@@ -92,10 +92,11 @@ describe('scheduler', () => {
   it('skips jobs whose module is disabled', async () => {
     const off = await makeApp({ ...flags('attendance,attendance.web,attendance.regularization,shifts,holidays') });
     const Y = await createTenant();
-    await tick(off.deps.pool, quiet, at(today, '23:00'));
-    expect((await runsOf(Y.id)).map((r) => r.job_key)).not.toContain('leave.accrual');
+    await inApp(off, () => tick(off.deps.pool, quiet, at(today, '23:00')));
+    const ran = (await runsOf(Y.id)).map((r) => r.job_key);
+    expect(ran).not.toContain('leave.accrual');
+    expect(ran).toContain('recruitment.retention'); // retention runs whatever the flag says
     await off.close();
-    await makeApp().then((x) => x.close()); // restore default modules for this process
   });
 });
 

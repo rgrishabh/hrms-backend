@@ -1,7 +1,7 @@
 import type { Pool } from '../../db/pool.js';
 import { withPlatformBypass, type Db } from '../../db/tx.js';
 import { SYSTEM_ROLES } from '../auth/permissions.js';
-import { isModuleEnabled } from '../features/state.js';
+import { allOff, isModuleEnabled } from '../features/state.js';
 import { getFrom, getMailer } from './mailer.js';
 import { renderEmail, type EmailBrand } from './templates.js';
 import { getPushSender, pushPayload } from './push.js';
@@ -22,19 +22,31 @@ export interface NotifyMessage {
   /** In-app relative link, e.g. /approvals */
   link?: string | null;
   actionLabel?: string;
+  /** The module it belongs to, when its kind does not say (see featureOfKind). Nothing is sent while the module is off, and what was sent stays out of sight. */
+  feature?: string;
   /** Same key + same user = one notification (e.g. daily reminders). */
   dedupeKey?: string;
   email?: boolean;
   push?: boolean;
 }
 
+/** Kind prefixes that belong to one module. Others are platform notices; a cross-module one (approval.*, cases.*) names its feature in the message. */
+const KIND_FEATURES: readonly (readonly [string, string])[] = [
+  ['assets.', 'assets'], ['cases.committee', 'posh'], ['cases.posh', 'posh'], ['cases.deadline', 'posh'], ['cases.grievance', 'grievance'], ['cases.assigned', 'grievance'], ['cases.overdue', 'grievance'],
+  ['lifecycle.onboarding', 'core.onboarding'], ['lifecycle.probation', 'core.onboarding'], ['lifecycle.offboarding', 'core.offboarding'], ['competency.', 'lab.competency'], ['documents.', 'core.documents'], ['expenses.', 'expenses'], ['loans.', 'loans'],
+  ['payroll.payslip', 'payroll.payslips'], ['payroll.', 'payroll'], ['performance.', 'performance'], ['policies.', 'core.policies'], ['recruitment.', 'recruitment'],
+  ['reports.', 'reports.advanced'], ['training.', 'training'], ['travel.', 'travel'],
+];
+export const featureOfKind = (kind: string) => KIND_FEATURES.find(([prefix]) => kind.startsWith(prefix))?.[1];
+
 export async function notifyUsers(db: Db, tenantId: string, userIds: string[], msg: NotifyMessage) {
   const ids = [...new Set(userIds)].filter(Boolean);
-  if (!ids.length) return { inApp: 0, emails: 0 };
-  const inApp = await db.query(`INSERT INTO notifications (tenant_id, user_id, kind, title, body, link, dedupe_key)
-    SELECT $1, u.id, $3, $4, $5, $6, $7 FROM users u WHERE u.tenant_id=$1 AND u.id = ANY($2) AND u.status='active'
+  const feature = msg.feature ?? featureOfKind(msg.kind);
+  if (!ids.length || allOff(feature)) return { inApp: 0, emails: 0 };
+  const inApp = await db.query(`INSERT INTO notifications (tenant_id, user_id, kind, title, body, link, dedupe_key, feature)
+    SELECT $1, u.id, $3, $4, $5, $6, $7, $8 FROM users u WHERE u.tenant_id=$1 AND u.id = ANY($2) AND u.status='active'
     ON CONFLICT (tenant_id, user_id, dedupe_key) WHERE dedupe_key IS NOT NULL DO NOTHING`,
-    [tenantId, ids, msg.kind, msg.title.slice(0, 200), msg.body?.slice(0, 1000) ?? null, msg.link ?? null, msg.dedupeKey ?? null]);
+    [tenantId, ids, msg.kind, msg.title.slice(0, 200), msg.body?.slice(0, 1000) ?? null, msg.link ?? null, msg.dedupeKey ?? null, feature ?? null]);
   let emails = 0;
   if (msg.email !== false && getMailer() && isModuleEnabled('notifications.email')) {
     const rendered = renderEmail(brand, msg);

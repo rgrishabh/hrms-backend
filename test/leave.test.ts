@@ -219,6 +219,5 @@ describe('module disabled', () => {
     const r = await c.get('/api/v1/leave/types');
     expect(r.statusCode).toBe(404);
     await off.close();
-    await makeApp().then((x) => x.close()); // restore the default module set for this process
   });
 });

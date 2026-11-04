@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import pg from 'pg';
 import type { FastifyInstance } from 'fastify';
-import { makeApp, createTenant, Client, ownerQuery, type TenantFixture, flags } from './helpers.js';
+import { makeApp, createTenant, Client, ownerQuery, type TenantFixture, flags, inApp } from './helpers.js';
 import { TEST_OWNER_URL } from './env.js';
 import { plannedRecoveries } from '../src/modules/loans/service.js';
 import type { Db } from '../src/db/tx.js';
@@ -34,7 +34,7 @@ describe('F-13 loan recovery and repayment do not race', () => {
       VALUES ($1,$2,'loan',5000,1,5000,'2026-01','Fixture purpose','disbursed',$3,now()) RETURNING id`, [T.id, T.users.other!.employeeId, T.users.hr!.id]);
     const [run] = await ownerQuery<{ id: string }>(`INSERT INTO payroll_runs (tenant_id, legal_entity_id, period, created_by) VALUES ($1,$2,'2026-01',$3) RETURNING id`, [T.id, T.legalEntityId, T.users.payroll!.id]);
     await c.query('BEGIN');
-    const planned = await plannedRecoveries(c as unknown as Db, T.id, run!.id, T.users.other!.employeeId!, '2026-01', false);
+    const planned = await inApp(app, () => plannedRecoveries(c as unknown as Db, T.id, run!.id, T.users.other!.employeeId!, '2026-01', false));
     expect(planned).toHaveLength(1);
     const repayment = pay.post(`/api/v1/loans/requests/${l!.id}/repayment`, { amount: 5000, reference: 'Cash receipt 1' });
     const first = await Promise.race([repayment.then(() => 'finished'), sleep(600).then(() => 'waiting')]);

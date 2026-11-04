@@ -1,7 +1,7 @@
 import type { Env } from '../config/env.js';
 import { buildPublicConfig, type PublicConfig } from '../config/installation.js';
 import { setDeploymentDefaults, setDeploymentLimits } from './settings/service.js';
-import { setEnabledModules, setEmailTransportConfigured, setPushConfigured, setStorageConfigured } from './features/state.js';
+import { setEmailTransportConfigured, setPushConfigured, setStorageConfigured } from './features/state.js';
 import { setMfaFloor, type MfaLevel } from './auth/mfa.js';
 import { createPushSender, getPushSender, setPushSender } from './notify/push.js';
 import { setEmailBrand } from './notify/service.js';
@@ -16,7 +16,7 @@ export interface RuntimeOverrides {
   pushOverride?: boolean;
 }
 
-export interface Runtime { publicConfig: PublicConfig }
+export interface Runtime { publicConfig: PublicConfig; features: ReadonlySet<string> }
 
 type RuntimeLog = { info: (o: object, m?: string) => void };
 
@@ -28,7 +28,6 @@ const mfaFloorOf = (env: Pick<Env, 'MFA_AVAILABLE' | 'MFA_ENFORCED'>): MfaLevel 
  * Validates the module set, so an invalid configuration stops either process.
  */
 export function initRuntime(env: Env, log: RuntimeLog, overrides: RuntimeOverrides = {}): Runtime {
-  setEnabledModules(env.enabledFeatures);
   setDeploymentLimits({ sessionTtlHours: env.SESSION_TTL_HOURS });
   setMfaFloor(mfaFloorOf(env));
   setDeploymentDefaults({ 'general.timezone': env.ORGANIZATION_TIMEZONE, 'general.date_format': env.ORGANIZATION_DATE_FORMAT });
@@ -43,5 +42,5 @@ export function initRuntime(env: Env, log: RuntimeLog, overrides: RuntimeOverrid
   if (!overrides.pushOverride) setPushSender(createPushSender(env));
   setPushConfigured(!!getPushSender());
   registerAllApprovalHandlers();
-  return { publicConfig };
+  return { publicConfig, features: env.enabledFeatures };
 }

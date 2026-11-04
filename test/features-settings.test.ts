@@ -29,8 +29,8 @@ describe('deployment-controlled modules', () => {
   afterAll(async () => { await app2.close(); });
 
   it('reports supported / enabled / configured / usable separately', async () => {
-    expect(await mod(admin, 'attendance.web')).toMatchObject({ supported: true, enabled: false, usable: false, blockers: ['Not enabled for this installation'] });
-    if (PLANNED) expect(await mod(admin, PLANNED)).toMatchObject({ supported: false, enabled: false });
+    expect(await mod(admin, 'attendance.web')).toBeUndefined(); // off: not listed, and no description either
+    if (PLANNED) expect(await mod(admin, PLANNED)).toBeUndefined();
     expect(await mod(admin, 'attendance.biometric')).toMatchObject({ enabled: true, configured: false, usable: false });
     expect(await mod(admin, 'core.employees')).toMatchObject({ core: true, usable: true });
   });
@@ -65,7 +65,6 @@ describe('deployment-controlled modules', () => {
       payload: { deviceTime: new Date().toISOString(), events: [{ eventId: 'e1', deviceUserId: '1', timestamp: new Date().toISOString() }] } });
     expect(r.statusCode).toBe(404);
     await app3.close();
-    await makeApp().then((a) => a.close()); // restore the default test module set for the rest of this file
   });
 });
 

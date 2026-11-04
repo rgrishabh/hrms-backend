@@ -1,5 +1,6 @@
 import type { FastifyInstance, FastifyRequest } from 'fastify';
 import { z } from 'zod';
+import { only } from '../../core/features/routes.js';
 import { tenantActor, tenantActorAny, requireFeature, type TenantActor, gateFeatures } from '../../core/http/context.js';
 import { audit } from '../../core/audit/audit.js';
 import { AppError, badRequest, conflict, forbidden, notFound } from '../../core/http/errors.js';
@@ -177,7 +178,7 @@ export async function competencyRoutes(app: FastifyInstance) {
   });
 
   // ------------------------------------------------------------ methods (feature: lab.competency)
-  app.get('/methods', async (req) => {
+  only(app, 'lab.competency').get('/methods', async (req) => {
     const a = tenantActorAny(req, 'competency.read', 'competency.manage', 'competency.assess', 'competency.self');
     return a.tx(async (db) => {
       await requireFeature(db, a.tenantId, 'lab.competency');
@@ -206,7 +207,7 @@ export async function competencyRoutes(app: FastifyInstance) {
     for (const c of new Set(b.requiredCourseIds)) await db.query('INSERT INTO lab_method_requirements (tenant_id, method_id, course_id) VALUES ($1,$2,$3)', [a.tenantId, id, c]);
     return id;
   }
-  app.post('/methods', async (req, reply) => {
+  only(app, 'lab.competency').post('/methods', async (req, reply) => {
     const a = tenantActor(req, 'competency.manage');
     const b = MethodBody.parse(req.body);
     return a.tx(async (db) => {
@@ -216,7 +217,7 @@ export async function competencyRoutes(app: FastifyInstance) {
       reply.code(201); return { id };
     });
   });
-  app.put('/methods/:id', async (req) => {
+  only(app, 'lab.competency').put('/methods/:id', async (req) => {
     const a = tenantActor(req, 'competency.manage');
     const { id } = z.object({ id: Uuid }).parse(req.params);
     const b = MethodBody.parse(req.body);
@@ -230,7 +231,7 @@ export async function competencyRoutes(app: FastifyInstance) {
   });
 
   // ------------------------------------------------------------ assessments
-  app.get('/assessments', async (req) => {
+  only(app, 'lab.competency').get('/assessments', async (req) => {
     const a = tenantActor(req);
     const q = PageQuery.extend({ employeeId: Uuid.optional(), methodId: Uuid.optional() }).parse(req.query);
     const employeeId = scopeEmployee(a, q.employeeId, 'competency.read', 'competency.assess');
@@ -248,7 +249,7 @@ export async function competencyRoutes(app: FastifyInstance) {
     });
   });
 
-  app.post('/assessments', async (req, reply) => {
+  only(app, 'lab.competency').post('/assessments', async (req, reply) => {
     const a = tenantActor(req, 'competency.assess');
     const b = z.object({
       employeeId: Uuid, methodId: Uuid, activity: Activity, assessedOn: IsoDate,
@@ -271,7 +272,7 @@ export async function competencyRoutes(app: FastifyInstance) {
   });
 
   // ------------------------------------------------------------ authorizations
-  app.post('/authorizations', async (req, reply) => {
+  only(app, 'lab.competency').post('/authorizations', async (req, reply) => {
     const a = tenantActor(req, 'competency.assess');
     const { assessmentId } = z.object({ assessmentId: Uuid }).parse(req.body);
     return a.tx(async (db) => {
@@ -304,7 +305,7 @@ export async function competencyRoutes(app: FastifyInstance) {
     });
   });
 
-  app.get('/authorizations', async (req) => {
+  only(app, 'lab.competency').get('/authorizations', async (req) => {
     const a = tenantActor(req);
     const q = PageQuery.extend({ employeeId: Uuid.optional(), methodId: Uuid.optional(), status: z.enum(['pending', 'authorized', 'suspended', 'in_force', 'ended', 'review_due']).optional() }).parse(req.query);
     const employeeId = scopeEmployee(a, q.employeeId, 'competency.read', 'competency.authorize');
@@ -331,7 +332,7 @@ export async function competencyRoutes(app: FastifyInstance) {
     });
   });
 
-  app.get('/authorizations/:id', async (req) => {
+  only(app, 'lab.competency').get('/authorizations/:id', async (req) => {
     const a = tenantActor(req);
     const { id } = z.object({ id: Uuid }).parse(req.params);
     return a.tx(async (db) => {
@@ -374,11 +375,11 @@ export async function competencyRoutes(app: FastifyInstance) {
       return { ok: true, status: to };
     });
   };
-  app.post('/authorizations/:id/suspend', transition('suspend'));
-  app.post('/authorizations/:id/reinstate', transition('reinstate'));
-  app.post('/authorizations/:id/withdraw', transition('withdraw'));
+  only(app, 'lab.competency').post('/authorizations/:id/suspend', transition('suspend'));
+  only(app, 'lab.competency').post('/authorizations/:id/reinstate', transition('reinstate'));
+  only(app, 'lab.competency').post('/authorizations/:id/withdraw', transition('withdraw'));
 
-  app.post('/authorizations/:id/cancel', async (req) => {
+  only(app, 'lab.competency').post('/authorizations/:id/cancel', async (req) => {
     const a = tenantActor(req, 'competency.assess');
     const { id } = z.object({ id: Uuid }).parse(req.params);
     return a.tx(async (db) => {
@@ -392,7 +393,7 @@ export async function competencyRoutes(app: FastifyInstance) {
 
   // ------------------------------------------------------------ check & matrix
   /** For LIMS / report sign-off integration: is this person authorized for this method and activity today? */
-  app.get('/check', async (req) => {
+  only(app, 'lab.competency').get('/check', async (req) => {
     const a = tenantActor(req);
     const q = z.object({ employeeId: Uuid.optional(), employeeCode: z.string().trim().max(50).optional(), methodId: Uuid.optional(), methodCode: z.string().trim().toUpperCase().max(40).optional(), activity: Activity })
       .refine((v) => (v.employeeId || v.employeeCode) && (v.methodId || v.methodCode), 'Give an employee and a method').parse(req.query);
@@ -409,7 +410,7 @@ export async function competencyRoutes(app: FastifyInstance) {
     });
   });
 
-  app.get('/matrix', async (req) => {
+  only(app, 'lab.competency').get('/matrix', async (req) => {
     const a = tenantActor(req, 'competency.read');
     const q = z.object({ discipline: z.string().trim().max(80).optional(), branchId: Uuid.optional() }).parse(req.query);
     return a.tx(async (db) => {

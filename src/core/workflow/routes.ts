@@ -2,7 +2,7 @@ import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import { tenantActor, tenantActorAny } from '../http/context.js';
 import { Uuid } from '../http/pagination.js';
-import { actOnRequest, cancelRequest, inbox, reassignRequest, requestHistory, ESCALATION_PERMISSION } from './engine.js';
+import { actOnRequest, cancelRequest, inbox, reassignRequest, requestHistory, ESCALATION_PERMISSION, offEntityTypes } from './engine.js';
 import { notFound, forbidden } from '../http/errors.js';
 import { delegationRoutes } from './delegations.js';
 
@@ -17,7 +17,7 @@ export async function approvalRoutes(app: FastifyInstance) {
   app.get('/mine', async (req) => {
     const a = tenantActor(req);
     return a.tx(async (db) => ({ items: (await db.query(`SELECT id, entity_type, entity_id, summary, status, created_at, decided_at
-      FROM approval_requests WHERE tenant_id=$1 AND requester_id=$2 ORDER BY created_at DESC LIMIT 100`, [a.tenantId, a.user.userId])).rows }));
+      FROM approval_requests WHERE tenant_id=$1 AND requester_id=$2 AND NOT (entity_type = ANY($3)) ORDER BY created_at DESC LIMIT 100`, [a.tenantId, a.user.userId, offEntityTypes()])).rows }));
   });
 
   app.get('/:id', async (req) => {
@@ -25,7 +25,7 @@ export async function approvalRoutes(app: FastifyInstance) {
     const { id } = z.object({ id: Uuid }).parse(req.params);
     return a.tx(async (db) => {
       const r = await db.query<{ requester_id: string }>(`SELECT id, entity_type, entity_id, summary, status, requester_id, created_at, decided_at
-        FROM approval_requests WHERE tenant_id=$1 AND id=$2`, [a.tenantId, id]);
+        FROM approval_requests WHERE tenant_id=$1 AND id=$2 AND NOT (entity_type = ANY($3))`, [a.tenantId, id, offEntityTypes()]);
       const rq = r.rows[0];
       if (!rq) throw notFound();
       const steps = await requestHistory(db, a.tenantId, id);

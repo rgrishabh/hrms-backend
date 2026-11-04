@@ -2,7 +2,6 @@ import type { Env, InstallationEnv } from './env.js';
 import { deploymentDomains } from './env.js';
 import type pg from 'pg';
 type Db = pg.ClientBase;
-import { isModuleEnabled } from '../core/features/state.js';
 import { FEATURES } from '../core/features/registry.js';
 
 /**
@@ -50,7 +49,7 @@ export function buildPublicConfig(env: Env): PublicConfig {
       dateFormat: env.ORGANIZATION_DATE_FORMAT,
       fiscalYearStartMonth: env.ORGANIZATION_FY_START_MONTH,
     },
-    modules: FEATURES.filter((f) => isModuleEnabled(f.key)).map((f) => f.key),
+    modules: FEATURES.filter((f) => env.enabledFeatures.has(f.key)).map((f) => f.key),
   };
 }
 

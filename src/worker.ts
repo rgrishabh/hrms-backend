@@ -2,6 +2,7 @@ import pino from 'pino';
 import { loadEnv, type Env } from './config/env.js';
 import { createPool } from './db/pool.js';
 import { initRuntime } from './core/runtime.js';
+import { withFeatures } from './core/features/state.js';
 import { unsafeDatabaseRole } from './core/db-role.js';
 import { Scheduler } from './core/jobs/scheduler.js';
 import { HEARTBEAT_INTERVAL_MS, heartbeatFile, writeHeartbeat, type Heartbeat } from './core/jobs/heartbeat.js';
@@ -22,8 +23,9 @@ try {
 const log = pino({ level: env.LOG_LEVEL, base: { role: 'worker' } });
 const pool = createPool(env.DATABASE_URL, env.DATABASE_POOL_MAX);
 
+let features: ReadonlySet<string>;
 try {
-  initRuntime(env, log);
+  ({ features } = initRuntime(env, log));
 } catch (e) {
   log.fatal(`Startup failed: ${(e as Error).message}`);
   process.exit(1);
@@ -48,7 +50,8 @@ const scheduler = new Scheduler(pool, log, env.JOBS_INTERVAL_SECONDS * 1000, {
 });
 await writeBeat();
 const heartbeat = setInterval(() => { void writeBeat(); }, HEARTBEAT_INTERVAL_MS);
-scheduler.start();
+// The whole loop runs with this deployment's feature set.
+withFeatures(features, () => { scheduler.start(); });
 // Timers of the scheduler are unref'd; this one keeps the process up until a signal.
 log.info({ intervalSeconds: env.JOBS_INTERVAL_SECONDS }, 'worker started');
 

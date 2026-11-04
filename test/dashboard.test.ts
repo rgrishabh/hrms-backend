@@ -41,7 +41,7 @@ beforeAll(async () => {
   const c = new pg.Client({ connectionString: TEST_OWNER_URL });
   await c.connect();
   try {
-    await generateDemo(c, { password, today, tenantId: tid });
+    await generateDemo(c, { password, today, tenantId: tid, features: app.deps.env.enabledFeatures });
     const [mgr] = await ownerQuery<{ id: string }>(`SELECT e.id FROM employees e JOIN users u ON u.id=e.user_id WHERE e.tenant_id=$1 AND u.email=$2`, [tid, `lab.manager@${host}`]);
     team = await teamEmployeeIds(c as unknown as Db, tid, mgr!.id);
     const members = await ownerQuery<{ id: string; code: string }>(`SELECT id, employee_code AS code FROM employees WHERE id = ANY($1) AND status IN ('active','on_notice') AND date_of_joining < $2 ORDER BY employee_code`, [team, today]);

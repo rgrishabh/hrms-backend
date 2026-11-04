@@ -13,7 +13,7 @@ let app: FastifyInstance; let c: pg.Client;
 let tid: string; let host: string;
 
 beforeAll(async () => {
-  app = await makeApp({ ...flags('default,leave,comp_off,overtime,field_duty,expenses,travel,payroll,loans,salary_advance') });
+  app = await makeApp({ ...flags('default,leave,comp_off,overtime,field_duty,expenses,travel,payroll,loans,salary_advance,training,lab.competency,core.policies,recruitment,core.onboarding,core.offboarding,assets,performance,posh,grievance') });
   c = new pg.Client({ connectionString: TEST_OWNER_URL });
   await c.connect();
   // A bare, freshly bootstrapped organization: domain + one administrator, no employees.
@@ -31,12 +31,12 @@ afterAll(async () => { await c.end(); await app.close(); });
 describe('demo data generator', () => {
   it('refuses an organization that has real (non-demo) employees, and changes nothing', async () => {
     const T = await createTenant();
-    await expect(generateDemo(c, { password, today, tenantId: T.id })).rejects.toThrow(/non-demo employee/);
+    await expect(generateDemo(c, { password, today, tenantId: T.id, features: app.deps.env.enabledFeatures })).rejects.toThrow(/non-demo employee/);
     expect((await ownerQuery(`SELECT 1 FROM employees WHERE tenant_id=$1 AND employee_code LIKE 'DM-%'`, [T.id])).length).toBe(0);
   });
 
   it('fills an empty organization across modules, then is idempotent', async () => {
-    const r = await generateDemo(c, { password, today, tenantId: tid });
+    const r = await generateDemo(c, { password, today, tenantId: tid, features: app.deps.env.enabledFeatures });
     expect(r!.logins).toHaveLength(10);
     const [counts] = await ownerQuery<Record<string, number>>(`SELECT
       (SELECT count(*)::int FROM employees WHERE tenant_id=$1) AS employees,
@@ -46,7 +46,7 @@ describe('demo data generator', () => {
       (SELECT count(*)::int FROM statutory_rules WHERE tenant_id=$1) AS statutory`, [tid]);
     expect(counts).toMatchObject({ employees: 63, applications: 10, salaries: 63, statutory: 0 }); // never ships statutory values
     expect(counts!.days).toBeGreaterThan(1000);
-    expect(await generateDemo(c, { password, today, tenantId: tid })).toBeNull();
+    expect(await generateDemo(c, { password, today, tenantId: tid, features: app.deps.env.enabledFeatures })).toBeNull();
     expect((await ownerQuery(`SELECT 1 FROM employees WHERE tenant_id=$1`, [tid])).length).toBe(63);
   });
 

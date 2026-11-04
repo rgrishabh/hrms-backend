@@ -7,6 +7,7 @@ import { createPool } from '../src/db/pool.js';
 import { FieldCipher, hashPassword } from '../src/core/crypto/index.js';
 import { loadEnv } from '../src/config/env.js';
 import { FEATURES, FEATURE_MAP, type FeatureDefinition } from '../src/core/features/registry.js';
+import { withFeatures } from '../src/core/features/state.js';
 import { runQueued } from '../src/core/jobs/scheduler.js';
 import { TEST_APP_URL, TEST_OWNER_URL } from './env.js';
 
@@ -37,6 +38,9 @@ export async function makeApp(overrides: Record<string, string> = {}, opts: { ma
   app.addHook('onClose', async () => { await pool.end(); });
   return app;
 }
+
+/** Run something outside a request (a job, a service function) as that app would: with its feature set. */
+export const inApp = <T>(app: FastifyInstance, fn: () => T): T => withFeatures(app.deps.env.enabledFeatures, fn);
 
 /** Owner connection with RLS bypass — fixtures and white-box assertions only. */
 export async function ownerQuery<T extends pg.QueryResultRow = Record<string, unknown>>(sql: string, params: unknown[] = []): Promise<T[]> {
@@ -133,7 +137,7 @@ export class Client {
     if (r.statusCode !== 202) return r;
     const { runId } = r.json() as { runId: string };
     const [run] = await ownerQuery<{ tenant_id: string }>('SELECT tenant_id FROM job_runs WHERE id=$1', [runId]);
-    await runQueued(this.app.deps.pool, SILENT_LOG, run!.tenant_id, new Date());
+    await inApp(this.app, () => runQueued(this.app.deps.pool, SILENT_LOG, run!.tenant_id, new Date()));
     const [done] = await ownerQuery<{ status: string; result: unknown; error: string | null }>('SELECT status, result, error FROM job_runs WHERE id=$1', [runId]);
     const out = { runId, status: done!.status, result: done!.result, error: done!.error };
     return { statusCode: 200, body: JSON.stringify(out), json: (() => out) as LightMyRequestResponse['json'] };

@@ -1,4 +1,5 @@
 import type { FastifyInstance } from 'fastify';
+import { only } from '../../core/features/routes.js';
 import { z } from 'zod';
 import { evaluateFeatures } from '../../core/features/state.js';
 import { tenantActor, tenantActorAny, requireFeature, type TenantActor, gateFeatures } from '../../core/http/context.js';
@@ -125,7 +126,7 @@ export async function lifecycleRoutes(app: FastifyInstance) {
     });
   });
 
-  app.post('/checklists', async (req, reply) => {
+  only(app, 'core.onboarding').post('/checklists', async (req, reply) => {
     const a = tenantActor(req, 'lifecycle.manage');
     const b = z.object({ employeeId: Uuid, templateId: Uuid.optional() }).parse(req.body);
     return a.tx(async (db) => {
@@ -159,7 +160,7 @@ export async function lifecycleRoutes(app: FastifyInstance) {
     const { id } = z.object({ id: Uuid }).parse(req.params);
     return a.tx((db) => checklistDetail(db, a, id));
   });
-  app.post('/checklists/:id/cancel', async (req) => {
+  only(app, 'core.onboarding').post('/checklists/:id/cancel', async (req) => {
     const a = tenantActor(req, 'lifecycle.manage');
     const { id } = z.object({ id: Uuid }).parse(req.params);
     const { reason } = z.object({ reason: z.string().trim().min(3).max(500) }).parse(req.body);
@@ -216,7 +217,7 @@ export async function lifecycleRoutes(app: FastifyInstance) {
   taskAction('done'); taskAction('skip'); taskAction('reopen');
 
   /** Pre-joining → active on (or after) the joining date. */
-  app.post('/employees/:id/joined', async (req) => {
+  only(app, 'core.onboarding').post('/employees/:id/joined', async (req) => {
     const a = tenantActor(req, 'lifecycle.manage');
     const { id } = z.object({ id: Uuid }).parse(req.params);
     return a.tx(async (db) => {
@@ -232,7 +233,7 @@ export async function lifecycleRoutes(app: FastifyInstance) {
   });
 
   // ------------------------------------------------------------ probation
-  app.get('/probation', async (req) => {
+  only(app, 'core.onboarding').get('/probation', async (req) => {
     const a = tenantActor(req);
     const q = z.object({ status: z.enum(['open', 'pending', 'approved', 'rejected', 'cancelled']).optional() }).parse(req.query);
     return a.tx(async (db) => {
@@ -246,7 +247,7 @@ export async function lifecycleRoutes(app: FastifyInstance) {
     });
   });
 
-  app.post('/probation/:id/submit', async (req) => {
+  only(app, 'core.onboarding').post('/probation/:id/submit', async (req) => {
     const a = tenantActor(req);
     const { id } = z.object({ id: Uuid }).parse(req.params);
     const b = z.object({ recommendation: z.enum(['confirm', 'extend', 'terminate']), extendMonths: z.number().int().min(1).max(6).nullable().default(null), comments: z.string().trim().min(10).max(4000) })
@@ -296,7 +297,7 @@ export async function lifecycleRoutes(app: FastifyInstance) {
     return { id, shortfallDays: n.shortfall, noticeDaysRequired: n.required };
   }
 
-  app.post('/separations/resign', async (req, reply) => {
+  only(app, 'core.offboarding').post('/separations/resign', async (req, reply) => {
     const a = tenantActor(req, 'lifecycle.self');
     const b = z.object({ reason: z.string().trim().min(3).max(2000), requestedLwd: IsoDate }).parse(req.body);
     if (!a.user.employeeId) throw badRequest('Your account is not linked to an employee record');
@@ -305,7 +306,7 @@ export async function lifecycleRoutes(app: FastifyInstance) {
       reply.code(201); return r;
     });
   });
-  app.post('/separations', async (req, reply) => {
+  only(app, 'core.offboarding').post('/separations', async (req, reply) => {
     const a = tenantActor(req, 'lifecycle.manage');
     const b = z.object({ employeeId: Uuid, kind: z.enum(SEPARATION_KINDS), reason: z.string().trim().min(3).max(2000), noticeDate: IsoDate, requestedLwd: IsoDate }).parse(req.body);
     if (b.employeeId === a.user.employeeId) throw forbidden('Use "Resign" for your own separation');
@@ -323,7 +324,7 @@ export async function lifecycleRoutes(app: FastifyInstance) {
     return { s, emp, hr };
   }
 
-  app.get('/separations', async (req) => {
+  only(app, 'core.offboarding').get('/separations', async (req) => {
     const a = tenantActor(req);
     const q = PageQuery.extend({ status: z.string().max(20).optional(), scope: z.enum(['mine', 'team', 'all']).default('all') }).parse(req.query);
     return a.tx(async (db) => {
@@ -340,7 +341,7 @@ export async function lifecycleRoutes(app: FastifyInstance) {
     });
   });
 
-  app.get('/separations/:id', async (req) => {
+  only(app, 'core.offboarding').get('/separations/:id', async (req) => {
     const a = tenantActor(req);
     const { id } = z.object({ id: Uuid }).parse(req.params);
     return a.tx(async (db) => {
@@ -356,7 +357,7 @@ export async function lifecycleRoutes(app: FastifyInstance) {
     });
   });
 
-  app.put('/separations/:id/lwd', async (req) => {
+  only(app, 'core.offboarding').put('/separations/:id/lwd', async (req) => {
     const a = tenantActor(req, 'lifecycle.manage');
     const { id } = z.object({ id: Uuid }).parse(req.params);
     const b = z.object({ approvedLwd: IsoDate, waiveShortfall: z.boolean().default(false) }).parse(req.body);
@@ -373,7 +374,7 @@ export async function lifecycleRoutes(app: FastifyInstance) {
     });
   });
 
-  app.post('/separations/:id/withdraw', async (req) => {
+  only(app, 'core.offboarding').post('/separations/:id/withdraw', async (req) => {
     const a = tenantActor(req);
     const { id } = z.object({ id: Uuid }).parse(req.params);
     return a.tx(async (db) => {
@@ -387,7 +388,7 @@ export async function lifecycleRoutes(app: FastifyInstance) {
   });
 
   /** HR cancels an approved separation before the last working day (resignation withdrawn by agreement). */
-  app.post('/separations/:id/cancel', async (req) => {
+  only(app, 'core.offboarding').post('/separations/:id/cancel', async (req) => {
     const a = tenantActor(req, 'lifecycle.manage');
     const { id } = z.object({ id: Uuid }).parse(req.params);
     const { reason } = z.object({ reason: z.string().trim().min(3).max(500) }).parse(req.body);
@@ -403,7 +404,7 @@ export async function lifecycleRoutes(app: FastifyInstance) {
     });
   });
 
-  app.post('/separations/:id/exit-interview', async (req) => {
+  only(app, 'core.offboarding').post('/separations/:id/exit-interview', async (req) => {
     const a = tenantActor(req);
     const { id } = z.object({ id: Uuid }).parse(req.params);
     const b = z.object({ answers: z.record(z.string().max(80), z.string().trim().max(4000)).refine((o) => Object.keys(o).length > 0 && Object.keys(o).length <= 30, 'Give 1–30 answers') }).parse(req.body);
@@ -417,7 +418,7 @@ export async function lifecycleRoutes(app: FastifyInstance) {
     });
   });
 
-  app.post('/separations/:id/fnf', async (req) => {
+  only(app, 'core.offboarding').post('/separations/:id/fnf', async (req) => {
     const a = tenantActor(req, 'lifecycle.manage');
     const { id } = z.object({ id: Uuid }).parse(req.params);
     const b = z.object({ status: z.enum(['not_started', 'in_progress', 'settled']), note: Text(2000) }).parse(req.body);
@@ -429,7 +430,7 @@ export async function lifecycleRoutes(app: FastifyInstance) {
     });
   });
 
-  app.post('/separations/:id/complete', async (req) => {
+  only(app, 'core.offboarding').post('/separations/:id/complete', async (req) => {
     const a = tenantActor(req, 'lifecycle.manage');
     const { id } = z.object({ id: Uuid }).parse(req.params);
     const b = z.object({ rehireEligible: z.boolean() }).parse(req.body);
@@ -460,12 +461,12 @@ export async function lifecycleRoutes(app: FastifyInstance) {
  */
 export async function lifecycleDaily(db: Db, tenantId: string, today: string) {
   let reminders = 0; let reviews = 0; let accessEnded = 0;
-  const tasks = (await db.query<{ id: string; title: string; owner: Owner; due_date: string; employee_id: string; overdue: number }>(`SELECT t.id, t.title, t.owner, t.due_date::text, c.employee_id, ($2::date - t.due_date) AS overdue
+  const tasks = (await db.query<{ id: string; kind: 'onboarding' | 'offboarding'; title: string; owner: Owner; due_date: string; employee_id: string; overdue: number }>(`SELECT c.kind, t.id, t.title, t.owner, t.due_date::text, c.employee_id, ($2::date - t.due_date) AS overdue
     FROM checklist_tasks t JOIN checklists c ON c.tenant_id=t.tenant_id AND c.id=t.checklist_id AND c.status='open'
     WHERE t.tenant_id=$1 AND t.status='pending' AND t.due_date <= $2::date AND ($2::date - t.due_date) % 7 = 0`, [tenantId, today])).rows;
   for (const t of tasks) {
     const emp = (await loadEmp(db, tenantId, t.employee_id))!;
-    const r = await notifyUsers(db, tenantId, await taskAssignees(db, tenantId, t.owner, emp), { kind: 'lifecycle.task_due',
+    const r = await notifyUsers(db, tenantId, await taskAssignees(db, tenantId, t.owner, emp), { kind: 'lifecycle.task_due', feature: featureFor(t.kind),
       title: `${t.overdue ? 'Overdue' : 'Due today'}: ${t.title} (${emp.name})`, body: `Due ${t.due_date}.`, link: '/lifecycle?tab=tasks', actionLabel: 'Open tasks', dedupeKey: `task:${t.id}:${t.overdue}` });
     reminders += r.inApp;
   }

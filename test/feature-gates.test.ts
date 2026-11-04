@@ -46,9 +46,9 @@ describe('module-wide feature gates', () => {
     expect((await hr.get('/api/v1/attendance/locks')).statusCode).toBe(200);
   });
 
-  it('without a session the answer is still 401, so module state is not disclosed', async () => {
+  it('without a session the answer is 404 too: the route does not exist', async () => {
     const anon = new Client(off, T.host);
-    expect((await anon.get('/api/v1/expenses/batches')).statusCode).toBe(401);
-    expect((await anon.get('/api/v1/cases/people')).statusCode).toBe(401);
+    expect((await anon.get('/api/v1/expenses/batches')).statusCode).toBe(404);
+    expect((await anon.get('/api/v1/cases/people')).statusCode).toBe(404);
   });
 });

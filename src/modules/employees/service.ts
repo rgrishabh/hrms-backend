@@ -2,6 +2,7 @@ import { z } from 'zod';
 import type { Db } from '../../db/tx.js';
 import { IsoDate, Uuid } from '../../core/http/pagination.js';
 import { badRequest, conflict } from '../../core/http/errors.js';
+import { isModuleEnabled } from '../../core/features/state.js';
 
 export const EMPLOYMENT_TYPES = ['permanent', 'probation', 'contract', 'trainee', 'intern', 'consultant'] as const;
 export const EMPLOYEE_STATUSES = ['pre_joining', 'active', 'on_notice', 'exited', 'inactive'] as const;
@@ -51,9 +52,10 @@ export const COLS: Record<keyof EmployeeInput, string> = {
 
 export const DIRECTORY_SELECT = `e.id, e.employee_code, e.first_name, e.last_name, e.work_email, e.designation, e.status,
   e.branch_id, b.name AS branch_name, e.department_id, d.name AS department_name`;
-export const FULL_SELECT = `${DIRECTORY_SELECT}, e.phone, e.date_of_birth, e.legal_entity_id, le.name AS legal_entity_name, e.grade,
+/** Probation and confirmation dates belong to onboarding: while it is off they are not part of an employee record. */
+export const fullSelect = () => `${DIRECTORY_SELECT}, e.phone, e.date_of_birth, e.legal_entity_id, le.name AS legal_entity_name, e.grade,
   e.employment_type, e.reporting_manager_id, trim(m.first_name || ' ' || coalesce(m.last_name, '')) AS reporting_manager_name,
-  e.date_of_joining, e.probation_end_date, e.confirmation_date, e.contract_end_date, e.exit_date, e.user_id, e.version, e.created_at, e.updated_at`;
+  e.date_of_joining, ${isModuleEnabled('core.onboarding') ? 'e.probation_end_date, e.confirmation_date, ' : ''}e.contract_end_date, e.exit_date, e.user_id, e.version, e.created_at, e.updated_at`;
 export const FROM_JOINS = `FROM employees e
   JOIN branches b ON b.tenant_id = e.tenant_id AND b.id = e.branch_id
   JOIN legal_entities le ON le.tenant_id = e.tenant_id AND le.id = e.legal_entity_id

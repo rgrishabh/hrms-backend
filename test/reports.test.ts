@@ -29,7 +29,7 @@ beforeAll(async () => {
   await ownerQuery(`INSERT INTO user_roles (user_id, tenant_id, role_key) VALUES ($1,$2,'tenant_admin')`, [u!.id, tid]);
   const c = new pg.Client({ connectionString: TEST_OWNER_URL });
   await c.connect();
-  try { await generateDemo(c, { password, today, tenantId: tid }); } finally { await c.end(); }
+  try { await generateDemo(c, { password, today, tenantId: tid, features: app.deps.env.enabledFeatures }); } finally { await c.end(); }
   for (const p of ['hr.head', 'lab.manager', 'director', 'payroll', 'finance', 'analyst', 'quality']) as[p] = await Client.login(app, host, `${p}@${host}`, password);
 }, 120_000);
 afterAll(async () => { await app.close(); });

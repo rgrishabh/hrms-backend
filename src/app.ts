@@ -1,4 +1,4 @@
-import Fastify, { type FastifyInstance } from 'fastify';
+import Fastify, { type FastifyInstance, type FastifyPluginAsync } from 'fastify';
 import cookie from '@fastify/cookie';
 import helmet from '@fastify/helmet';
 import rateLimit from '@fastify/rate-limit';
@@ -11,6 +11,8 @@ import { sha256, safeEqualHex } from './core/crypto/index.js';
 import { AppError } from './core/http/errors.js';
 import type { AppDeps } from './core/http/context.js';
 import { initRuntime } from './core/runtime.js';
+import { withFeatures } from './core/features/state.js';
+import type { FeatureRoute } from './core/features/routes.js';
 import { authRoutes, PASSWORD_CHANGE_ALLOWED } from './modules/auth.js';
 import { MFA_PENDING_ALLOWED, MFA_ENROLL_ALLOWED } from './core/auth/mfa.js';
 import { tenantAdminRoutes } from './modules/tenant/routes.js';
@@ -59,7 +61,20 @@ export async function buildApp(deps: AppDeps): Promise<FastifyInstance> {
   });
   app.decorate('deps', deps);
   // Deployment configuration is validated here; an invalid module set stops the process.
-  const { publicConfig } = initRuntime(env, app.log, deps);
+  const { publicConfig, features } = initRuntime(env, app.log, deps);
+  // Each app's requests see its own feature set. Reading the body leaves the async context, hence the second hook.
+  app.addHook('onRequest', (_req, _reply, done) => { withFeatures(features, done); });
+  app.addHook('preValidation', (_req, _reply, done) => { withFeatures(features, done); });
+  // What each route needs, for the test that goes through every flag.
+  const featureRoutes: FeatureRoute[] = [];
+  let mounting: readonly string[] | null = null;
+  app.decorate('featureRoutes', featureRoutes);
+  app.addHook('onRoute', (r) => {
+    for (const method of [r.method].flat()) {
+      if (method === 'HEAD' || method === 'OPTIONS') continue;
+      featureRoutes.push({ method, url: r.url, requires: [...(mounting ? [mounting] : []), ...(r.config?.features ? [r.config.features] : [])] });
+    }
+  });
   const SPA_CSP = spaCsp([publicConfig.brand.logoUrl, publicConfig.brand.faviconUrl]);
   app.decorateRequest('ctx', null as never);
 
@@ -147,33 +162,44 @@ export async function buildApp(deps: AppDeps): Promise<FastifyInstance> {
     return reply.code(500).send({ error: { code: 'internal', message: 'Something went wrong. Reference: ' + req.id } });
   });
 
+  // Always on: no flag in the registry.
   await app.register(authRoutes, { prefix: '/api/v1', publicConfig });
   await app.register(mfaRoutes, { prefix: '/api/v1/auth/mfa', publicConfig });
   await app.register(tenantAdminRoutes, { prefix: '/api/v1/tenant', publicConfig });
   await app.register(orgRoutes, { prefix: '/api/v1/org' });
   await app.register(employeeRoutes, { prefix: '/api/v1/employees' });
-  await app.register(attendanceRoutes, { prefix: '/api/v1/attendance' });
   await app.register(approvalRoutes, { prefix: '/api/v1/approvals' });
-  await app.register(leaveRoutes, { prefix: '/api/v1/leave' });
   await app.register(notificationRoutes, { prefix: '/api/v1/notifications' });
-  await app.register(documentRoutes, { prefix: '/api/v1/documents' });
-  await app.register(expenseRoutes, { prefix: '/api/v1/expenses' });
-  await app.register(competencyRoutes, { prefix: '/api/v1/competency' });
-  await app.register(policyRoutes, { prefix: '/api/v1/policies' });
-  await app.register(recruitmentRoutes, { prefix: '/api/v1/recruitment' });
-  await app.register(lifecycleRoutes, { prefix: '/api/v1/lifecycle' });
-  await app.register(payrollRoutes, { prefix: '/api/v1/payroll' });
-  await app.register(caseRoutes, { prefix: '/api/v1/cases' });
-  await app.register(performanceRoutes, { prefix: '/api/v1/performance' });
-  await app.register(assetRoutes, { prefix: '/api/v1/assets' });
-  await app.register(overtimeRoutes, { prefix: '/api/v1/overtime' });
-  await app.register(fieldDutyRoutes, { prefix: '/api/v1/field-duty' });
-  await app.register(travelRoutes, { prefix: '/api/v1/travel' });
-  await app.register(loanRoutes, { prefix: '/api/v1/loans' });
-  await app.register(accountingRoutes, { prefix: '/api/v1/accounting' });
   await app.register(reportRoutes, { prefix: '/api/v1/reports' });
   await app.register(dashboardRoutes, { prefix: '/api/v1/dashboard' });
-  await app.register(deviceIngestRoutes, { prefix: '/api/v1/devices' });
+
+  // A module that is off is never mounted, so its routes answer 404 like any address that does not exist.
+  const modules: readonly [readonly [string, ...string[]], FastifyPluginAsync, string][] = [
+    [['attendance'], attendanceRoutes, 'attendance'],
+    [['leave'], leaveRoutes, 'leave'],
+    [['core.documents'], documentRoutes, 'documents'],
+    [['expenses'], expenseRoutes, 'expenses'],
+    [['training'], competencyRoutes, 'competency'],
+    [['core.policies'], policyRoutes, 'policies'],
+    [['recruitment'], recruitmentRoutes, 'recruitment'],
+    [['core.onboarding', 'core.offboarding'], lifecycleRoutes, 'lifecycle'],
+    [['payroll'], payrollRoutes, 'payroll'],
+    [['grievance', 'posh'], caseRoutes, 'cases'],
+    [['performance'], performanceRoutes, 'performance'],
+    [['assets'], assetRoutes, 'assets'],
+    [['overtime'], overtimeRoutes, 'overtime'],
+    [['field_duty'], fieldDutyRoutes, 'field-duty'],
+    [['travel'], travelRoutes, 'travel'],
+    [['loans', 'salary_advance'], loanRoutes, 'loans'],
+    [['accounting_exports'], accountingRoutes, 'accounting'],
+    [['attendance.biometric'], deviceIngestRoutes, 'devices'],
+  ];
+  for (const [keys, plugin, path] of modules) {
+    if (!keys.some((k) => features.has(k))) continue;
+    mounting = keys;
+    await app.register(plugin, { prefix: `/api/v1/${path}` });
+    mounting = null;
+  }
   const branding = env.BRANDING_DIR ? registerBrandingAssets(env.BRANDING_DIR, [env.BRAND_LOGO_URL, env.BRAND_FAVICON_URL]) : null;
   registerWeb(app, env.WEB_DIST_DIR ?? null, publicConfig, branding);
 

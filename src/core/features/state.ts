@@ -1,3 +1,4 @@
+import { AsyncLocalStorage } from 'node:async_hooks';
 import type { Db } from '../../db/tx.js';
 import { FEATURES, FEATURE_MAP, type FeatureDefinition } from './registry.js';
 import { featureNotConfigured, notFound } from '../http/errors.js';
@@ -13,11 +14,22 @@ import { resolveSetting } from '../settings/service.js';
  * Disabling a module never deletes data; it only blocks new operations.
  */
 
-// Process-wide: one installation per process (set by initRuntime from the FEATURE_* variables).
-let enabledModules: ReadonlySet<string> = new Set(FEATURES.filter((d) => d.core || d.defaultEnabled).map((d) => d.key));
-
-export function setEnabledModules(set: ReadonlySet<string>) { enabledModules = set; }
-export function isModuleEnabled(key: string) { return enabledModules.has(key); }
+/**
+ * Which features are on is decided once per process from its FEATURE_* variables, and never changes while it runs.
+ * It is carried in the async context instead of a mutable global: buildApp enters its own set for every request and the
+ * worker for its whole loop, so two apps in one process (the test suite) cannot see each other's set. Code running outside
+ * any of these sees the registry defaults.
+ */
+const scope = new AsyncLocalStorage<ReadonlySet<string>>();
+const DEFAULTS: ReadonlySet<string> = new Set(FEATURES.filter((d) => d.core || d.defaultEnabled).map((d) => d.key));
+export const currentFeatures = (): ReadonlySet<string> => scope.getStore() ?? DEFAULTS;
+export function withFeatures<T>(features: ReadonlySet<string>, fn: () => T): T { return scope.run(features, fn); }
+export function isModuleEnabled(key: string) { return currentFeatures().has(key); }
+/** True when no feature of a key or list applies: a setting, job or report that belongs to a module that is off. */
+export function allOff(feature: string | readonly string[] | undefined | null) {
+  if (!feature) return false;
+  return !(typeof feature === 'string' ? [feature] : feature).some(isModuleEnabled);
+}
 
 export interface FeatureState {
   key: string;
@@ -86,7 +98,7 @@ export async function evaluateFeatures(db: Db, tenantId: string): Promise<Map<st
     const blockers: string[] = [];
     const supported = d.availability !== 'planned';
     if (!supported) blockers.push('Not available in this release');
-    const enabled = d.core || enabledModules.has(d.key);
+    const enabled = d.core || isModuleEnabled(d.key);
     if (supported && !enabled) blockers.push('Not enabled for this installation');
     let dependenciesMet = true;
     for (const dep of d.dependencies) {

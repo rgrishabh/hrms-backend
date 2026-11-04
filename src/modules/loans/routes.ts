@@ -172,7 +172,7 @@ export async function loanRoutes(app: FastifyInstance) {
       if (l.employee_id === a.user.employeeId) throw forbidden('You cannot disburse your own advance or loan');
       if (l.status !== 'approved') throw conflict(`Only an approved request can be disbursed (this one is ${l.status})`);
       await db.query(`UPDATE employee_loans SET status='disbursed', disbursed_at=now(), disbursed_by=$3, disbursement_reference=$4 WHERE tenant_id=$1 AND id=$2`, [a.tenantId, id, a.user.userId, b.reference]);
-      if (l.user_id) await notifyUsers(db, a.tenantId, [l.user_id], { kind: 'loans.disbursed', title: `${KIND_LABEL[l.kind]} paid: ₹${new Decimal(l.amount).toFixed(0)}`, body: `Recovered through payroll from ${l.first_period}. Reference ${b.reference}`, link: '/loans' });
+      if (l.user_id) await notifyUsers(db, a.tenantId, [l.user_id], { kind: 'loans.disbursed', feature: KIND_FEATURE[l.kind], title: `${KIND_LABEL[l.kind]} paid: ₹${new Decimal(l.amount).toFixed(0)}`, body: `Recovered through payroll from ${l.first_period}. Reference ${b.reference}`, link: '/loans' });
       await audit(db, { ...a.auditBase, action: 'loans.disbursed', targetType: 'employee_loan', targetId: id, metadata: { amount: l.amount, reference: b.reference } });
       return { ok: true };
     });

@@ -6,7 +6,7 @@ import { badRequest, conflict, forbidden, notFound } from '../../core/http/error
 import { IsoDate, PageQuery, offsetOf, paged, Uuid } from '../../core/http/pagination.js';
 import { endAccess } from '../lifecycle/service.js';
 import {
-  EmployeeInput, COLS, DIRECTORY_SELECT, FULL_SELECT, FROM_JOINS, EMPLOYEE_STATUSES,
+  EmployeeInput, COLS, DIRECTORY_SELECT, fullSelect, FROM_JOINS, EMPLOYEE_STATUSES,
   insertEmployee, validateReferences, findDuplicates,
 } from './service.js';
 import { profileRoutes } from './profile.js';
@@ -69,7 +69,7 @@ export async function employeeRoutes(app: FastifyInstance) {
         AND ($2::text IS NULL OR e.employee_code ILIKE $2||'%' OR lower(e.first_name||' '||coalesce(e.last_name,'')) LIKE '%'||lower($2)||'%' OR e.work_email ILIKE '%'||$2||'%')
         AND ($3::uuid IS NULL OR e.branch_id=$3) AND ($4::uuid IS NULL OR e.department_id=$4) AND ($5::text IS NULL OR e.status=$5)`;
       const total = Number((await db.query<{ n: string }>(`SELECT count(*) AS n FROM employees e WHERE ${where}`, params)).rows[0]!.n);
-      const rows = await db.query(`SELECT ${full ? FULL_SELECT : DIRECTORY_SELECT} ${FROM_JOINS} WHERE ${where}
+      const rows = await db.query(`SELECT ${full ? fullSelect() : DIRECTORY_SELECT} ${FROM_JOINS} WHERE ${where}
         ORDER BY e.first_name, e.last_name, e.employee_code LIMIT $6 OFFSET $7`, [...params, q.pageSize, offsetOf(q)]);
       return { ...paged(rows.rows, total, q), view: full ? 'full' : 'directory' };
     });
@@ -78,7 +78,7 @@ export async function employeeRoutes(app: FastifyInstance) {
   app.get('/me', async (req) => {
     const a = tenantActor(req);
     if (!a.user.employeeId) throw notFound('Your user account is not linked to an employee record');
-    return a.tx(async (db) => (await db.query(`SELECT ${FULL_SELECT} ${FROM_JOINS} WHERE e.tenant_id=$1 AND e.id=$2`, [a.tenantId, a.user.employeeId])).rows[0]);
+    return a.tx(async (db) => (await db.query(`SELECT ${fullSelect()} ${FROM_JOINS} WHERE e.tenant_id=$1 AND e.id=$2`, [a.tenantId, a.user.employeeId])).rows[0]);
   });
 
   app.get('/:id', async (req) => {
@@ -86,7 +86,7 @@ export async function employeeRoutes(app: FastifyInstance) {
     const { id } = z.object({ id: Uuid }).parse(req.params);
     const full = a.has('employees.read') || a.user.employeeId === id;
     return a.tx(async (db) => {
-      const r = await db.query(`SELECT ${full ? FULL_SELECT : DIRECTORY_SELECT} ${FROM_JOINS} WHERE e.tenant_id=$1 AND e.id=$2`, [a.tenantId, id]);
+      const r = await db.query(`SELECT ${full ? fullSelect() : DIRECTORY_SELECT} ${FROM_JOINS} WHERE e.tenant_id=$1 AND e.id=$2`, [a.tenantId, id]);
       if (!r.rowCount) throw notFound('Employee not found');
       return { ...r.rows[0], view: full ? 'full' : 'directory' };
     });

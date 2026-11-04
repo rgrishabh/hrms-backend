@@ -15,6 +15,7 @@ import { teamEmployeeIds, employeeTimezone } from '../attendance/service.js';
 import { localDate, daysBetween } from '../attendance/time.js';
 import type { Db } from '../../db/tx.js';
 import { setOffAdvance } from '../travel/service.js';
+import { isModuleEnabled } from '../../core/features/state.js';
 import { allowanceRoutes, priceAllowance } from './allowances.js';
 
 const Money = z.union([z.number(), z.string()]).transform((v, ctx) => {
@@ -135,7 +136,7 @@ export async function expenseRoutes(app: FastifyInstance) {
       const params = [a.tenantId, ids, q.status ?? null];
       const where = `c.tenant_id=$1 AND ($2::uuid[] IS NULL OR c.employee_id = ANY($2)) AND ($3::text IS NULL OR c.status=$3)`;
       const total = Number((await db.query<{ n: string }>(`SELECT count(*) AS n FROM expense_claims c WHERE ${where}`, params)).rows[0]!.n);
-      const rows = await db.query(`SELECT c.id, c.title, c.status, c.total, c.advance_adjusted, c.travel_request_id, c.currency, c.created_at, c.submitted_at, c.approved_at, c.paid_at, c.payment_reference, c.employee_id,
+      const rows = await db.query(`SELECT c.id, c.title, c.status, c.total, ${isModuleEnabled('travel') ? 'c.advance_adjusted, c.travel_request_id,' : ''} c.currency, c.created_at, c.submitted_at, c.approved_at, c.paid_at, c.payment_reference, c.employee_id,
           e.employee_code, trim(e.first_name||' '||coalesce(e.last_name,'')) AS employee_name,
           (SELECT count(*)::int FROM expense_items i WHERE i.tenant_id=c.tenant_id AND i.claim_id=c.id) AS items,
           (SELECT count(*)::int FROM expense_items i WHERE i.tenant_id=c.tenant_id AND i.claim_id=c.id AND i.duplicate_of IS NOT NULL) AS flagged
@@ -158,7 +159,9 @@ export async function expenseRoutes(app: FastifyInstance) {
       const items = (await db.query(`SELECT i.id, i.expense_date, i.amount, i.description, i.merchant, i.invoice_number, i.gstin, i.receipt_name, i.receipt_key IS NOT NULL AS has_receipt,
           i.duplicate_of, c.name AS category_name, c.code AS category_code, c.calc, i.quantity, i.rate, i.tier, i.vehicle FROM expense_items i JOIN expense_categories c ON c.tenant_id=i.tenant_id AND c.id=i.category_id
         WHERE i.tenant_id=$1 AND i.claim_id=$2 ORDER BY i.expense_date, i.created_at`, [a.tenantId, id])).rows;
-      return { ...claim, items, editable: ['draft', 'returned'].includes(claim.status) && claim.employee_id === a.user.employeeId };
+      // A claim's trip fields belong to travel: while it is off they are not part of the claim.
+      const { travel_request_id: _trip, advance_adjusted: _advance, ...withoutTrip } = claim;
+      return { ...(isModuleEnabled('travel') ? claim : withoutTrip), items, editable: ['draft', 'returned'].includes(claim.status) && claim.employee_id === a.user.employeeId };
     });
   });
 

@@ -134,3 +134,13 @@ A request is an approval request (`lab_authorization`) routed to holders of `com
 **Reason:** `web-push` brings several transitive crypto packages to do what the platform already does. The fixed payload makes the rule structural instead of a review item.
 **Not in the contract:** `VAPID_*` are new variable names. Without them the feature answers `feature_not_configured`.
 
+## D33 — Off means not registered; one feature set per app
+**Context:** the contract says a module that is off answers 404. Several apps are built in one test process, and the audit warned that a mutable global would leak between them.
+**Options, set:** keep the global and re-set it in each test; pass the set through every call; carry it in `AsyncLocalStorage`.
+**Decision:** the set belongs to `env.enabledFeatures`. `buildApp` registers from it and enters it for each request (`onRequest`, and again at `preValidation`, since reading the body leaves the async context). The worker enters it for its whole loop, the CLI for its run. There is no mutable global: code outside any scope sees the registry defaults, and tests call a job or service as an app would with `inApp(app, fn)`.
+**Options, routes:** a preHandler answering 404; not registering. A preHandler would still run CORS, rate limits and `/:id` matching, and would differ from an unknown address.
+**Decision:** modules are mounted conditionally in `app.ts`, and narrower features inside a plugin use `only(app, 'shifts').get(...)`. Both feed `app.featureRoutes`, what each route needs, which the generated test walks for every flag in both states. A hand-written prefix table in that test catches a route left out of its gate. An anonymous caller now gets 404, not 401: module state is deliberately not secret, since `/api/v1/config/public` publishes it.
+**Shadowing:** a route that is off can resolve to a parametric sibling that is on (`/cases/committee` to `/cases/:id`, `/reports/saved` to `/reports/:key`). `/cases/:id` now only matches ids, and `/reports/:key` answers 404 before authentication for a report that is unavailable.
+**Limits:** `/payslips/:id` is gated by `FEATURE_PAYSLIPS` too, so with payslips off a payroll manager reads pay through the run's items. Mail already queued when a module goes off is still delivered.
+**Runtime setup:** a module that is on but unusable keeps its routes and answers 409 `feature_not_configured`; `gateFeatures` and `requireFeature` do that now.
+

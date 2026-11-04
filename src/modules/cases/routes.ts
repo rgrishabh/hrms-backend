@@ -1,4 +1,5 @@
 import type { FastifyInstance } from 'fastify';
+import { only } from '../../core/features/routes.js';
 import { z } from 'zod';
 import { tenantActor, requireFeature, type TenantActor, gateFeatures } from '../../core/http/context.js';
 import { audit } from '../../core/audit/audit.js';
@@ -65,7 +66,7 @@ export async function caseRoutes(app: FastifyInstance) {
   const dec = (s: string | null | undefined) => (s ? cipher.decrypt(s) : null);
 
   // ------------------------------------------------------------ Internal Committee
-  app.get('/committee', async (req) => {
+  only(app, 'posh').get('/committee', async (req) => {
     const a = tenantActor(req);
     return a.tx(async (db) => {
       await requireFeature(db, a.tenantId, 'posh');
@@ -75,7 +76,7 @@ export async function caseRoutes(app: FastifyInstance) {
       return { members, external, warnings: [...(members.some((m: { role: string }) => m.role === 'presiding_officer') ? [] : ['No presiding officer']), ...(external.length ? [] : ['No external member'])] };
     });
   });
-  app.put('/committee', async (req) => {
+  only(app, 'posh').put('/committee', async (req) => {
     const a = tenantActor(req, 'posh.admin');
     const b = z.object({ members: z.array(z.object({ userId: Uuid, role: z.enum(['presiding_officer', 'member']) })).min(1).max(20)
       .refine((m) => m.filter((x) => x.role === 'presiding_officer').length === 1, 'Exactly one presiding officer'),
@@ -176,7 +177,8 @@ export async function caseRoutes(app: FastifyInstance) {
     });
   });
 
-  app.get('/:id', async (req) => {
+  // Only ids, so that /committee is simply not found while POSH is off.
+  app.get('/:id([0-9a-fA-F-]{36})', async (req) => {
     const a = tenantActor(req);
     const { id } = z.object({ id: Uuid }).parse(req.params);
     return a.tx(async (db) => {
@@ -233,7 +235,7 @@ export async function caseRoutes(app: FastifyInstance) {
         // Inquiry finished → report due within 10 days (POSH Act s.13).
         if (c.kind === 'posh' && b.toStatus === 'report_submitted') await db.query(`UPDATE cases SET report_due=$3::date + 10 WHERE tenant_id=$1 AND id=$2`, [a.tenantId, id, today]);
         if ((b.visibleToComplainant || b.toStatus) && c.complainant_user)
-          await notifyUsers(db, a.tenantId, [c.complainant_user], { kind: 'cases.update', title: `Update on your case ${ref(c.kind, c.number)}`, body: 'Open HRMS to read it.', link: `/cases?case=${id}`, actionLabel: 'Open' });
+          await notifyUsers(db, a.tenantId, [c.complainant_user], { kind: 'cases.update', feature: FEATURE[c.kind], title: `Update on your case ${ref(c.kind, c.number)}`, body: 'Open HRMS to read it.', link: `/cases?case=${id}`, actionLabel: 'Open' });
       }
       const base = caseAuditBase(a, role);
       await audit(db, { ...base, action: 'cases.event_added', category: 'data', targetType: 'case', targetId: id, metadata: { ...base.metadata, role, toStatus: b.toStatus ?? null, visibleToComplainant: b.visibleToComplainant } });
@@ -278,7 +280,7 @@ export async function caseRoutes(app: FastifyInstance) {
   });
 
   /** Counts for the annual report the IC prepares (no names). */
-  app.get('/posh/annual-report', async (req) => {
+  only(app, 'posh').get('/posh/annual-report', async (req) => {
     const a = tenantActor(req);
     const q = z.object({ year: z.coerce.number().int().min(2013).max(2100) }).parse(req.query);
     return a.tx(async (db) => {

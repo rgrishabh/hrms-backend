@@ -13,7 +13,7 @@ import { lifecycleDaily } from '../../modules/lifecycle/routes.js';
 import { caseDeadlines } from '../../modules/cases/routes.js';
 import { assetsDaily } from '../../modules/assets/routes.js';
 import { runSchedules } from '../../modules/reports/service.js';
-import { escalateOverdue, reassignStranded, stepRecipients, blockedUsers } from '../workflow/engine.js';
+import { escalateOverdue, reassignStranded, stepRecipients, blockedUsers, handlerFeature, offEntityTypes } from '../workflow/engine.js';
 
 /**
  * Background jobs. Schedules are in the organization's timezone (general.timezone).
@@ -88,17 +88,17 @@ export const JOBS: readonly JobDefinition[] = [
     async run(db, tenantId, ctx) {
       const days = await getSettingValue<number>(db, tenantId, 'notifications.approval_reminder_days');
       if (days === 0) return { skipped: 'reminders turned off' };
-      const pending = await db.query<{ id: string; summary: string; approver_kind: string; approver_user_id: string | null; approver_permission: string | null;
+      const pending = await db.query<{ id: string; entity_type: string; summary: string; approver_kind: string; approver_user_id: string | null; approver_permission: string | null;
         escalated_to: string | null; escalated_permission: string | null; age_days: number }>(
-        `SELECT r.id, r.summary, s.approver_kind, s.approver_user_id, s.approver_permission, s.escalated_to, s.escalated_permission,
+        `SELECT r.id, r.entity_type, r.summary, s.approver_kind, s.approver_user_id, s.approver_permission, s.escalated_to, s.escalated_permission,
                 extract(day FROM now() - r.created_at)::int AS age_days
            FROM approval_requests r JOIN approval_steps s ON s.tenant_id=r.tenant_id AND s.request_id=r.id AND s.status='active'
-          WHERE r.tenant_id=$1 AND r.status='pending' AND r.created_at < now() - make_interval(days => $2)`, [tenantId, days]);
+          WHERE r.tenant_id=$1 AND r.status='pending' AND r.created_at < now() - make_interval(days => $2) AND NOT (r.entity_type = ANY($3))`, [tenantId, days, offEntityTypes()]);
       let notified = 0;
       for (const p of pending.rows) {
         const { direct, delegates } = await stepRecipients(db, tenantId, p, ctx.localDate);
         const blocked = await blockedUsers(db, tenantId, p.id);
-        const r = await notifyUsers(db, tenantId, [...direct, ...delegates.keys()].filter((u) => !blocked.has(u)), { kind: 'approval.reminder', title: `Waiting ${p.age_days} day(s) for your approval`,
+        const r = await notifyUsers(db, tenantId, [...direct, ...delegates.keys()].filter((u) => !blocked.has(u)), { kind: 'approval.reminder', feature: handlerFeature(p.entity_type), title: `Waiting ${p.age_days} day(s) for your approval`,
           body: p.summary, link: '/approvals', actionLabel: 'Review', dedupeKey: `reminder:${p.id}:${ctx.localDate}` });
         notified += r.inApp;
       }

@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { createDecipheriv, createECDH, createVerify, generateKeyPairSync, hkdfSync } from 'node:crypto';
 import type { FastifyInstance } from 'fastify';
-import { makeApp, createTenant, Client, ownerQuery, flags, type TenantFixture } from './helpers.js';
+import { makeApp, createTenant, Client, ownerQuery, flags, inApp, type TenantFixture } from './helpers.js';
 import { createPushSender, encryptPayload, isAllowedEndpoint, pushPayload, setPushSender, vapidHeader, type PushMessage, type PushResult, type PushSubscription } from '../src/core/notify/push.js';
 import { deliverPushOutbox, notifyUsers } from '../src/core/notify/service.js';
 import { withTenant } from '../src/db/tx.js';
@@ -74,7 +74,7 @@ describe('push notifications', () => {
 
   it('the payload holds nothing from the notification, and only the kind reaches the outbox', async () => {
     const secret = 'Salary of Priya Sharma ₹91,234 and PAN ABCDE1234F';
-    await withTenant(app.deps.pool, T.id, (db) => notifyUsers(db, T.id, [T.users.employee!.id, T.users.other!.id], { kind: 'payroll.ready', title: secret, body: secret, link: `/employees/${T.users.employee!.employeeId}` }));
+    await inApp(app, () => withTenant(app.deps.pool, T.id, (db) => notifyUsers(db, T.id, [T.users.employee!.id, T.users.other!.id], { kind: 'employee.bank_changed', title: secret, body: secret, link: `/employees/${T.users.employee!.employeeId}` })));
     const outbox = await ownerQuery('SELECT * FROM push_outbox WHERE tenant_id=$1', [T.id]);
     expect(outbox).toHaveLength(1); // the other user has no subscription
     expect(JSON.stringify(outbox)).not.toMatch(/Priya|91,234|ABCDE/);
@@ -88,7 +88,7 @@ describe('push notifications', () => {
 
   it('a subscription the push service says is gone is removed, and a failure is retried', async () => {
     answer = { ok: false, gone: false, error: 'push service answered 500' };
-    await withTenant(app.deps.pool, T.id, (db) => notifyUsers(db, T.id, [T.users.employee!.id], { kind: 'x.y', title: 't' }));
+    await inApp(app, () => withTenant(app.deps.pool, T.id, (db) => notifyUsers(db, T.id, [T.users.employee!.id], { kind: 'x.y', title: 't' })));
     await deliverPushOutbox(app.deps.pool, log);
     const [r] = await ownerQuery<{ status: string; last_error: string }>(`SELECT status, last_error FROM push_outbox WHERE tenant_id=$1 AND kind='x.y'`, [T.id]);
     expect(r).toMatchObject({ status: 'queued', last_error: 'push service answered 500' });

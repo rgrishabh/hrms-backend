@@ -1,7 +1,7 @@
 import type { Db } from '../../db/tx.js';
 import { badRequest, forbidden, notFound } from '../../core/http/errors.js';
 import { requireFeature } from '../../core/http/context.js';
-import { evaluateFeatures } from '../../core/features/state.js';
+import { allOff, evaluateFeatures } from '../../core/features/state.js';
 import { loadPermissions } from '../../core/auth/session.js';
 import { notifyUsers } from '../../core/notify/service.js';
 import { orgToday } from '../competency/service.js';
@@ -108,6 +108,8 @@ export async function runSchedules(db: Db, tenantId: string, today: string) {
       [tenantId, s.id, nextRun(s, today), result.slice(0, 300), disable]);
     const owner = await viewerOf(db, tenantId, s.owner_id);
     const def = REPORT_MAP.get(s.report_key);
+    // Its module is off: the schedule waits, unchanged, and resumes when the flag returns.
+    if (def && allOff(def.feature)) continue;
     if (!owner || !def || !scopeOf(def, owner)) { await advance('Stopped: the owner can no longer run this report', true); skipped++; continue; }
     try {
       const r = await runReport(db, tenantId, s.report_key, { ...s.params, ...periodParams(def, s.period, today) }, owner);

@@ -2,6 +2,7 @@ import type { Db } from '../../db/tx.js';
 import { badRequest, conflict, forbidden, notFound } from '../http/errors.js';
 import { audit } from '../audit/audit.js';
 import { notifyUsers, usersWithPermission } from '../notify/service.js';
+import { allOff } from '../features/state.js';
 import { localDate } from '../../modules/attendance/time.js';
 
 /**
@@ -33,7 +34,7 @@ export type StepSpec = { kind: 'user'; userId: string } | { kind: 'permission'; 
 export interface ApprovalHandler {
   onApproved(db: Db, tenantId: string, entityId: string, actorId: string): Promise<void>;
   onRejected(db: Db, tenantId: string, entityId: string, actorId: string, status: 'rejected' | 'returned' | 'cancelled'): Promise<void>;
-  /** Module feature that must be enabled to act (approvals already pending may still be rejected/cancelled). */
+  /** The module this belongs to. While it is off, its requests leave the inbox and answer 404; see offEntityTypes. */
   feature?: string;
   /** Human label and in-app link for notifications, e.g. 'Leave request', '/leave'. */
   label?: string;
@@ -93,7 +94,7 @@ async function notifyActiveApprovers(db: Db, tenantId: string, requestId: string
        FROM approval_requests r JOIN approval_steps s ON s.tenant_id=r.tenant_id AND s.request_id=r.id AND s.status='active'
        JOIN users u ON u.id=r.requester_id WHERE r.tenant_id=$1 AND r.id=$2 AND r.status='pending'`, [tenantId, requestId]);
   const step = r.rows[0];
-  if (!step) return;
+  if (!step || allOff(handlers.get(step.entity_type)?.feature)) return;
   const blocked = await blockedUsers(db, tenantId, requestId);
   const today = await orgToday(db, tenantId);
   // On escalation only the new parties are told; the original approver hears separately.
@@ -102,17 +103,28 @@ async function notifyActiveApprovers(db: Db, tenantId: string, requestId: string
     : step, today);
   const label = handlers.get(step.entity_type)?.label ?? 'Request';
   const title = opts.onlyEscalation ? `Escalated to you: ${label.toLowerCase()} from ${step.requester_name}` : `${label} from ${step.requester_name} needs your approval`;
-  await notifyUsers(db, tenantId, direct.filter((u) => !blocked.has(u)), { kind: opts.onlyEscalation ? 'approval.escalated' : 'approval.requested', title, body: step.summary, link: '/approvals', actionLabel: 'Review' });
+  await notifyUsers(db, tenantId, direct.filter((u) => !blocked.has(u)), { kind: opts.onlyEscalation ? 'approval.escalated' : 'approval.requested', title, body: step.summary, link: '/approvals', actionLabel: 'Review', feature: handlers.get(step.entity_type)?.feature });
   const names = await displayNames(db, tenantId, [...new Set(delegates.values())]);
   for (const [delegate, delegator] of delegates) {
     if (blocked.has(delegate)) continue;
     await notifyUsers(db, tenantId, [delegate], { kind: opts.onlyEscalation ? 'approval.escalated' : 'approval.requested', title: `${title} (covering for ${names.get(delegator) ?? 'a colleague'})`,
-      body: step.summary, link: '/approvals', actionLabel: 'Review' });
+      body: step.summary, link: '/approvals', actionLabel: 'Review', feature: handlers.get(step.entity_type)?.feature });
   }
 }
 
 const handlers = new Map<string, ApprovalHandler>();
 export function registerApprovalHandler(entityType: string, h: ApprovalHandler) { handlers.set(entityType, h); }
+
+/**
+ * Requests of a module that is off: out of every inbox, nobody can act on them, no reminder or escalation runs and nobody is told.
+ * Their state is untouched, so they carry on as they were when the flag returns.
+ */
+export const offEntityTypes = () => [...handlers].filter(([, h]) => allOff(h.feature)).map(([type]) => type);
+function assertEntityOn(entityType: string) {
+  if (allOff(handlers.get(entityType)?.feature)) throw notFound('Approval request not found');
+}
+
+export const handlerFeature = (entityType: string) => handlers.get(entityType)?.feature;
 
 export interface Actor { userId: string; permissions: Set<string> }
 
@@ -153,10 +165,11 @@ async function eligibleHolders(db: Db, tenantId: string, permission: string, blo
 
 /** Nobody can act on this request as things stand: administrators and the requester are told, and it is on record. */
 async function warnNoApprover(db: Db, tenantId: string, requestId: string, entityType: string, requesterId: string) {
+  if (allOff(handlers.get(entityType)?.feature)) return;
   const label = handlers.get(entityType)?.label ?? 'Request';
   const admins = await usersWithPermission(db, tenantId, 'users.manage');
   await notifyUsers(db, tenantId, [...new Set([...admins, requesterId])], { kind: 'approval.no_approver', title: `${label} has nobody who can approve it`,
-    body: 'Nobody eligible holds the permission it needs. An administrator can reassign it, or grant the permission to someone else.', link: '/approvals', actionLabel: 'Open' });
+    body: 'Nobody eligible holds the permission it needs. An administrator can reassign it, or grant the permission to someone else.', link: '/approvals', actionLabel: 'Open', feature: handlers.get(entityType)?.feature });
   await audit(db, { tenantId, actorId: null, actorType: 'system', action: 'approval.no_eligible_approver', targetType: entityType, metadata: { approvalRequestId: requestId } });
 }
 
@@ -181,6 +194,7 @@ export async function actOnRequest(db: Db, tenantId: string, requestId: string, 
     'SELECT id, entity_type, entity_id, requester_id, status, current_step, excluded_user_ids FROM approval_requests WHERE tenant_id=$1 AND id=$2 FOR UPDATE', [tenantId, requestId]);
   const req = rq.rows[0];
   if (!req) throw notFound('Approval request not found');
+  assertEntityOn(req.entity_type);
   if (req.status !== 'pending') throw conflict(`This request is already ${req.status}`);
   if (req.requester_id === actor.userId) throw forbidden('You cannot approve or reject your own request');
   if (req.excluded_user_ids.includes(actor.userId)) throw forbidden('You cannot act on a request you prepared or that concerns you');
@@ -223,7 +237,7 @@ export async function actOnRequest(db: Db, tenantId: string, requestId: string, 
     const verb = final === 'approved' ? 'approved' : final === 'rejected' ? 'rejected' : 'returned for changes';
     await notifyUsers(db, tenantId, [req.requester_id], {
       kind: `approval.${final}`, title: `Your ${(h.label ?? 'request').toLowerCase()} was ${verb}`,
-      body: comment ? `${summary} — “${comment.slice(0, 300)}”` : summary, link: h.requesterLink ?? '/approvals', actionLabel: 'View',
+      body: comment ? `${summary} — “${comment.slice(0, 300)}”` : summary, link: h.requesterLink ?? '/approvals', actionLabel: 'View', feature: h.feature,
     });
   }
   await audit(db, { tenantId, actorId: actor.userId, action: `approval.${stepStatus}`, targetType: req.entity_type, targetId: req.entity_id,
@@ -240,6 +254,7 @@ export async function cancelRequest(db: Db, tenantId: string, requestId: string,
     'SELECT entity_type, entity_id, requester_id, status FROM approval_requests WHERE tenant_id=$1 AND id=$2 FOR UPDATE', [tenantId, requestId]);
   const req = rq.rows[0];
   if (!req) throw notFound('Approval request not found');
+  assertEntityOn(req.entity_type);
   if (req.requester_id !== actorId && !opts.subjectMayWithdraw) throw forbidden('Only the requester can cancel this request');
   if (req.status !== 'pending') throw conflict(`This request is already ${req.status}`);
   await db.query(`UPDATE approval_requests SET status='cancelled', decided_at=now() WHERE tenant_id=$1 AND id=$2`, [tenantId, requestId]);
@@ -266,13 +281,13 @@ export async function inbox(db: Db, tenantId: string, actor: Actor, today?: stri
         AND $4::date BETWEEN d.starts_on AND d.ends_on AND s.approver_kind='user' AND d.delegator_id IN (s.approver_user_id, s.escalated_to)
         ORDER BY (d.delegator_id = s.approver_user_id) DESC LIMIT 1) dl ON true
     LEFT JOIN users du ON du.id=dl.delegator_id
-    WHERE r.tenant_id=$1 AND r.status='pending' AND r.requester_id <> $2 AND NOT ($2 = ANY(r.excluded_user_ids))
+    WHERE r.tenant_id=$1 AND r.status='pending' AND r.requester_id <> $2 AND NOT ($2 = ANY(r.excluded_user_ids)) AND NOT (r.entity_type = ANY($5))
       AND ((s.approver_kind='user' AND (s.approver_user_id=$2 OR dl.delegator_id IS NOT NULL))
         OR (s.approver_kind='permission' AND s.approver_permission = ANY($3))
         OR s.escalated_to=$2 OR s.escalated_permission = ANY($3))
       AND NOT EXISTS (SELECT 1 FROM approval_steps p WHERE p.tenant_id=r.tenant_id AND p.request_id=r.id AND p.acted_by IS NOT NULL
         AND (p.acted_by=$2 OR p.acted_for=$2 OR (dl.delegator_id IS NOT NULL AND s.approver_user_id IS DISTINCT FROM $2 AND p.acted_by=dl.delegator_id)))
-    ORDER BY r.created_at LIMIT 200`, [tenantId, actor.userId, [...actor.permissions], today]);
+    ORDER BY r.created_at LIMIT 200`, [tenantId, actor.userId, [...actor.permissions], today, offEntityTypes()]);
   return r.rows.map(({ delegated_by, delegated_by_name, approver_name, ...x }) => {
     const mine = (x.approver_kind === 'permission' && actor.permissions.has(x.approver_permission!)) || x.approver_user_id === actor.userId;
     const escalated = !mine && (x.escalated_to === actor.userId || (!!x.escalated_permission && actor.permissions.has(x.escalated_permission)));
@@ -305,8 +320,8 @@ export async function escalateOverdue(db: Db, tenantId: string, days: number) {
        FROM approval_steps s JOIN approval_requests r ON r.tenant_id=s.tenant_id AND r.id=s.request_id AND r.status='pending'
        JOIN users au ON au.id=s.approver_user_id
       WHERE s.tenant_id=$1 AND s.status='active' AND s.approver_kind='user' AND s.escalated_at IS NULL
-        AND coalesce(s.activated_at, r.created_at) < now() - make_interval(days => $2)
-      ORDER BY coalesce(s.activated_at, r.created_at) FOR UPDATE OF s SKIP LOCKED`, [tenantId, days]);
+        AND coalesce(s.activated_at, r.created_at) < now() - make_interval(days => $2) AND NOT (r.entity_type = ANY($3))
+      ORDER BY coalesce(s.activated_at, r.created_at) FOR UPDATE OF s SKIP LOCKED`, [tenantId, days, offEntityTypes()]);
   let toManager = 0, toGroup = 0;
   for (const st of due.rows) {
     const blocked = await blockedUsers(db, tenantId, st.request_id);
@@ -317,7 +332,7 @@ export async function escalateOverdue(db: Db, tenantId: string, days: number) {
     await notifyActiveApprovers(db, tenantId, st.request_id, { onlyEscalation: true });
     const label = handlers.get(st.entity_type)?.label ?? 'Request';
     await notifyUsers(db, tenantId, [st.approver_user_id], { kind: 'approval.escalated', title: `${label} escalated to ${mgr ? mgr.display_name : 'HR'} after ${days} day(s)`,
-      body: `${st.summary} — you can still decide it.`, link: '/approvals', actionLabel: 'Review' });
+      body: `${st.summary} — you can still decide it.`, link: '/approvals', actionLabel: 'Review', feature: handlers.get(st.entity_type)?.feature });
     await audit(db, { tenantId, actorId: null, actorType: 'system', action: 'approval.escalated', targetType: st.entity_type,
       metadata: { approvalRequestId: st.request_id, from: st.approver_user_id, to: mgr?.user_id ?? ESCALATION_PERMISSION, afterDays: days } });
   }
@@ -361,7 +376,7 @@ export async function reassignStepsOf(db: Db, tenantId: string, userId: string) 
 export async function reassignStranded(db: Db, tenantId: string) {
   const steps = await db.query<{ id: string; request_id: string; approver_permission: string; entity_type: string; requester_id: string }>(
     `SELECT s.id, s.request_id, s.approver_permission, r.entity_type, r.requester_id FROM approval_steps s JOIN approval_requests r ON r.tenant_id=s.tenant_id AND r.id=s.request_id AND r.status='pending'
-      WHERE s.tenant_id=$1 AND s.status='active' AND s.approver_kind='permission' AND s.escalated_at IS NULL FOR UPDATE OF s SKIP LOCKED`, [tenantId]);
+      WHERE s.tenant_id=$1 AND s.status='active' AND s.approver_kind='permission' AND s.escalated_at IS NULL AND NOT (r.entity_type = ANY($2)) FOR UPDATE OF s SKIP LOCKED`, [tenantId, offEntityTypes()]);
   let moved = 0;
   for (const st of steps.rows) {
     const blocked = await blockedUsers(db, tenantId, st.request_id);
@@ -383,6 +398,7 @@ export async function reassignStranded(db: Db, tenantId: string) {
 export async function reassignRequest(db: Db, tenantId: string, requestId: string, actorId: string, targetUserId: string, reason: string, audBase: { requestId: string; ip: string }, opts: { onlyIfStuck: boolean }) {
   const req = (await db.query<{ entity_type: string; status: string }>('SELECT entity_type, status FROM approval_requests WHERE tenant_id=$1 AND id=$2 FOR UPDATE', [tenantId, requestId])).rows[0];
   if (!req) throw notFound('Approval request not found');
+  assertEntityOn(req.entity_type);
   if (req.status !== 'pending') throw conflict(`This request is already ${req.status}`);
   const blocked = await blockedUsers(db, tenantId, requestId);
   if (blocked.has(actorId)) throw forbidden('You cannot reassign a request you prepared, that concerns you, or that you already decided');

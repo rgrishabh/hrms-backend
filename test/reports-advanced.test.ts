@@ -142,6 +142,5 @@ describe('F-10 snapshots follow the reader, not the owner', () => {
     expect(r.statusCode).toBe(200);
     expect(JSON.stringify(r.json().rows)).not.toContain('100000');
     await off.close();
-    await makeApp().then((x) => x.close());
   });
 });

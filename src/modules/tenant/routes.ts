@@ -6,13 +6,13 @@ import { JOBS, JOB_MAP, nextRun, jobActive } from '../../core/jobs/registry.js';
 import { enqueueRun, localNow, MAX_ATTEMPTS } from '../../core/jobs/scheduler.js';
 import { SETTINGS } from '../../core/settings/registry.js';
 import { resolveSetting, writeSetting, clearSetting } from '../../core/settings/service.js';
-import { evaluateFeatures } from '../../core/features/state.js';
+import { allOff, evaluateFeatures, isModuleEnabled } from '../../core/features/state.js';
 import { FEATURE_MAP, dependentsOf } from '../../core/features/registry.js';
 import { audit } from '../../core/audit/audit.js';
 import { badRequest, conflict, forbidden, notFound } from '../../core/http/errors.js';
 import { PageQuery, offsetOf, paged, Uuid } from '../../core/http/pagination.js';
 import type { PublicConfig } from '../../config/installation.js';
-import { SYSTEM_ROLES, SYSTEM_ROLE_MAP, PERMISSIONS } from '../../core/auth/permissions.js';
+import { SYSTEM_ROLES, SYSTEM_ROLE_MAP, PERMISSIONS, permissionFeature } from '../../core/auth/permissions.js';
 import { hashPassword } from '../../core/crypto/index.js';
 import { getSettingValue } from '../../core/settings/service.js';
 import { revokeAllSessionsForUser } from '../../core/auth/session.js';
@@ -25,13 +25,13 @@ export async function tenantAdminRoutes(app: FastifyInstance, opts: { publicConf
     const a = tenantActor(req, 'settings.read');
     const q = z.object({ branchId: Uuid.optional() }).parse(req.query);
     return a.tx(async (db) => {
-      const features = await evaluateFeatures(db, a.tenantId);
       const items = [];
       for (const d of SETTINGS) {
+        if (allOff(d.feature)) continue; // a setting of a module that is off does not exist for this deployment
         const eff = await resolveSetting(db, a.tenantId, d.key, q.branchId);
         items.push({
           key: d.key, group: d.group, label: d.label, description: d.description, control: d.control, options: d.options ?? null,
-          scopes: d.scopes, feature: d.feature ?? null, featureEnabled: !d.feature || (typeof d.feature === 'string' ? [d.feature] : d.feature).some((k) => features.get(k)?.enabled),
+          scopes: d.scopes, feature: d.feature ?? null,
           editable: a.has(d.editPermission), editPermission: d.editPermission,
           effective: eff.value, source: eff.source, defaultValue: eff.defaultValue, platformValue: eff.platformValue ?? null,
           tenantValue: eff.tenantValue ?? null, branchValue: eff.branchValue ?? null, version: eff.version ?? null,
@@ -46,7 +46,7 @@ export async function tenantAdminRoutes(app: FastifyInstance, opts: { publicConf
   app.put('/settings/:key', async (req) => {
     const { key } = z.object({ key: z.string() }).parse(req.params);
     const def = SETTINGS.find((s) => s.key === key);
-    if (!def) throw notFound('Unknown setting');
+    if (!def || allOff(def.feature)) throw notFound('Unknown setting');
     const a = tenantActor(req, def.editPermission);
     const body = SettingWriteBody.parse(req.body);
     return a.tx(async (db) => {
@@ -60,7 +60,7 @@ export async function tenantAdminRoutes(app: FastifyInstance, opts: { publicConf
   app.delete('/settings/:key', async (req) => {
     const { key } = z.object({ key: z.string() }).parse(req.params);
     const def = SETTINGS.find((s) => s.key === key);
-    if (!def) throw notFound('Unknown setting');
+    if (!def || allOff(def.feature)) throw notFound('Unknown setting');
     const a = tenantActor(req, def.editPermission);
     const q = z.object({ scope: z.enum(['tenant', 'branch']).default('tenant'), branchId: Uuid.optional() }).parse(req.query);
     return a.tx(async (db) => {
@@ -86,7 +86,7 @@ export async function tenantAdminRoutes(app: FastifyInstance, opts: { publicConf
       return {
         ...opts.publicConfig,
         domains,
-        modules: [...states.values()].map((s) => ({ ...s, availability: FEATURE_MAP.get(s.key)!.availability, dependents: dependentsOf(s.key).map((d) => d.key) })),
+        modules: [...states.values()].filter((s) => s.enabled).map((s) => ({ ...s, availability: FEATURE_MAP.get(s.key)!.availability, dependents: dependentsOf(s.key).map((d) => d.key) })),
         managedBy: 'deployment',
       };
     });
@@ -104,7 +104,7 @@ export async function tenantAdminRoutes(app: FastifyInstance, opts: { publicConf
         WHERE r.tenant_id=$1 ORDER BY r.started_at DESC LIMIT 100`, [a.tenantId])).rows;
       return {
         timezone: tz, maxAttempts: MAX_ATTEMPTS,
-        items: JOBS.map((j) => ({
+        items: JOBS.filter((j) => j.retention || !allOff(j.feature)).map((j) => ({
           key: j.key, name: j.name, description: j.description, schedule: j.schedule, feature: j.feature ?? null,
           active: jobActive(j, (k) => !!states.get(k)?.usable), nextRun: nextRun(j.schedule, date, time),
           canRun: a.has(j.runPermission), recentRuns: runs.filter((r) => r.job_key === j.key).slice(0, 10),
@@ -116,12 +116,12 @@ export async function tenantAdminRoutes(app: FastifyInstance, opts: { publicConf
   app.post('/jobs/:key/run', { config: { rateLimit: { max: 10, timeWindow: '1 minute' } } }, async (req, reply) => {
     const { key } = z.object({ key: z.string() }).parse(req.params);
     const job = JOB_MAP.get(key);
-    if (!job) throw notFound('Unknown job');
+    if (!job || (!job.retention && allOff(job.feature))) throw notFound('Unknown job');
     const a = tenantActor(req, job.runPermission);
-    if (job.feature) await a.tx(async (db) => {
+    if (job.feature && !job.retention) await a.tx(async (db) => {
       const keys = typeof job.feature === 'string' ? [job.feature] : job.feature!;
       const states = await evaluateFeatures(db, a.tenantId);
-      if (!jobActive(job, (k) => !!states.get(k)?.usable)) await requireFeature(db, a.tenantId, keys[0]!); // throws feature_unavailable
+      if (!jobActive(job, (k) => !!states.get(k)?.usable)) await requireFeature(db, a.tenantId, keys.find(isModuleEnabled)!); // throws feature_not_configured
     });
     await a.tx((db) => audit(db, { ...a.auditBase, action: 'job.run_requested', category: 'data', targetType: 'job', targetId: key }));
     reply.code(202);
@@ -136,12 +136,13 @@ export async function tenantAdminRoutes(app: FastifyInstance, opts: { publicConf
     return a.tx(async (db) => {
       const counts = new Map((await db.query<{ role_key: string; n: number }>(`SELECT r.role_key, count(DISTINCT r.user_id)::int AS n FROM user_roles r JOIN users u ON u.id=r.user_id
         WHERE r.tenant_id=$1 AND u.status='active' GROUP BY r.role_key`, [a.tenantId])).rows.map((r) => [r.role_key, r.n]));
+      const visible = (perms: readonly string[]) => perms.filter((p) => !allOff(permissionFeature(p)));
       return {
-        system: SYSTEM_ROLES.map((r) => ({ key: r.key, name: r.name, permissions: r.permissions, grantable: grantable(r.key, r.permissions), users: counts.get(r.key) ?? 0 })),
+        system: SYSTEM_ROLES.map((r) => ({ key: r.key, name: r.name, permissions: visible(r.permissions), grantable: grantable(r.key, r.permissions), users: counts.get(r.key) ?? 0 })),
         custom: (await db.query<{ key: string; name: string; permissions: string[] }>(`SELECT t.key, t.name, t.description, t.permissions, t.updated_at, u.display_name AS updated_by_name
             FROM tenant_roles t LEFT JOIN users u ON u.id=coalesce(t.updated_by, t.created_by) WHERE t.tenant_id=$1 ORDER BY t.name`, [a.tenantId])).rows
-          .map((r) => ({ ...r, grantable: grantable(r.key, r.permissions), users: counts.get(r.key) ?? 0, mfaRequired: r.permissions.some((p) => PRIVILEGED_PERMISSIONS.has(p)) })),
-        permissions: Object.entries(PERMISSIONS).map(([key, label]) => ({ key, label, privileged: PRIVILEGED_PERMISSIONS.has(key) })),
+          .map((r) => ({ ...r, permissions: visible(r.permissions), grantable: grantable(r.key, r.permissions), users: counts.get(r.key) ?? 0, mfaRequired: r.permissions.some((p) => PRIVILEGED_PERMISSIONS.has(p)) })),
+        permissions: Object.entries(PERMISSIONS).filter(([key]) => !allOff(permissionFeature(key))).map(([key, label]) => ({ key, label, privileged: PRIVILEGED_PERMISSIONS.has(key) })),
         // Whether this user may create and edit roles, and with which permissions (an administrator: any).
         canManage: a.has('users.manage'), maxPermissions: isAdministrator(a) ? null : [...a.user.permissions].filter((p) => p in PERMISSIONS),
       };

@@ -1,5 +1,6 @@
 import { contentHash } from '../modules/policies/routes.js';
 import pg from 'pg';
+import { resolveFeatures } from '../core/features/registry.js';
 import { hashPassword } from '../core/crypto/index.js';
 import { loadInstallationEnv } from '../config/env.js';
 import { bootstrapInstallation } from './bootstrap.js';
@@ -44,11 +45,7 @@ async function main() {
     // Local convenience only: no forced password change for the demo admin.
     await c.query(`UPDATE users SET must_change_password=false WHERE tenant_id=$1 AND email=$2`, [tid, adminEmail]);
     if ((await c.query('SELECT 1 FROM legal_entities WHERE tenant_id=$1', [tid])).rowCount) {
-      await seedLeave(c, tid);
-      await seedExpenses(c, tid);
-      await seedExtraUsers(c, tid, adminEmail.split('@')[1]!, await hashPassword(DEV_PASSWORD));
-      await seedCompetency(c, tid);
-      await seedPolicies(c, tid);
+      await seedModules(c, tid, adminEmail.split('@')[1]!);
       await c.query('COMMIT');
       console.log('Demo data already present (leave, expense, competency and policy demo data ensured).');
       return;
@@ -95,11 +92,7 @@ async function main() {
     await mkUser('auditor', 'Demo Auditor', ['auditor']);
     const designations = ['Chemist', 'Senior Chemist', 'Microbiologist', 'Field Sampler', 'Lab Technician', 'Instrument Engineer'];
     for (let i = 4; i <= 40; i++) await mkEmp(i, 'Synthetic', `Employee${String(i).padStart(3, '0')}`, ['WATER', 'AIR', 'SOIL', 'QA'][i % 4]!, designations[i % 6]!, i % 3 === 0 ? labMgr : null);
-    await seedLeave(c, tid);
-    await seedExpenses(c, tid);
-    await seedExtraUsers(c, tid, domain, pw);
-    await seedCompetency(c, tid);
-    await seedPolicies(c, tid);
+    await seedModules(c, tid, domain);
     await c.query('COMMIT');
     console.log(`Seeded ${env.ORGANIZATION_NAME} (40 synthetic employees) at ${env.APP_URL}`);
     console.log(`Users: admin@, hr@, manager@, employee@, payroll@, finance@, quality@, auditor@${domain}`);
@@ -111,6 +104,17 @@ async function main() {
 
 /** DEMO leave policies (illustrative numbers, not legal advice) + accruals for the current leave year. Idempotent. */
 /** Finance and quality demo users (added after the first seed version, so ensured on re-runs too). */
+/** A module that is off gets no seed data. */
+async function seedModules(c: pg.Client, tid: string, domain: string) {
+  const { features, problems } = resolveFeatures(process.env);
+  if (problems.length) throw new Error(problems.join('; '));
+  if (features.has('leave')) await seedLeave(c, tid);
+  if (features.has('expenses')) await seedExpenses(c, tid);
+  await seedExtraUsers(c, tid, domain, await hashPassword(DEV_PASSWORD));
+  if (features.has('training')) await seedCompetency(c, tid);
+  if (features.has('core.policies')) await seedPolicies(c, tid);
+}
+
 async function seedExtraUsers(c: pg.Client, tid: string, domain: string, pw: string) {
   for (const [key, name, role] of [['finance', 'Demo Finance', 'finance_manager'], ['quality', 'Demo Quality', 'quality_manager']] as const) {
     if ((await c.query('SELECT 1 FROM users WHERE tenant_id=$1 AND email=$2', [tid, `${key}@${domain}`])).rowCount) continue;

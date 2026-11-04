@@ -16,6 +16,8 @@
 
 ### Changed
 
+* Off means absent: routes of a module that is off are not registered and answer 404, signed in or not. Pending approvals of that module leave the inbox and answer 404, and resume unchanged when the flag returns. Its settings, jobs, permissions, reports, snapshots, notifications, seed and demo data, and its fields on other records, are gone with it. Retention jobs still run.
+* `GET /api/v1/tenant/settings` no longer has `featureEnabled`; off settings are not listed. `/tenant/installation` lists only what is on.
 * `POST /api/v1/tenant/jobs/:key/run` answers 202 with `{ runId, status: "queued" }`; the worker runs it.
 
 ## [1.1.0](https://github.com/rgrishabh/hrms-backend/compare/v1.0.0...v1.1.0) (2026-11-04)
