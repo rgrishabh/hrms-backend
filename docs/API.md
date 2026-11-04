@@ -70,6 +70,10 @@ Base path `/api/v1`. JSON in and out. Each installation serves one organization;
 | GET `/travel/requests?scope=mine\|team\|all&status&advance=to_pay\|outstanding&on` · GET `/travel/requests/:id` | travel.self / team.read / read, expenses.pay | List / detail with `settlement` |
 | POST `/travel/requests/:id/withdraw` · `/cancel` · `/complete` · `/claim` | traveller (cancel: also travel.approve) | Withdraw pending; cancel approved; mark completed; start the trip's expense claim |
 | POST `/travel/requests/:id/advance-paid` · `/advance-returned` · `/close` | expenses.pay | Record the advance paid `{reference}`; record unspent advance returned `{amount, note}`; close a settled trip |
+| **Advances and loans** (module `advances_loans`; see ADVANCES_LOANS.md) | | |
+| POST `/loans/requests` | loans.self / loans.manage | Apply `{kind: salary_advance\|loan, amount, installments, firstPeriod, purpose, employeeId?}` → manager, then finance |
+| GET `/loans/requests?scope=mine\|team\|all&status&kind` · GET `/loans/requests/:id` | loans.self / team.read / read | List (with `outstanding`) / detail with `balance`, `schedule`, `recoveries` |
+| POST `/loans/requests/:id/withdraw` · `/disburse` · `/cancel` · `/repayment` · `/defer` | applicant / loans.manage (cancel: also loans.approve) | Withdraw pending; disburse `{reference}`; cancel approved; repayment `{amount, reference}`; defer `{period, reason}` |
 | **Accounting exports** (module `accounting_exports`; see ACCOUNTING_EXPORTS.md) | | |
 | GET / PUT `/accounting/ledger-map` | accounting.export / accounting.configure | Ledger names per head (`{entries:[{key, ledger}]}`; empty ledger removes); `heads` lists what to map |
 | GET `/accounting/sources` | accounting.export | Finalized/paid runs and approved/paid batches with their last export |

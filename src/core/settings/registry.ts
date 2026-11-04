@@ -96,6 +96,17 @@ export const SETTINGS: readonly SettingDefinition[] = [
     control: 'number', schema: z.number().int().min(0).max(100), default: 80, scopes: ['tenant'], editPermission: 'travel.manage' }),
   def({ key: 'travel.finance_approval_above', group: 'general', feature: 'travel', label: 'Travel: finance approves estimates from (₹)', description: 'Trips estimated at or above this also need finance approval. Empty = only trips with an advance, trips abroad and trips of people without a manager.',
     control: 'number', schema: z.number().min(0).nullable(), default: null, scopes: ['tenant'], editPermission: 'travel.manage' }),
+  // Salary advances and loans (the organization's policy).
+  def({ key: 'loans.advance_max_installments', group: 'general', feature: 'advances_loans', label: 'Salary advance: most instalments', description: 'A salary advance is recovered in at most this many monthly instalments.',
+    control: 'number', schema: z.number().int().min(1).max(24), default: 3, scopes: ['tenant'], editPermission: 'loans.manage' }),
+  def({ key: 'loans.max_installments', group: 'general', feature: 'advances_loans', label: 'Loan: most instalments', description: 'A loan is recovered in at most this many monthly instalments.',
+    control: 'number', schema: z.number().int().min(1).max(120), default: 24, scopes: ['tenant'], editPermission: 'loans.manage' }),
+  def({ key: 'loans.max_advance_amount', group: 'general', feature: 'advances_loans', label: 'Salary advance: largest amount (₹)', description: 'Empty = no limit (finance decides at approval).',
+    control: 'number', schema: z.number().int().positive().nullable(), default: null, scopes: ['tenant'], editPermission: 'loans.manage' }),
+  def({ key: 'loans.max_loan_amount', group: 'general', feature: 'advances_loans', label: 'Loan: largest amount (₹)', description: 'Empty = no limit (finance decides at approval).',
+    control: 'number', schema: z.number().int().positive().nullable(), default: null, scopes: ['tenant'], editPermission: 'loans.manage' }),
+  def({ key: 'loans.one_at_a_time', group: 'general', feature: 'advances_loans', label: 'One advance and one loan at a time', description: 'Refuse a new salary advance (or loan) while another is pending, approved or not yet repaid.',
+    control: 'boolean', schema: z.boolean(), default: true, scopes: ['tenant'], editPermission: 'loans.manage' }),
   // Accounting exports (Tally import).
   def({ key: 'accounting.tally_company', group: 'general', feature: 'accounting_exports', label: 'Tally: company name', description: 'Exact company name in Tally to import into. Empty = the company open in Tally at import.',
     control: 'text', schema: z.string().trim().max(200), default: '', scopes: ['tenant'], editPermission: 'accounting.configure' }),

@@ -66,7 +66,7 @@ export const FEATURES: readonly FeatureDefinition[] = [
   f({ key: 'payroll.statutory', name: 'Statutory deductions', description: 'PF, ESI, PT, LWF and TDS from a rule register whose values the organization enters and verifies (maker-checker).', category: 'payroll_finance', availability: 'available', dependencies: ['payroll'] }),
   f({ key: 'expenses', name: 'Expenses & reimbursements', description: 'Claims with receipts, manager + finance approval, duplicate checks, payment batches with maker-checker.', category: 'payroll_finance', availability: 'available', dependencies: ['core.employees'] }),
   f({ key: 'travel', name: 'Travel management', description: 'Trip requests with estimates and advances, settled against the trip\'s expense claim; trip days count as field duty.', category: 'payroll_finance', availability: 'available', dependencies: ['expenses'] }),
-  f({ key: 'advances_loans', name: 'Advances and loans', description: 'Salary/travel advances and repayment schedules.', category: 'payroll_finance', availability: 'planned', dependencies: ['payroll'] }),
+  f({ key: 'advances_loans', name: 'Advances and loans', description: 'Salary advances and interest-free loans, recovered in monthly instalments through payroll.', category: 'payroll_finance', availability: 'available', dependencies: ['payroll'] }),
   f({ key: 'accounting_exports', name: 'Accounting exports', description: 'Payroll and reimbursement journals for the accounts, mapped to your ledgers (CSV or Tally XML).', category: 'payroll_finance', availability: 'available', dependencies: ['payroll'] }),
 
   // ---- Talent & lab
