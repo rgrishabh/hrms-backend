@@ -1,5 +1,6 @@
 import type { Db } from '../../db/tx.js';
 import { getSettingValue } from '../settings/service.js';
+import { SYSTEM_ROLES } from './permissions.js';
 
 /**
  * MFA enforcement = the stricter of the deployment floor (MFA_ENFORCEMENT) and the
@@ -11,6 +12,14 @@ import { getSettingValue } from '../settings/service.js';
 export type MfaLevel = 'off' | 'privileged' | 'all';
 const RANK: Record<MfaLevel, number> = { off: 0, privileged: 1, all: 2 };
 export const PRIVILEGED_ROLES: readonly string[] = ['tenant_admin', 'hr_admin', 'payroll_manager', 'it_admin'];
+/**
+ * Permissions that only privileged system roles carry (configuration, access, bank details, payroll set-up).
+ * An organization's own role carrying any of them counts as privileged too, so a custom role cannot avoid MFA.
+ */
+export const PRIVILEGED_PERMISSIONS: ReadonlySet<string> = (() => {
+  const ordinary = new Set(SYSTEM_ROLES.filter((r) => !PRIVILEGED_ROLES.includes(r.key)).flatMap((r) => r.permissions as readonly string[]));
+  return new Set(SYSTEM_ROLES.filter((r) => PRIVILEGED_ROLES.includes(r.key)).flatMap((r) => r.permissions as readonly string[]).filter((p) => !ordinary.has(p)));
+})();
 
 let floor: MfaLevel = 'privileged';
 export const setMfaFloor = (l: MfaLevel) => { floor = l; };
@@ -21,8 +30,8 @@ export async function effectiveMfaLevel(db: Db, tenantId: string): Promise<MfaLe
   return RANK[org] > RANK[floor] ? org : floor;
 }
 
-export function mfaRequiredFor(roles: string[], level: MfaLevel) {
-  return level === 'all' || (level === 'privileged' && roles.some((r) => PRIVILEGED_ROLES.includes(r)));
+export function mfaRequiredFor(roles: string[], permissions: ReadonlySet<string>, level: MfaLevel) {
+  return level === 'all' || (level === 'privileged' && (roles.some((r) => PRIVILEGED_ROLES.includes(r)) || [...permissions].some((p) => PRIVILEGED_PERMISSIONS.has(p))));
 }
 
 /** Paths usable while a session still needs its MFA code. */
