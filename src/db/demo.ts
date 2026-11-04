@@ -298,6 +298,22 @@ export async function generateDemo(c: pg.Client | pg.PoolClient, opts: { passwor
   }
   say('expenses: 5 categories, 2 draft claims');
 
+  // ---- advances and loans: the analyst's salary advance (paid; recovered from this month's payroll) and the IT manager's loan
+  {
+    const month = today.slice(0, 7);
+    const [y, m] = month.split('-').map(Number) as [number, number];
+    const prev = new Date(Date.UTC(y, m - 2, 1)).toISOString().slice(0, 7);
+    for (const [k, kind, amount, n, first, purpose] of [['analyst', 'salary_advance', 15000, 3, month, 'Advance for my sister\'s wedding expenses'],
+      ['it', 'loan', 60000, 12, prev, 'Two-wheeler purchase for commuting to the Bhosari site']] as const) {
+      const inst = Math.ceil(amount / n);
+      const lid = (await q<{ id: string }>(`INSERT INTO employee_loans (tenant_id, employee_id, kind, amount, installments, installment_amount, first_period, purpose, status, decided_at, disbursed_at, disbursed_by, disbursement_reference, created_by)
+        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,'disbursed',now(),now(),$9,$10,$11) RETURNING id`, [tid, personas[k]!.id, kind, amount, n, inst, first, purpose, uid('payroll'), `NEFT-DEMO-${k.toUpperCase()}`, uid(k)])).rows[0]!.id;
+      // The loan started last month; that instalment was repaid directly (the demo has no payroll runs).
+      if (first === prev) await q(`INSERT INTO loan_recoveries (tenant_id, loan_id, source, amount, reference, recorded_by) VALUES ($1,$2,'repayment',$3,'Cash receipt (demo)',$4)`, [tid, lid, inst, uid('payroll')]);
+    }
+    say('advances and loans: a salary advance and a loan, both paid out and being recovered');
+  }
+
   // ---- training & competency
   const course: Record<string, string> = {};
   for (const [code, name, kind, months] of [['INDUCTION', 'Laboratory induction', 'induction', null], ['CHEM-SAFETY', 'Chemical safety & spill response', 'safety', 12], ['QMS', 'ISO/IEC 17025 awareness', 'quality', 24],

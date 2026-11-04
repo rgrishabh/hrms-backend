@@ -3,6 +3,7 @@ import { getSettingValue } from '../../core/settings/service.js';
 import { featureOn } from '../lifecycle/service.js';
 import { daysBetween } from '../attendance/time.js';
 import { calculate, CALC_VERSION, RULE_PARAMS, type Component, type RuleKind, type CalcInput } from './calc.js';
+import { plannedRecoveries, applyRecoveries } from '../loans/service.js';
 import { overtimeForRun } from '../overtime/service.js';
 
 export function periodBounds(period: string) {
@@ -57,8 +58,10 @@ export async function computeRun(db: Db, tenantId: string, runId: string) {
   const statutoryOn = await featureOn(db, tenantId, 'payroll.statutory');
   const attendanceOn = await featureOn(db, tenantId, 'attendance');
   const overtimeOn = await featureOn(db, tenantId, 'overtime');
-  // A recompute starts clean: overtime this run picked up before is offered to it again.
+  const loansOn = await featureOn(db, tenantId, 'advances_loans');
+  // A recompute starts clean: overtime and loan instalments this run picked up before are offered to it again.
   await db.query('UPDATE overtime_claims SET payroll_run_id=NULL WHERE tenant_id=$1 AND payroll_run_id=$2', [tenantId, runId]);
+  await db.query('DELETE FROM loan_recoveries WHERE tenant_id=$1 AND payroll_run_id=$2', [tenantId, runId]);
   const emps = (await db.query<EmpForPay>(`SELECT e.id, e.employee_code, trim(e.first_name||' '||coalesce(e.last_name,'')) AS name, e.date_of_joining::text, e.exit_date::text,
       b.state AS branch_state, s.pf_excluded, s.tax_regime, s.pt_state
     FROM employees e JOIN branches b ON b.tenant_id=e.tenant_id AND b.id=e.branch_id LEFT JOIN employee_statutory s ON s.tenant_id=e.tenant_id AND s.employee_id=e.id
@@ -108,7 +111,16 @@ export async function computeRun(db: Db, tenantId: string, runId: string) {
       rules: { pf: await cached('pf', 'IN'), esi: await cached('esi', 'IN'), pt: ptState ? await cached('pt', ptState) : undefined, lwf: ptState ? await cached('lwf', ptState) : undefined, tds: await cached('tds', regime) },
       expect: statutoryOn ? expect : [],
     };
-    const r = calculate(input);
+    let r = calculate(input);
+    if (loansOn) {
+      // Loan instalments come off what is left after everything else, never taking net pay below zero.
+      const planned = await plannedRecoveries(db, tenantId, runId, e.id, run.period, run.kind === 'fnf');
+      if (planned.length) {
+        const rec = await applyRecoveries(db, tenantId, runId, run.period, planned, r.net);
+        warnings.push(...rec.warnings);
+        if (rec.adjustments.length) r = calculate({ ...input, adjustments: [...adjustments, ...rec.adjustments] });
+      }
+    }
     warnings.push(...r.warnings);
     await db.query(`INSERT INTO payroll_items (tenant_id, run_id, employee_id, salary_id, days_in_period, employed_days, lop_days, paid_days, lines, gross, deductions, net, employer_cost, warnings, hold, calc_version)
       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16)`,

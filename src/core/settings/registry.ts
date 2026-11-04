@@ -87,6 +87,18 @@ export const SETTINGS: readonly SettingDefinition[] = [
   def({ key: 'field_duty.hr_approval', group: 'attendance', feature: 'field_duty', label: 'Field duty: HR approves after the manager', description: 'When off, the reporting manager\'s approval is enough. HR always approves when the employee has no manager with an account.',
     control: 'boolean', schema: z.boolean(), default: false, scopes: ['tenant'], editPermission: 'field_duty.manage' }),
 
+  // Salary advances and loans (the organization's policy).
+  def({ key: 'loans.advance_max_installments', group: 'general', feature: 'advances_loans', label: 'Salary advance: most instalments', description: 'A salary advance is recovered in at most this many monthly instalments.',
+    control: 'number', schema: z.number().int().min(1).max(24), default: 3, scopes: ['tenant'], editPermission: 'loans.manage' }),
+  def({ key: 'loans.max_installments', group: 'general', feature: 'advances_loans', label: 'Loan: most instalments', description: 'A loan is recovered in at most this many monthly instalments.',
+    control: 'number', schema: z.number().int().min(1).max(120), default: 24, scopes: ['tenant'], editPermission: 'loans.manage' }),
+  def({ key: 'loans.max_advance_amount', group: 'general', feature: 'advances_loans', label: 'Salary advance: largest amount (₹)', description: 'Empty = no limit (finance decides at approval).',
+    control: 'number', schema: z.number().int().positive().nullable(), default: null, scopes: ['tenant'], editPermission: 'loans.manage' }),
+  def({ key: 'loans.max_loan_amount', group: 'general', feature: 'advances_loans', label: 'Loan: largest amount (₹)', description: 'Empty = no limit (finance decides at approval).',
+    control: 'number', schema: z.number().int().positive().nullable(), default: null, scopes: ['tenant'], editPermission: 'loans.manage' }),
+  def({ key: 'loans.one_at_a_time', group: 'general', feature: 'advances_loans', label: 'One advance and one loan at a time', description: 'Refuse a new salary advance (or loan) while another is pending, approved or not yet repaid.',
+    control: 'boolean', schema: z.boolean(), default: true, scopes: ['tenant'], editPermission: 'loans.manage' }),
+
   def({ key: 'leave.year_start_month', group: 'attendance', feature: 'leave', label: 'Leave year starts in', description: 'Month in which the leave year begins (balances, accruals and carry-forward follow this year).',
     control: 'select', options: ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'].map((m, i) => ({ value: String(i + 1), label: m })),
     schema: z.coerce.number().int().min(1).max(12), default: 1, scopes: ['tenant'], editPermission: 'leave.manage' }),

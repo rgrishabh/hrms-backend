@@ -65,6 +65,10 @@ Base path `/api/v1`. JSON in and out. Each installation serves one organization;
 | POST `/field-duty/requests` | field_duty.self / manage | Request `{startDate, endDate, dayPart, purpose, place, clientName?, reference?, reason}`, or record it for an employee (`employeeId`, manage). Manager approves, then HR if `field_duty.hr_approval` is on |
 | GET `/field-duty/requests?scope=mine\|team\|all&status&on&from&to` · GET `/field-duty/requests/:id` | field_duty.self / team.read / read | List / detail |
 | POST `/field-duty/requests/:id/withdraw` · `/cancel` · `/report` | employee / field_duty.manage | Withdraw pending; cancel approved (employee before it starts, HR until the dates are locked); report the outcome once started |
+| **Advances and loans** (module `advances_loans`; see ADVANCES_LOANS.md) | | |
+| POST `/loans/requests` | loans.self / loans.manage | Apply `{kind: salary_advance\|loan, amount, installments, firstPeriod, purpose, employeeId?}` → manager, then finance |
+| GET `/loans/requests?scope=mine\|team\|all&status&kind` · GET `/loans/requests/:id` | loans.self / team.read / read | List (with `outstanding`) / detail with `balance`, `schedule`, `recoveries` |
+| POST `/loans/requests/:id/withdraw` · `/disburse` · `/cancel` · `/repayment` · `/defer` | applicant / loans.manage (cancel: also loans.approve) | Withdraw pending; disburse `{reference}`; cancel approved; repayment `{amount, reference}`; defer `{period, reason}` |
 | **Overtime** (module `overtime`; see OVERTIME.md) | | |
 | GET `/overtime/eligible` | overtime.self | My days with recorded overtime still to claim, and the payout options |
 | POST `/overtime/claims` | overtime.self | Claim `{workDate, minutes, payout, reason}` → manager, then HR approval |
