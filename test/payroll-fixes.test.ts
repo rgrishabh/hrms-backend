@@ -332,3 +332,64 @@ describe('other payroll findings (AUDIT 4.2)', () => {
     expect(csvCell('+919999')).toBe("'+919999");
   });
 });
+
+describe('F-12 held pay', () => {
+  let W: TenantFixture; let p: Client; let f: Client; let e: string; let loan: string; let run: string;
+  let loansApp: FastifyInstance;
+  beforeAll(async () => {
+    loansApp = await makeApp({ ENABLED_MODULES: `${MODULES},advances_loans` });
+    W = await createTenant();
+    p = await Client.login(loansApp, W.host, W.users.payroll!.email);
+    const email = `fin@${W.host}`;
+    const [u] = await ownerQuery<{ id: string }>(`INSERT INTO users (tenant_id, email, display_name, password_hash) SELECT tenant_id, $2, 'fin', password_hash FROM users WHERE id=$1 RETURNING id`, [W.users.payroll!.id, email]);
+    await ownerQuery(`INSERT INTO user_roles (user_id, tenant_id, role_key) VALUES ($1,$2,'finance_manager')`, [u!.id, W.id]);
+    f = await Client.login(loansApp, W.host, email);
+    e = W.users.employee!.employeeId!;
+    await seedComponents(W);
+    await activeSalary(W, e, '2024-01-01', { BASIC: 30000 });
+    await ownerQuery(`INSERT INTO employee_bank_accounts (employee_id, tenant_id, account_holder, account_number_enc, account_last4, ifsc) VALUES ($1,$2,'Emp',$3,'9012','SBIN0001234')`, [e, W.id, loansApp.deps.cipher.encrypt('123456789012')]);
+    const [l] = await ownerQuery<{ id: string }>(`INSERT INTO employee_loans (tenant_id, employee_id, kind, amount, installments, installment_amount, first_period, purpose, status, created_by, disbursed_at)
+      VALUES ($1,$2,'salary_advance',1000,1,1000,'2026-01','Fixture purpose','disbursed',$3,now()) RETURNING id`, [W.id, e, W.users.hr!.id]);
+    loan = l!.id;
+    await p.post('/api/v1/attendance/locks', { periodStart: '2026-01-01', periodEnd: '2026-01-31' });
+    run = await createRun(p, W, '2026-01');
+    await compute(p, run);
+    expect((await p.post(`/api/v1/payroll/runs/${run}/hold`, { employeeId: e, hold: true })).statusCode).toBe(200);
+    await toApproved(p, f, run);
+    expect((await p.post(`/api/v1/payroll/runs/${run}/finalize`)).statusCode).toBe(200);
+  });
+  afterAll(async () => { await loansApp.close(); });
+  const status = async () => (await ownerQuery<{ status: string }>(`SELECT status FROM employee_loans WHERE id=$1`, [loan]))[0]!.status;
+
+  it('held pay is not a final recovery: the loan stays open and shows the amount in progress', async () => {
+    expect(await status()).toBe('disbursed');
+    const hrc = await Client.login(loansApp, W.host, W.users.hr!.email);
+    const d = (await hrc.get(`/api/v1/loans/requests/${loan}`)).json();
+    expect(d.recovered ?? d.balance?.recovered).toBe('0.00');
+    expect(d.inProgress ?? d.balance?.inProgress).toBe('1000.00');
+  });
+
+  it('only a payroll approver can release, and it opens payslip, loan closure and a separate bank file', async () => {
+    const url = `/api/v1/payroll/runs/${run}/items/${e}/release`;
+    expect((await p.post(url, { reason: 'Documents received' })).statusCode).toBe(403);
+    const before = (await p.get(`/api/v1/payroll/runs/${run}/bank.csv`)).body;
+    expect(before).not.toContain('XXXXXX9012');
+    expect(before).not.toContain('123456789012');
+    expect((await f.post(url, { reason: 'x' })).statusCode).toBe(400);
+    const r = await f.post(url, { reason: 'Documents received' });
+    expect(r.statusCode, r.body).toBe(200);
+    expect((await f.post(url, { reason: 'Documents received' })).statusCode).toBe(409);
+    expect(await status()).toBe('closed');
+    const emp = await Client.login(loansApp, W.host, W.users.employee!.email);
+    expect((await emp.get('/api/v1/payroll/payslips/mine')).json().items).toHaveLength(1);
+    expect((await ownerQuery(`SELECT 1 FROM notifications WHERE tenant_id=$1 AND user_id=$2 AND kind='payroll.payslip'`, [W.id, W.users.employee!.id])).length).toBe(1);
+    expect((await p.get(`/api/v1/payroll/runs/${run}/bank.csv`)).body).not.toContain('123456789012');   // the original file does not change
+    expect((await p.get(`/api/v1/payroll/runs/${run}/bank-released.csv`)).body).toContain('123456789012');
+    await expect(ownerQuery(`UPDATE payroll_items SET net=1 WHERE run_id=$1`, [run])).rejects.toThrow(/cannot be changed/);
+  });
+
+  it('release is for held items of finalized runs', async () => {
+    const o = await createRun(p, W, '2026-02');
+    expect((await f.post(`/api/v1/payroll/runs/${o}/items/${e}/release`, { reason: 'Too early' })).statusCode).toBe(409);
+  });
+});

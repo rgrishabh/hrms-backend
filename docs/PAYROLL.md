@@ -48,6 +48,8 @@ Modules: `payroll` (components, salaries, runs, exports), `payroll.payslips` (em
 - Bank file: full account numbers only with `employees.bank.read`, otherwise masked.
 - PF and ESI contribution files: inputs to the portal formats. Check them against the current ECR / ESI upload specification before uploading.
 
+**Held pay:** an item on hold stays out of the bank file and payslips, and a loan instalment in it stays in progress, not recovered, so the loan does not close. After finalize, a `payroll.approve` holder releases it (`POST /payroll/runs/:id/items/:employeeId/release`, with a reason): the payslip appears, loans are re-checked, and the money goes out in `bank-released.csv` while `bank.csv` stays as it was.
+
 **Stale results:** finalize refuses a run computed before attendance was locked, computed by an older calculation version, or (F&F) computed before the leaver's attendance last changed. `POST /payroll/runs/:id/reopen` takes an approved run back to draft to recompute and approve again.
 
 **F&F:** an `fnf` run for one leaver with an approved separation, one per leaver unless cancelled. A leaver's salary for the month is paid once: an open F&F run takes them out of the regular run (a computed regular run goes back to draft). If the regular run was already submitted or later, the F&F run pays only its adjustments, with no second PT or LWF.

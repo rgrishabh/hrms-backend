@@ -40,6 +40,8 @@ Base path `/api/v1`. JSON in and out. Each installation serves one organization;
 | GET/PUT `/employees/:id/bank-account` | `employees.bank.read` (or self) / `employees.bank.manage` | Masked view (audited) / proposes an encrypted change: 202, applied when someone with `employees.bank.approve` approves it. Not your own account |
 | GET `/employees/:id/bank-account/pending` | `employees.bank.read` or `employees.bank.approve` | The waiting change, masked (audited) |
 | POST `/payroll/runs/:id/reopen` | `payroll.manage` | Approved run back to draft |
+| POST `/payroll/runs/:id/items/:employeeId/release` | `payroll.approve` | Release held pay after finalize |
+| GET `/payroll/runs/:id/bank-released.csv` | `payroll.read` | Held pay released after finalize |
 | GET `/employees/:id/profile` | profile.self (own) / employees.read | Personal details `{sections: {contacts, addresses, nominees, education, experience}, pending, missing, edit}`; see EMPLOYEE_RECORD.md |
 | PUT `/employees/:id/profile/:section` | employees.manage / profile.self (own) | Replace a section `{items, note?}`: applied (200), or for the employee's own nominees, education and employment history a change for HR approval (202 `{changeId, approvalId}`) |
 | GET `/employees/profile-changes/:id` · POST `/employees/profile-changes/:id/withdraw` | employee / profile.approve / employees.read · employee | Proposed change with the section as it is now · withdraw while pending |

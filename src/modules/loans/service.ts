@@ -9,14 +9,16 @@ export const installmentOf = (amount: number, n: number) => Math.ceil(amount / n
 
 /**
  * Taken back so far: direct repayments and payroll deductions in runs that are not cancelled (`committed`), and
- * of those, what is final (repayments, and deductions in finalized or paid runs).
+ * of those, what is final (repayments, and deductions in finalized or paid runs where the pay is not held: until held
+ * pay is released the employee has not had it, so the deduction stays in progress and the loan stays open).
  */
 export async function balanceOf(db: Db, tenantId: string, loanId: string, opts: { excludeRunId?: string } = {}) {
   const r = (await db.query<{ amount: string; committed: string; final: string }>(`SELECT l.amount::text,
       coalesce(sum(x.amount) FILTER (WHERE x.source='repayment' OR (r.status <> 'cancelled' AND x.payroll_run_id IS DISTINCT FROM $3::uuid)), 0)::text AS committed,
-      coalesce(sum(x.amount) FILTER (WHERE x.source='repayment' OR r.status IN ('finalized','paid')), 0)::text AS final
+      coalesce(sum(x.amount) FILTER (WHERE x.source='repayment' OR (r.status IN ('finalized','paid') AND NOT coalesce(i.hold, false))), 0)::text AS final
     FROM employee_loans l LEFT JOIN loan_recoveries x ON x.tenant_id=l.tenant_id AND x.loan_id=l.id
     LEFT JOIN payroll_runs r ON r.tenant_id=x.tenant_id AND r.id=x.payroll_run_id
+    LEFT JOIN payroll_items i ON i.tenant_id=x.tenant_id AND i.run_id=x.payroll_run_id AND i.employee_id=l.employee_id
     WHERE l.tenant_id=$1 AND l.id=$2 GROUP BY l.amount`, [tenantId, loanId, opts.excludeRunId ?? null])).rows[0];
   if (!r) return { amount: '0.00', outstanding: '0.00', recovered: '0.00', inProgress: '0.00' };
   const outstanding = Decimal.max(0, new Decimal(r.amount).minus(r.committed));

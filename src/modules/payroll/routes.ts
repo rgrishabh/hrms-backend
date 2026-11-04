@@ -367,6 +367,29 @@ export async function payrollRoutes(app: FastifyInstance) {
     });
   });
 
+  /**
+   * Pays out an item held at finalize. A payroll approver decides, not the person who prepared the run; the item leaves
+   * the hold, the employee gets their payslip, and it goes out in its own bank file so the run's file never changes.
+   */
+  app.post('/runs/:id/items/:employeeId/release', async (req) => {
+    const a = tenantActor(req, 'payroll.approve');
+    const { id, employeeId } = z.object({ id: Uuid, employeeId: Uuid }).parse(req.params);
+    const { reason } = z.object({ reason: z.string().trim().min(5).max(500) }).parse(req.body);
+    return a.tx(async (db) => {
+      const r = await loadRun(db, a, id, true);
+      if (!['finalized', 'paid'].includes(r.status)) throw conflict('Only held pay in a finalized run is released here; before that, take it off hold');
+      if (employeeId === a.user.employeeId) throw forbidden('You cannot release your own held pay');
+      const u = await db.query(`UPDATE payroll_items SET hold=false, hold_released_at=now(), hold_released_by=$4, hold_release_reason=$5 WHERE tenant_id=$1 AND run_id=$2 AND employee_id=$3 AND hold AND net >= 0`,
+        [a.tenantId, id, employeeId, a.user.userId, reason]);
+      if (!u.rowCount) throw conflict('No held pay to release for this employee (or its net pay is negative)');
+      if (await featureOn(db, a.tenantId, 'advances_loans')) await closeRepaid(db, a.tenantId, [employeeId]);
+      const user = (await db.query<{ user_id: string | null }>('SELECT user_id FROM employees WHERE tenant_id=$1 AND id=$2', [a.tenantId, employeeId])).rows[0]?.user_id;
+      if (user) await notifyUsers(db, a.tenantId, [user], { kind: 'payroll.payslip', title: `Your payslip for ${r.period} is available`, body: 'Open HRMS to view or print it.', link: '/payslips', actionLabel: 'View payslip', dedupeKey: `payslip:${id}:${employeeId}` });
+      await audit(db, { ...a.auditBase, action: 'payroll.hold_released', category: 'security', targetType: 'payroll_run', targetId: id, metadata: { employeeId, reason } });
+      return { ok: true };
+    });
+  });
+
   app.post('/runs/:id/acknowledge-warnings', async (req) => {
     const a = tenantActor(req, 'payroll.manage');
     const { id } = z.object({ id: Uuid }).parse(req.params);
@@ -481,8 +504,8 @@ export async function payrollRoutes(app: FastifyInstance) {
       }
       return reply.header('content-type', 'text/csv; charset=utf-8').header('content-disposition', `attachment; filename="${file}"`).header('cache-control', 'private, no-store').send(csv(rows));
     }));
-  const itemsOf = (db: Db, tenantId: string, runId: string) => db.query<{ employee_code: string; name: string; employee_id: string; lines: { code: string; amount: number; kind: string }[]; gross: string; deductions: string; net: string; paid_days: string; lop_days: string; hold: boolean }>(
-    `SELECT e.employee_code, trim(e.first_name||' '||coalesce(e.last_name,'')) AS name, i.employee_id, i.lines, i.gross, i.deductions, i.net, i.paid_days, i.lop_days, i.hold
+  const itemsOf = (db: Db, tenantId: string, runId: string) => db.query<{ employee_code: string; name: string; employee_id: string; lines: { code: string; amount: number; kind: string }[]; gross: string; deductions: string; net: string; paid_days: string; lop_days: string; hold: boolean; hold_released_at: Date | null }>(
+    `SELECT e.employee_code, trim(e.first_name||' '||coalesce(e.last_name,'')) AS name, i.employee_id, i.lines, i.gross, i.deductions, i.net, i.paid_days, i.lop_days, i.hold, i.hold_released_at
      FROM payroll_items i JOIN employees e ON e.tenant_id=i.tenant_id AND e.id=i.employee_id WHERE i.tenant_id=$1 AND i.run_id=$2 ORDER BY e.employee_code`, [tenantId, runId]);
   const amt = (lines: { code: string; amount: number }[], code: string) => lines.find((l) => l.code === code)?.amount ?? 0;
 
@@ -492,16 +515,19 @@ export async function payrollRoutes(app: FastifyInstance) {
     return [['employee_code', 'name', 'paid_days', 'lop_days', ...codes, 'gross', 'deductions', 'net', 'hold'],
       ...items.map((i) => [i.employee_code, i.name, i.paid_days, i.lop_days, ...codes.map((c) => amt(i.lines, c)), i.gross, i.deductions, i.net, i.hold ? 'yes' : ''])];
   }, 'payroll.read', ['csv', 'xlsx']);
-  exportRun('bank', async (db, a, run) => {
+  const bankFile = (include: (i: { hold: boolean; hold_released_at: Date | null; net: string }) => boolean) => async (db: Db, a: TenantActor, run: { id: string }) => {
     const full = a.has('employees.bank.read');
-    const items = (await itemsOf(db, a.tenantId, run.id)).rows.filter((i) => !i.hold && Number(i.net) > 0);
+    const items = (await itemsOf(db, a.tenantId, run.id)).rows.filter((i) => include(i) && Number(i.net) > 0);
     const out: unknown[][] = [['employee_code', 'name', 'amount', 'account_holder', 'ifsc', 'account_number']];
     for (const i of items) {
       const b = (await db.query<{ account_holder: string; ifsc: string; account_last4: string; account_number_enc: string }>(`SELECT account_holder, ifsc, account_last4, account_number_enc FROM employee_bank_accounts WHERE tenant_id=$1 AND employee_id=$2`, [a.tenantId, i.employee_id])).rows[0];
       out.push([i.employee_code, i.name, i.net, b?.account_holder ?? '', b?.ifsc ?? '', b ? (full ? cipher.decrypt(b.account_number_enc) : `XXXXXX${b.account_last4}`) : 'MISSING']);
     }
     return out;
-  });
+  };
+  // The run's file stays as it was at finalize; pay released later goes out in its own file.
+  exportRun('bank', bankFile((i) => !i.hold && !i.hold_released_at));
+  exportRun('bank-released', bankFile((i) => !i.hold && !!i.hold_released_at));
   exportRun('pf', async (db, a, run) => {
     const items = (await itemsOf(db, a.tenantId, run.id)).rows.filter((i) => i.lines.some((l) => l.code === 'PF_EE'));
     const out: unknown[][] = [['uan', 'employee_code', 'name', 'gross', 'pf_employee', 'eps_employer', 'epf_employer', 'lop_days']];
