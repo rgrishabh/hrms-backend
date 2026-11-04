@@ -52,6 +52,14 @@ const schema = z.object({
 
   // ---- email (module notifications.email). Credentials from env / secret store only.
   MAIL_TRANSPORT: z.enum(['disabled', 'smtp', 'log']).default('disabled'),
+  // SMS (module notifications.sms): the provider's HTTP API, with DLT sender and entity IDs.
+  SMS_TRANSPORT: z.enum(['disabled', 'http', 'log']).default('disabled'),
+  SMS_HTTP_URL: z.url().optional(),
+  SMS_HTTP_AUTH_HEADER: z.string().optional(),           // "Name: value", e.g. "authkey: …" or "Authorization: Basic …"
+  SMS_HTTP_CONTENT_TYPE: z.enum(['json', 'form']).default('json'),
+  SMS_HTTP_BODY: z.string().optional(),                  // body with {{to}} {{to_digits}} {{message}} {{template_id}} {{sender_id}} {{entity_id}}
+  SMS_SENDER_ID: z.string().regex(/^[A-Z0-9]{3,11}$/).optional(),
+  SMS_DLT_ENTITY_ID: z.string().regex(/^[0-9]{10,25}$/).optional(),
   SMTP_HOST: z.string().optional(),
   SMTP_PORT: z.coerce.number().int().min(1).max(65535).default(587),
   SMTP_SECURE: bool('false'),          // true = implicit TLS (465); false = STARTTLS when offered
@@ -126,6 +134,9 @@ export function loadEnv(source: NodeJS.ProcessEnv = process.env): Env {
   if (env.MAIL_TRANSPORT === 'smtp' && (!env.SMTP_HOST || !env.MAIL_FROM_ADDRESS)) problems.push('MAIL_TRANSPORT=smtp needs SMTP_HOST and MAIL_FROM_ADDRESS');
   if (env.MAIL_TRANSPORT === 'smtp' && !!env.SMTP_USER !== !!env.SMTP_PASSWORD) problems.push('Set both SMTP_USER and SMTP_PASSWORD, or neither');
   if (env.MAIL_TRANSPORT === 'log' && env.NODE_ENV === 'production') problems.push("MAIL_TRANSPORT=log is for development only");
+  if (env.SMS_TRANSPORT === 'http' && (!env.SMS_HTTP_URL || !env.SMS_HTTP_BODY)) problems.push('SMS_TRANSPORT=http needs SMS_HTTP_URL and SMS_HTTP_BODY');
+  if (env.SMS_TRANSPORT === 'http' && env.NODE_ENV === 'production' && !env.SMS_HTTP_URL?.startsWith('https://')) problems.push('SMS_HTTP_URL must use https');
+  if (env.SMS_TRANSPORT === 'log' && env.NODE_ENV === 'production') problems.push('SMS_TRANSPORT=log is for development only');
   if (env.BRAND_LOGO_URL?.startsWith('/branding/') || env.BRAND_FAVICON_URL?.startsWith('/branding/')) {
     if (!env.BRANDING_DIR) problems.push('BRANDING_DIR must be set to serve /branding/* logo or favicon files');
   }
