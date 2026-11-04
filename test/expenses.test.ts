@@ -70,6 +70,21 @@ describe('claim validation', () => {
 });
 
 describe('approval and payment', () => {
+  it('a manager who is also a finance approver approves only one of the two steps', async () => {
+    await ownerQuery(`INSERT INTO user_roles (user_id, tenant_id, role_key) VALUES ($1,$2,'finance_manager')`, [T.users.manager!.id, T.id]);
+    try {
+      const id = await newClaim(emp, 'Two-step check');
+      expect((await addItem(emp, id, { categoryId: cats.TRAVEL!, expenseDate: today, amount: '300', description: 'Auto' }, false)).statusCode).toBe(201);
+      expect((await emp.post(`/api/v1/expenses/claims/${id}/submit`)).statusCode).toBe(200);
+      const item = async (cl: Client) => (await cl.get('/api/v1/approvals/inbox')).json().items.find((x: { entity_id: string }) => x.entity_id === id);
+      const req = (await item(mgr)).id;
+      expect((await mgr.post(`/api/v1/approvals/${req}/act`, { action: 'approve' })).statusCode).toBe(200);
+      expect(await item(mgr)).toBeUndefined(); // the finance step is someone else's
+      expect((await mgr.post(`/api/v1/approvals/${req}/act`, { action: 'approve' })).statusCode).toBe(403);
+      expect((await fin1.post(`/api/v1/approvals/${req}/act`, { action: 'approve' })).statusCode).toBe(200);
+    } finally { await ownerQuery(`DELETE FROM user_roles WHERE user_id=$1 AND role_key='finance_manager'`, [T.users.manager!.id]); }
+  });
+
   let claimId = ''; let batchId = '';
   it('requires manager then finance approval; colleagues cannot see the claim', async () => {
     claimId = await newClaim(emp, 'PPE and travel — Nov');

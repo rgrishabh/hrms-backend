@@ -60,6 +60,31 @@ describe('performance', () => {
   });
 });
 
+describe('performance: no one sees or settles their own rating early', () => {
+  it('HR does not see their own manager rating in the all-staff list before finalization', async () => {
+    await ownerQuery(`UPDATE performance_reviews SET manager_rating=2, status='manager_submitted' WHERE tenant_id=$1 AND cycle_id=$2 AND employee_id=$3`, [T.id, cycleId, T.users.hr!.employeeId]);
+    const items = (await hr.get(`/api/v1/performance/reviews?cycleId=${cycleId}&scope=all`)).json().items as { employee_id: string; manager_rating: number | null }[];
+    expect(items.find((r) => r.employee_id === T.users.hr!.employeeId)!.manager_rating).toBeNull();
+    expect(items.find((r) => r.employee_id === empId)!.manager_rating).toBe(3); // others' ratings remain visible to HR
+    const [{ m }] = (await ownerQuery<{ m: { rating: number | null } }>(`SELECT change_metadata AS m FROM audit_logs WHERE tenant_id=$1 AND action='performance.review_manager' ORDER BY created_at DESC LIMIT 1`, [T.id])) as [{ m: { rating: number | null } }];
+    expect(m.rating).toBeNull(); // ratings before finalization are not in the audit log
+  });
+
+  it('the reviewing manager cannot also finalize, even with HR rights', async () => {
+    const id = (await other.get(`/api/v1/performance/reviews?cycleId=${cycleId}&scope=mine`)).json().items[0].id as string;
+    await ownerQuery(`UPDATE employees SET reporting_manager_id=$2 WHERE id=$1`, [T.users.other!.employeeId, T.users.manager!.employeeId]);
+    await ownerQuery(`UPDATE performance_reviews SET reviewer_id=$2, manager_rating=4, status='manager_submitted' WHERE id=$1`, [id, T.users.manager!.employeeId]);
+    await ownerQuery(`INSERT INTO user_roles (user_id, tenant_id, role_key) VALUES ($1,$2,'hr_admin')`, [T.users.manager!.id, T.id]);
+    try {
+      const v = async (c: Client) => (await c.get(`/api/v1/performance/reviews/${id}`)).json().version as number;
+      const r = await mgr.post(`/api/v1/performance/reviews/${id}/finalize`, { rating: 4, expectedVersion: await v(mgr) });
+      expect(r.statusCode).toBe(403);
+      expect(r.json().error.message).toMatch(/different person/);
+      expect((await hr.post(`/api/v1/performance/reviews/${id}/finalize`, { rating: 4, expectedVersion: await v(hr) })).statusCode).toBe(200);
+    } finally { await ownerQuery(`DELETE FROM user_roles WHERE user_id=$1 AND role_key='hr_admin'`, [T.users.manager!.id]); }
+  });
+});
+
 describe('assets', () => {
   let assetId: string;
   it('register, issue with acknowledgement, calibration gate, return, history', async () => {

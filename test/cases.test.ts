@@ -83,6 +83,33 @@ describe('POSH', () => {
   });
 });
 
+describe('confidentiality of who filed and who handles', () => {
+  it('audit history never names the complainant or their address; handlers stay accountable', async () => {
+    const rows = await ownerQuery<{ action: string; actor_id: string | null; ip: string | null; m: { actor?: string; role?: string } }>(
+      `SELECT action, actor_id, ip, change_metadata AS m FROM audit_logs WHERE tenant_id=$1 AND target_id=$2 ORDER BY created_at`, [T.id, poshId]);
+    const byComplainant = rows.filter((r) => r.action === 'cases.posh_filed' || r.m.role === 'complainant');
+    expect(byComplainant.length).toBeGreaterThan(0);
+    for (const r of byComplainant) expect(r).toMatchObject({ actor_id: null, ip: null, m: { actor: 'complainant' } });
+    expect(rows.some((r) => r.action === 'cases.viewed' && r.m.role === 'handler' && r.actor_id !== null)).toBe(true);
+    const audit = (await admin.get('/api/v1/tenant/audit?action=cases.')).json();
+    expect(JSON.stringify(audit)).not.toContain(T.users.employee!.email.split('@')[0]);
+  });
+
+  it('nobody adds themselves to the Internal Committee; every change is recorded and announced to members', async () => {
+    const current = (await admin.get('/api/v1/cases/committee')).json().members.map((m: { user_id: string; role: string }) => ({ userId: m.user_id, role: m.role }));
+    const external = [{ name: 'A. Sharma', organization: 'Women Rights NGO, Pune', since: '2026-01-01' }];
+    const self = await admin.put('/api/v1/cases/committee', { members: [...current, { userId: T.users.admin!.id, role: 'member' }], external });
+    expect(self.statusCode).toBe(403);
+    expect((await hr.put('/api/v1/cases/committee', { members: [...current, { userId: T.users.admin!.id, role: 'member' }], external })).statusCode).toBe(200);
+    const [a] = await ownerQuery<{ m: { added: string[]; removed: string[] } }>(`SELECT change_metadata AS m FROM audit_logs WHERE tenant_id=$1 AND action='posh.committee_updated' ORDER BY created_at DESC LIMIT 1`, [T.id]);
+    expect(a!.m).toMatchObject({ added: [T.users.admin!.id], removed: [] });
+    const n = await ownerQuery<{ body: string }>(`SELECT body FROM notifications WHERE tenant_id=$1 AND user_id=$2 AND kind='cases.committee'`, [T.id, T.users.it!.id]);
+    expect(n.at(-1)!.body).toMatch(/^Added: /);
+    // restore (by another administrator; removing yourself is allowed)
+    expect((await hr.put('/api/v1/cases/committee', { members: current, external })).statusCode).toBe(200);
+  });
+});
+
 describe('grievances', () => {
   it('anonymous grievances reach HR; assignment, complainant comments, resolve, reopen, withdraw', async () => {
     const r = await emp.post('/api/v1/cases', { kind: 'grievance', category: 'safety', description: 'Spill kits in the solvent store are empty and nobody refills them.', anonymous: true });

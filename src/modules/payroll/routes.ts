@@ -126,7 +126,8 @@ export async function payrollRoutes(app: FastifyInstance) {
         [a.tenantId, id, b.effectiveFrom, JSON.stringify(b.amounts), b.annualCtc, b.reason, a.user.userId])).rows[0]!.id;
       // No figures in the summary: it goes into notifications and email.
       await createApprovalRequest(db, a.tenantId, { entityType: 'salary_change', entityId: sid, requesterId: a.user.userId,
-        summary: `${e.name}: salary effective ${b.effectiveFrom} — ${b.reason}`, steps: [{ kind: 'permission', permission: 'payroll.approve' }] });
+        summary: `${e.name}: salary effective ${b.effectiveFrom} — ${b.reason}`, steps: [{ kind: 'permission', permission: 'payroll.approve' }],
+        excludeUserIds: [e.user_id] }); // nobody approves their own salary
       await audit(db, { ...a.auditBase, action: 'payroll.salary_proposed', category: 'data', targetType: 'employee', targetId: id, metadata: { salaryId: sid, effectiveFrom: b.effectiveFrom, components: Object.keys(b.amounts) } });
       reply.code(201); return { id: sid };
     });

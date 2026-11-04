@@ -102,6 +102,19 @@ describe('upload, list and download', () => {
     expect((await emp.get(`/api/v1/documents/${note.json().id}/download`)).statusCode).toBe(404);
   });
 
+  it('only users cleared for restricted documents can change a restricted category', async () => {
+    const [u] = await ownerQuery<{ id: string }>(`INSERT INTO users (tenant_id, email, display_name, password_hash) SELECT tenant_id, $2, 'HR Exec', password_hash FROM users WHERE id=$1 RETURNING id`,
+      [T.users.hr!.id, `hrexec@${T.host}`]);
+    await ownerQuery(`INSERT INTO user_roles (user_id, tenant_id, role_key) VALUES ($1,$2,'hr_executive')`, [u!.id, T.id]);
+    const exec = await Client.login(app, T.host, `hrexec@${T.host}`);
+    const body = { code: 'MEDICAL', name: 'Medical certificate', employeeUpload: true };
+    expect((await exec.put(`/api/v1/documents/categories/${cats.MEDICAL}`, { ...body, restricted: false })).statusCode).toBe(403);
+    expect((await exec.post('/api/v1/documents/categories', { code: 'IDPROOF', name: 'Identity proof', restricted: false })).statusCode).toBe(201);
+    expect((await exec.put(`/api/v1/documents/categories/${(await exec.get('/api/v1/documents/categories')).json().items.find((c: { code: string }) => c.code === 'IDPROOF').id}`,
+      { code: 'IDPROOF', name: 'Identity proof', restricted: true })).statusCode).toBe(403);
+    expect((await hr.put(`/api/v1/documents/categories/${cats.MEDICAL}`, { ...body, restricted: true })).statusCode).toBe(200);
+  });
+
   it('employees can only upload to permitted categories, for themselves', async () => {
     expect((await upload(emp, { categoryId: cats.CONTRACT!, title: 'Fake contract', employeeId: T.users.employee!.employeeId! }, { name: 'c.pdf', content: PDF })).statusCode).toBe(403);
     expect((await upload(emp, { categoryId: cats.MEDICAL!, title: 'For colleague', employeeId: T.users.other!.employeeId! }, { name: 'c.pdf', content: PDF })).statusCode).toBe(403);

@@ -264,7 +264,8 @@ export async function lifecycleRoutes(app: FastifyInstance) {
         [a.tenantId, id, b.recommendation, b.recommendation === 'extend' ? b.extendMonths : null, b.comments, a.user.userId]);
       const steps: StepSpec[] = [{ kind: 'permission', permission: 'lifecycle.manage' }];
       const approvalId = await createApprovalRequest(db, a.tenantId, { entityType: 'probation_review', entityId: id, requesterId: a.user.userId,
-        summary: `${emp.name}: ${b.recommendation}${b.recommendation === 'extend' ? ` by ${b.extendMonths} month(s)` : ''} (probation ends ${r.probation_end})`, steps });
+        summary: `${emp.name}: ${b.recommendation}${b.recommendation === 'extend' ? ` by ${b.extendMonths} month(s)` : ''} (probation ends ${r.probation_end})`, steps,
+        excludeUserIds: [emp.user_id] });
       await audit(db, { ...a.auditBase, action: 'lifecycle.probation_submitted', targetType: 'probation_review', targetId: id, metadata: { recommendation: b.recommendation, approvalId } });
       return { ok: true };
     });
@@ -290,7 +291,8 @@ export async function lifecycleRoutes(app: FastifyInstance) {
     if (p.kind === 'resignation' && emp.manager_user_id && emp.manager_user_id !== a.user.userId) steps.push({ kind: 'user', userId: emp.manager_user_id });
     steps.push({ kind: 'permission', permission: 'lifecycle.manage' });
     const approvalId = await createApprovalRequest(db, a.tenantId, { entityType: 'separation', entityId: id, requesterId: a.user.userId,
-      summary: `${emp.name}: ${p.kind.replace('_', ' ')}, last day ${p.requestedLwd}${n.shortfall ? ` (notice short by ${n.shortfall} days)` : ''}`, steps });
+      summary: `${emp.name}: ${p.kind.replace('_', ' ')}, last day ${p.requestedLwd}${n.shortfall ? ` (notice short by ${n.shortfall} days)` : ''}`, steps,
+      excludeUserIds: [emp.user_id] }); // nobody approves their own separation
     await audit(db, { ...a.auditBase, action: 'lifecycle.separation_started', targetType: 'separation', targetId: id, metadata: { kind: p.kind, requestedLwd: p.requestedLwd, shortfall: n.shortfall, approvalId } });
     return { id, shortfallDays: n.shortfall, noticeDaysRequired: n.required };
   }

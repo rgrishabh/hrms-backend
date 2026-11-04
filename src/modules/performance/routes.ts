@@ -137,11 +137,11 @@ export async function performanceRoutes(app: FastifyInstance) {
       await requireFeature(db, a.tenantId, F);
       if (q.scope === 'all' && !a.has('performance.manage')) throw forbidden();
       const rows = (await db.query(`SELECT r.id, r.employee_id, e.employee_code, trim(e.first_name||' '||coalesce(e.last_name,'')) AS employee_name, e.designation, r.status,
-          trim(m.first_name||' '||coalesce(m.last_name,'')) AS reviewer_name, r.self_rating, r.manager_rating, r.final_rating
+          trim(m.first_name||' '||coalesce(m.last_name,'')) AS reviewer_name, r.self_rating, r.manager_rating, r.final_rating, e.user_id = $4 AS own
         FROM performance_reviews r JOIN employees e ON e.tenant_id=r.tenant_id AND e.id=r.employee_id LEFT JOIN employees m ON m.tenant_id=r.tenant_id AND m.id=r.reviewer_id
         WHERE r.tenant_id=$1 AND r.cycle_id=$2 AND (($3='mine' AND e.user_id=$4) OR ($3='team' AND m.user_id=$4) OR $3='all') ORDER BY e.first_name`, [a.tenantId, q.cycleId, q.scope, a.user.userId])).rows;
-      // The employee sees ratings only once finalized.
-      return { items: rows.map((r) => (q.scope === 'mine' && !['finalized', 'acknowledged'].includes(r.status as string) ? { ...r, manager_rating: null, final_rating: null } : r)) };
+      // Nobody sees the manager or final rating of their own review before it is finalized — in any list, HR included.
+      return { items: rows.map(({ own, ...r }) => (own && !['finalized', 'acknowledged'].includes(r.status as string) ? { ...r, manager_rating: null, final_rating: null } : r)) };
     });
   });
   app.get('/reviews/:id', async (req) => {
@@ -181,6 +181,7 @@ export async function performanceRoutes(app: FastifyInstance) {
           [a.tenantId, p.id, body.rating, body.comments, JSON.stringify(body.goalRatings ?? {})]);
       } else if (p.step === 'finalize') {
         need(a.has('performance.manage') && role !== 'employee', 'HR finalizes ratings (not on your own review)');
+        need(role !== 'manager', 'A different person finalizes the rating you wrote as the manager');
         if (r.status !== 'manager_submitted') throw conflict('The manager review is not submitted yet');
         if (!body.rating) throw badRequest('Give the final rating');
         await db.query(`UPDATE performance_reviews SET final_rating=$3, final_comments=$4, finalized_by=$5, status='finalized', version=version+1 WHERE tenant_id=$1 AND id=$2`, [a.tenantId, p.id, body.rating, body.comments ?? null, a.user.userId]);
@@ -190,7 +191,7 @@ export async function performanceRoutes(app: FastifyInstance) {
         if (r.status !== 'finalized') throw conflict('The review is not finalized');
         await db.query(`UPDATE performance_reviews SET status='acknowledged', employee_ack_at=now(), employee_ack_note=$3, version=version+1 WHERE tenant_id=$1 AND id=$2`, [a.tenantId, p.id, body.comments ?? null]);
       }
-      await audit(db, { ...a.auditBase, action: `performance.review_${p.step}`, category: 'data', targetType: 'performance_review', targetId: p.id, metadata: { rating: body.rating ?? null } });
+      await audit(db, { ...a.auditBase, action: `performance.review_${p.step}`, category: 'data', targetType: 'performance_review', targetId: p.id, metadata: { rating: p.step === 'finalize' ? body.rating ?? null : null } }); // ratings before finalization stay out of the audit log
       return { ok: true };
     });
   });
