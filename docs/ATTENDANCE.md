@@ -73,6 +73,8 @@ Not built: employee-initiated swap requests with approval.
 
 ## Corrections (regularization)
 
+An approved correction takes the place of what it corrects during calculation: a corrected in replaces the day's first punch if that was an in, a corrected out replaces the last punch if that was an out. A correction filling a gap removes nothing, and the latest approved correction of a direction wins. Source events are never changed.
+
 An employee requests in and/or out times for a date within `attendance.regularization_window_days` (default 7). It can't be a future date or a locked date, and times must fall on or next to the work date. Routing: the employee's reporting manager (if they have a login), otherwise anyone with `attendance.approve`. On approval, new `regularization` events are added (original punches are kept) and the date is recalculated.
 
 ## Payroll lock

@@ -30,8 +30,12 @@ import { zonedToInstant, addDays, minutesBetween } from './time.js';
  *    the other half must be worked, exactly as with half-day leave. Full-day leave
  *    takes precedence (`duty_on_leave`). Field duty on a weekly off / holiday does
  *    not change the day: work there is overtime as usual.
+ *  - (v4) An approved correction replaces what it corrects without touching the source event: a corrected in takes the
+ *    place of the day's first punch if that was an in, a corrected out of the last punch if that was an out. Punches of
+ *    unknown direction count as the direction pairing would give them. A correction filling a gap removes nothing, and
+ *    the latest approved correction of a direction wins.
  */
-export const CALC_VERSION = 3;
+export const CALC_VERSION = 4;
 
 export interface ShiftPolicy {
   id: string;
@@ -46,7 +50,11 @@ export interface ShiftPolicy {
   overtimeAfterMinutes: number | null;
 }
 
-export interface Punch { id: string; time: Date; direction: 'in' | 'out' | 'unknown' }
+export interface Punch {
+  id: string; time: Date; direction: 'in' | 'out' | 'unknown';
+  /** An approved correction, and when it was recorded (later ones win). */
+  source?: 'regularization'; seq?: number;
+}
 
 export interface DayInput {
   workDate: string;
@@ -92,6 +100,20 @@ export function shiftWindow(workDate: string, tz: string, shift: ShiftPolicy | n
   return { start: new Date(shiftStart.getTime() - 4 * 3600e3), end: new Date(shiftStart.getTime() + 20 * 3600e3), shiftStart, shiftEnd };
 }
 
+/** The punches of a day with approved corrections in place of what they correct (see v4 above). */
+function applyCorrections(punches: Punch[]): Punch[] {
+  const corrections = punches.filter((p) => p.source === 'regularization');
+  if (!corrections.length) return punches;
+  const latest = (dir: 'in' | 'out') => corrections.filter((c) => c.direction === dir).sort((a, b) => (b.seq ?? 0) - (a.seq ?? 0))[0];
+  const correctedIn = latest('in'); const correctedOut = latest('out');
+  const originals = punches.filter((p) => p.source !== 'regularization');
+  if (correctedIn && originals[0] && originals[0].direction !== 'out') originals.shift();
+  const last = originals[originals.length - 1];
+  if (correctedOut && last && (last.direction === 'out' || (last.direction === 'unknown' && originals.length % 2 === 0))) originals.pop();
+  return [...originals, ...(correctedIn ? [correctedIn] : []), ...(correctedOut ? [correctedOut] : [])]
+    .sort((a, b) => a.time.getTime() - b.time.getTime() || a.id.localeCompare(b.id));
+}
+
 export function calculateDay(input: DayInput): DayResult {
   const { workDate, shift, dayType } = input;
   const base: DayResult = {
@@ -103,9 +125,9 @@ export function calculateDay(input: DayInput): DayResult {
     return { ...base, status: 'not_joined' };
   }
   const win = shiftWindow(workDate, input.timezone, shift);
-  const inWindow = input.punches
+  const inWindow = applyCorrections(input.punches
     .filter((p) => p.time >= win.start && p.time < win.end)
-    .sort((a, b) => a.time.getTime() - b.time.getTime() || a.id.localeCompare(b.id));
+    .sort((a, b) => a.time.getTime() - b.time.getTime() || a.id.localeCompare(b.id)));
 
   // Drop accidental repeats.
   const kept: Punch[] = [];

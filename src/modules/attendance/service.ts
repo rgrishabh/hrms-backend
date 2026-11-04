@@ -87,10 +87,10 @@ export async function recalculateRange(db: Db, tenantId: string, employeeId: str
   // Events span from (from − 1 day) to (to + 2 days) to cover overnight windows.
   const evFrom = zonedToInstant(addDays(from, -1), '00:00', tz);
   const evTo = zonedToInstant(addDays(to, 2), '00:00', tz);
-  const punches: Punch[] = (await db.query<{ id: string; event_time: Date; direction: Punch['direction'] }>(
-    `SELECT id, event_time, direction FROM attendance_events WHERE tenant_id=$1 AND employee_id=$2 AND status='accepted'
+  const punches: Punch[] = (await db.query<{ id: string; event_time: Date; direction: Punch['direction']; source: string; received_at: Date }>(
+    `SELECT id, event_time, direction, source, received_at FROM attendance_events WHERE tenant_id=$1 AND employee_id=$2 AND status='accepted'
        AND event_time >= $3 AND event_time < $4 ORDER BY event_time`, [tenantId, employeeId, evFrom, evTo])).rows
-    .map((r) => ({ id: r.id, time: r.event_time, direction: r.direction }));
+    .map((r) => ({ id: r.id, time: r.event_time, direction: r.direction, ...(r.source === 'regularization' ? { source: 'regularization' as const, seq: r.received_at.getTime() } : {}) }));
   const locked = await lockedDates(db, tenantId, from, to);
   const leaves = await approvedLeaveByDate(db, tenantId, employeeId, from, to);
   const duties = await approvedDutyByDate(db, tenantId, employeeId, from, to);
