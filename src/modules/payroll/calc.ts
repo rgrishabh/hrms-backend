@@ -7,7 +7,7 @@ import { z } from 'zod';
  * is missing the deduction is NOT guessed — a warning is raised instead.
  * CALC_VERSION changes whenever results for the same inputs would change.
  */
-export const CALC_VERSION = 1;
+export const CALC_VERSION = 2;
 
 const pct = z.number().min(0).max(100);
 const money = z.number().min(0).max(1e9);
