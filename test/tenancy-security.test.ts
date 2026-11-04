@@ -133,6 +133,40 @@ describe('authentication & session security', () => {
     expect((await admin.patch(`/api/v1/tenant/users/${T.users.admin!.id}`, { roles: ['employee'] })).statusCode).toBe(409);
   });
 
+  it('user management cannot be used to escalate: only an administrator grants roles beyond their own', async () => {
+    const T = await createTenant();
+    const it = T.users.it!; // IT administrator: has users.manage, not HR or payroll permissions
+    const itAdmin = await Client.login(app, T.host, it.email);
+    const user = (email: string, roles: string[]) => itAdmin.post('/api/v1/tenant/users', { email, displayName: 'New Person', initialPassword: 'Initial-Password-123', roles });
+    // not to themselves, not to a new account, not by removing someone else's
+    for (const roles of [['it_admin', 'hr_admin'], ['it_admin', 'tenant_admin'], ['it_admin', 'payroll_manager']])
+      expect((await itAdmin.patch(`/api/v1/tenant/users/${it!.id}`, { roles })).statusCode).toBe(403);
+    expect((await user(`x1@${T.host}`, ['hr_admin'])).statusCode).toBe(403);
+    expect((await user(`x2@${T.host}`, ['tenant_admin'])).statusCode).toBe(403);
+    // accounts holding permissions the IT administrator lacks are off limits (disable, MFA reset, role change)
+    for (const body of [{ status: 'disabled' }, { resetMfa: true }, { roles: ['employee'] }])
+      expect((await itAdmin.patch(`/api/v1/tenant/users/${T.users.hr!.id}`, body)).statusCode).toBe(403);
+    expect((await itAdmin.patch(`/api/v1/tenant/users/${T.users.admin!.id}`, { status: 'disabled' })).statusCode).toBe(403);
+    const [{ n }] = (await ownerQuery<{ n: number }>(`SELECT count(*)::int AS n FROM user_roles WHERE user_id=$1`, [it!.id])) as [{ n: number }];
+    expect(n).toBe(1);
+    // ordinary accounts are still theirs to run
+    const ok = await user(`staff@${T.host}`, ['employee']);
+    expect(ok.statusCode).toBe(201);
+    expect((await itAdmin.patch(`/api/v1/tenant/users/${ok.json().id}`, { status: 'disabled' })).statusCode).toBe(200);
+    // an administrator can grant any role
+    const admin = await Client.login(app, T.host, T.users.admin!.email);
+    expect((await admin.patch(`/api/v1/tenant/users/${ok.json().id}`, { roles: ['hr_admin'] })).statusCode).toBe(200);
+  });
+
+  it('an account created by an administrator must change its initial password at first sign-in', async () => {
+    const T = await createTenant();
+    const admin = await Client.login(app, T.host, T.users.admin!.email);
+    const r = await admin.post('/api/v1/tenant/users', { email: `new@${T.host}`, displayName: 'New Person', initialPassword: 'Initial-Password-123', roles: ['employee'] });
+    expect(r.statusCode).toBe(201);
+    const login = await new Client(app, T.host).post('/api/v1/auth/login', { email: `new@${T.host}`, password: 'Initial-Password-123' });
+    expect(login.json().passwordChangeRequired).toBe(true);
+  });
+
   it('never returns password hashes or session tokens in user listings', async () => {
     const admin = await Client.login(app, A.host, A.users.admin!.email);
     const body = (await admin.get('/api/v1/tenant/users')).body;
