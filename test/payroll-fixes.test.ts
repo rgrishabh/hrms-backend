@@ -3,6 +3,7 @@ import type { FastifyInstance } from 'fastify';
 import { makeApp, createTenant, Client, ownerQuery, type TenantFixture } from './helpers.js';
 import { activeRule, activeSalary, approveEntity, compute, createRun, day, itemOf, lineOf, seedComponents } from './payroll-helpers.js';
 import { calculateDay, type DayInput } from '../src/modules/attendance/calc.js';
+import { csvCell } from '../src/core/http/csv.js';
 
 const MODULES = 'default,payroll,payroll.payslips,payroll.statutory';
 let app: FastifyInstance; let T: TenantFixture; let pay: Client; let emp: string;
@@ -268,5 +269,66 @@ describe('F-7 finalize refuses a stale result', () => {
     const id = await createRun(p, W, '2026-05');
     expect((await p.post(`/api/v1/payroll/runs/${id}/reopen`)).statusCode).toBe(409);
     expect((await f.post(`/api/v1/payroll/runs/${id}/reopen`)).statusCode).toBe(403);
+  });
+});
+
+describe('other payroll findings (AUDIT 4.2)', () => {
+  let W: TenantFixture; let p: Client; let f: Client; let e: string;
+  beforeAll(async () => {
+    W = await createTenant();
+    p = await Client.login(app, W.host, W.users.payroll!.email);
+    f = await finance(W);
+    e = W.users.employee!.employeeId!;
+    await seedComponents(W);
+    await activeSalary(W, e, '2024-01-01', { BASIC: 30000 });
+  });
+
+  it('salary approval refuses a date a finalized run came to cover after the proposal', async () => {
+    const o = W.users.other!.employeeId!;
+    await activeSalary(W, o, '2024-01-01', { BASIC: 30000 });
+    const sal = await p.post(`/api/v1/payroll/employees/${o}/salaries`, { effectiveFrom: '2026-01-15', amounts: { BASIC: 40000 }, reason: 'Proposed before the run closed' });
+    expect(sal.statusCode, sal.body).toBe(201);
+    expect((await p.post('/api/v1/attendance/locks', { periodStart: '2026-01-01', periodEnd: '2026-01-31' })).statusCode).toBe(201);
+    const id = await createRun(p, W, '2026-01');
+    await compute(p, id);
+    await toApproved(p, f, id);
+    expect((await p.post(`/api/v1/payroll/runs/${id}/finalize`)).statusCode).toBe(200);
+    const late = await approveEntity(f, sal.json().id);
+    expect(late.statusCode).toBe(409);
+    expect(late.json().error.message).toMatch(/finalized/);
+  });
+
+  it('whoever computed or adjusted a run cannot approve it, not only the submitter', async () => {
+    const [row] = await ownerQuery<{ id: string }>(`SELECT id FROM users WHERE email=$1`, [W.users.hr!.email]);
+    await ownerQuery(`INSERT INTO user_roles (user_id, tenant_id, role_key) VALUES ($1,$2,'payroll_manager'),($1,$2,'finance_manager') ON CONFLICT DO NOTHING`, [row!.id, W.id]);
+    const both = await Client.login(app, W.host, W.users.hr!.email);
+    const id = await createRun(p, W, '2026-06');
+    expect((await both.post(`/api/v1/payroll/runs/${id}/adjustments`, { employeeId: e, kind: 'earning', label: 'Hand-keyed bonus', amount: 100 })).statusCode).toBe(201);
+    await compute(both, id);
+    await p.post(`/api/v1/payroll/runs/${id}/acknowledge-warnings`, { note: 'Fixture warnings' });
+    expect((await p.post(`/api/v1/payroll/runs/${id}/submit`)).statusCode).toBe(200);
+    const inbox = (await both.get('/api/v1/approvals/inbox')).json().items;
+    expect(inbox.some((x: { entity_id: string }) => x.entity_id === id)).toBe(false);
+    expect((await approveEntity(f, id)).statusCode).toBe(200);
+  });
+
+  it('PUT statutory keeps what it was not sent; null clears', async () => {
+    const put = (b: unknown) => p.put(`/api/v1/payroll/employees/${e}/statutory`, b);
+    expect((await put({ uan: '100200300400', esiIpNumber: '1234567890', pfMemberId: 'PF1', ptState: 'Goa', taxRegime: 'old', pfExcluded: true })).statusCode).toBe(200);
+    expect((await put({ taxRegime: 'new' })).statusCode).toBe(200);
+    let s = (await p.get(`/api/v1/payroll/employees/${e}/statutory`)).json();
+    expect(s).toMatchObject({ uan: '100200300400', esi_ip_number: '1234567890', pf_member_id: 'PF1', pt_state: 'Goa', tax_regime: 'new', pf_excluded: true });
+    expect((await put({ uan: null })).statusCode).toBe(200);
+    s = (await p.get(`/api/v1/payroll/employees/${e}/statutory`)).json();
+    expect(s.uan).toBeNull();
+    expect(s.esi_ip_number).toBe('1234567890');
+  });
+
+  it('csv keeps negative numbers numeric and still neutralizes formulas', () => {
+    expect(csvCell('-1250.50')).toBe('-1250.50');
+    expect(csvCell(-3)).toBe('-3');
+    expect(csvCell('-1+1')).toBe("'-1+1");
+    expect(csvCell('=SUM(A1)')).toBe("'=SUM(A1)");
+    expect(csvCell('+919999')).toBe("'+919999");
   });
 });

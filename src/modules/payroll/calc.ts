@@ -7,7 +7,7 @@ import { z } from 'zod';
  * is missing the deduction is NOT guessed — a warning is raised instead.
  * CALC_VERSION changes whenever results for the same inputs would change.
  */
-export const CALC_VERSION = 5;
+export const CALC_VERSION = 6;
 
 const pct = z.number().min(0).max(100);
 const money = z.number().min(0).max(1e9);
@@ -174,7 +174,7 @@ export function calculate(i: CalcInput): CalcResult {
     if (pt > 0) lines.push({ code: 'PT', name: `Professional tax (${i.statutory.ptState})`, kind: 'deduction', amount: pt });
   }
   // LWF (state, specific months)
-  if (!i.supplementary && i.rules.lwf && i.rules.lwf.months.includes(i.month)) {
+  if (!i.supplementary && gross.gt(0) && i.rules.lwf && i.rules.lwf.months.includes(i.month)) {
     if (i.rules.lwf.employee > 0) lines.push({ code: 'LWF_EE', name: 'Labour welfare fund (employee)', kind: 'deduction', amount: i.rules.lwf.employee });
     if (i.rules.lwf.employer > 0) lines.push({ code: 'LWF_ER', name: 'Labour welfare fund (employer)', kind: 'employer', amount: i.rules.lwf.employer });
   }

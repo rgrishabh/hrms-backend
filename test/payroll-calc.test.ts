@@ -143,3 +143,13 @@ describe('F-6 mid-month salary segments', () => {
     expect(seg).toEqual(plain);
   });
 });
+
+describe('LWF with no pay', () => {
+  it('is not charged when nothing was earned', () => {
+    const lwf = { employee: 12, employer: 36, months: [11] };
+    const none = calculate(base({ paidDays: 0, amounts: { BASIC: 20000 }, components: [comp('BASIC')], rules: { lwf }, expect: [] }));
+    expect(none.lines.filter((l) => l.code.startsWith('LWF'))).toEqual([]);
+    expect(none.net).toBe(0);
+    expect(line(calculate(base({ amounts: { BASIC: 20000 }, components: [comp('BASIC')], rules: { lwf }, expect: [] })), 'LWF_EE')).toBe(12);
+  });
+});

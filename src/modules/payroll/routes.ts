@@ -33,6 +33,13 @@ async function loadRun(db: Db, a: TenantActor, id: string, lock = false) {
   return r;
 }
 
+/** A finalized or paid run has this employee in a month reaching `date`: that pay can no longer change. */
+async function finalizedRunCovers(db: Db, tenantId: string, employeeId: string, date: string) {
+  return ((await db.query(`SELECT 1 FROM payroll_runs r JOIN payroll_items i ON i.tenant_id=r.tenant_id AND i.run_id=r.id
+    WHERE r.tenant_id=$1 AND i.employee_id=$2 AND r.status IN ('finalized','paid') AND (r.period||'-01')::date + interval '1 month' - interval '1 day' >= $3::date LIMIT 1`, [tenantId, employeeId, date])).rowCount ?? 0) > 0;
+}
+const COVERED_BY_FINALIZED = 'A finalized payroll already covers that date; use an adjustment (arrears) in the next run instead';
+
 export async function payrollRoutes(app: FastifyInstance) {
   gateFeatures(app, 'payroll');
   const cipher = app.deps.cipher;
@@ -43,6 +50,7 @@ export async function payrollRoutes(app: FastifyInstance) {
     async onApproved(db, tenantId, id) {
       const s = (await db.query<{ employee_id: string; effective_from: string; status: string }>(`SELECT employee_id, effective_from::text, status FROM employee_salaries WHERE tenant_id=$1 AND id=$2 FOR UPDATE`, [tenantId, id])).rows[0];
       if (!s || s.status !== 'pending') throw conflict('Salary change is no longer pending');
+      if (await finalizedRunCovers(db, tenantId, s.employee_id, s.effective_from)) throw conflict(COVERED_BY_FINALIZED);
       await db.query(`UPDATE employee_salaries SET status='superseded' WHERE tenant_id=$1 AND employee_id=$2 AND status='active' AND effective_from=$3`, [tenantId, s.employee_id, s.effective_from]);
       await db.query(`UPDATE employee_salaries SET status='active', approved_at=now() WHERE tenant_id=$1 AND id=$2`, [tenantId, id]);
     },
@@ -124,9 +132,7 @@ export async function payrollRoutes(app: FastifyInstance) {
       const unknown = Object.keys(b.amounts).filter((k) => !comps.some((c) => c.code === k));
       if (unknown.length) throw badRequest(`Unknown or inactive components: ${unknown.join(', ')}`);
       for (const c of comps) if (c.calc === 'percent' && b.amounts[c.code]! > 100) throw badRequest(`${c.code} is a percentage (0–100)`);
-      const locked = (await db.query(`SELECT 1 FROM payroll_runs r JOIN payroll_items i ON i.tenant_id=r.tenant_id AND i.run_id=r.id
-        WHERE r.tenant_id=$1 AND i.employee_id=$2 AND r.status IN ('finalized','paid') AND (r.period||'-01')::date + interval '1 month' - interval '1 day' >= $3::date`, [a.tenantId, id, b.effectiveFrom])).rowCount;
-      if (locked) throw conflict('A finalized payroll already covers that date; use an adjustment (arrears) in the next run instead');
+      if (await finalizedRunCovers(db, a.tenantId, id, b.effectiveFrom)) throw conflict(COVERED_BY_FINALIZED);
       const sid = (await db.query<{ id: string }>(`INSERT INTO employee_salaries (tenant_id, employee_id, effective_from, amounts, annual_ctc, reason, created_by) VALUES ($1,$2,$3,$4,$5,$6,$7) RETURNING id`,
         [a.tenantId, id, b.effectiveFrom, JSON.stringify(b.amounts), b.annualCtc, b.reason, a.user.userId])).rows[0]!.id;
       // No figures in the summary: it goes into notifications and email.
@@ -151,20 +157,28 @@ export async function payrollRoutes(app: FastifyInstance) {
   app.put('/employees/:id/statutory', async (req) => {
     const a = tenantActor(req, 'payroll.manage');
     const { id } = z.object({ id: Uuid }).parse(req.params);
-    const b = z.object({ uan: z.string().regex(/^[0-9]{12}$/).nullable().default(null), pfMemberId: Text(40), pfExcluded: z.boolean().default(false),
-      esiIpNumber: z.string().regex(/^[0-9]{10}$/).nullable().default(null), pan: z.string().trim().toUpperCase().regex(/^[A-Z]{5}[0-9]{4}[A-Z]$/, 'PAN format: AAAAA9999A').optional(),
-      taxRegime: z.enum(['new', 'old']).default('new'), ptState: Text(60) }).parse(req.body);
+    // Only what is sent changes: an omitted field keeps its value, null clears it.
+    const b = z.object({ uan: z.string().regex(/^[0-9]{12}$/).nullable().optional(), pfMemberId: z.string().trim().max(40).nullable().optional(), pfExcluded: z.boolean().optional(),
+      esiIpNumber: z.string().regex(/^[0-9]{10}$/).nullable().optional(), pan: z.string().trim().toUpperCase().regex(/^[A-Z]{5}[0-9]{4}[A-Z]$/, 'PAN format: AAAAA9999A').optional(),
+      taxRegime: z.enum(['new', 'old']).optional(), ptState: z.string().trim().max(60).nullable().optional() }).parse(req.body);
     return a.tx(async (db) => {
       await requireFeature(db, a.tenantId, F);
       if (!(await db.query('SELECT 1 FROM employees WHERE tenant_id=$1 AND id=$2', [a.tenantId, id])).rowCount) throw notFound('Employee not found');
+      const cur = (await db.query<{ uan: string | null; pf_member_id: string | null; pf_excluded: boolean; esi_ip_number: string | null; tax_regime: string; pt_state: string | null }>(
+        'SELECT uan, pf_member_id, pf_excluded, esi_ip_number, tax_regime, pt_state FROM employee_statutory WHERE tenant_id=$1 AND employee_id=$2 FOR UPDATE', [a.tenantId, id])).rows[0];
+      const uan = b.uan === undefined ? cur?.uan ?? null : b.uan; const pfExcluded = b.pfExcluded ?? cur?.pf_excluded ?? false;
+      const pfMemberId = b.pfMemberId === undefined ? cur?.pf_member_id ?? null : b.pfMemberId || null;
+      const esiIpNumber = b.esiIpNumber === undefined ? cur?.esi_ip_number ?? null : b.esiIpNumber;
+      const taxRegime = b.taxRegime ?? cur?.tax_regime ?? 'new';
+      const ptState = b.ptState === undefined ? cur?.pt_state ?? null : b.ptState || null;
       await db.query(`INSERT INTO employee_statutory (tenant_id, employee_id, uan, pf_member_id, pf_excluded, esi_ip_number, pan_enc, pan_last4, tax_regime, pt_state)
         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
         ON CONFLICT (tenant_id, employee_id) DO UPDATE SET uan=EXCLUDED.uan, pf_member_id=EXCLUDED.pf_member_id, pf_excluded=EXCLUDED.pf_excluded, esi_ip_number=EXCLUDED.esi_ip_number,
           pan_enc=coalesce(EXCLUDED.pan_enc, employee_statutory.pan_enc), pan_last4=coalesce(EXCLUDED.pan_last4, employee_statutory.pan_last4),
           tax_regime=EXCLUDED.tax_regime, pt_state=EXCLUDED.pt_state, updated_at=now()`,
-        [a.tenantId, id, b.uan, b.pfMemberId, b.pfExcluded, b.esiIpNumber, b.pan ? cipher.encrypt(b.pan) : null, b.pan ? b.pan.slice(-5, -1) : null, b.taxRegime, b.ptState]);
+        [a.tenantId, id, uan, pfMemberId, pfExcluded, esiIpNumber, b.pan ? cipher.encrypt(b.pan) : null, b.pan ? b.pan.slice(-5, -1) : null, taxRegime, ptState]);
       await audit(db, { ...a.auditBase, action: 'payroll.statutory_details_updated', category: 'data', targetType: 'employee', targetId: id,
-        metadata: { uanSet: !!b.uan, panChanged: !!b.pan, pfExcluded: b.pfExcluded, taxRegime: b.taxRegime, ptState: b.ptState } });
+        metadata: { uanSet: !!uan, panChanged: !!b.pan, pfExcluded, taxRegime, ptState } });
       return { ok: true };
     });
   });
@@ -286,6 +300,7 @@ export async function payrollRoutes(app: FastifyInstance) {
       const r = await loadRun(db, a, id, true);
       if (!['draft', 'computed'].includes(r.status)) throw conflict(`A ${r.status} run cannot be recomputed`);
       const res = await computeRun(db, a.tenantId, id);
+      await db.query('UPDATE payroll_runs SET computed_by=$3 WHERE tenant_id=$1 AND id=$2', [a.tenantId, id, a.user.userId]);
       await audit(db, { ...a.auditBase, action: 'payroll.run_computed', targetType: 'payroll_run', targetId: id, metadata: { ...res.totals, warnings: res.warnings } });
       return res;
     });
@@ -373,8 +388,11 @@ export async function payrollRoutes(app: FastifyInstance) {
       if (r.status !== 'computed') throw conflict('Compute the run before submitting');
       if (r.warnings > 0 && !r.warnings_acknowledged) throw conflict(`The run has ${r.warnings} warning(s); review and acknowledge them first`);
       await db.query(`UPDATE payroll_runs SET status='pending' WHERE tenant_id=$1 AND id=$2`, [a.tenantId, id]);
+      // Maker-checker covers everyone who shaped the figures, not only the person pressing submit.
+      const makers = (await db.query<{ user_id: string | null }>(`SELECT computed_by AS user_id FROM payroll_runs WHERE tenant_id=$1 AND id=$2
+        UNION SELECT created_by FROM payroll_adjustments WHERE tenant_id=$1 AND run_id=$2`, [a.tenantId, id])).rows.map((x) => x.user_id);
       await createApprovalRequest(db, a.tenantId, { entityType: 'payroll_run', entityId: id, requesterId: a.user.userId,
-        summary: `Payroll ${r.period}${r.kind === 'fnf' ? ' (F&F)' : ''} — review the register before approving`, steps: [{ kind: 'permission', permission: 'payroll.approve' }] });
+        summary: `Payroll ${r.period}${r.kind === 'fnf' ? ' (F&F)' : ''} — review the register before approving`, steps: [{ kind: 'permission', permission: 'payroll.approve' }], excludeUserIds: makers });
       await audit(db, { ...a.auditBase, action: 'payroll.run_submitted', targetType: 'payroll_run', targetId: id });
       return { ok: true };
     });
