@@ -29,7 +29,7 @@ Every module in the feature registry (34) is built and `available`; none is `pla
 | 20 | Performance, assets, exit | ✅ | Review cycles, weighted goals, self / manager / HR reviews; assets with calibration and exit clearance | 360° feedback, PIPs, asset depreciation ⬜ |
 | 21 | Workflow engine | ✅ | Sequential steps, maker-checker, approval parties with exclusions, comments, history, subject withdrawal; delegation while away and time-based escalation (docs/APPROVALS.md) | Parallel steps ⬜ (amount-based routing lives in the modules, e.g. travel and expenses) |
 | 22 | Notifications & integrations | ✅ | In-app + email (outbox, retries, templates, opt-out, reminders); SMS through the organization's provider with DLT templates (docs/NOTIFICATIONS.md, docs/SMS.md) | Push ⬜ |
-| 23 | Reporting | ✅ | Report registry with team / organization scope, CSV export; saved and scheduled reports delivered in HRMS; department overview (docs/REPORTS.md) | XLSX / PDF export ⬜ |
+| 23 | Reporting | ✅ | Report registry with team / organization scope, CSV and Excel (.xlsx) export, also for the payroll register and policy acknowledgements; saved and scheduled reports delivered in HRMS; department overview (docs/REPORTS.md) | PDF export ⬜ |
 | 24–25 | Data model | ✅ | Implemented for every module above | |
 | 26 | API | ✅ | `/api/v1/...`, zod validation, consistent errors, pagination, rate limiting (docs/API.md) | |
 | 27 | UI/UX | ✅ | Screens for every module; Playwright browser tests in CI against the published backend image | |
@@ -49,7 +49,7 @@ Every module in the feature registry (34) is built and `available`; none is `pla
 3. ~~Custom-role management~~ (done: Settings → Roles).
 4. ~~Rotating shift rosters~~ (done: docs/ATTENDANCE.md → Rotating rosters).
 5. **Travel per diem and mileage.**
-6. **XLSX export** for reports and registers.
+6. ~~XLSX export~~ (done: reports, report snapshots, payroll register, policy acknowledgements).
 7. **Tax declarations, then Form 16 / 24Q / ECR**: only after the compliance register review (INDIAN_PAYROLL_COMPLIANCE.md).
 8. **AWS go-live**: Organizations / Control Tower, first real `plan` / `apply`, RDS restore rehearsal (infra/README.md). Needs explicit approval.
 

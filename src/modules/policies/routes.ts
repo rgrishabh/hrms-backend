@@ -1,4 +1,5 @@
 import type { FastifyInstance, FastifyRequest } from 'fastify';
+import { xlsx, XLSX_TYPE } from '../../core/http/xlsx.js';
 import { z } from 'zod';
 import { createHash } from 'node:crypto';
 import { tenantActor, requireFeature, type TenantActor, gateFeatures } from '../../core/http/context.js';
@@ -349,6 +350,23 @@ export async function policyRoutes(app: FastifyInstance) {
       const { total, rows } = await ackRows(db, a, id, q.status, { pageSize: q.pageSize, offset: offsetOf(q) });
       return paged(rows, total, q);
     });
+  });
+
+  app.get('/versions/:id/acknowledgements.xlsx', async (req, reply) => {
+    const a = tenantActor(req, 'policies.read');
+    const { id } = z.object({ id: Uuid }).parse(req.params);
+    const { book, name } = await a.tx(async (db) => {
+      await requireFeature(db, a.tenantId, FEATURE);
+      const v = await loadVersion(db, a.tenantId, id);
+      if (!v) throw notFound('Version not found');
+      const { rows } = await ackRows(db, a, id, undefined);
+      await audit(db, { ...a.auditBase, action: 'policies.acknowledgements_exported', category: 'access', targetType: 'policy_version', targetId: id, metadata: { rows: rows.length, format: 'xlsx' } });
+      const book = xlsx([{ name: `${v.code} v${v.version_no}`, columns: [{ label: 'Employee code', type: 'text' }, { label: 'Name', type: 'text' }, { label: 'Branch', type: 'text' },
+        { label: 'Department', type: 'text' }, { label: 'Acknowledged at', type: 'text' }, { label: 'Content SHA-256', type: 'text' }],
+        rows: rows.map((r) => [r.employee_code, r.name, r.branch, r.department, r.acknowledged_at ? new Date(r.acknowledged_at).toISOString() : 'Not yet', r.content_sha256]) }]);
+      return { book, name: `${v.code}-v${v.version_no}-acknowledgements.xlsx` };
+    });
+    return reply.header('content-type', XLSX_TYPE).header('content-disposition', `attachment; filename="${name}"`).header('cache-control', 'private, no-store').send(book);
   });
 
   app.get('/versions/:id/acknowledgements.csv', async (req, reply) => {

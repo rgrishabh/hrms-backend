@@ -1,6 +1,6 @@
 # Reports
 
-Read-only reports over the HR data, each run on demand from **Reports** in the web app and downloadable as CSV.
+Read-only reports over the HR data, each run on demand from **Reports** in the web app and downloadable as CSV or Excel (.xlsx).
 Defined in `src/modules/reports/registry.ts`: every report declares who may run it, the module it needs, its
 parameters (the web form is generated from them) and one SQL query. Grouping expressions are fixed in code and
 chosen from a list; no user text reaches SQL.
@@ -34,8 +34,9 @@ chosen from a list; no user text reaches SQL.
 
 - Team-scoped reports (managers) cover the caller's reporting chain only (direct and indirect reports).
 - Results are capped at 5000 rows (the response says when it was truncated).
-- CSV downloads are `Cache-Control: no-store`, neutralize spreadsheet formulas (`=`, `+`, `-`, `@` …), and are
-  audited as `reports.exported` with the report key, parameters, scope and row count. On-screen views are not audited.
+- Downloads are `Cache-Control: no-store` and audited as `reports.exported` with the report key, parameters, scope, row count and format. On-screen views are not audited.
+- **CSV** neutralizes spreadsheet formulas (`=`, `+`, `-`, `@` …) with a leading apostrophe.
+- **Excel** (`/export.xlsx`) is written by HRMS itself (`src/core/http/xlsx.ts`, no third-party library): one sheet named after the report, a bold frozen header with a filter, money as `#,##0.00`, percentages, dates as real dates, and a bold totals row. Text cells are always plain text, never formulas, so nothing in the data can run when the file is opened, and codes keep their leading zeros.
 
 ## Advanced reporting (module `reports.advanced`)
 

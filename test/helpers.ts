@@ -1,5 +1,6 @@
 import pg from 'pg';
 import { randomBytes } from 'node:crypto';
+import { inflateRawSync } from 'node:zlib';
 import type { FastifyInstance, LightMyRequestResponse } from 'fastify';
 import { buildApp } from '../src/app.js';
 import { createPool } from '../src/db/pool.js';
@@ -131,4 +132,21 @@ export function multipart(fields: Record<string, string>, file?: { name: string;
   }
   parts.push(Buffer.from(`--${boundary}--\r\n`));
   return { body: Buffer.concat(parts), headers: { 'content-type': `multipart/form-data; boundary=${boundary}` } };
+}
+
+/** Test-only reader for .xlsx files: unzips (stored or deflated) and returns each part's text by name. */
+export function readXlsx(buf: Buffer): Record<string, string> {
+  const eocd = buf.lastIndexOf(Buffer.from([0x50, 0x4b, 0x05, 0x06]));
+  if (eocd < 0) throw new Error('not a zip file');
+  const count = buf.readUInt16LE(eocd + 10); let p = buf.readUInt32LE(eocd + 16);
+  const out: Record<string, string> = {};
+  for (let i = 0; i < count; i++) {
+    const method = buf.readUInt16LE(p + 10), size = buf.readUInt32LE(p + 20), nameLen = buf.readUInt16LE(p + 28), extra = buf.readUInt16LE(p + 30), comment = buf.readUInt16LE(p + 32);
+    const local = buf.readUInt32LE(p + 42); const name = buf.toString('utf8', p + 46, p + 46 + nameLen);
+    const start = local + 30 + buf.readUInt16LE(local + 26) + buf.readUInt16LE(local + 28);
+    const data = buf.subarray(start, start + size);
+    out[name] = (method === 8 ? inflateRawSync(data) : data).toString('utf8');
+    p += 46 + nameLen + extra + comment;
+  }
+  return out;
 }

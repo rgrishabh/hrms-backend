@@ -94,7 +94,7 @@ Base path `/api/v1`. JSON in and out. Each installation serves one organization;
 | GET / POST `/reports/saved` · DELETE `/reports/saved/:id` | can run the report | My saved reports `{reportKey, name, params}` |
 | GET `/reports/saved/:id/recipients` | owner | Who may receive it (organization-wide access) |
 | PUT / DELETE `/reports/saved/:id/schedule` | owner | `{frequency, weekday?, dayOfMonth?, period, recipientIds, enabled}`; recipients need organization-wide access |
-| GET `/reports/snapshots` · `/reports/snapshots/:id` · `/reports/snapshots/:id/export.csv` | recipient with access | Scheduled reports sent to me |
+| GET `/reports/snapshots` · `/reports/snapshots/:id` · `/reports/snapshots/:id/export.csv` / `.xlsx` | recipient with access | Scheduled reports sent to me |
 | **Overtime** (module `overtime`; see OVERTIME.md) | | |
 | GET `/overtime/eligible` | overtime.self | My days with recorded overtime still to claim, and the payout options |
 | POST `/overtime/claims` | overtime.self | Claim `{workDate, minutes, payout, reason}` → manager, then HR approval |
@@ -110,4 +110,4 @@ Base path `/api/v1`. JSON in and out. Each installation serves one organization;
 | **Reports** (see REPORTS.md) | | |
 | GET `/reports` | session | Reports the caller may run (permission + module), with `scope` (`all` or `team`) and parameter definitions with defaults |
 | GET `/reports/:key?…params` | the report's permissions | `{columns, rows, totals, notes, scope, params, truncated}`; ≤ 5000 rows |
-| GET `/reports/:key/export.csv?…params` | the report's permissions | Same data as CSV (UTF-8 BOM, formulas neutralized, `no-store`); audited `reports.exported` |
+| GET `/reports/:key/export.csv?…params` · `/reports/:key/export.xlsx?…params` | the report's permissions | Same data as CSV (UTF-8 BOM, formulas neutralized) or Excel (typed columns, totals; text never a formula); `no-store`; audited `reports.exported` with the format |
