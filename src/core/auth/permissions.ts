@@ -39,6 +39,7 @@ export const PERMISSIONS = {
   // documents
   'documents.self': 'View own documents and upload where a category allows it',
   'documents.read': 'View employee and company documents (not restricted categories)',
+  'documents.payroll': 'View employee documents in payroll categories only (not restricted ones)',
   'documents.restricted': 'View restricted documents (e.g. medical, identity)',
   'documents.manage': 'Upload and archive any document; manage document categories',
   // expenses
@@ -135,7 +136,7 @@ export const SYSTEM_ROLES: readonly RoleDefinition[] = [
     'attendance.read', 'attendance.recalculate', 'attendance.approve', 'leave.read', 'leave.approve', 'documents.read', 'documents.manage', 'training.manage', 'policies.read', 'policies.manage',
     'recruitment.requisition', 'recruitment.read', 'recruitment.manage', 'lifecycle.read', 'lifecycle.manage', 'overtime.read', 'field_duty.read', 'field_duty.approve', 'profile.approve', 'approvals.hr_step') },
   { key: 'payroll_manager', name: 'Payroll Manager', scope: 'tenant', permissions: P(...SELF, 'org.read', 'employees.read', 'employees.bank.read', 'payroll.read', 'payroll.manage', 'payroll.statutory',
-    'attendance.read', 'attendance.lock', 'leave.read', 'documents.read', 'expenses.read', 'expenses.pay', 'overtime.read', 'field_duty.read', 'travel.read', 'loans.read', 'loans.manage', 'accounting.export') },
+    'attendance.read', 'attendance.lock', 'leave.read', 'documents.payroll', 'expenses.read', 'expenses.pay', 'overtime.read', 'field_duty.read', 'travel.read', 'loans.read', 'loans.manage', 'accounting.export') },
   { key: 'finance_manager', name: 'Finance Manager', scope: 'tenant', permissions: P(...SELF, 'org.read', 'employees.bank.approve', 'recruitment.compensation', 'payroll.read', 'payroll.approve', 'payroll.statutory', 'expenses.read', 'expenses.approve', 'expenses.pay', 'expenses.manage', 'travel.read', 'travel.approve', 'travel.manage', 'loans.read', 'loans.approve', 'accounting.export', 'accounting.configure') },
   { key: 'department_head', name: 'Department Head', scope: 'tenant', permissions: P(...SELF, 'org.read', 'attendance.team.read', 'leave.team.read', 'expenses.team.read', 'overtime.team.read', 'field_duty.team.read', 'travel.team.read', 'loans.team.read', 'recruitment.requisition') },
   { key: 'laboratory_manager', name: 'Laboratory Manager', scope: 'tenant', permissions: P(...SELF, 'org.read', 'attendance.team.read', 'leave.team.read', 'expenses.team.read', 'overtime.team.read', 'field_duty.team.read', 'travel.team.read', 'loans.team.read',
@@ -149,7 +150,7 @@ export const SYSTEM_ROLES: readonly RoleDefinition[] = [
   { key: 'it_admin', name: 'IT Administrator', scope: 'tenant', permissions: P(...SELF, 'settings.read', 'users.manage', 'attendance.devices.manage', 'org.read', 'assets.manage') },
   { key: 'employee', name: 'Employee', scope: 'tenant', permissions: SELF },
   { key: 'auditor', name: 'Auditor / Read-only Reviewer', scope: 'tenant', permissions: P(...SELF, 'settings.read', 'audit.read', 'org.read',
-    'employees.read', 'attendance.read', 'leave.read', 'documents.read', 'expenses.read', 'competency.read', 'policies.read', 'recruitment.read', 'lifecycle.read', 'payroll.read', 'overtime.read', 'field_duty.read', 'travel.read', 'loans.read') },
+    'employees.read', 'attendance.read', 'leave.read', 'documents.payroll', 'expenses.read', 'competency.read', 'policies.read', 'recruitment.read', 'lifecycle.read', 'payroll.read', 'overtime.read', 'field_duty.read', 'travel.read', 'loans.read') },
 ];
 
 export const SYSTEM_ROLE_MAP: ReadonlyMap<string, RoleDefinition> = new Map(SYSTEM_ROLES.map((r) => [r.key, r]));

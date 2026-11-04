@@ -13,7 +13,7 @@ How personal and pay data is classified, who may see it, how it is stored and ho
 | L3 | Personal phone and address, date of birth, emergency contacts, leave reasons, documents | Self, HR above them in the hierarchy |
 | L4 | Salary, CTC, payslips, bank account, PAN, Aadhaar, loans and advances, tax regime | Self, authorised roles above them |
 
-There is no photo column today. "HR" for L3 means holding `employees.manage`, or `documents.read` for files. A manager reads a leave, overtime or field-duty reason while a request from their team is pending, because deciding needs it (D39).
+There is no photo column today. "HR" for L3 means holding `employees.manage`, or `documents.read` for files. Payroll staff and auditors hold `documents.payroll`, which reads only categories HR marked as payroll-related, under the same level check (D43). A manager reads a leave, overtime or field-duty reason while a request from their team is pending, because deciding needs it (D39).
 
 ## Salary hierarchy
 

@@ -10,18 +10,19 @@ import { getStore, newKey } from '../../core/storage/index.js';
 import { detectFile, safeFileName } from '../../core/storage/sniff.js';
 import type { Db } from '../../db/tx.js';
 
-interface Category { id: string; code: string; name: string; scope: 'employee' | 'company'; employee_visible: boolean; employee_upload: boolean; restricted: boolean; requires_expiry: boolean; status: string }
-const CAT_COLS = 'id, code, name, scope, employee_visible, employee_upload, restricted, requires_expiry, status';
+interface Category { id: string; code: string; name: string; scope: 'employee' | 'company'; employee_visible: boolean; employee_upload: boolean; restricted: boolean; requires_expiry: boolean; status: string; payroll_related: boolean }
+const CAT_COLS = 'id, code, name, scope, employee_visible, employee_upload, restricted, requires_expiry, status, payroll_related';
 
 const CategoryBody = z.object({
   code: z.string().trim().toUpperCase().regex(/^[A-Z][A-Z0-9_]{0,19}$/), name: z.string().trim().min(2).max(80),
   scope: z.enum(['employee', 'company']).default('employee'), employeeVisible: z.boolean().default(true), employeeUpload: z.boolean().default(false),
-  restricted: z.boolean().default(false), requiresExpiry: z.boolean().default(false), status: z.enum(['active', 'inactive']).default('active'),
+  restricted: z.boolean().default(false), requiresExpiry: z.boolean().default(false), status: z.enum(['active', 'inactive']).default('active'), payrollRelated: z.boolean().default(false),
 }).refine((c) => !(c.scope === 'company' && c.employeeUpload), { message: 'Employees cannot upload company documents', path: ['employeeUpload'] });
 
 /**
  * Visibility (one rule used for list, metadata and download):
  *  - documents.read: all non-restricted documents; restricted ones need documents.restricted
+ *  - documents.payroll: employee documents in payroll categories only, never restricted ones (payroll staff, auditors)
  *  - everyone: their own employee documents in employee-visible categories, and
  *    company documents in employee-visible categories
  * Managers get no implicit access to their team's documents (least privilege).
@@ -29,10 +30,13 @@ const CategoryBody = z.object({
 function visibilitySql(a: TenantActor) {
   const hr = a.has('documents.read') || a.has('documents.manage');
   const restricted = a.has('documents.restricted');
+  const payroll = a.has('documents.payroll') ? 'true' : 'false';
+  const above = (e: string) => `EXISTS (SELECT 1 FROM employees se WHERE se.tenant_id=d.tenant_id AND se.id=${e} AND ${Number(a.user.salaryLevel)} > ${subjectLevelSql('se')})`;
   // An employee's documents are L3: HR reads them only for people below them in the salary hierarchy.
   return {
     sql: `(($2::boolean AND ($3::boolean OR NOT c.restricted)
-         AND (d.employee_id IS NULL OR d.employee_id = $4::uuid OR EXISTS (SELECT 1 FROM employees se WHERE se.tenant_id=d.tenant_id AND se.id=d.employee_id AND ${Number(a.user.salaryLevel)} > ${subjectLevelSql('se')})))
+         AND (d.employee_id IS NULL OR d.employee_id = $4::uuid OR ${above('d.employee_id')}))
+       OR (${payroll} AND c.payroll_related AND NOT c.restricted AND d.employee_id IS NOT NULL AND ${above('d.employee_id')})
        OR (c.employee_visible AND (d.employee_id = $4::uuid OR d.employee_id IS NULL)))`,
     params: [hr, restricted, a.user.employeeId ?? '00000000-0000-0000-0000-000000000000'] as unknown[],
   };
@@ -59,14 +63,14 @@ export async function documentRoutes(app: FastifyInstance) {
     });
   });
 
-  const catCols = (b: z.infer<typeof CategoryBody>) => [b.code, b.name, b.scope, b.employeeVisible, b.employeeUpload, b.restricted, b.requiresExpiry, b.status];
+  const catCols = (b: z.infer<typeof CategoryBody>) => [b.code, b.name, b.scope, b.employeeVisible, b.employeeUpload, b.restricted, b.requiresExpiry, b.status, b.payrollRelated];
   app.post('/categories', async (req, reply) => {
     const a = tenantActor(req, 'documents.manage');
     const b = CategoryBody.parse(req.body);
     return a.tx(async (db) => {
       await requireFeature(db, a.tenantId, 'core.documents');
-      const r = await db.query<{ id: string }>(`INSERT INTO document_categories (tenant_id, code, name, scope, employee_visible, employee_upload, restricted, requires_expiry, status)
-        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9) RETURNING id`, [a.tenantId, ...catCols(b)]);
+      const r = await db.query<{ id: string }>(`INSERT INTO document_categories (tenant_id, code, name, scope, employee_visible, employee_upload, restricted, requires_expiry, status, payroll_related)
+        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) RETURNING id`, [a.tenantId, ...catCols(b)]);
       await audit(db, { ...a.auditBase, action: 'documents.category_created', category: 'configuration', targetType: 'document_category', targetId: r.rows[0]!.id, metadata: b });
       reply.code(201); return { id: r.rows[0]!.id };
     });
@@ -81,7 +85,7 @@ export async function documentRoutes(app: FastifyInstance) {
       if (prev.scope !== b.scope) throw badRequest('The scope of an existing category cannot change');
       // The restricted flag is what keeps medical / identity files from document managers: only those cleared for them may change it.
       if ((prev.restricted || b.restricted) && !a.has('documents.restricted')) throw forbidden('Only users with access to restricted documents can change a restricted category');
-      await db.query(`UPDATE document_categories SET code=$3, name=$4, scope=$5, employee_visible=$6, employee_upload=$7, restricted=$8, requires_expiry=$9, status=$10
+      await db.query(`UPDATE document_categories SET code=$3, name=$4, scope=$5, employee_visible=$6, employee_upload=$7, restricted=$8, requires_expiry=$9, status=$10, payroll_related=$11
         WHERE tenant_id=$1 AND id=$2`, [a.tenantId, id, ...catCols(b)]);
       await audit(db, { ...a.auditBase, action: 'documents.category_updated', category: 'configuration', targetType: 'document_category', targetId: id, metadata: { from: prev, to: b } });
       return { ok: true };

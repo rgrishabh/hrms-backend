@@ -204,3 +204,9 @@ A request is an approval request (`lab_authorization`) routed to holders of `com
 **Context:** the audit warned that collapsing removes the finance step, the only separation of duties on expenses, loans and advances.
 **Decision:** `single`: there is no second person, so the owner decides and it is on the audit log. `single_hr`: expenses, loans, advances, travel with a finance step, overtime pay, bank changes, salary changes, payroll and recruitment go to the owner, not to HR. Comp-off, leave, regularization, field duty, separation and profile changes go to HR or the owner.
 
+## D43 — Payroll and auditors read payroll categories, not all documents
+**Context:** `payroll_manager` and `auditor` held `documents.read`, so they could read every non-restricted employee document, beyond "self and HR" for L3.
+**Options:** remove access entirely; a fixed list of category codes; a flag on the category.
+**Decision:** a new `documents.payroll` replaces `documents.read` for those two roles, and reads employee documents in categories marked `payroll_related`, with the same level check, never restricted ones. Categories are organization data, so HR marks them (`payrollRelated` on the category). Company documents stay as they were: `employee_visible` decides.
+**Consequence:** no existing category is marked, so payroll staff and auditors lose document access until HR marks the right ones, such as tax proofs. An audit that needs other files asks HR. Custom roles holding `documents.read` keep it, because the organization chose that.
+

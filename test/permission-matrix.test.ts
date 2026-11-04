@@ -54,7 +54,7 @@ const PEOPLE: Record<Mode, Persona[]> = {
 const FLAGS = 'default,payroll,payroll.payslips,payroll.statutory,loans,salary_advance,reports.advanced,accounting_exports,expenses,recruitment,core.offboarding';
 const PERIOD = '2026-01';
 
-interface Subject extends Persona { employeeId: string; userId: string | null; code: string; gross: number; figure: string; account: string; uan: string; itemId: string; loanId: string; docId: string; phone: string }
+interface Subject extends Persona { employeeId: string; userId: string | null; code: string; gross: number; figure: string; account: string; uan: string; itemId: string; loanId: string; docId: string; payDocId: string; phone: string }
 interface Hiring { requisitionId: string; candidateId: string; applicationId: string; budget: string; expected: string; offer: string }
 interface World { app: FastifyInstance; host: string; tenantId: string; runId: string; releasedRunId: string; subjects: Record<string, Subject>; clients: Record<string, Client>; root: string; hiring: Hiring }
 
@@ -71,6 +71,7 @@ async function build(mode: Mode, env: Record<string, string> = {}): Promise<Worl
   const [le] = await q<{ id: string }>(`INSERT INTO legal_entities (tenant_id, name) VALUES ($1,'LE') RETURNING id`, [tid]);
   const [br] = await q<{ id: string }>(`INSERT INTO branches (tenant_id, legal_entity_id, code, name, state) VALUES ($1,$2,'HQ','HQ','Maharashtra') RETURNING id`, [tid, le!.id]);
   const [cat] = await q<{ id: string }>(`INSERT INTO document_categories (tenant_id, code, name, scope, employee_visible) VALUES ($1,'IDP','Identity','employee',true) RETURNING id`, [tid]);
+  const [payCat] = await q<{ id: string }>(`INSERT INTO document_categories (tenant_id, code, name, scope, employee_visible, payroll_related) VALUES ($1,'TAX','Tax proof','employee',true,true) RETURNING id`, [tid]);
   const pw = await hashPassword(PASSWORD);
   const people = PEOPLE[mode];
   const subjects: Record<string, Subject> = {};
@@ -87,7 +88,7 @@ async function build(mode: Mode, env: Record<string, string> = {}): Promise<Worl
     const phone = `+91 98${String(10000000 + i * 137)}`;
     const [e] = await q<{ id: string }>(`INSERT INTO employees (tenant_id, employee_code, first_name, last_name, legal_entity_id, branch_id, date_of_joining, user_id, phone) VALUES ($1,$2,'Emp',$3,$4,$5,'2024-01-01',$6,$7) RETURNING id`, [tid, code, p.key, le!.id, br!.id, userId, phone]);
     const gross = 70000 + i * 1111; const account = `90${String(1000000000 + i * 7919)}`;
-    subjects[p.key] = { ...p, employeeId: e!.id, userId, code, gross, figure: String(gross), account, uan: String(100000000000 + i * 104729), itemId: '', loanId: '', docId: '', phone };
+    subjects[p.key] = { ...p, employeeId: e!.id, userId, code, gross, figure: String(gross), account, uan: String(100000000000 + i * 104729), itemId: '', loanId: '', docId: '', payDocId: '', phone };
   }
   const [run] = await q<{ id: string }>(`INSERT INTO payroll_runs (tenant_id, legal_entity_id, period, created_by, totals_enc) VALUES ($1,$2,$3,$4,$5) RETURNING id`, [tid, le!.id, PERIOD, creator, seal({ employees: people.length, gross: 1, deductions: 0, net: 1, employerCost: 1, held: 0 })]);
   await q(`INSERT INTO pay_components (tenant_id, code, name, kind) VALUES ($1,'BASIC','Basic','earning')`, [tid]);
@@ -108,6 +109,11 @@ async function build(mode: Mode, env: Record<string, string> = {}): Promise<Worl
     const [d] = await q<{ id: string }>(`INSERT INTO documents (tenant_id, category_id, employee_id, title, file_name, content_type, size_bytes, sha256, storage_key, uploaded_by) VALUES ($1,$2,$3,'ID','id.pdf','application/pdf',20,$6,$4,$5) RETURNING id`,
       [tid, cat!.id, s.employeeId, key, creator, createHash('sha256').update(`%PDF secret of ${s.key}`).digest('hex')]);
     s.docId = d!.id;
+    const payKey = newKey(tid, s.employeeId);
+    await writeFile(path.join(root, payKey), `%PDF secret of ${s.key}`);
+    const [pd] = await q<{ id: string }>(`INSERT INTO documents (tenant_id, category_id, employee_id, title, file_name, content_type, size_bytes, sha256, storage_key, uploaded_by) VALUES ($1,$2,$3,'Tax','tax.pdf','application/pdf',20,$6,$4,$5) RETURNING id`,
+      [tid, payCat!.id, s.employeeId, payKey, creator, createHash('sha256').update(`%PDF secret of ${s.key}`).digest('hex')]);
+    s.payDocId = pd!.id;
   }
   for (const s of Object.values(subjects)) {
     await q(`INSERT INTO separations (tenant_id, employee_id, kind, reason, notice_date, requested_lwd, notice_days_required, status, initiated_by) VALUES ($1,$2,'resignation','Fixture reason','2026-01-01','2026-01-31',30,'approved',$3)`, [tid, s.employeeId, creator]);
@@ -364,11 +370,15 @@ for (const mode of ['single', 'single_hr', 'multi'] as const) {
     it.each(viewers.map((v) => [v.key, v] as const))('L3 direct file URL of someone else’s document, as %s', async (_k, v) => {
       for (const sp of everyone) {
         const s = w.subjects[sp.key]!;
+        // Self and HR above them. Payroll and auditors are neither: they read payroll categories only, by the same level rule (D43).
         const r = await w.clients[v.key]!.get(`/api/v1/documents/${s.docId}/download`);
-        const hrDocs = v.hrL3 || ['payroll', 'seniorPayroll', 'auditor'].includes(v.key);
-        const allowed = v.key === sp.key || (!!hrDocs && v.level > sp.level);
+        const allowed = v.key === sp.key || (!!v.hrL3 && v.level > sp.level);
         expect(r.statusCode === 200, `${v.key} -> ${sp.key}: ${r.statusCode}`).toBe(allowed);
         if (!allowed) expect(r.body.includes('secret')).toBe(false);
+        const tax = await w.clients[v.key]!.get(`/api/v1/documents/${s.payDocId}/download`);
+        const payDocs = v.hrL3 || ['payroll', 'seniorPayroll', 'auditor'].includes(v.key);
+        expect(tax.statusCode === 200, `tax: ${v.key} -> ${sp.key}: ${tax.statusCode}`).toBe(v.key === sp.key || (!!payDocs && v.level > sp.level));
+        if (v.key !== sp.key && ['payroll', 'auditor'].includes(v.key)) expect((await w.clients[v.key]!.get(`/api/v1/documents?employeeId=${s.employeeId}`)).json().items.some((d: { id: string }) => d.id === s.docId)).toBe(false);
       }
     });
 

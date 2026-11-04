@@ -46,7 +46,7 @@ export const CLASSIFICATION: Readonly<Record<string, Readonly<Record<string, Dat
   competency_assessments: { employee_id: 'L3', method_id: 'L3', activity: 'L3', approach: 'L3', assessed_on: 'L3', result: 'L3', evidence: 'L3', assessor_id: 'L3' },
   departments: { code: 'L1', name: 'L1', parent_id: 'L1', status: 'L1' },
   device_user_mappings: { device_user_id: 'L2', employee_id: 'L2' },
-  document_categories: { code: 'L1', name: 'L1', scope: 'L1', employee_visible: 'L1', employee_upload: 'L1', restricted: 'L1', requires_expiry: 'L1', status: 'L1' },
+  document_categories: { code: 'L1', name: 'L1', scope: 'L1', employee_visible: 'L1', employee_upload: 'L1', restricted: 'L1', requires_expiry: 'L1', status: 'L1', payroll_related: 'L1' },
   documents: { category_id: 'L3', employee_id: 'L3', title: 'L3', file_name: 'L3', content_type: 'L3', size_bytes: 'L3', sha256: 'L3', storage_key: 'L3', expires_on: 'L3', status: 'L3', uploaded_by: 'L3', archived_at: 'L3', archived_by: 'L3' },
   email_outbox: { to_user_id: 'L3', to_email: 'L3', subject: 'L3', text_body: 'L3', html_body: 'L3', kind: 'L3', dedupe_key: 'L3', status: 'L3', attempts: 'L3', next_attempt_at: 'L3', last_error: 'L3', sent_at: 'L3' },
   employee_addresses: { employee_id: 'L3', kind: 'L3', line1: 'L3', line2: 'L3', city: 'L3', state: 'L3', postal_code: 'L3', country: 'L3' },

@@ -94,9 +94,14 @@ describe('upload, list and download', () => {
     const med = await upload(emp, { categoryId: cats.MEDICAL!, title: 'Fitness certificate', employeeId: T.users.employee!.employeeId! }, { name: 'med.png', content: PNG });
     expect(med.statusCode, med.body).toBe(201);
     const note = await upload(hr, { categoryId: cats.PAYNOTE!, title: 'Internal', employeeId: T.users.employee!.employeeId! }, { name: 'n.pdf', content: PDF });
-    const payroll = await Client.login(app, T.host, T.users.payroll!.email); // documents.read, not restricted
+    const payroll = await Client.login(app, T.host, T.users.payroll!.email); // payroll categories only
     expect((await payroll.get(`/api/v1/documents/${med.json().id}/download`)).statusCode).toBe(404);
-    expect((await payroll.get(`/api/v1/documents/${contractId}/download`)).statusCode).toBe(200);
+    expect((await payroll.get(`/api/v1/documents/${contractId}/download`)).statusCode).toBe(404);
+    const tax = await hr.post('/api/v1/documents/categories', { code: 'TAXPROOF', name: 'Tax proof', payrollRelated: true });
+    expect(tax.statusCode, tax.body).toBe(201);
+    expect((await hr.get('/api/v1/documents/categories')).json().items.find((c: { code: string }) => c.code === 'TAXPROOF').payroll_related).toBe(true);
+    const proof = await upload(hr, { categoryId: tax.json().id, title: 'Rent receipts', employeeId: T.users.employee!.employeeId! }, { name: 'r.pdf', content: PDF });
+    expect((await payroll.get(`/api/v1/documents/${proof.json().id}/download`)).statusCode).toBe(200);
     expect((await hr.get(`/api/v1/documents/${med.json().id}/download`)).statusCode).toBe(200);
     expect((await emp.get(`/api/v1/documents/${med.json().id}/download`)).statusCode).toBe(200); // their own
     expect((await emp.get(`/api/v1/documents/${note.json().id}/download`)).statusCode).toBe(404);
