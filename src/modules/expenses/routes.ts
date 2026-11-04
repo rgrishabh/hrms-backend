@@ -14,6 +14,7 @@ import { notifyUsers } from '../../core/notify/service.js';
 import { teamEmployeeIds, employeeTimezone } from '../attendance/service.js';
 import { localDate, daysBetween } from '../attendance/time.js';
 import type { Db } from '../../db/tx.js';
+import { setOffAdvance } from '../travel/service.js';
 
 const Money = z.union([z.number(), z.string()]).transform((v, ctx) => {
   const d = new Decimal(v);
@@ -58,6 +59,8 @@ export async function expenseRoutes(app: FastifyInstance) {
     async onApproved(db, tenantId, id) {
       const r = await db.query(`UPDATE expense_claims SET status='approved', approved_at=now(), updated_at=now() WHERE tenant_id=$1 AND id=$2 AND status='submitted'`, [tenantId, id]);
       if (!r.rowCount) throw conflict('Claim is no longer awaiting approval');
+      // A trip's claim first uses up the travel advance paid for it; only the rest is reimbursed.
+      await setOffAdvance(db, tenantId, id);
     },
     async onRejected(db, tenantId, id, _actor, status) {
       await db.query(`UPDATE expense_claims SET status=$3, updated_at=now() WHERE tenant_id=$1 AND id=$2`, [tenantId, id, status === 'returned' ? 'returned' : status]);
@@ -123,7 +126,7 @@ export async function expenseRoutes(app: FastifyInstance) {
       const params = [a.tenantId, ids, q.status ?? null];
       const where = `c.tenant_id=$1 AND ($2::uuid[] IS NULL OR c.employee_id = ANY($2)) AND ($3::text IS NULL OR c.status=$3)`;
       const total = Number((await db.query<{ n: string }>(`SELECT count(*) AS n FROM expense_claims c WHERE ${where}`, params)).rows[0]!.n);
-      const rows = await db.query(`SELECT c.id, c.title, c.status, c.total, c.currency, c.created_at, c.submitted_at, c.approved_at, c.paid_at, c.payment_reference, c.employee_id,
+      const rows = await db.query(`SELECT c.id, c.title, c.status, c.total, c.advance_adjusted, c.travel_request_id, c.currency, c.created_at, c.submitted_at, c.approved_at, c.paid_at, c.payment_reference, c.employee_id,
           e.employee_code, trim(e.first_name||' '||coalesce(e.last_name,'')) AS employee_name,
           (SELECT count(*)::int FROM expense_items i WHERE i.tenant_id=c.tenant_id AND i.claim_id=c.id) AS items,
           (SELECT count(*)::int FROM expense_items i WHERE i.tenant_id=c.tenant_id AND i.claim_id=c.id AND i.duplicate_of IS NOT NULL) AS flagged
@@ -297,7 +300,7 @@ export async function expenseRoutes(app: FastifyInstance) {
   // ------------------------------------------------------------ payment (finance)
   app.get('/payables', async (req) => {
     const a = tenantActor(req, 'expenses.pay');
-    return a.tx(async (db) => ({ items: (await db.query(`SELECT c.id, c.title, c.total, c.approved_at, e.employee_code, trim(e.first_name||' '||coalesce(e.last_name,'')) AS employee_name,
+    return a.tx(async (db) => ({ items: (await db.query(`SELECT c.id, c.title, c.total, c.advance_adjusted, (c.total - c.advance_adjusted) AS payable, c.approved_at, e.employee_code, trim(e.first_name||' '||coalesce(e.last_name,'')) AS employee_name,
         (current_date - c.approved_at::date) AS age_days FROM expense_claims c JOIN employees e ON e.tenant_id=c.tenant_id AND e.id=c.employee_id
       WHERE c.tenant_id=$1 AND c.status='approved' AND c.batch_id IS NULL ORDER BY c.approved_at`, [a.tenantId])).rows }));
   });
@@ -307,7 +310,7 @@ export async function expenseRoutes(app: FastifyInstance) {
     const b = z.object({ claimIds: z.array(Uuid).min(1).max(500) }).parse(req.body);
     return a.tx(async (db) => {
       await requireFeature(db, a.tenantId, 'expenses');
-      const claims = await db.query<{ id: string; total: string }>(`SELECT id, total FROM expense_claims WHERE tenant_id=$1 AND id = ANY($2) AND status='approved' AND batch_id IS NULL FOR UPDATE`,
+      const claims = await db.query<{ id: string; total: string }>(`SELECT id, (total - advance_adjusted)::text AS total FROM expense_claims WHERE tenant_id=$1 AND id = ANY($2) AND status='approved' AND batch_id IS NULL FOR UPDATE`,
         [a.tenantId, b.claimIds]);
       if (claims.rowCount !== new Set(b.claimIds).size) throw conflict('Some claims are not approved or are already in a batch');
       const total = claims.rows.reduce((s, c) => s.plus(c.total), new Decimal(0));
@@ -368,7 +371,7 @@ export async function expenseRoutes(app: FastifyInstance) {
       if (b.status !== 'approved') throw conflict('Only an approved batch can be marked paid');
       await db.query(`UPDATE reimbursement_batches SET status='paid', paid_by=$3, paid_at=now(), payment_reference=$4 WHERE tenant_id=$1 AND id=$2`, [a.tenantId, id, a.user.userId, body.paymentReference]);
       const paid = await db.query<{ created_by: string; title: string; total: string }>(`UPDATE expense_claims SET status='paid', paid_at=now(), payment_reference=$3, updated_at=now()
-        WHERE tenant_id=$1 AND batch_id=$2 AND status='approved' RETURNING created_by, title, total`, [a.tenantId, id, body.paymentReference]);
+        WHERE tenant_id=$1 AND batch_id=$2 AND status='approved' RETURNING created_by, title, (total - advance_adjusted)::text AS total`, [a.tenantId, id, body.paymentReference]);
       for (const c of paid.rows) {
         await notifyUsers(db, a.tenantId, [c.created_by], { kind: 'expenses.paid', title: `Expense claim reimbursed: ₹${c.total}`, body: `${c.title} · reference ${body.paymentReference}`, link: '/expenses' });
       }
@@ -387,7 +390,7 @@ export async function expenseRoutes(app: FastifyInstance) {
       if (!b) throw notFound('Batch not found');
       if (!['approved', 'paid'].includes(b.status)) throw conflict('Export is available once the batch is approved');
       const r = await db.query<{ employee_code: string; name: string; total: string; claims: number; account_holder: string | null; ifsc: string | null; account_last4: string | null; account_number_enc: string | null }>(
-        `SELECT e.employee_code, trim(e.first_name||' '||coalesce(e.last_name,'')) AS name, sum(c.total)::text AS total, count(*)::int AS claims,
+        `SELECT e.employee_code, trim(e.first_name||' '||coalesce(e.last_name,'')) AS name, sum(c.total - c.advance_adjusted)::text AS total, count(*)::int AS claims,
            ba.account_holder, ba.ifsc, ba.account_last4, ba.account_number_enc
          FROM expense_claims c JOIN employees e ON e.tenant_id=c.tenant_id AND e.id=c.employee_id
          LEFT JOIN employee_bank_accounts ba ON ba.tenant_id=e.tenant_id AND ba.employee_id=e.id

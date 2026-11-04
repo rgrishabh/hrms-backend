@@ -65,6 +65,11 @@ Base path `/api/v1`. JSON in and out. Each installation serves one organization;
 | POST `/field-duty/requests` | field_duty.self / manage | Request `{startDate, endDate, dayPart, purpose, place, clientName?, reference?, reason}`, or record it for an employee (`employeeId`, manage). Manager approves, then HR if `field_duty.hr_approval` is on |
 | GET `/field-duty/requests?scope=mine\|team\|all&status&on&from&to` · GET `/field-duty/requests/:id` | field_duty.self / team.read / read | List / detail |
 | POST `/field-duty/requests/:id/withdraw` · `/cancel` · `/report` | employee / field_duty.manage | Withdraw pending; cancel approved (employee before it starts, HR until the dates are locked); report the outcome once started |
+| **Travel** (module `travel`; see TRAVEL.md) | | |
+| POST `/travel/requests` | travel.self | Request `{purpose, tripType, origin, destination, startDate, endDate, travelMode, accommodation, project?, estimate{travel,stay,local,meals,other}, advance, markOnDuty}`. Manager approves, plus finance for advances, trips abroad and large estimates |
+| GET `/travel/requests?scope=mine\|team\|all&status&advance=to_pay\|outstanding&on` · GET `/travel/requests/:id` | travel.self / team.read / read, expenses.pay | List / detail with `settlement` |
+| POST `/travel/requests/:id/withdraw` · `/cancel` · `/complete` · `/claim` | traveller (cancel: also travel.approve) | Withdraw pending; cancel approved; mark completed; start the trip's expense claim |
+| POST `/travel/requests/:id/advance-paid` · `/advance-returned` · `/close` | expenses.pay | Record the advance paid `{reference}`; record unspent advance returned `{amount, note}`; close a settled trip |
 | **Advances and loans** (module `advances_loans`; see ADVANCES_LOANS.md) | | |
 | POST `/loans/requests` | loans.self / loans.manage | Apply `{kind: salary_advance\|loan, amount, installments, firstPeriod, purpose, employeeId?}` → manager, then finance |
 | GET `/loans/requests?scope=mine\|team\|all&status&kind` · GET `/loans/requests/:id` | loans.self / team.read / read | List (with `outstanding`) / detail with `balance`, `schedule`, `recoveries` |
