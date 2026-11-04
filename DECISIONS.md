@@ -185,7 +185,7 @@ A request is an approval request (`lab_authorization`) routed to holders of `com
 ## D39 — Masked by default, with named need-to-know limits
 **Decision:** every L4 field is masked until `?reveal=1`, aggregates included, since a group of one is a salary. Exports count as a reveal and are audited per subject. A masked answer writes no audit row, because it carries no L4.
 **A manager on a loan's approval chain** sees that the request exists and not the amount, unless `security.manager_team_salaries` is on and they are above the subject. So by default a manager approves a loan without its figure, and finance sees it at the next step. This follows the rule as written. The product owner may want to revisit it.
-**Leave reasons:** L3 says self and HR, but a manager cannot decide a request without the reason. A manager reads it in their team list while the request is pending, and not after.
+**Leave, overtime and field-duty reasons:** L3 says self and HR, but a manager cannot decide a request without the reason. A manager reads it in their team list while the request is pending, and not after. On overtime and field duty, whoever holds a step of the pending request reads it too, a delegate included, and whoever recorded field duty for someone else keeps what they wrote. `overtime.read` alone (payroll, auditor) gets the request with the reason masked.
 **PAN and Aadhaar:** reveal shows the last four characters. PAN is never decrypted by the API.
 
 ## D40 — Role grants count as setting a level

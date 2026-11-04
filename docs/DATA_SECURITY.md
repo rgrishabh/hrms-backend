@@ -13,7 +13,7 @@ How personal and pay data is classified, who may see it, how it is stored and ho
 | L3 | Personal phone and address, date of birth, emergency contacts, leave reasons, documents | Self, HR above them in the hierarchy |
 | L4 | Salary, CTC, payslips, bank account, PAN, Aadhaar, loans and advances, tax regime | Self, authorised roles above them |
 
-There is no photo column today. "HR" for L3 means holding `employees.manage`, or `documents.read` for files. A manager reads a leave reason while a request from their team is pending, because deciding needs it (D39).
+There is no photo column today. "HR" for L3 means holding `employees.manage`, or `documents.read` for files. A manager reads a leave, overtime or field-duty reason while a request from their team is pending, because deciding needs it (D39).
 
 ## Salary hierarchy
 
@@ -57,6 +57,7 @@ With several roles the highest floor and highest ceiling count. Employee and man
 | Audit views | Amount and identity keys are removed when written, were removed from old rows by the migration, and are removed again on read |
 | Notifications, email, approval summaries | No figures: callers no longer write them, and `scrubAmounts` removes what gets through |
 | Search, dashboards | Carry no L4; the matrix test asserts it |
+| Overtime and field-duty reasons | Self, HR above them, and who decides while pending. Everyone else who can read the request gets it masked |
 | Documents | Level check on HR access, including the direct download URL |
 | Recruitment CTC | `recruitment.compensation`, then masked unless revealed. Candidates have no level |
 

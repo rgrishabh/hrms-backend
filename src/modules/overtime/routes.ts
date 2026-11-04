@@ -12,6 +12,7 @@ import { isModuleEnabled } from '../../core/features/state.js';
 import { teamEmployeeIds } from '../attendance/service.js';
 import { addDays } from '../attendance/time.js';
 import { orgToday } from '../competency/service.js';
+import { maskFields, policyViewer, reasonVisibleSql } from '../../core/policy/salary.js';
 import { insertLedgerEntry } from '../leave/jobs.js';
 import { leaveYearOf, yearClosed, yearStartMonth, balanceOf } from '../leave/service.js';
 import { overtimePaySettings, compOffType, compOffDays } from './service.js';
@@ -173,7 +174,9 @@ export async function overtimeRoutes(app: FastifyInstance) {
       const args = [a.tenantId, ids, q.status ?? null, q.period ?? null, isModuleEnabled('comp_off')];
       const total = Number((await db.query<{ n: string }>(`SELECT count(*) AS n FROM overtime_claims c WHERE ${where}`, args)).rows[0]!.n);
       const sums = (await db.query<{ status: string; minutes: string }>(`SELECT status, sum(minutes)::text AS minutes FROM overtime_claims c WHERE ${where} GROUP BY status`, args)).rows;
-      const rows = (await db.query(`SELECT ${CLAIM_COLS} FROM ${CLAIM_FROM} WHERE ${where} ORDER BY c.work_date DESC, e.employee_code LIMIT ${q.pageSize} OFFSET ${offsetOf(q)}`, args)).rows;
+      const reasonOk = reasonVisibleSql(await policyViewer(db, a.tenantId, a.user), 'e', 'c.status', q.scope === 'team' && a.has('overtime.team.read') ? 'true' : 'false');
+      const rows = (await db.query<{ reason_ok: boolean } & Record<string, unknown>>(`SELECT ${CLAIM_COLS}, ${reasonOk} AS reason_ok FROM ${CLAIM_FROM} WHERE ${where} ORDER BY c.work_date DESC, e.employee_code LIMIT ${q.pageSize} OFFSET ${offsetOf(q)}`, args)).rows
+        .map(({ reason_ok, ...r }) => (reason_ok ? r : maskFields(r, ['reason'])));
       return { ...paged(rows, total, q), minutesByStatus: Object.fromEntries(sums.map((s) => [s.status, Number(s.minutes)])) };
     });
   });
@@ -182,8 +185,14 @@ export async function overtimeRoutes(app: FastifyInstance) {
     const a = tenantActor(req);
     const { id } = z.object({ id: Uuid }).parse(req.params);
     return a.tx(async (db) => {
-      await loadClaim(db, a, id);
-      return (await db.query(`SELECT ${CLAIM_COLS} FROM ${CLAIM_FROM} WHERE c.tenant_id=$1 AND c.id=$2`, [a.tenantId, id])).rows[0];
+      const c = await loadClaim(db, a, id);
+      const decides = c.status === 'pending' && (
+        (a.has('overtime.team.read') && !!a.user.employeeId && (await teamEmployeeIds(db, a.tenantId, a.user.employeeId)).includes(c.employee_id))
+        || !!(await db.query(`SELECT 1 FROM approval_requests r JOIN approval_steps s ON s.tenant_id=r.tenant_id AND s.request_id=r.id
+            WHERE r.tenant_id=$1 AND r.entity_type IN ('overtime_claim','overtime_comp_off') AND r.entity_id=$2 AND s.approver_user_id=$3 AND r.status='pending'`, [a.tenantId, id, a.user.userId])).rowCount);
+      const reasonOk = reasonVisibleSql(await policyViewer(db, a.tenantId, a.user), 'e', 'c.status', decides ? 'true' : 'false');
+      const { reason_ok, ...row } = (await db.query<{ reason_ok: boolean } & Record<string, unknown>>(`SELECT ${CLAIM_COLS}, ${reasonOk} AS reason_ok FROM ${CLAIM_FROM} WHERE c.tenant_id=$1 AND c.id=$2`, [a.tenantId, id])).rows[0]!;
+      return reason_ok ? row : maskFields(row, ['reason']);
     });
   });
 

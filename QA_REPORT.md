@@ -73,3 +73,4 @@ Delegated: no decline path after an accepted offer (`recruitment/routes.ts:627`)
 | ID | Module | Severity | Steps | Root cause | Fix | Test |
 |---|---|---|---|---|---|---|
 | D-01 | Role grants | High | An administrator appoints a peer administrator; or removes a custom role from someone with a high stored level, lifting their ceiling above the actor | Only the role's floor was checked, with an exception for `tenant_admin` | Compare effective levels before and after, no exception. Nobody changes someone at or above them. Last owner protected, including in `endAccess` | `role-grants.test.ts` |
+| D-02 | Overtime, field duty | Medium | Payroll or an auditor opens a claim and reads the reason; HR reads the reason of HR above them | The reason column was selected for anyone who could read the request, though classified L3 | `reasonVisibleSql`, same rule as leave | `l3-reasons.test.ts` |

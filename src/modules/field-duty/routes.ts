@@ -1,3 +1,4 @@
+import { maskFields, policyViewer, reasonVisibleSql } from '../../core/policy/salary.js';
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import { tenantActor, tenantActorAny, gateFeatures, type TenantActor } from '../../core/http/context.js';
@@ -135,7 +136,9 @@ export async function fieldDutyRoutes(app: FastifyInstance) {
         AND ($4::date IS NULL OR f.end_date >= $4) AND ($5::date IS NULL OR f.start_date <= $5)`;
       const args = [a.tenantId, ids, q.status ?? null, from, to];
       const total = Number((await db.query<{ n: string }>(`SELECT count(*) AS n FROM field_duty_requests f WHERE ${where}`, args)).rows[0]!.n);
-      const rows = (await db.query(`SELECT ${COLS} FROM ${FROM} WHERE ${where} ORDER BY f.start_date DESC, e.employee_code LIMIT ${q.pageSize} OFFSET ${offsetOf(q)}`, args)).rows;
+      const reasonOk = reasonVisibleSql(await policyViewer(db, a.tenantId, a.user), 'e', 'f.status', q.scope === 'team' && a.has('field_duty.team.read') ? 'true' : 'false');
+      const rows = (await db.query<{ reason_ok: boolean } & Record<string, unknown>>(`SELECT ${COLS}, ${reasonOk} AS reason_ok FROM ${FROM} WHERE ${where} ORDER BY f.start_date DESC, e.employee_code LIMIT ${q.pageSize} OFFSET ${offsetOf(q)}`, args)).rows
+        .map(({ reason_ok, ...r }) => (reason_ok ? r : maskFields(r, ['reason'])));
       return { ...paged(rows, total, q), today: await orgToday(db, a.tenantId) };
     });
   });
@@ -144,8 +147,15 @@ export async function fieldDutyRoutes(app: FastifyInstance) {
     const a = tenantActor(req);
     const { id } = z.object({ id: Uuid }).parse(req.params);
     return a.tx(async (db) => {
-      await loadDuty(db, a, id);
-      return (await db.query(`SELECT ${COLS} FROM ${FROM} WHERE f.tenant_id=$1 AND f.id=$2`, [a.tenantId, id])).rows[0];
+      const d = await loadDuty(db, a, id);
+      const decides = d.status === 'pending' && (
+        (a.has('field_duty.team.read') && !!a.user.employeeId && (await teamEmployeeIds(db, a.tenantId, a.user.employeeId)).includes(d.employee_id))
+        || !!(await db.query(`SELECT 1 FROM approval_requests r JOIN approval_steps s ON s.tenant_id=r.tenant_id AND s.request_id=r.id
+            WHERE r.tenant_id=$1 AND r.entity_type='field_duty' AND r.entity_id=$2 AND s.approver_user_id=$3 AND r.status='pending'`, [a.tenantId, id, a.user.userId])).rowCount);
+      const reasonOk = reasonVisibleSql(await policyViewer(db, a.tenantId, a.user), 'e', 'f.status', decides ? 'true' : 'false');
+      // Whoever recorded it for someone else wrote the reason, and keeps reading it.
+      const { reason_ok, ...row } = (await db.query<{ reason_ok: boolean } & Record<string, unknown>>(`SELECT ${COLS}, (${reasonOk} OR f.created_by=$3) AS reason_ok FROM ${FROM} WHERE f.tenant_id=$1 AND f.id=$2`, [a.tenantId, id, a.user.userId])).rows[0]!;
+      return reason_ok ? row : maskFields(row, ['reason']);
     });
   });
 

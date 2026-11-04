@@ -49,6 +49,12 @@ export function l3RowFilter(v: PolicyViewer, employee: string): string {
   return holdsL3(v) ? `(${self} OR ${level(v.level)} > ${subjectLevelSql(employee)})` : `(${self})`;
 }
 
+/**
+ * Reasons on requests are L3 (D39): self and HR above them, plus whoever decides the request while it waits, since deciding needs the reason.
+ * `decides` says that this viewer is such a person for this row, as SQL; `status` is the alias of the request's status column.
+ */
+export const reasonVisibleSql = (v: PolicyViewer, employee: string, status: string, decides: string) => `(${l3RowFilter(v, employee)} OR (${status}='pending' AND ${decides}))`;
+
 /** Whether one subject is visible, read from the database. */
 export async function subjectVisible(db: Db, tenantId: string, v: PolicyViewer, employeeId: string, filter: (v: PolicyViewer, e: string) => string = l4RowFilter) {
   const r = await db.query<{ ok: boolean }>(`SELECT ${filter(v, 'e')} AS ok FROM employees e WHERE e.tenant_id=$1 AND e.id=$2`, [tenantId, employeeId]);
