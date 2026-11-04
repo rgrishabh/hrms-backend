@@ -161,6 +161,32 @@ export async function tenantAdminRoutes(app: FastifyInstance, opts: { publicConf
     }
   };
 
+  /** Every permission the given role keys carry (system roles and this organization's custom roles). */
+  const rolePermissions = async (db: import('../../db/tx.js').Db, tenantId: string, roles: string[]) => {
+    const out = new Set<string>();
+    for (const k of roles) SYSTEM_ROLE_MAP.get(k)?.permissions.forEach((p) => out.add(p));
+    const custom = roles.filter((k) => !SYSTEM_ROLE_MAP.has(k));
+    if (custom.length) (await db.query<{ permissions: string[] }>('SELECT permissions FROM tenant_roles WHERE tenant_id=$1 AND key = ANY($2)', [tenantId, custom]))
+      .rows.forEach((r) => r.permissions.forEach((p) => out.add(p)));
+    return out;
+  };
+  /**
+   * No escalation through user management: only an Administrator may grant any role. Anyone else with users.manage
+   * (e.g. the IT administrator) may grant or remove only roles whose permissions they hold themselves, and may not
+   * change an account that holds permissions they lack.
+   */
+  const isAdministrator = (a: { user: { roles: string[] } }) => a.user.roles.includes('tenant_admin');
+  const assertMayGrant = async (db: import('../../db/tx.js').Db, a: { tenantId: string; user: { roles: string[]; permissions: Set<string> } }, roles: string[]) => {
+    if (isAdministrator(a) || !roles.length) return;
+    const beyond = [...(await rolePermissions(db, a.tenantId, roles))].filter((p) => !a.user.permissions.has(p));
+    if (roles.includes('tenant_admin') || beyond.length) throw forbidden('Only an administrator can grant or remove roles with permissions you do not have yourself');
+  };
+  const assertMayManage = async (db: import('../../db/tx.js').Db, a: { tenantId: string; user: { roles: string[]; permissions: Set<string> } }, targetRoles: string[]) => {
+    if (isAdministrator(a)) return;
+    const beyond = [...(await rolePermissions(db, a.tenantId, targetRoles))].filter((p) => !a.user.permissions.has(p));
+    if (targetRoles.includes('tenant_admin') || beyond.length) throw forbidden('Only an administrator can change this account');
+  };
+
   app.post('/users', async (req, reply) => {
     const a = tenantActor(req, 'users.manage');
     const body = z.object({ email: z.string().trim().toLowerCase().pipe(z.email()), displayName: z.string().trim().min(2).max(120),
@@ -169,7 +195,9 @@ export async function tenantAdminRoutes(app: FastifyInstance, opts: { publicConf
       const minLen = await getSettingValue<number>(db, a.tenantId, 'security.password_min_length');
       if (body.initialPassword.length < minLen) throw badRequest(`Password must be at least ${minLen} characters`);
       await assertTenantRoles(db, a.tenantId, body.roles);
-      const u = await db.query<{ id: string }>(`INSERT INTO users (tenant_id, email, display_name, password_hash) VALUES ($1,$2,$3,$4) RETURNING id`,
+      await assertMayGrant(db, a, body.roles);
+      // The administrator chose the initial password, so the person must replace it at first sign-in.
+      const u = await db.query<{ id: string }>(`INSERT INTO users (tenant_id, email, display_name, password_hash, must_change_password) VALUES ($1,$2,$3,$4,true) RETURNING id`,
         [a.tenantId, body.email, body.displayName, await hashPassword(body.initialPassword)]);
       const userId = u.rows[0]!.id;
       for (const role of body.roles) await db.query(`INSERT INTO user_roles (user_id, tenant_id, role_key, granted_by) VALUES ($1,$2,$3,$4)`, [userId, a.tenantId, role, a.user.userId]);
@@ -194,8 +222,11 @@ export async function tenantAdminRoutes(app: FastifyInstance, opts: { publicConf
       if (id === a.user.userId && (body.status === 'disabled' || (body.roles && !body.roles.includes('tenant_admin') && prevRoles.includes('tenant_admin')))) {
         throw conflict('You cannot disable yourself or remove your own administrator role');
       }
+      await assertMayManage(db, a, prevRoles);
       if (body.roles) {
         await assertTenantRoles(db, a.tenantId, body.roles);
+        const changed = [...body.roles.filter((r) => !prevRoles.includes(r)), ...prevRoles.filter((r) => !body.roles!.includes(r))];
+        await assertMayGrant(db, a, changed);
         await db.query('DELETE FROM user_roles WHERE tenant_id=$1 AND user_id=$2', [a.tenantId, id]);
         for (const role of body.roles) await db.query(`INSERT INTO user_roles (user_id, tenant_id, role_key, granted_by) VALUES ($1,$2,$3,$4)`, [id, a.tenantId, role, a.user.userId]);
         const admins = await db.query<{ n: string }>(`SELECT count(DISTINCT r.user_id) AS n FROM user_roles r JOIN users u ON u.id=r.user_id
