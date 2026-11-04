@@ -4,8 +4,11 @@ import { tenantActor } from '../http/context.js';
 import { Uuid } from '../http/pagination.js';
 import { actOnRequest, cancelRequest, inbox, requestHistory } from './engine.js';
 import { notFound, forbidden } from '../http/errors.js';
+import { delegationRoutes } from './delegations.js';
 
 export async function approvalRoutes(app: FastifyInstance) {
+  await delegationRoutes(app);
+
   app.get('/inbox', async (req) => {
     const a = tenantActor(req);
     return a.tx(async (db) => ({ items: await inbox(db, a.tenantId, { userId: a.user.userId, permissions: a.user.permissions }) }));
@@ -28,7 +31,7 @@ export async function approvalRoutes(app: FastifyInstance) {
       const steps = await requestHistory(db, a.tenantId, id);
       const mine = await inbox(db, a.tenantId, { userId: a.user.userId, permissions: a.user.permissions });
       const involved = rq.requester_id === a.user.userId || mine.some((m) => m.id === id) ||
-        (await db.query('SELECT 1 FROM approval_steps WHERE tenant_id=$1 AND request_id=$2 AND (approver_user_id=$3 OR acted_by=$3)', [a.tenantId, id, a.user.userId])).rowCount;
+        (await db.query('SELECT 1 FROM approval_steps WHERE tenant_id=$1 AND request_id=$2 AND (approver_user_id=$3 OR acted_by=$3 OR acted_for=$3 OR escalated_to=$3)', [a.tenantId, id, a.user.userId])).rowCount;
       if (!involved) throw forbidden();
       return { ...rq, steps };
     });

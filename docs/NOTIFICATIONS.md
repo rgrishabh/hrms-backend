@@ -6,9 +6,11 @@ In-app notifications are always on. Email is module `notifications.email`: add i
 
 | Event | Who | Link |
 |---|---|---|
-| Approval requested, or moved to the next step | The step's approver (named user), or **every active user holding the step's permission** (e.g. HR for `leave.approve`). Never the requester | `/approvals` |
+| Approval requested, or moved to the next step | The step's approver (named user), or **every active user holding the step's permission** (e.g. HR for `leave.approve`), plus a delegate covering for a named approver ("covering for …"). Never the requester | `/approvals` |
+| Approvals handed over, ended or declined (docs/APPROVALS.md) | The delegate; the approver when HR set it up or the delegate declined | `/approvals` |
+| Step escalated after `approvals.escalate_after_days` | The approver's manager or HR (`approvals.escalations`), and the original approver | `/approvals` |
 | Request approved / rejected / returned | The requester, with the approver's comment | Module page (`/leave`, `/attendance/me`) |
-| Request waiting longer than `notifications.approval_reminder_days` (default 2; 0 = off) | Current approvers, at most **once per day** (`approvals.reminder` job, 09:30) | `/approvals` |
+| Request waiting longer than `notifications.approval_reminder_days` (default 2; 0 = off) | Current approvers (including delegates and anyone it was escalated to), at most **once per day** (`approvals.reminder` job, 09:30) | `/approvals` |
 | Password changed | The user (security notice) | `/account` |
 
 Content is a title, a short summary and a link. **Never** salary, bank, identity or other sensitive data.

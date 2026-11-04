@@ -15,7 +15,7 @@ Every module in the feature registry (34) is built and `available`; none is `pla
 | 6 | Configuration layers, precedence | ✅ | Deployment config (env, validated) / secrets / business settings (DB) / deployment defaults | |
 | 7 | Admin settings | ✅ | General, attendance, security, organization, users, audit, installation view; module settings (payroll, expenses, SMS, accounting, …) | |
 | 8 | Roles & permissions | 🟡 | 12 system roles, segregation of duties, grantable-role limits, server-side checks; TOTP MFA enforced for privileged roles; custom roles enforced from `tenant_roles` | Custom-role management API/UI ⬜ |
-| 9 | Employee information | 🟡 | Master, history, import, duplicates, encrypted bank details, statutory IDs (PAN encrypted, UAN, ESIC), documents with restricted access and expiry | Emergency contacts, addresses, nominees, education, previous employment ⬜; employee-initiated correction requests ⬜ |
+| 9 | Employee information | ✅ | Master, history, import, duplicates, encrypted bank details, statutory IDs (PAN encrypted, UAN, ESIC), documents with restricted access and expiry; emergency contacts, addresses, nominees, education, previous employment, with employee changes to the verified sections approved by HR (docs/EMPLOYEE_RECORD.md) | |
 | 10 | Recruitment & lifecycle | ✅ | Requisitions, candidates with consent and erasure, pipeline, blind panel feedback, approved offers, hire; onboarding / exit checklists, probation, separations, exit interview, access ended after last working day (docs/RECRUITMENT.md, docs/LIFECYCLE.md) | Offer-letter documents, careers page ⬜ |
 | 11 | Attendance, shifts, rosters | 🟡 | Engine (calc v3), overnight shifts, grace, half day, weekly off, holidays, regularization, locking; overtime with pay or compensatory off (docs/OVERTIME.md); field duty as paid on-duty days (docs/FIELD_DUTY.md) | Rotating rosters ⬜; offline mobile queue ⬜ |
 | 12 | Biometric integration | 🟡 | Vendor-neutral push contract, device keys, drift, dedupe, unmapped queue, reprocessing, health | Vendor-specific adapters 🔒 (need the actual hardware/API) |
@@ -27,7 +27,7 @@ Every module in the feature registry (34) is built and `available`; none is `pla
 | 18 | POSH & grievance | ✅ | IC membership, encrypted complaints with statutory timelines, anonymous grievances with SLA (docs/CASES.md) | Hearing minutes, attachments ⬜ |
 | 19 | Lab competency & training | ✅ | Training records with validity; competency, technical authorizations with maker-checker, expiry, suspension, matrix, `/check` for LIMS (docs/COMPETENCY.md) | Training sessions, effectiveness evaluation, LIMS API keys ⬜ |
 | 20 | Performance, assets, exit | ✅ | Review cycles, weighted goals, self / manager / HR reviews; assets with calibration and exit clearance | 360° feedback, PIPs, asset depreciation ⬜ |
-| 21 | Workflow engine | 🟡 | Sequential steps, maker-checker, approval parties with exclusions, comments, history, subject withdrawal | Delegation, time-based escalation, parallel / amount-based routing ⬜ |
+| 21 | Workflow engine | ✅ | Sequential steps, maker-checker, approval parties with exclusions, comments, history, subject withdrawal; delegation while away and time-based escalation (docs/APPROVALS.md) | Parallel steps ⬜ (amount-based routing lives in the modules, e.g. travel and expenses) |
 | 22 | Notifications & integrations | ✅ | In-app + email (outbox, retries, templates, opt-out, reminders); SMS through the organization's provider with DLT templates (docs/NOTIFICATIONS.md, docs/SMS.md) | Push ⬜ |
 | 23 | Reporting | ✅ | Report registry with team / organization scope, CSV export; saved and scheduled reports delivered in HRMS; department overview (docs/REPORTS.md) | XLSX / PDF export ⬜ |
 | 24–25 | Data model | ✅ | Implemented for every module above | |
@@ -44,8 +44,8 @@ Every module in the feature registry (34) is built and `available`; none is `pla
 
 ## Next steps (suggested order)
 
-1. **Employee record completion**: emergency contacts, addresses, nominees, education, previous employment; correction requests from self-service.
-2. **Workflow delegation and escalation**: approvers hand off while away; overdue steps escalate to the next level.
+1. ~~Employee record completion~~ (done: docs/EMPLOYEE_RECORD.md).
+2. ~~Workflow delegation and escalation~~ (done: docs/APPROVALS.md).
 3. **Custom-role management**: create and edit organization roles within the grantable-permission limits.
 4. **Rotating shift rosters.**
 5. **Travel per diem and mileage.**
