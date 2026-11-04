@@ -81,7 +81,7 @@ export const FEATURES: readonly FeatureDefinition[] = [
   f({ key: 'posh', name: 'POSH complaints', description: 'Complaints to the Internal Committee only (not visible to administrators), statutory timelines, encrypted narrative, annual report counts.', category: 'operations', availability: 'available', dependencies: ['core.employees'] }),
   f({ key: 'notifications.email', name: 'Email notifications', description: 'Approval alerts, reminders and security notices by email (SMTP configured by the deployment).', category: 'operations', availability: 'available' }),
   f({ key: 'notifications.sms', name: 'SMS notifications', description: 'Selected notifications by SMS through your provider, using your DLT-registered templates.', category: 'operations', availability: 'available' }),
-  f({ key: 'reports.advanced', name: 'Advanced reporting', description: 'Cross-module reports and scheduled exports.', category: 'operations', availability: 'planned' }),
+  f({ key: 'reports.advanced', name: 'Advanced reporting', description: 'Saved reports, scheduled reports delivered in HRMS, and a cross-module department overview.', category: 'operations', availability: 'available' }),
 ] as const;
 
 export const FEATURE_MAP: ReadonlyMap<string, FeatureDefinition> = new Map(FEATURES.map((d) => [d.key, d]));
