@@ -4,6 +4,9 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { hashPassword } from '../core/crypto/index.js';
 import { pgSsl } from './ssl.js';
+// Same type parsing as the app (DATE and NUMERIC as strings): the attendance engine compares dates as text,
+// so without it every demo day was calculated without its shift (no late, early-exit or overtime minutes).
+import './pool.js';
 import { recalculateRange } from '../modules/attendance/service.js';
 import { countDays, nonWorkingDates } from '../modules/leave/service.js';
 import { contentHash } from '../modules/policies/routes.js';
@@ -160,7 +163,17 @@ export async function generateDemo(c: pg.Client | pg.PoolClient, opts: { passwor
     for (let d = start; d <= end; d = addDays(d, 1)) onLeave.add(`${e.id}:${d}`);
   }
 
-  // ---- attendance: last 30 days of punches, calculated by the engine
+  // ---- attendance: last 30 days of punches, calculated by the engine (overtime recorded for the GEN shift after 9 h)
+  for (const [k, v] of [['attendance.overtime_enabled', true], ['overtime.comp_off_leave_type', 'COMP']] as const)
+    await q(`INSERT INTO tenant_settings (tenant_id, setting_key, setting_value, updated_by) VALUES ($1,$2,$3,$4) ON CONFLICT DO NOTHING`, [tid, k, JSON.stringify(v), adminId]);
+  // Late evenings: laboratory and field staff now and then (instrument batches, late sample arrivals); the analyst has a few,
+  // two of them long (an overnight digestion), so there is overtime to claim as pay or compensatory off.
+  const ANALYST_LATE: Record<number, number> = { 2: 200, 3: 320, 4: 320, 5: 190, 7: 210, 9: 330, 10: 330 };
+  const lateMinutes = (e: { id: string; dept: string; code: string }, d: string) => {
+    if (e.id === personas.analyst!.id) return ANALYST_LATE[Math.round((Date.parse(today) - Date.parse(d)) / 86_400_000)] ?? 0;
+    if (!['WATER', 'FIELD', 'FOOD', 'AIR'].includes(e.dept)) return 0;
+    return (Number(d.slice(8)) + Number(e.code.slice(3))) % 11 === 0 ? 150 + (Number(e.code.slice(3)) % 4) * 20 : 0;
+  };
   const from = addDays(today, -30); const to = addDays(today, -1);
   let punches = 0;
   for (const e of emps) {
@@ -168,12 +181,14 @@ export async function generateDemo(c: pg.Client | pg.PoolClient, opts: { passwor
     for (let d = from > e.joined ? from : e.joined; d <= to; d = addDays(d, 1)) {
       if (new Date(`${d}T00:00:00Z`).getUTCDay() === 0) continue; // Sunday weekly off
       if (onLeave.has(`${e.id}:${d}`)) continue;
-      const r = rnd();
+      const extra = lateMinutes(e, d);
+      const r0 = rnd(); const r = extra ? 0.5 : r0; // a late evening is a full day with both punches
       if (r < 0.035) continue; // absent
       const late = rnd() < 0.15 ? int(12, 55) : int(-20, 8);
       const inT = new Date(`${d}T04:00:00Z`); inT.setUTCMinutes(inT.getUTCMinutes() + late);           // 09:30 IST ± …
       const outT = new Date(`${d}T12:30:00Z`); outT.setUTCMinutes(outT.getUTCMinutes() + int(-25, 70)); // 18:00 IST ± …
       if (r < 0.06) outT.setUTCHours(outT.getUTCHours() - 4);                                            // half day
+      else outT.setUTCMinutes(outT.getUTCMinutes() + extra);                                             // late evening
       await q(`INSERT INTO attendance_events (tenant_id, employee_id, source, source_ref, event_time, direction) VALUES ($1,$2,'web',$3,$4,'in')`, [tid, e.id, `demo-${e.code}-${d}-in`, inT.toISOString()]);
       punches++;
       if (r < 0.075 && r >= 0.06) continue; // missing out punch
@@ -193,7 +208,9 @@ export async function generateDemo(c: pg.Client | pg.PoolClient, opts: { passwor
     const { runAccruals } = await import('../modules/leave/jobs.js');
     for (let m = 1; m <= Number(today.slice(5, 7)); m++) await runAccruals(db as never, tid, year, m, null);
   }
-  say('leave: CL/SL/EL/LWP with accruals to date (example policy — set your own)');
+  await q(`INSERT INTO leave_types (tenant_id, code, name, description, paid, allow_half_day, requires_balance, accrual_method, annual_entitlement, carry_forward_max, count_non_working_days, min_notice_days)
+    VALUES ($1,'COMP','Compensatory Off','Earned by approved overtime taken as time off',true,true,true,'none',0,0,false,0) ON CONFLICT (tenant_id, code) DO NOTHING`, [tid]);
+  say('leave: CL/SL/EL/LWP with accruals to date, COMP earned from overtime (example policy — set your own)');
   // approved leave history, written as the approval flow writes it: request, ledger debit, attendance recalculated (on_leave)
   const typeId = Object.fromEntries((await q<{ code: string; id: string }>('SELECT code, id FROM leave_types WHERE tenant_id=$1', [tid])).rows.map((r) => [r.code, r.id]));
   let leaveDays = 0; let leaveRequests = 0;
@@ -210,6 +227,23 @@ export async function generateDemo(c: pg.Client | pg.PoolClient, opts: { passwor
     leaveDays += days; leaveRequests++;
   }
   say(`leave history: ${leaveRequests} approved requests, ${leaveDays} days`);
+
+  // ---- overtime: one approved compensatory off (the analyst's long evening 9–10 days ago), credited as approval writes it.
+  // Overtime PAY needs the organization's own rate in Settings → Attendance policy; the demo does not set it.
+  {
+    const a = personas.analyst!;
+    const day = (await q<{ overtime_minutes: number; work_date: string }>(`SELECT overtime_minutes, work_date::text FROM attendance_daily WHERE tenant_id=$1 AND employee_id=$2
+      AND work_date IN ($3,$4) AND overtime_minutes >= 240 ORDER BY work_date LIMIT 1`, [tid, a.id, addDays(today, -10), addDays(today, -9)])).rows[0];
+    const wd = day?.work_date;
+    if (day && wd) {
+      const days = day.overtime_minutes >= 480 ? 1 : 0.5;
+      const cid = (await q<{ id: string }>(`INSERT INTO overtime_claims (tenant_id, employee_id, work_date, minutes, recorded_minutes, payout, reason, status, comp_off_days, created_by, decided_at)
+        VALUES ($1,$2,$3,$4,$4,'comp_off','Overnight digestion for the heavy-metals batch (client deadline)','approved',$5,$6, now()) RETURNING id`, [tid, a.id, wd, day.overtime_minutes, days, uid('analyst')])).rows[0]!.id;
+      await q(`INSERT INTO leave_ledger (tenant_id, employee_id, leave_type_id, leave_year, entry_type, days, reference, note, created_by)
+        VALUES ($1,$2,$3,$4,'adjustment',$5,$6,$7,$8)`, [tid, a.id, typeId.COMP, year, days, `overtime:${cid}:credit`, `Compensatory off for overtime on ${wd}`, uid('hr.head')]);
+      say(`overtime: analyst's compensatory off approved (${days} day); other late evenings left to claim`);
+    }
+  }
 
   // ---- expenses
   const cat: Record<string, string> = {};

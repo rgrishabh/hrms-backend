@@ -23,7 +23,7 @@ Base path `/api/v1`. JSON in and out. Each installation serves one organization;
 | GET `/tenant/settings?branchId=` | `settings.read` | Effective values with source, default, inherited values, version |
 | PUT/DELETE `/tenant/settings/:key` | per-setting edit permission | Set (`{value, scope, branchId, expectedVersion}`) / reset to inherited |
 | GET `/tenant/installation` | settings.read | Read-only: branding, organization, domains, module states (supported/enabled/configured/usable + blockers) |
-| GET `/tenant/roles` | users.manage or settings.read | System + custom roles, permission catalogue |
+| GET `/tenant/roles` | users.manage or settings.read | System + custom roles (each with `grantable` for the caller), permission catalogue |
 | GET/POST `/tenant/users`, PATCH `/tenant/users/:id` | `users.manage` | Create, roles, disable, unlock |
 | GET `/tenant/audit` | `audit.read` | Filter by category/target/action |
 | **Organization** | | |
@@ -61,6 +61,11 @@ Base path `/api/v1`. JSON in and out. Each installation serves one organization;
 | POST `/leave/requests/:id/cancel` | requester or `leave.manage` | Reverses consumed days if approved |
 | GET `/leave/calendar?from&to` | team / `leave.read` | Pending + approved leave intervals (≤ 92 days) |
 | POST `/leave/accruals`, `/leave/year-end`, `/leave/adjustments` | `leave.manage` | Idempotent jobs; audited |
+| **Overtime** (module `overtime`; see OVERTIME.md) | | |
+| GET `/overtime/eligible` | overtime.self | My days with recorded overtime still to claim, and the payout options |
+| POST `/overtime/claims` | overtime.self | Claim `{workDate, minutes, payout, reason}` → manager, then HR approval |
+| GET `/overtime/claims?scope=mine\|team\|all` · GET `/overtime/claims/:id` | overtime.self / team.read / read | List (with `minutesByStatus`) / detail |
+| POST `/overtime/claims/:id/withdraw` · `/cancel` | claimant / overtime.manage | Withdraw pending / cancel approved (reverses comp off; resets a computed run) |
 | **Approvals** | | |
 | GET `/approvals/inbox`, `/approvals/mine`, `/approvals/:id` | session | |
 | POST `/approvals/:id/act` | current-step approver (never the requester) | `{action: approve|reject|return, comment}` (comment required unless approving) |

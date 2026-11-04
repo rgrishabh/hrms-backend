@@ -78,6 +78,10 @@ const CONFIG_CHECKS: Record<string, (db: Db, tenantId: string) => Promise<{ conf
     configured: emailTransportConfigured, operational: 'not_applicable',
     note: emailTransportConfigured ? undefined : 'Email transport not configured (MAIL_TRANSPORT / SMTP_* deployment settings)',
   }),
+  overtime: async (db, tenantId) => {
+    const on = (await resolveSetting(db, tenantId, 'attendance.overtime_enabled')).value === true;
+    return { configured: on, operational: 'not_applicable', note: on ? undefined : "Turn on 'Calculate overtime minutes' in the attendance policy" };
+  },
   'attendance.biometric': async (db, tenantId) => {
     const r = await db.query<{ active: string; recent: string }>(
       `SELECT count(*) FILTER (WHERE status='active') AS active,

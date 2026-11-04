@@ -32,6 +32,7 @@ import { lifecycleRoutes } from './modules/lifecycle/routes.js';
 import { payrollRoutes } from './modules/payroll/routes.js';
 import { caseRoutes } from './modules/cases/routes.js';
 import { performanceRoutes } from './modules/performance/routes.js';
+import { overtimeRoutes } from './modules/overtime/routes.js';
 import { assetRoutes } from './modules/assets/routes.js';
 import { reportRoutes } from './modules/reports/routes.js';
 import { dashboardRoutes } from './modules/dashboard/routes.js';
@@ -178,6 +179,7 @@ export async function buildApp(deps: AppDeps): Promise<FastifyInstance> {
   await app.register(caseRoutes, { prefix: '/api/v1/cases' });
   await app.register(performanceRoutes, { prefix: '/api/v1/performance' });
   await app.register(assetRoutes, { prefix: '/api/v1/assets' });
+  await app.register(overtimeRoutes, { prefix: '/api/v1/overtime' });
   await app.register(reportRoutes, { prefix: '/api/v1/reports' });
   await app.register(dashboardRoutes, { prefix: '/api/v1/dashboard' });
   await app.register(deviceIngestRoutes, { prefix: '/api/v1/devices' });
