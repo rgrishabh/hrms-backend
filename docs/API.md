@@ -74,6 +74,11 @@ Base path `/api/v1`. JSON in and out. Each installation serves one organization;
 | POST `/loans/requests` | loans.self / loans.manage | Apply `{kind: salary_advance\|loan, amount, installments, firstPeriod, purpose, employeeId?}` → manager, then finance |
 | GET `/loans/requests?scope=mine\|team\|all&status&kind` · GET `/loans/requests/:id` | loans.self / team.read / read | List (with `outstanding`) / detail with `balance`, `schedule`, `recoveries` |
 | POST `/loans/requests/:id/withdraw` · `/disburse` · `/cancel` · `/repayment` · `/defer` | applicant / loans.manage (cancel: also loans.approve) | Withdraw pending; disburse `{reference}`; cancel approved; repayment `{amount, reference}`; defer `{period, reason}` |
+| **Accounting exports** (module `accounting_exports`; see ACCOUNTING_EXPORTS.md) | | |
+| GET / PUT `/accounting/ledger-map` | accounting.export / accounting.configure | Ledger names per head (`{entries:[{key, ledger}]}`; empty ledger removes); `heads` lists what to map |
+| GET `/accounting/sources` | accounting.export | Finalized/paid runs and approved/paid batches with their last export |
+| GET `/accounting/payroll-runs/:id/journal` · `/reimbursement-batches/:id/journal` | accounting.export | Voucher preview with `missing` heads and `balanced` |
+| GET `/accounting/payroll-runs/:id/export?format=csv\|tally_xml` · `/reimbursement-batches/:id/export` | accounting.export | Download (refused while heads are unmapped); logged and audited |
 | **Overtime** (module `overtime`; see OVERTIME.md) | | |
 | GET `/overtime/eligible` | overtime.self | My days with recorded overtime still to claim, and the payout options |
 | POST `/overtime/claims` | overtime.self | Claim `{workDate, minutes, payout, reason}` → manager, then HR approval |
