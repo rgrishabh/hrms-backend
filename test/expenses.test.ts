@@ -95,7 +95,7 @@ describe('approval and payment', () => {
     const other = await Client.login(app, T.host, T.users.other!.email);
     expect((await other.get(`/api/v1/expenses/claims/${claimId}`)).statusCode).toBe(404);
     const step1 = (await mgr.get('/api/v1/approvals/inbox')).json().items.find((x: { entity_id: string }) => x.entity_id === claimId);
-    expect(step1.summary).toBe('PPE and travel — Nov: ₹1,849.50');
+    expect(step1.summary).toBe('PPE and travel — Nov');
     expect((await fin1.get('/api/v1/approvals/inbox')).json().items.some((x: { entity_id: string }) => x.entity_id === claimId)).toBe(false); // not yet
     await mgr.post(`/api/v1/approvals/${step1.id}/act`, { action: 'approve' });
     const step2 = (await fin1.get('/api/v1/approvals/inbox')).json().items.find((x: { entity_id: string }) => x.entity_id === claimId);

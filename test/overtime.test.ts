@@ -92,8 +92,8 @@ describe('overtime', () => {
 
   it('payroll pays approved overtime once, at the configured rate on the salary of the day worked', async () => {
     const run = (await pay.post('/api/v1/payroll/runs', { period: PERIOD, legalEntityId: T.legalEntityId })).json().id;
-    for (let i = 0; i < 2; i++) expect((await pay.post(`/api/v1/payroll/runs/${run}/compute`)).statusCode).toBe(200); // recompute does not double it
-    const item = (await pay.get(`/api/v1/payroll/runs/${run}`)).json().items[0];
+    for (let i = 0; i < 2; i++) expect((await pay.post(`/api/v1/payroll/runs/${run}/compute?reveal=1`)).statusCode).toBe(200); // recompute does not double it
+    const item = (await pay.get(`/api/v1/payroll/runs/${run}?reveal=1`)).json().items[0];
     const ot = item.lines.filter((l: { code: string }) => l.code === 'OT');
     // 26000 BASIC ÷ 26 days ÷ 8 h = 125/h; 2 h × 2 = 500. HRA is not in the ordinary-rate basis.
     expect(ot).toHaveLength(1);
@@ -109,8 +109,8 @@ describe('overtime', () => {
     const x = await hr.post(`/api/v1/overtime/claims/${id}/cancel`, { reason: 'Recorded against the wrong day' });
     expect(x.json()).toMatchObject({ ok: true, payrollRunToRecompute: PERIOD });
     expect((await pay.post(`/api/v1/payroll/runs/${run}/submit`)).statusCode).toBe(409);
-    await pay.post(`/api/v1/payroll/runs/${run}/compute`);
-    expect((await pay.get(`/api/v1/payroll/runs/${run}`)).json().items[0].lines.some((l: { code: string }) => l.code === 'OT')).toBe(false);
+    await pay.post(`/api/v1/payroll/runs/${run}/compute?reveal=1`);
+    expect((await pay.get(`/api/v1/payroll/runs/${run}?reveal=1`)).json().items[0].lines.some((l: { code: string }) => l.code === 'OT')).toBe(false);
     expect((await pay.post(`/api/v1/payroll/runs/${run}/cancel`, { reason: 'test cleanup' })).statusCode).toBeLessThan(300);
   });
 

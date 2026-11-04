@@ -53,7 +53,7 @@ describe('F-2 year-end carry-forward', () => {
     const pay = await Client.login(app, w.T.host, w.T.users.payroll!.email);
     const [sep] = await ownerQuery<{ id: string }>(`INSERT INTO separations (tenant_id, employee_id, kind, reason, notice_date, notice_days_required, requested_lwd, approved_lwd, status, initiated_by)
       VALUES ($1,$2,'resignation','Fixture','2025-05-01',30,'2025-06-30','2025-06-30','approved',$3) RETURNING id`, [w.T.id, w.empId, w.T.users.hr!.id]);
-    const s = await pay.get(`/api/v1/payroll/fnf-suggestions/${w.empId}`);
+    const s = await pay.get(`/api/v1/payroll/fnf-suggestions/${w.empId}?reveal=1`);
     expect(s.statusCode, s.body).toBe(200);
     // 10 carried into 2025 plus 15 accrued in 2025; neither the old closed year nor anything else.
     expect(s.json().leaveBalances.find((l: { code: string }) => l.code === 'EL').balance).toBe('25.00');

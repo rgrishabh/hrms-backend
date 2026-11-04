@@ -52,7 +52,7 @@ describe('enforcement and enrolment', () => {
     expect(recovery).toHaveLength(10);
     expect((await hr.get('/api/v1/employees')).statusCode).toBe(200); // this session is verified
     const [u] = await ownerQuery<{ mfa_secret_enc: string; mfa_recovery_hashes: string[] }>(`SELECT mfa_secret_enc, mfa_recovery_hashes FROM users WHERE id=$1`, [T.users.hr!.id]);
-    expect(u!.mfa_secret_enc).toMatch(/^v1\./);
+    expect(u!.mfa_secret_enc).toMatch(/^v2\./);
     expect(u!.mfa_secret_enc).not.toContain(secret);
     expect(u!.mfa_recovery_hashes.some((h) => recovery.includes(h))).toBe(false); // hashes only
   });

@@ -67,7 +67,8 @@ describe('travel', () => {
     expect((await other.get(`/api/v1/travel/requests/${id}`)).statusCode).toBe(404);
     expect((await emp.get('/api/v1/travel/requests?scope=all')).statusCode).toBe(403);
     const step = await approve(mgr, id);
-    expect(step.summary).toMatch(/Pune → Taloja MIDC, .* estimate ₹6,500$/);
+    expect(step.summary).toMatch(/Pune → Taloja MIDC, /);
+    expect(step.summary).not.toMatch(/6,?500/);
     const t = await get(id);
     expect(t).toMatchObject({ status: 'approved', estimate_total: '6500.00', on_duty_note: null });
     expect(t.field_duty_id).toBeTruthy();
@@ -99,7 +100,7 @@ describe('travel', () => {
     expect((await get(id)).settlement).toMatchObject({ advancePaid: '4000.00', claimed: '3000.00', advanceAdjusted: '3000.00', reimbursable: '0.00', outstanding: '1000.00' });
     expect((await fin.post(`/api/v1/travel/requests/${id}/close`)).json().error.message).toMatch(/marked it completed/);
     expect((await emp.post(`/api/v1/travel/requests/${id}/complete`)).statusCode).toBe(200);
-    expect((await fin.post(`/api/v1/travel/requests/${id}/close`)).json().error.message).toMatch(/₹1,000 of the advance is still outstanding/);
+    expect((await fin.post(`/api/v1/travel/requests/${id}/close`)).json().error.message).toMatch(/Part of the advance is still outstanding/);
     expect((await fin.post(`/api/v1/travel/requests/${id}/advance-returned`, { amount: 1500, note: 'Cash' })).statusCode).toBe(400);
     expect((await fin.post(`/api/v1/travel/requests/${id}/advance-returned`, { amount: 1000, note: 'Returned in cash to accounts' })).json()).toMatchObject({ outstanding: '0.00' });
     expect((await fin.post(`/api/v1/travel/requests/${id}/close`)).statusCode).toBe(200);

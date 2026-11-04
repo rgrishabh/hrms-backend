@@ -5,7 +5,7 @@ import { mkdtempSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import type { FastifyInstance } from 'fastify';
-import { makeApp, createTenant, Client, ownerQuery, flags, inApp, multipart, type TenantFixture } from './helpers.js';
+import { makeApp, createTenant, Client, ownerQuery, flags, inApp, multipart, type TenantFixture, seal } from './helpers.js';
 import { TEST_OWNER_URL } from './env.js';
 import { notifyUsers } from '../src/core/notify/service.js';
 import { generateDemo } from '../src/db/demo.js';
@@ -160,8 +160,8 @@ describe('report snapshots', () => {
     const on = await makeApp({ ...flags('default,reports.advanced') });
     const T = await createTenant();
     const hrId = T.users.hr!.id;
-    const [s] = await ownerQuery<{ id: string }>(`INSERT INTO report_snapshots (tenant_id, owner_id, report_key, name, params, scope, columns, rows, row_count, recipient_ids, expires_at)
-      VALUES ($1,$2,'leave_taken','L','{}','all','[]','[]',0,$3, now() + interval '1 day') RETURNING id`, [T.id, hrId, [hrId]]);
+    const [s] = await ownerQuery<{ id: string }>(`INSERT INTO report_snapshots (tenant_id, owner_id, report_key, name, params, scope, columns, data_enc, row_count, recipient_ids, expires_at)
+      VALUES ($1,$2,'leave_taken','L','{}','all','[]',$4,0,$3, now() + interval '1 day') RETURNING id`, [T.id, hrId, [hrId], seal({ rows: [], totals: null })]);
     const hrOff = await Client.login(off, T.host, T.users.hr!.email);
     const hrOn = await Client.login(on, T.host, T.users.hr!.email);
     expect((await hrOff.get('/api/v1/reports/snapshots')).json().items).toEqual([]);

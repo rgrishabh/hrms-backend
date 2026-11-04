@@ -1,6 +1,6 @@
 import type { FastifyInstance } from 'fastify';
 import { expect } from 'vitest';
-import { Client, ownerQuery, type TenantFixture } from './helpers.js';
+import { Client, ownerQuery, seal, type TenantFixture } from './helpers.js';
 
 export interface PayrollWorld { app: FastifyInstance; T: TenantFixture; pay: Client; hr: Client }
 
@@ -13,8 +13,8 @@ export async function seedComponents(T: TenantFixture, extra: { code: string; ta
 }
 
 export async function activeSalary(T: TenantFixture, employeeId: string, effectiveFrom: string, amounts: Record<string, number>) {
-  const [s] = await ownerQuery<{ id: string }>(`INSERT INTO employee_salaries (tenant_id, employee_id, effective_from, amounts, reason, status, created_by, approved_at)
-    VALUES ($1,$2,$3,$4,'fixture','active',$5,now()) RETURNING id`, [T.id, employeeId, effectiveFrom, JSON.stringify(amounts), T.users.payroll!.id]);
+  const [s] = await ownerQuery<{ id: string }>(`INSERT INTO employee_salaries (tenant_id, employee_id, effective_from, amounts_enc, reason, status, created_by, approved_at)
+    VALUES ($1,$2,$3,$4,'fixture','active',$5,now()) RETURNING id`, [T.id, employeeId, effectiveFrom, seal(amounts), T.users.payroll!.id]);
   return s!.id;
 }
 
@@ -36,14 +36,14 @@ export async function createRun(pay: Client, T: TenantFixture, period: string, o
 }
 
 export async function compute(pay: Client, runId: string) {
-  const r = await pay.post(`/api/v1/payroll/runs/${runId}/compute`);
+  const r = await pay.post(`/api/v1/payroll/runs/${runId}/compute?reveal=1`);
   expect(r.statusCode, r.body).toBe(200);
   return r.json();
 }
 
 export interface Item { employee_id: string; lop_days: string; paid_days: string; employed_days: string; gross: string; net: string; hold: boolean; warnings: string[]; lines: { code: string; amount: number; basis?: string }[] }
 export async function itemOf(pay: Client, runId: string, employeeId: string): Promise<Item | undefined> {
-  const r = await pay.get(`/api/v1/payroll/runs/${runId}`);
+  const r = await pay.get(`/api/v1/payroll/runs/${runId}?reveal=1`);
   expect(r.statusCode, r.body).toBe(200);
   return (r.json().items as Item[]).find((i) => i.employee_id === employeeId);
 }

@@ -2,7 +2,7 @@ import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import pg from 'pg';
 import { randomBytes } from 'node:crypto';
 import type { FastifyInstance } from 'fastify';
-import { makeApp, Client, ownerQuery, flags } from './helpers.js';
+import { makeApp, Client, ownerQuery, flags, seal } from './helpers.js';
 import { readXlsx } from './helpers.js';
 import { TEST_OWNER_URL } from './env.js';
 import { generateDemo } from '../src/db/demo.js';
@@ -35,7 +35,7 @@ beforeAll(async () => {
 afterAll(async () => { await app.close(); });
 
 const run = async (who: string, key: string, q = '') => {
-  const r = await as[who]!.get(`/api/v1/reports/${key}${q ? `?${q}` : ''}`);
+  const r = await as[who]!.get(`/api/v1/reports/${key}?reveal=1${q ? `&${q}` : ''}`);
   expect(r.statusCode, r.body).toBe(200);
   return r.json() as Report;
 };
@@ -125,8 +125,9 @@ describe('reports', () => {
     const [draft] = await ownerQuery<{ id: string }>(`INSERT INTO payroll_runs (tenant_id, legal_entity_id, period, status, created_by)
       SELECT $1, le.id, $2, 'computed', (SELECT id FROM users WHERE tenant_id=$1 LIMIT 1) FROM legal_entities le WHERE le.tenant_id=$1 LIMIT 1 RETURNING id`, [tid, today.slice(0, 7)]);
     for (const [rid, k] of [[run1!.id, 1], [draft!.id, 100]] as const) {
-      await ownerQuery(`INSERT INTO payroll_items (tenant_id, run_id, employee_id, days_in_period, employed_days, lop_days, paid_days, lines, gross, deductions, net, employer_cost, calc_version)
-        SELECT $1, $2, id, 30, 30, 1, 29, '[]', 30000*$3, 2000*$3, 28000*$3, 31800*$3, 1 FROM employees WHERE tenant_id=$1 AND status='active' ORDER BY employee_code LIMIT 3`, [tid, rid, k]);
+      await ownerQuery(`INSERT INTO payroll_items (tenant_id, run_id, employee_id, days_in_period, employed_days, lop_days, paid_days, data_enc, calc_version)
+        SELECT $1, $2, id, 30, 30, 1, 29, $3, 1 FROM employees WHERE tenant_id=$1 AND status='active' AND user_id IS NULL ORDER BY employee_code LIMIT 3`,
+        [tid, rid, seal({ lines: [], gross: 30000 * k, deductions: 2000 * k, net: 28000 * k, employerCost: 31800 * k, warnings: [] })]);
     }
     await ownerQuery(`UPDATE payroll_runs SET status='finalized', finalized_at=now() WHERE id=$1`, [run1!.id]);
     const r = await run('payroll', 'payroll_cost');

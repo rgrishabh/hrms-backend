@@ -42,8 +42,7 @@ describe('employee personal details', () => {
     expect(r.missing).toEqual(['An emergency contact', 'Current address', 'Permanent address', 'A provident fund nominee']);
     expect(r.edit).toMatchObject({ contacts: 'direct', addresses: 'direct', nominees: 'approval', education: 'approval', experience: 'approval' });
     expect((await profile(hr)).json().edit.nominees).toBe('direct');
-    expect((await profile(pay)).statusCode).toBe(200);                 // payroll reads full records
-    expect((await profile(pay)).json().edit.contacts).toBeNull();       // … but does not edit them
+    expect((await profile(pay)).statusCode).toBe(404);                 // personal details (L3) are the employee's and HR's, not payroll's
     expect((await profile(other)).statusCode).toBe(404);               // a colleague
     expect((await profile(mgr)).statusCode).toBe(404);                 // the manager does not see personal details
   });

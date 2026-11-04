@@ -8,6 +8,7 @@ import { FieldCipher, hashPassword } from '../src/core/crypto/index.js';
 import { loadEnv } from '../src/config/env.js';
 import { FEATURES, FEATURE_MAP, type FeatureDefinition } from '../src/core/features/registry.js';
 import { withFeatures } from '../src/core/features/state.js';
+import { withMode } from '../src/core/policy/mode.js';
 import { runQueued } from '../src/core/jobs/scheduler.js';
 import { TEST_APP_URL, TEST_BRAND, TEST_OWNER_URL } from './env.js';
 
@@ -34,13 +35,19 @@ export async function makeApp(overrides: Record<string, string> = {}, opts: { ma
     ...overrides,
   });
   const pool = createPool(env.DATABASE_URL, 5);
-  const app = await buildApp({ env, pool, cipher: new FieldCipher(env.DATA_ENCRYPTION_KEY), mailerOverride: opts.mailerOverride, storeOverride: opts.storeOverride, pushOverride: opts.pushOverride, brandDirOverride: opts.brandDirOverride });
+  const app = await buildApp({ env, pool, cipher: new FieldCipher(env.DATA_ENCRYPTION_KEY!), mailerOverride: opts.mailerOverride, storeOverride: opts.storeOverride, pushOverride: opts.pushOverride, brandDirOverride: opts.brandDirOverride });
   app.addHook('onClose', async () => { await pool.end(); });
   return app;
 }
 
 /** Run something outside a request (a job, a service function) as that app would: with its feature set. */
-export const inApp = <T>(app: FastifyInstance, fn: () => T): T => withFeatures(app.deps.env.enabledFeatures, fn);
+export const inApp = <T>(app: FastifyInstance, fn: () => T): T => withFeatures(app.deps.env.enabledFeatures, () => withMode(app.deps.env.ORG_MANAGEMENT_MODE, fn));
+
+/** The key every test app uses, for fixtures written straight to the database. */
+export const TEST_KEY = Buffer.alloc(32, 7).toString('base64');
+export const testCipher = new FieldCipher(TEST_KEY);
+export const seal = (v: unknown) => testCipher.encrypt(JSON.stringify(v));
+export const unseal = <T>(token: string) => JSON.parse(testCipher.decrypt(token)) as T;
 
 /** Owner connection with RLS bypass — fixtures and white-box assertions only. */
 export async function ownerQuery<T extends pg.QueryResultRow = Record<string, unknown>>(sql: string, params: unknown[] = []): Promise<T[]> {

@@ -75,7 +75,8 @@ describe('F-14 approvals that would stick', () => {
   it('when nobody at all can act: administrators are warned and can reassign, within limits', async () => {
     const T = await createTenant();
     await ownerQuery(`UPDATE users SET status='disabled' WHERE id=$1`, [T.users.hr!.id]);
-    const id = await create(T, 'employee', [{ kind: 'permission', permission: 'payroll.approve' }]);
+    // Held by nobody here: administrators now hold payroll.approve themselves (salaries are visible only above their subject).
+    const id = await create(T, 'employee', [{ kind: 'permission', permission: 'expenses.approve' }]);
     const admin = await login(T, 'admin');
     const warned = await ownerQuery(`SELECT 1 FROM notifications WHERE tenant_id=$1 AND user_id=$2 AND kind='approval.no_approver'`, [T.id, T.users.admin!.id]);
     expect(warned.length).toBe(1);
@@ -107,7 +108,7 @@ describe('F-14 approvals that would stick', () => {
     const hr = await login(T, 'hr');
     const admin = await login(T, 'admin');
     await ownerQuery(`UPDATE user_roles SET role_key='finance_manager' WHERE user_id=$1 AND role_key='employee'`, [T.users.other!.id]);
-    const id = await create(T, 'employee', [{ kind: 'permission', permission: 'payroll.approve' }]);
+    const id = await create(T, 'employee', [{ kind: 'permission', permission: 'expenses.approve' }]);
     expect(await inInbox(hr, id)).toBe(false);
     await ownerQuery(`UPDATE users SET status='disabled' WHERE id=$1`, [T.users.other!.id]);
     expect((await admin.put('/api/v1/tenant/settings/approvals.escalate_after_days', { value: 0 })).statusCode).toBe(200);

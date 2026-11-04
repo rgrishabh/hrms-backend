@@ -30,7 +30,7 @@ const approveFor = async (c: Client, entityId: string) => {
   const item = (await c.get('/api/v1/approvals/inbox')).json().items.find((x: { entity_id: string }) => x.entity_id === entityId);
   return c.post(`/api/v1/approvals/${item.id}/act`, { action: 'approve' });
 };
-const version = async (id: string) => (await hr.get(`/api/v1/recruitment/applications/${id}`)).json().version as number;
+const version = async (id: string) => (await hr.get(`/api/v1/recruitment/applications/${id}?reveal=1`)).json().version as number;
 const move = async (stage: string, extra: Record<string, unknown> = {}) => hr.post(`/api/v1/recruitment/applications/${appId}/move`, { stage, expectedVersion: await version(appId), ...extra });
 
 beforeAll(async () => {
@@ -57,15 +57,15 @@ describe('requisitions', () => {
     expect(r.statusCode).toBe(201);
     expect(r.json().code).toMatch(/^REQ-\d{4}$/);
     reqId = r.json().id;
-    const v = (await hr.get(`/api/v1/recruitment/requisitions/${reqId}`)).json().version;
+    const v = (await hr.get(`/api/v1/recruitment/requisitions/${reqId}?reveal=1`)).json().version;
     expect((await hr.put(`/api/v1/recruitment/requisitions/${reqId}`, { ...body, budgetCtcMax: 900000, expectedVersion: v })).statusCode).toBe(200); // HR sets the budget
-    expect((await mgr.get(`/api/v1/recruitment/requisitions/${reqId}`)).json().budget_ctc_max).toBeNull(); // redacted for the manager
-    expect((await hr.get(`/api/v1/recruitment/requisitions/${reqId}`)).json().budget_ctc_max).toBe('900000.00');
-    expect((await other.get(`/api/v1/recruitment/requisitions/${reqId}`)).statusCode).toBe(403);
+    expect((await mgr.get(`/api/v1/recruitment/requisitions/${reqId}?reveal=1`)).json().budget_ctc_max).toBeNull(); // redacted for the manager
+    expect((await hr.get(`/api/v1/recruitment/requisitions/${reqId}?reveal=1`)).json().budget_ctc_max).toBe('900000.00');
+    expect((await other.get(`/api/v1/recruitment/requisitions/${reqId}?reveal=1`)).statusCode).toBe(403);
     expect((await mgr.post(`/api/v1/recruitment/requisitions/${reqId}/submit`)).statusCode).toBe(200);
     expect((await approveFor(hr, reqId)).statusCode).toBe(200);
-    expect((await mgr.get(`/api/v1/recruitment/requisitions/${reqId}`)).json().status).toBe('approved');
-    expect((await mgr.get('/api/v1/recruitment/requisitions')).json().items.some((x: { id: string }) => x.id === reqId)).toBe(true);
+    expect((await mgr.get(`/api/v1/recruitment/requisitions/${reqId}?reveal=1`)).json().status).toBe('approved');
+    expect((await mgr.get('/api/v1/recruitment/requisitions?reveal=1')).json().items.some((x: { id: string }) => x.id === reqId)).toBe(true);
   });
 });
 
@@ -83,10 +83,10 @@ describe('candidates', () => {
     expect(dup.json().error.details.duplicates[0].id).toBe(candId);
     expect((await addCandidate(hr, { firstName: 'Ravi', email: 'ravi@mail.example', phone: '+91 98765 43210' })).statusCode).toBe(409); // shared phone…
     expect((await addCandidate(hr, { firstName: 'Ravi', email: 'ravi@mail.example', phone: '+91 98765 43210', confirmDuplicate: 'true' })).statusCode).toBe(201); // …confirmed
-    expect((await hr.get(`/api/v1/recruitment/candidates/${candId}`)).json().expected_ctc).toBe('850000.00');
-    expect((await hrExec.get(`/api/v1/recruitment/candidates/${candId}`)).json().expected_ctc).toBeNull();
-    expect((await emp.get(`/api/v1/recruitment/candidates/${candId}`)).statusCode).toBe(404);
-    expect((await emp.get('/api/v1/recruitment/candidates')).statusCode).toBe(403);
+    expect((await hr.get(`/api/v1/recruitment/candidates/${candId}?reveal=1`)).json().expected_ctc).toBe('850000.00');
+    expect((await hrExec.get(`/api/v1/recruitment/candidates/${candId}?reveal=1`)).json().expected_ctc).toBeNull();
+    expect((await emp.get(`/api/v1/recruitment/candidates/${candId}?reveal=1`)).statusCode).toBe(404);
+    expect((await emp.get('/api/v1/recruitment/candidates?reveal=1')).statusCode).toBe(403);
     const [row] = await ownerQuery<{ retain_until: string }>(`SELECT retain_until::text FROM candidates WHERE id=$1`, [candId]);
     expect(row!.retain_until > today).toBe(true);
   });
@@ -105,7 +105,7 @@ describe('pipeline and interviews', () => {
     expect((await move('interview', { note: 'Strong CRM experience' })).statusCode).toBe(200);
     const stale = await hr.post(`/api/v1/recruitment/applications/${appId}/move`, { stage: 'offer', expectedVersion: 1 });
     expect(stale.statusCode).toBe(409);
-    const d = (await hr.get(`/api/v1/recruitment/applications/${appId}`)).json();
+    const d = (await hr.get(`/api/v1/recruitment/applications/${appId}?reveal=1`)).json();
     expect(d.events.map((e: { to_stage: string }) => e.to_stage)).toEqual(['applied', 'screening', 'interview']);
   });
 
@@ -125,7 +125,7 @@ describe('pipeline and interviews', () => {
     expect((await other.get('/api/v1/recruitment/interviews/mine')).json().items.length).toBe(2);
     expect((await emp.post(`/api/v1/recruitment/interviews/${ivId}/feedback`, { rating: 5, recommendation: 'yes', notes: 'Not on the panel at all' })).statusCode).toBe(404);
     expect((await mgr.post(`/api/v1/recruitment/interviews/${ivId}/feedback`, { rating: 5, recommendation: 'strong_yes', notes: 'Ran ICP-OES calibration flawlessly' })).statusCode).toBe(200);
-    const seen = (await other.get(`/api/v1/recruitment/applications/${appId}`)).json();
+    const seen = (await other.get(`/api/v1/recruitment/applications/${appId}?reveal=1`)).json();
     expect(seen.access).toBe('panel');
     expect(seen.events).toEqual([]);
     const mgrRow = seen.interviews[0].panel.find((p: { user_id: string }) => p.user_id === T.users.manager!.id);
@@ -134,7 +134,7 @@ describe('pipeline and interviews', () => {
     const done = await other.post(`/api/v1/recruitment/interviews/${ivId}/feedback`, { rating: 4, recommendation: 'yes', notes: 'Good method knowledge; weak on uncertainty' });
     expect(done.json()).toMatchObject({ ok: true, interviewCompleted: true });
     expect((await other.post(`/api/v1/recruitment/interviews/${ivId}/feedback`, { rating: 1, recommendation: 'no', notes: 'Changing my mind later' })).statusCode).toBe(409);
-    const after = (await other.get(`/api/v1/recruitment/applications/${appId}`)).json();
+    const after = (await other.get(`/api/v1/recruitment/applications/${appId}?reveal=1`)).json();
     expect(after.interviews[0].panel.find((p: { user_id: string }) => p.user_id === T.users.manager!.id).rating).toBe(5);
     expect((await ownerQuery(`SELECT 1 FROM audit_logs WHERE tenant_id=$1 AND action='recruitment.resume_downloaded'`, [T.id])).length).toBe(1);
   });
@@ -157,7 +157,7 @@ describe('offers and hire', () => {
     expect(inbox.summary).not.toMatch(/950|9,50|ctc/i);
     expect((await hr.get('/api/v1/approvals/inbox')).json().items.some((x: { entity_id: string }) => x.entity_id === offerId)).toBe(false); // requester
     expect((await approveFor(hrHead, offerId)).statusCode).toBe(200);
-    expect((await hrExec.get(`/api/v1/recruitment/applications/${appId}`)).json().offers[0].annual_ctc).toBeNull();
+    expect((await hrExec.get(`/api/v1/recruitment/applications/${appId}?reveal=1`)).json().offers[0].annual_ctc).toBeNull();
     expect((await hr.post(`/api/v1/recruitment/offers/${offerId}/hire`, { employeeCode: 'EMP-REC1' })).statusCode).toBe(409); // not accepted yet
     expect((await hr.post(`/api/v1/recruitment/offers/${offerId}/accepted`, {})).statusCode).toBe(409); // must be sent first
     expect((await hr.post(`/api/v1/recruitment/offers/${offerId}/sent`, {})).statusCode).toBe(200);
@@ -173,8 +173,8 @@ describe('offers and hire', () => {
       `SELECT status, reporting_manager_id, designation, date_of_joining::text, probation_end_date::text, first_name FROM employees WHERE id=$1`, [h.json().employeeId]);
     expect(e).toMatchObject({ status: 'pre_joining', reporting_manager_id: T.users.manager!.employeeId, designation: 'Senior Chemist', date_of_joining: addDays(today, 30), first_name: 'Asha' });
     expect(e!.probation_end_date > e!.date_of_joining).toBe(true);
-    expect((await hr.get(`/api/v1/recruitment/applications/${appId}`)).json().stage).toBe('hired');
-    expect((await hr.get(`/api/v1/recruitment/requisitions/${reqId}`)).json()).toMatchObject({ status: 'closed', filled: 1 });
+    expect((await hr.get(`/api/v1/recruitment/applications/${appId}?reveal=1`)).json().stage).toBe('hired');
+    expect((await hr.get(`/api/v1/recruitment/requisitions/${reqId}?reveal=1`)).json()).toMatchObject({ status: 'closed', filled: 1 });
     expect((await hr.post(`/api/v1/recruitment/offers/${offerId}/hire`, { employeeCode: 'EMP-REC2' })).statusCode).toBe(409);
   });
 });
@@ -188,10 +188,10 @@ describe('hiring approver', () => {
     expect(r.statusCode).toBe(201);
     expect((await hrHead.post(`/api/v1/recruitment/requisitions/${r.json().id}/submit`)).statusCode).toBe(200);
     expect((await approveFor(director, r.json().id)).statusCode).toBe(200);
-    const req = (await director.get(`/api/v1/recruitment/requisitions/${r.json().id}`)).json();
+    const req = (await director.get(`/api/v1/recruitment/requisitions/${r.json().id}?reveal=1`)).json();
     expect(req).toMatchObject({ status: 'approved', budget_ctc_max: '700000.00' });
     // read access to the pipeline, including compensation on offers
-    expect((await director.get(`/api/v1/recruitment/applications/${appId}`)).json().offers[0].annual_ctc).toBe('950000.00');
+    expect((await director.get(`/api/v1/recruitment/applications/${appId}?reveal=1`)).json().offers[0].annual_ctc).toBe('950000.00');
     // but no changes to candidates, stages or offers
     expect((await addCandidate(director, { email: 'x.y@mail.example' })).statusCode).toBe(403);
     expect((await director.post('/api/v1/recruitment/applications', { requisitionId: r.json().id, candidateId: candId })).statusCode).toBe(403);
@@ -221,7 +221,7 @@ describe('retention and erasure', () => {
     expect((await hrExec.post(`/api/v1/recruitment/candidates/${ravi}/anonymize`, { reason: 'Candidate asked us to delete their data' })).statusCode).toBe(200);
     expect((await hrExec.post(`/api/v1/recruitment/candidates/${ravi}/anonymize`, { reason: 'again' })).statusCode).toBe(404);
     const off = await makeApp({ ...flags('default') });
-    try { expect((await (await Client.login(off, T.host, T.users.hr!.email)).get('/api/v1/recruitment/requisitions')).json().error.code).toBe('not_found'); }
+    try { expect((await (await Client.login(off, T.host, T.users.hr!.email)).get('/api/v1/recruitment/requisitions?reveal=1')).json().error.code).toBe('not_found'); }
     finally { await off.close(); }
   });
 });

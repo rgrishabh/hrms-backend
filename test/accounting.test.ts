@@ -34,7 +34,7 @@ beforeAll(async () => {
   await approve(fin, s.json().id);
   runId = (await pay.post('/api/v1/payroll/runs', { period: THIS, legalEntityId: T.legalEntityId })).json().id;
   expect((await pay.post('/api/v1/attendance/locks', { periodStart: `${THIS}-01`, periodEnd: lastDay(THIS) })).statusCode).toBeLessThan(300);
-  expect((await pay.post(`/api/v1/payroll/runs/${runId}/compute`)).statusCode).toBe(200);
+  expect((await pay.post(`/api/v1/payroll/runs/${runId}/compute?reveal=1`)).statusCode).toBe(200);
   await pay.post(`/api/v1/payroll/runs/${runId}/acknowledge-warnings`, { note: 'Test run without statutory rules' });
   expect((await pay.post(`/api/v1/payroll/runs/${runId}/submit`)).statusCode).toBe(200);
   await approve(fin, runId);
@@ -60,7 +60,7 @@ describe('accounting exports', () => {
   it('the payroll journal balances, and nothing is exported until every head has a ledger', async () => {
     const j = (await pay.get(`/api/v1/accounting/payroll-runs/${runId}/journal`)).json();
     // The figures are the run's own (prorated for the unpaid days this test employee has).
-    const item = (await pay.get(`/api/v1/payroll/runs/${runId}`)).json().items[0];
+    const item = (await pay.get(`/api/v1/payroll/runs/${runId}?reveal=1`)).json().items[0];
     const line = (code: string) => item.lines.find((l: { code: string }) => l.code === code).amount.toFixed(2);
     expect(j).toMatchObject({ date: lastDay(THIS), balanced: true, total: Number(item.gross).toFixed(2) });
     expect(j.entries).toEqual([
@@ -88,7 +88,7 @@ describe('accounting exports', () => {
     expect(x.body).toContain(`<LEDGERNAME>Salary Payable</LEDGERNAME><ISDEEMEDPOSITIVE>No</ISDEEMEDPOSITIVE><AMOUNT>${net}</AMOUNT>`);
     expect(x.body).not.toContain('SVCURRENTCOMPANY');
     expect((await ownerQuery(`SELECT format FROM accounting_exports WHERE tenant_id=$1 AND source_id=$2 ORDER BY created_at`, [T.id, runId])).map((r) => r.format)).toEqual(['csv', 'tally_xml']);
-    const src = (await pay.get('/api/v1/accounting/sources')).json();
+    const src = (await pay.get('/api/v1/accounting/sources?reveal=1')).json();
     expect(src.runs.find((r: { id: string }) => r.id === runId).last_export).toMatchObject({ format: 'tally_xml' });
   });
 

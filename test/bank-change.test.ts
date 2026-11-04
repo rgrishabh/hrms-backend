@@ -61,7 +61,7 @@ describe('F-9 bank account changes', () => {
   it('a pending change can be seen by those who may read bank details, masked', async () => {
     const o = T.users.other!.employeeId!;
     expect((await hr.put(url(o), { ...BODY, accountNumber: '555555554444' })).statusCode).toBe(202);
-    const p = await hr.get(`${url(o)}/pending`);
+    const p = await hr.get(`${url(o)}/pending?reveal=1`);
     expect(p.statusCode).toBe(200);
     expect(p.json().pending).toMatchObject({ accountNumberMasked: 'XXXXXX4444', ifsc: 'SBIN0001234' });
     expect((await emp.get(`${url(o)}/pending`)).statusCode).toBe(403);

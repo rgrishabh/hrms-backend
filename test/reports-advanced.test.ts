@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import type { FastifyInstance } from 'fastify';
-import { makeApp, createTenant, Client, ownerQuery, type TenantFixture, flags } from './helpers.js';
+import { makeApp, createTenant, Client, ownerQuery, type TenantFixture, flags, seal } from './helpers.js';
 import { periodParams, nextRun } from '../src/modules/reports/service.js';
 import { REPORT_MAP } from '../src/modules/reports/registry.js';
 
@@ -97,8 +97,8 @@ describe('F-10 snapshots follow the reader, not the owner', () => {
   let W: TenantFixture; let exec: Client; let owner: Client; let payrollApp: FastifyInstance;
   const columns = [{ key: 'department', label: 'Department', type: 'text' }, { key: 'headcount', label: 'Headcount', type: 'int' }, { key: 'leave_days', label: 'Leave days', type: 'number' },
     { key: 'payroll_gross', label: 'Payroll gross', type: 'money' }, { key: 'employer_cost', label: 'Employer cost', type: 'money' }];
-  const snapshot = async (reportKey: string, cols: unknown[], rows: unknown[], totals: unknown, recipients: string[]) => (await ownerQuery<{ id: string }>(`INSERT INTO report_snapshots (tenant_id, owner_id, report_key, name, params, scope, columns, rows, totals, notes, row_count, recipient_ids, expires_at)
-    VALUES ($1,$2,$3,'Snap','{}','all',$4,$5,$6,'[]',$7,$8, now() + interval '1 day') RETURNING id`, [W.id, W.users.payroll!.id, reportKey, JSON.stringify(cols), JSON.stringify(rows), JSON.stringify(totals), rows.length, recipients]))[0]!.id;
+  const snapshot = async (reportKey: string, cols: unknown[], rows: unknown[], totals: unknown, recipients: string[]) => (await ownerQuery<{ id: string }>(`INSERT INTO report_snapshots (tenant_id, owner_id, report_key, name, params, scope, columns, data_enc, notes, row_count, recipient_ids, expires_at)
+    VALUES ($1,$2,$3,'Snap','{}','all',$4,$5,'[]',$6,$7, now() + interval '1 day') RETURNING id`, [W.id, W.users.payroll!.id, reportKey, JSON.stringify(cols), seal({ rows, totals }), rows.length, recipients]))[0]!.id;
 
   beforeAll(async () => {
     payrollApp = await makeApp({ ...flags('default,payroll,reports.advanced') });

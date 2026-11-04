@@ -61,8 +61,10 @@ describe('setup', () => {
     const inbox = (await fin.get('/api/v1/approvals/inbox')).json().items.find((x: { entity_id: string }) => x.entity_id === r.json().id);
     expect(inbox.summary).not.toMatch(/20000|26000/);
     await approve(fin, r.json().id);
-    expect((await pay.get(`/api/v1/payroll/employees/${empId}/salaries`)).json().items[0].status).toBe('active');
-    expect((await emp.get(`/api/v1/payroll/employees/${empId}/salaries`)).statusCode).toBe(403);
+    expect((await pay.get(`/api/v1/payroll/employees/${empId}/salaries?reveal=1`)).json().items[0].status).toBe('active');
+    // The person themselves may read their own, and only that.
+    expect((await emp.get(`/api/v1/payroll/employees/${empId}/salaries?reveal=1`)).statusCode).toBe(200);
+    expect((await emp.get(`/api/v1/payroll/employees/${T.users.other!.employeeId}/salaries?reveal=1`)).statusCode).toBe(403);
   });
 
   it('statutory rules are validated, and only a second person can verify (activate) them; PAN is encrypted', async () => {
@@ -73,7 +75,7 @@ describe('setup', () => {
     for (const id of ids) expect((await fin.post(`/api/v1/payroll/statutory-rules/${id}/verify`)).statusCode).toBe(200);
     expect((await pay.put(`/api/v1/payroll/statutory-rules/${ids[0]}`, { kind: 'pf', scope: 'IN', effectiveFrom: '2026-04-01', params: PF, sourceReference: 'edit after activation' })).statusCode).toBe(409);
     expect((await pay.put(`/api/v1/payroll/employees/${empId}/statutory`, { uan: '100200300400', pan: 'ABCDE1234F', taxRegime: 'new' })).statusCode).toBe(200);
-    const s = (await pay.get(`/api/v1/payroll/employees/${empId}/statutory`)).json();
+    const s = (await pay.get(`/api/v1/payroll/employees/${empId}/statutory?reveal=1`)).json();
     expect(s.pan).toBe('XXXXXX1234');
     const [row] = await ownerQuery<{ pan_enc: string }>(`SELECT pan_enc FROM employee_statutory WHERE employee_id=$1`, [empId]);
     expect(row!.pan_enc).not.toContain('ABCDE');
@@ -92,9 +94,9 @@ describe('payroll run', () => {
     expect(r.statusCode).toBe(201);
     runId = r.json().id;
     expect((await pay.post('/api/v1/payroll/runs', { period: PERIOD, legalEntityId: T.legalEntityId })).statusCode).toBe(409);
-    const c = (await pay.post(`/api/v1/payroll/runs/${runId}/compute`)).json();
+    const c = (await pay.post(`/api/v1/payroll/runs/${runId}/compute?reveal=1`)).json();
     expect(c.totals.employees).toBe(1); // only employees with an active salary are on payroll
-    const run = (await pay.get(`/api/v1/payroll/runs/${runId}`)).json();
+    const run = (await pay.get(`/api/v1/payroll/runs/${runId}?reveal=1`)).json();
     const item = run.items[0];
     expect(item).toMatchObject({ employed_days: '30.00', lop_days: '2.50', paid_days: '27.50' });
     const l = (code: string) => item.lines.find((x: { code: string }) => x.code === code)?.amount;
@@ -109,10 +111,10 @@ describe('payroll run', () => {
   it('adjustments force a recompute; LOP can be corrected', async () => {
     expect((await pay.post(`/api/v1/payroll/runs/${runId}/adjustments`, { employeeId: empId, kind: 'lop_days', label: 'Absence on 3rd regularized late', amount: -1 })).statusCode).toBe(201);
     expect((await pay.post(`/api/v1/payroll/runs/${runId}/adjustments`, { employeeId: empId, kind: 'earning', label: 'Night sampling allowance', amount: 1500 })).statusCode).toBe(201);
-    expect((await pay.get(`/api/v1/payroll/runs/${runId}`)).json().status).toBe('draft');
+    expect((await pay.get(`/api/v1/payroll/runs/${runId}?reveal=1`)).json().status).toBe('draft');
     expect((await pay.post(`/api/v1/payroll/runs/${runId}/submit`)).statusCode).toBe(409);
-    await pay.post(`/api/v1/payroll/runs/${runId}/compute`);
-    const item = (await pay.get(`/api/v1/payroll/runs/${runId}`)).json().items[0];
+    await pay.post(`/api/v1/payroll/runs/${runId}/compute?reveal=1`);
+    const item = (await pay.get(`/api/v1/payroll/runs/${runId}?reveal=1`)).json().items[0];
     expect(item.lop_days).toBe('1.50');
     expect(item.lines.some((x: { name: string }) => x.name === 'Night sampling allowance')).toBe(true);
   });
@@ -127,22 +129,22 @@ describe('payroll run', () => {
     // The result predates the lock, so it has to be recomputed and approved again.
     expect((await pay.post(`/api/v1/payroll/runs/${runId}/finalize`)).json().error.message).toMatch(/Reopen the run/);
     expect((await pay.post(`/api/v1/payroll/runs/${runId}/reopen`)).statusCode).toBe(200);
-    expect((await pay.post(`/api/v1/payroll/runs/${runId}/compute`)).statusCode).toBe(200);
+    expect((await pay.post(`/api/v1/payroll/runs/${runId}/compute?reveal=1`)).statusCode).toBe(200);
     await pay.post(`/api/v1/payroll/runs/${runId}/acknowledge-warnings`, { note: 'ESI not applicable at this branch — confirmed with consultant' });
     expect((await pay.post(`/api/v1/payroll/runs/${runId}/submit`)).statusCode).toBe(200);
     await approve(fin, runId);
     expect((await pay.post(`/api/v1/payroll/runs/${runId}/finalize`)).json()).toMatchObject({ ok: true, payslips: 1 });
-    await expect(ownerQuery(`UPDATE payroll_items SET net=0 WHERE run_id=$1`, [runId])).rejects.toThrow(/finalized and cannot be changed/);
+    await expect(ownerQuery(`UPDATE payroll_items SET data_enc='x' WHERE run_id=$1`, [runId])).rejects.toThrow(/finalized and cannot be changed/);
     expect((await pay.post(`/api/v1/payroll/runs/${runId}/adjustments`, { employeeId: empId, kind: 'earning', label: 'Too late', amount: 1 })).statusCode).toBe(409);
     expect((await pay.post(`/api/v1/payroll/employees/${empId}/salaries`, { effectiveFrom: '2026-09-15', amounts: { BASIC: 1 }, reason: 'Backdated into a closed month' })).statusCode).toBe(409);
   });
 
   it('employees see their own payslip only; exports are audited and mask accounts without bank access', async () => {
-    const mine = (await emp.get('/api/v1/payroll/payslips/mine')).json().items;
+    const mine = (await emp.get('/api/v1/payroll/payslips/mine?reveal=1')).json().items;
     expect(mine).toHaveLength(1);
-    const slip = (await emp.get(`/api/v1/payroll/payslips/${mine[0].id}`)).json();
+    const slip = (await emp.get(`/api/v1/payroll/payslips/${mine[0].id}?reveal=1`)).json();
     expect(slip).toMatchObject({ period: PERIOD, pan: 'XXXXXX1234X', account: 'XXXXXX9012' });
-    expect((await other.get(`/api/v1/payroll/payslips/${mine[0].id}`)).statusCode).toBe(404);
+    expect((await other.get(`/api/v1/payroll/payslips/${mine[0].id}?reveal=1`)).statusCode).toBe(404);
     expect((await ownerQuery(`SELECT 1 FROM notifications WHERE tenant_id=$1 AND user_id=$2 AND kind='payroll.payslip'`, [T.id, T.users.employee!.id])).length).toBe(1);
     const bankFull = (await pay.get(`/api/v1/payroll/runs/${runId}/bank.csv`)).body;
     expect(bankFull.split('\r\n')[1]).toMatch(/123456789012$/);       // payroll manager holds employees.bank.read
@@ -163,7 +165,7 @@ describe('payroll run', () => {
   it('F&F runs need an approved separation; module off → 403', async () => {
     expect((await pay.post('/api/v1/payroll/runs', { period: PERIOD, legalEntityId: T.legalEntityId, kind: 'fnf', employeeId: empId })).statusCode).toBe(409);
     const off = await makeApp({ ...flags('default') });
-    try { expect((await (await Client.login(off, T.host, T.users.payroll!.email)).get('/api/v1/payroll/runs')).json().error.code).toBe('not_found'); }
+    try { expect((await (await Client.login(off, T.host, T.users.payroll!.email)).get('/api/v1/payroll/runs?reveal=1')).json().error.code).toBe('not_found'); }
     finally { await off.close(); }
     void hr;
   });

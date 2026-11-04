@@ -76,7 +76,7 @@ describe('restricted bank details', () => {
     expect((await fin.post(`/api/v1/approvals/${change.json().approvalRequestId}/act`, { action: 'approve' })).statusCode).toBe(200);
     const [row] = await ownerQuery<{ account_number_enc: string }>(`SELECT account_number_enc FROM employee_bank_accounts WHERE employee_id=$1`, [id]);
     expect(row!.account_number_enc).not.toContain('123456789012');
-    expect(row!.account_number_enc.startsWith('v1.')).toBe(true);
+    expect(row!.account_number_enc.startsWith('v2.')).toBe(true);
 
     const payroll = await Client.login(app, T.host, T.users.payroll!.email);
     const view = (await payroll.get(`/api/v1/employees/${id}/bank-account`)).json();
@@ -89,14 +89,15 @@ describe('restricted bank details', () => {
 
   it('segregation of duties: tenant admin and colleagues cannot view, payroll cannot edit, employee sees own', async () => {
     const id = T.users.employee!.employeeId!;
+    // The Super-admin is above the employee in the salary hierarchy, so it can read this on an explicit reveal; masked otherwise.
     const admin = await Client.login(app, T.host, T.users.admin!.email);
-    expect((await admin.get(`/api/v1/employees/${id}/bank-account`)).statusCode).toBe(403);
+    expect((await admin.get(`/api/v1/employees/${id}/bank-account`)).json().accountNumber).toBeNull();
     const other = await Client.login(app, T.host, T.users.other!.email);
-    expect((await other.get(`/api/v1/employees/${id}/bank-account`)).statusCode).toBe(403);
+    expect((await other.get(`/api/v1/employees/${id}/bank-account?reveal=1`)).statusCode).toBe(403);
     const payroll = await Client.login(app, T.host, T.users.payroll!.email);
     expect((await payroll.put(`/api/v1/employees/${id}/bank-account`, { accountHolder: 'X Y', accountNumber: '999999999', ifsc: 'SBIN0001234' })).statusCode).toBe(403);
     const self = await Client.login(app, T.host, T.users.employee!.email);
-    expect((await self.get(`/api/v1/employees/${id}/bank-account`)).json().accountNumberMasked).toBe('XXXXXX9012');
+    expect((await self.get(`/api/v1/employees/${id}/bank-account?reveal=1`)).json().accountNumberMasked).toBe('XXXXXX9012');
   });
 
   it('validates IFSC format', async () => {

@@ -20,15 +20,15 @@ const approve = async (c: Client, entityId: string) => {
   expect(r.statusCode, r.body).toBe(200);
   return item;
 };
-const loan = async (id: string) => (await emp.get(`/api/v1/loans/requests/${id}`)).json();
+const loan = async (id: string) => (await emp.get(`/api/v1/loans/requests/${id}?reveal=1`)).json();
 const runFor = async (period: string) => {
   const r = await pay.post('/api/v1/payroll/runs', { period, legalEntityId: T.legalEntityId });
   expect(r.statusCode, r.body).toBe(201);
   return r.json().id as string;
 };
 const compute = async (run: string) => {
-  expect((await pay.post(`/api/v1/payroll/runs/${run}/compute`)).statusCode).toBe(200);
-  return (await pay.get(`/api/v1/payroll/runs/${run}`)).json().items.find((i: { employee_id: string }) => i.employee_id === empId);
+  expect((await pay.post(`/api/v1/payroll/runs/${run}/compute?reveal=1`)).statusCode).toBe(200);
+  return (await pay.get(`/api/v1/payroll/runs/${run}?reveal=1`)).json().items.find((i: { employee_id: string }) => i.employee_id === empId);
 };
 const loanLines = (item: { lines: { code: string }[] }) => item.lines.filter((l) => l.code.startsWith('LOAN'));
 
@@ -65,10 +65,11 @@ describe('advances and loans', () => {
     expect(r.json().installmentAmount).toBe(3334);
     adv = r.json().id;
     expect((await apply(emp, { amount: 2000, installments: 1 })).json().error.message).toMatch(/already a salary advance in progress/);
-    expect((await other.get(`/api/v1/loans/requests/${adv}`)).statusCode).toBe(404);
+    expect((await other.get(`/api/v1/loans/requests/${adv}?reveal=1`)).statusCode).toBe(404);
     expect((await emp.get('/api/v1/approvals/inbox')).json().items.some((x: { entity_id: string }) => x.entity_id === adv)).toBe(false);
     const step = await approve(mgr, adv);
-    expect(step.summary).toMatch(/salary advance ₹10,000 in 3 instalment\(s\) from/);
+    expect(step.summary).toMatch(/salary advance request$/);
+    expect(step.summary).not.toMatch(/10,?000/);
     expect((await loan(adv)).status).toBe('pending');
     await approve(fin, adv);
     expect((await loan(adv)).status).toBe('approved');
@@ -84,11 +85,11 @@ describe('advances and loans', () => {
     expect(loanLines(item)).toEqual([expect.objectContaining({ code: 'LOAN', kind: 'deduction', amount: 3334, name: 'Salary advance recovery (1 of 3)' })]);
     expect(Number(item.net)).toBe(26000 - 3334);
     expect((await loan(adv)).balance).toMatchObject({ outstanding: '6666.00', inProgress: '3334.00', recovered: '0.00' });
-    expect((await pay.post(`/api/v1/loans/requests/${adv}/repayment`, { amount: 7000, reference: 'Cash' })).json().error.message).toMatch(/Only ₹6,666 is outstanding \(₹3,334 more is in a payroll run/);
-    expect((await pay.post(`/api/v1/loans/requests/${adv}/repayment`, { amount: 6666, reference: 'Cash receipt 114' })).json()).toMatchObject({ closed: false, outstanding: '0.00' });
+    expect((await pay.post(`/api/v1/loans/requests/${adv}/repayment`, { amount: 7000, reference: 'Cash' })).json().error.message).toMatch(/more than is outstanding .*payroll run being processed/);
+    expect((await pay.post(`/api/v1/loans/requests/${adv}/repayment`, { amount: 6666, reference: 'Cash receipt 114' })).json()).toMatchObject({ closed: false });
     // Finalize the run: then the instalment is recovered and the advance is closed.
     expect((await pay.post('/api/v1/attendance/locks', { periodStart: `${THIS}-01`, periodEnd: lastDay(THIS) })).statusCode).toBeLessThan(300);
-    await pay.post(`/api/v1/payroll/runs/${run}/compute`);
+    await pay.post(`/api/v1/payroll/runs/${run}/compute?reveal=1`);
     await pay.post(`/api/v1/payroll/runs/${run}/acknowledge-warnings`, { note: 'Test run: attendance not calculated' });
     expect((await pay.post(`/api/v1/payroll/runs/${run}/submit`)).statusCode).toBe(200);
     await approve(fin, run);

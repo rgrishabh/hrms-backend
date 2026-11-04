@@ -177,7 +177,7 @@ describe('F-3 full-and-final and regular runs never pay the same days', () => {
     expect(await itemOf(p, reg, id)).toBeTruthy();
     const fnf = await createRun(p, W, '2026-04', { kind: 'fnf', employeeId: id });
     await compute(p, fnf);
-    expect((await p.get(`/api/v1/payroll/runs/${reg}`)).json().status).toBe('draft');
+    expect((await p.get(`/api/v1/payroll/runs/${reg}?reveal=1`)).json().status).toBe('draft');
     expect((await p.post(`/api/v1/payroll/runs/${reg}/submit`)).statusCode).toBe(409);
     await compute(p, reg);
     expect(await itemOf(p, reg, id)).toBeUndefined();
@@ -235,7 +235,7 @@ describe('F-7 finalize refuses a stale result', () => {
     expect(stale.statusCode).toBe(409);
     expect(stale.json().error.message).toMatch(/recompute|reopen/i);
     expect((await p.post(`/api/v1/payroll/runs/${id}/reopen`)).statusCode).toBe(200);
-    expect((await p.get(`/api/v1/payroll/runs/${id}`)).json().status).toBe('draft');
+    expect((await p.get(`/api/v1/payroll/runs/${id}?reveal=1`)).json().status).toBe('draft');
     await compute(p, id);
     expect(Number((await itemOf(p, id, e))!.lop_days)).toBeGreaterThan(0);
     await toApproved(p, f, id);
@@ -316,10 +316,10 @@ describe('other payroll findings (AUDIT 4.2)', () => {
     const put = (b: unknown) => p.put(`/api/v1/payroll/employees/${e}/statutory`, b);
     expect((await put({ uan: '100200300400', esiIpNumber: '1234567890', pfMemberId: 'PF1', ptState: 'Goa', taxRegime: 'old', pfExcluded: true })).statusCode).toBe(200);
     expect((await put({ taxRegime: 'new' })).statusCode).toBe(200);
-    let s = (await p.get(`/api/v1/payroll/employees/${e}/statutory`)).json();
+    let s = (await p.get(`/api/v1/payroll/employees/${e}/statutory?reveal=1`)).json();
     expect(s).toMatchObject({ uan: '100200300400', esi_ip_number: '1234567890', pf_member_id: 'PF1', pt_state: 'Goa', tax_regime: 'new', pf_excluded: true });
     expect((await put({ uan: null })).statusCode).toBe(200);
-    s = (await p.get(`/api/v1/payroll/employees/${e}/statutory`)).json();
+    s = (await p.get(`/api/v1/payroll/employees/${e}/statutory?reveal=1`)).json();
     expect(s.uan).toBeNull();
     expect(s.esi_ip_number).toBe('1234567890');
   });
@@ -364,7 +364,7 @@ describe('F-12 held pay', () => {
   it('held pay is not a final recovery: the loan stays open and shows the amount in progress', async () => {
     expect(await status()).toBe('disbursed');
     const hrc = await Client.login(loansApp, W.host, W.users.hr!.email);
-    const d = (await hrc.get(`/api/v1/loans/requests/${loan}`)).json();
+    const d = (await hrc.get(`/api/v1/loans/requests/${loan}?reveal=1`)).json();
     expect(d.recovered ?? d.balance?.recovered).toBe('0.00');
     expect(d.inProgress ?? d.balance?.inProgress).toBe('1000.00');
   });
@@ -381,11 +381,11 @@ describe('F-12 held pay', () => {
     expect((await f.post(url, { reason: 'Documents received' })).statusCode).toBe(409);
     expect(await status()).toBe('closed');
     const emp = await Client.login(loansApp, W.host, W.users.employee!.email);
-    expect((await emp.get('/api/v1/payroll/payslips/mine')).json().items).toHaveLength(1);
+    expect((await emp.get('/api/v1/payroll/payslips/mine?reveal=1')).json().items).toHaveLength(1);
     expect((await ownerQuery(`SELECT 1 FROM notifications WHERE tenant_id=$1 AND user_id=$2 AND kind='payroll.payslip'`, [W.id, W.users.employee!.id])).length).toBe(1);
     expect((await p.get(`/api/v1/payroll/runs/${run}/bank.csv`)).body).not.toContain('123456789012');   // the original file does not change
     expect((await p.get(`/api/v1/payroll/runs/${run}/bank-released.csv`)).body).toContain('123456789012');
-    await expect(ownerQuery(`UPDATE payroll_items SET net=1 WHERE run_id=$1`, [run])).rejects.toThrow(/cannot be changed/);
+    await expect(ownerQuery(`UPDATE payroll_items SET data_enc='x' WHERE run_id=$1`, [run])).rejects.toThrow(/cannot be changed/);
   });
 
   it('release is for held items of finalized runs', async () => {
