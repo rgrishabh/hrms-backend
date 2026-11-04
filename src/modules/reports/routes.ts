@@ -126,6 +126,23 @@ export async function reportRoutes(app: FastifyInstance) {
     });
   });
 
+  /** People who may receive this saved report: active users who can see it for the whole organization. */
+  app.get('/saved/:id/recipients', async (req) => {
+    const a = tenantActor(req);
+    const { id } = z.object({ id: Uuid }).parse(req.params);
+    return a.tx(async (db) => {
+      await requireFeature(db, a.tenantId, ADV);
+      const s = await ownSaved(db, a, id);
+      const def = REPORT_MAP.get(s.report_key)!;
+      if (scopeOf(def, viewer(a)) !== 'all') return { items: [] };
+      const users = (await db.query<{ id: string; display_name: string; email: string }>(`SELECT id, display_name, email FROM users WHERE tenant_id=$1 AND status='active' AND id <> $2 ORDER BY display_name`,
+        [a.tenantId, a.user.userId])).rows;
+      const items = [];
+      for (const u of users) { const v = await viewerOf(db, a.tenantId, u.id); if (v && scopeOf(def, v) === 'all') items.push({ id: u.id, name: u.display_name, email: u.email }); }
+      return { items };
+    });
+  });
+
   app.delete('/saved/:id/schedule', async (req) => {
     const a = tenantActor(req);
     const { id } = z.object({ id: Uuid }).parse(req.params);

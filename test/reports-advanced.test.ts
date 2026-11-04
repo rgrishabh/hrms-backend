@@ -53,6 +53,9 @@ describe('advanced reporting', () => {
 
     expect((await hr.put(`/api/v1/reports/saved/${id}/schedule`, { frequency: 'weekly' })).json().error.message).toMatch(/day of the week/);
     expect((await hr.put(`/api/v1/reports/saved/${id}/schedule`, { frequency: 'daily', recipientIds: [T.users.employee!.id] })).json().error.message).toMatch(/1 recipient\(s\) cannot see/);
+    const eligible = (await hr.get(`/api/v1/reports/saved/${id}/recipients`)).json().items.map((u: { id: string }) => u.id);
+    expect(eligible).toContain(T.users.payroll!.id);
+    expect(eligible).not.toContain(T.users.employee!.id);
     const sc = await hr.put(`/api/v1/reports/saved/${id}/schedule`, { frequency: 'daily', recipientIds: [T.users.payroll!.id] });
     expect(sc.json()).toMatchObject({ ok: true });
 

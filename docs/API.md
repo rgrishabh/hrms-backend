@@ -67,6 +67,7 @@ Base path `/api/v1`. JSON in and out. Each installation serves one organization;
 | POST `/field-duty/requests/:id/withdraw` · `/cancel` · `/report` | employee / field_duty.manage | Withdraw pending; cancel approved (employee before it starts, HR until the dates are locked); report the outcome once started |
 | **Advanced reporting** (module `reports.advanced`; see REPORTS.md) | | |
 | GET / POST `/reports/saved` · DELETE `/reports/saved/:id` | can run the report | My saved reports `{reportKey, name, params}` |
+| GET `/reports/saved/:id/recipients` | owner | Who may receive it (organization-wide access) |
 | PUT / DELETE `/reports/saved/:id/schedule` | owner | `{frequency, weekday?, dayOfMonth?, period, recipientIds, enabled}`; recipients need organization-wide access |
 | GET `/reports/snapshots` · `/reports/snapshots/:id` · `/reports/snapshots/:id/export.csv` | recipient with access | Scheduled reports sent to me |
 | **Overtime** (module `overtime`; see OVERTIME.md) | | |
