@@ -374,6 +374,26 @@ export async function generateDemo(c: pg.Client | pg.PoolClient, opts: { passwor
     [tid, uid('lab.manager'), uid('quality'), today, addDays(today, 4), 'At the NABL assessor training in Bengaluru']);
   say('approvals: lab manager away, quality manager covering; escalation after 3 days');
 
+  // ---- rosters: from next Monday the instrument room runs two shifts on a 14-day rotation (5 mornings, 2 off,
+  // 5 evenings, 2 off), with two crews half a cycle apart so both shifts are always covered. Past attendance is unchanged.
+  {
+    const mk = async (code: string, name: string, start: string, end: string) => (await q<{ id: string }>(`INSERT INTO shifts (tenant_id, code, name, start_time, end_time,
+      break_minutes, grace_minutes, early_exit_grace_minutes, half_day_min_minutes, full_day_min_minutes) VALUES ($1,$2,$3,$4,$5,30,10,10,240,420) RETURNING id`, [tid, code, name, start, end])).rows[0]!.id;
+    const morning = await mk('MORN', 'Instrument room — morning', '06:00', '14:00');
+    const evening = await mk('EVE', 'Instrument room — evening', '14:00', '22:00');
+    const days = [...Array(5).fill(morning), null, null, ...Array(5).fill(evening), null, null];
+    const pid = (await q<{ id: string }>(`INSERT INTO roster_patterns (tenant_id, code, name, days, created_by) VALUES ($1,'INST-2S','Instrument room 2-shift (14 days)',$2,$3) RETURNING id`,
+      [tid, days, adminId])).rows[0]!.id;
+    const wd = new Date(`${today}T00:00:00Z`).getUTCDay();
+    const monday = addDays(today, ((8 - wd) % 7) || 7);
+    const crew = emps.filter((x) => x.dept === 'INST' && !personaIds.has(x.id)).slice(0, 6);
+    for (const [i, e] of crew.entries()) {
+      await q(`INSERT INTO roster_assignments (tenant_id, employee_id, pattern_id, effective_from, start_day, created_by) VALUES ($1,$2,$3,$4,$5,$6)`,
+        [tid, e.id, pid, monday, i % 2 === 0 ? 0 : 7, adminId]);
+    }
+    say(`rosters: ${crew.length} instrument-room staff on INST-2S from ${monday}`);
+  }
+
   // ---- training & competency
   const course: Record<string, string> = {};
   for (const [code, name, kind, months] of [['INDUCTION', 'Laboratory induction', 'induction', null], ['CHEM-SAFETY', 'Chemical safety & spill response', 'safety', 12], ['QMS', 'ISO/IEC 17025 awareness', 'quality', 24],

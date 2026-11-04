@@ -82,7 +82,7 @@ async function evaluateRequest(db: Db, a: TenantActor, body: z.infer<typeof Requ
   if (body.startDate >= today && t.min_notice_days > 0 && daysBetween(today, body.startDate) < t.min_notice_days && !a.has('leave.manage')) {
     throw badRequest(`${t.name} must be requested at least ${t.min_notice_days} day(s) in advance`);
   }
-  const nonWorking = await nonWorkingDates(db, a.tenantId, e.branch_id, body.startDate, body.endDate);
+  const nonWorking = await nonWorkingDates(db, a.tenantId, e.branch_id, body.startDate, body.endDate, e.id);
   const { days, perDate } = countDays(body.startDate, body.endDate, body.startHalf as StartHalf, body.endHalf as EndHalf, nonWorking, t.count_non_working_days);
   if (days.isZero()) throw badRequest('The selected dates contain no working days');
   if (t.max_consecutive_days !== null && days.greaterThan(t.max_consecutive_days)) throw badRequest(`${t.name} allows at most ${t.max_consecutive_days} day(s) at a time`);
