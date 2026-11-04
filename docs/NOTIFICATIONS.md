@@ -42,4 +42,4 @@ Amazon SES: verify the sender domain (SPF/DKIM) and use the SES SMTP endpoint fo
 
 ## Not yet implemented
 
-SMS and push, per-event preferences, digest emails, expiry reminders (contracts, probation, certifications: these come with the respective modules), and a bounce/complaint feedback loop.
+Per-event preferences, digest emails, expiry reminders (contracts, probation, certifications: these come with the respective modules), and a bounce/complaint feedback loop.

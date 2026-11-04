@@ -1,11 +1,10 @@
 import type { Env } from '../config/env.js';
 import { buildPublicConfig, type PublicConfig } from '../config/installation.js';
 import { setDeploymentDefaults, setDeploymentLimits } from './settings/service.js';
-import { resolveEnabledModules, setEnabledModules, setEmailTransportConfigured, setSmsTransportConfigured, setStorageConfigured } from './features/state.js';
+import { resolveEnabledModules, setEnabledModules, setEmailTransportConfigured, setStorageConfigured } from './features/state.js';
 import { setMfaFloor } from './auth/mfa.js';
 import { setEmailBrand } from './notify/service.js';
 import { createMailer, getMailer, setMailer } from './notify/mailer.js';
-import { createSmsSender, getSmsSender, setSmsSender } from './notify/sms.js';
 import { createStore, getStore, setStore } from './storage/index.js';
 import { registerAllApprovalHandlers } from './workflow/handlers.js';
 
@@ -13,8 +12,6 @@ export interface RuntimeOverrides {
   /** Tests: keep an injected mailer instead of building one from env. */
   mailerOverride?: boolean;
   storeOverride?: boolean;
-  /** Tests: keep an injected SMS sender. */
-  smsOverride?: boolean;
 }
 
 export interface Runtime { publicConfig: PublicConfig }
@@ -36,8 +33,6 @@ export function initRuntime(env: Env, log: RuntimeLog, overrides: RuntimeOverrid
   // The API needs the mailer too: it decides whether to enqueue. Only the worker's scheduler ever sends.
   if (!overrides.mailerOverride) setMailer(createMailer(env, log));
   setEmailTransportConfigured(!!getMailer());
-  if (!overrides.smsOverride) setSmsSender(createSmsSender(env, log));
-  setSmsTransportConfigured(!!getSmsSender());
   if (!overrides.storeOverride) setStore(createStore(env));
   setStorageConfigured(!!getStore());
   registerAllApprovalHandlers();

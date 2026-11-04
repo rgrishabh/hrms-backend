@@ -141,3 +141,20 @@ describe('reminders', () => {
     expect((await inbox(hr)).items.filter((x: { kind: string }) => x.kind === 'approval.reminder').length).toBe(1);
   });
 });
+
+describe('there is no SMS', () => {
+  it('tables and preference are gone, and so are the routes and the preference field', async () => {
+    const a = await makeApp();
+    const T = await createTenant();
+    const rows = await ownerQuery<{ n: string }>(`SELECT count(*) AS n FROM information_schema.tables WHERE table_schema='public' AND table_name IN ('sms_outbox','sms_templates')`);
+    expect(rows[0]!.n).toBe('0');
+    const cols = await ownerQuery<{ n: string }>(`SELECT count(*) AS n FROM information_schema.columns WHERE table_name='users' AND column_name='sms_notifications'`);
+    expect(cols[0]!.n).toBe('0');
+    const hr = await Client.login(a, T.host, T.users.hr!.email);
+    expect((await hr.get('/api/v1/sms/templates')).statusCode).toBe(404);
+    const me = (await hr.get('/api/v1/auth/me')).json();
+    expect(me.preferences).not.toHaveProperty('smsNotifications');
+    expect(me.capabilities).not.toHaveProperty('notifications.sms');
+    await a.close();
+  });
+});

@@ -13,7 +13,7 @@ Every module in the feature registry (34) is built and `available`; none is `pla
 | 4 | Isolation, domains | ✅ | One installation per customer (Compose project or AWS account); hosts from deployment config; tenant scoping and Postgres RLS kept as defence in depth | |
 | 5 | Feature registry, module states, safe disable | ✅ | `ENABLED_MODULES` per installation, validated at startup; supported / enabled / configured / operational; every route of a switched-off module refused | |
 | 6 | Configuration layers, precedence | ✅ | Deployment config (env, validated) / secrets / business settings (DB) / deployment defaults | |
-| 7 | Admin settings | ✅ | General, attendance, security, organization, users, audit, installation view; module settings (payroll, expenses, SMS, accounting, …) | |
+| 7 | Admin settings | ✅ | General, attendance, security, organization, users, audit, installation view; module settings (payroll, expenses, accounting, …) | |
 | 8 | Roles & permissions | ✅ | 12 system roles, segregation of duties, grantable-role limits, server-side checks; TOTP MFA enforced for privileged roles; organization-defined roles (Settings → Roles) within the same grant limits, MFA-enforced when they carry privileged permissions; approval delegation (docs/APPROVALS.md) | |
 | 9 | Employee information | ✅ | Master, history, import, duplicates, encrypted bank details, statutory IDs (PAN encrypted, UAN, ESIC), documents with restricted access and expiry; emergency contacts, addresses, nominees, education, previous employment, with employee changes to the verified sections approved by HR (docs/EMPLOYEE_RECORD.md) | |
 | 10 | Recruitment & lifecycle | ✅ | Requisitions, candidates with consent and erasure, pipeline, blind panel feedback, approved offers, hire; onboarding / exit checklists, probation, separations, exit interview, access ended after last working day (docs/RECRUITMENT.md, docs/LIFECYCLE.md) | Offer-letter documents, careers page ⬜ |
@@ -28,7 +28,7 @@ Every module in the feature registry (34) is built and `available`; none is `pla
 | 19 | Lab competency & training | ✅ | Training records with validity; competency, technical authorizations with maker-checker, expiry, suspension, matrix, `/check` for LIMS (docs/COMPETENCY.md) | Training sessions, effectiveness evaluation, LIMS API keys ⬜ |
 | 20 | Performance, assets, exit | ✅ | Review cycles, weighted goals, self / manager / HR reviews; assets with calibration and exit clearance | 360° feedback, PIPs, asset depreciation ⬜ |
 | 21 | Workflow engine | ✅ | Sequential steps, maker-checker, approval parties with exclusions, comments, history, subject withdrawal; delegation while away and time-based escalation (docs/APPROVALS.md) | Parallel steps ⬜ (amount-based routing lives in the modules, e.g. travel and expenses) |
-| 22 | Notifications & integrations | ✅ | In-app + email (outbox, retries, templates, opt-out, reminders); SMS through the organization's provider with DLT templates (docs/NOTIFICATIONS.md, docs/SMS.md) | Push ⬜ |
+| 22 | Notifications & integrations | ✅ | In-app + email (outbox, retries, templates, opt-out, reminders)| Push ⬜ |
 | 23 | Reporting | ✅ | Report registry with team / organization scope, CSV and Excel (.xlsx) export, also for the payroll register and policy acknowledgements; saved and scheduled reports delivered in HRMS; department overview (docs/REPORTS.md) | PDF export ⬜ |
 | 24–25 | Data model | ✅ | Implemented for every module above | |
 | 26 | API | ✅ | `/api/v1/...`, zod validation, consistent errors, pagination, rate limiting (docs/API.md) | |

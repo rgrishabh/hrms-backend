@@ -67,8 +67,6 @@ let emailTransportConfigured = false;
 let storageConfigured = false;
 export function setStorageConfigured(v: boolean) { storageConfigured = v; }
 export function setEmailTransportConfigured(v: boolean) { emailTransportConfigured = v; }
-let smsTransportConfigured = false;
-export function setSmsTransportConfigured(v: boolean) { smsTransportConfigured = v; }
 
 /** Per-feature configuration checks beyond required settings. */
 const CONFIG_CHECKS: Record<string, (db: Db, tenantId: string) => Promise<{ configured: boolean; operational: FeatureState['operational']; note?: string }>> = {
@@ -80,11 +78,6 @@ const CONFIG_CHECKS: Record<string, (db: Db, tenantId: string) => Promise<{ conf
     configured: emailTransportConfigured, operational: 'not_applicable',
     note: emailTransportConfigured ? undefined : 'Email transport not configured (MAIL_TRANSPORT / SMTP_* deployment settings)',
   }),
-  'notifications.sms': async (db, tenantId) => {
-    if (!smsTransportConfigured) return { configured: false, operational: 'not_applicable', note: 'SMS provider not configured (SMS_TRANSPORT / SMS_HTTP_* deployment settings)' };
-    const n = Number((await db.query<{ n: string }>(`SELECT count(*) AS n FROM sms_templates WHERE tenant_id=$1 AND enabled`, [tenantId])).rows[0]!.n);
-    return { configured: true, operational: 'not_applicable', note: n ? undefined : 'No SMS templates yet: add the DLT-registered templates under Settings → SMS' };
-  },
   overtime: async (db, tenantId) => {
     const on = (await resolveSetting(db, tenantId, 'attendance.overtime_enabled')).value === true;
     return { configured: on, operational: 'not_applicable', note: on ? undefined : "Turn on 'Calculate overtime minutes' in the attendance policy" };

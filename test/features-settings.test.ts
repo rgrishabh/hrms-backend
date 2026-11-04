@@ -45,7 +45,6 @@ describe('deployment-controlled modules', () => {
   it('reports supported / enabled / configured / usable separately', async () => {
     expect(await mod(admin, 'attendance.web')).toMatchObject({ supported: true, enabled: false, usable: false, blockers: ['Not enabled for this installation'] });
     if (PLANNED) expect(await mod(admin, PLANNED)).toMatchObject({ supported: false, enabled: false });
-    expect(await mod(admin, 'notifications.sms')).toMatchObject({ supported: true, enabled: false, usable: false });
     expect(await mod(admin, 'attendance.biometric')).toMatchObject({ enabled: true, configured: false, usable: false });
     expect(await mod(admin, 'core.employees')).toMatchObject({ core: true, usable: true });
   });

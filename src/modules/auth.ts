@@ -107,9 +107,8 @@ export async function authRoutes(app: FastifyInstance, opts: { publicConfig: Pub
         mfa: { enabled: true, pending: true, enrollmentRequired: false }, roles: [], permissions: [], csrfToken: deriveCsrf(token),
         organization: { id: host.id, name: host.name }, preferences: null, capabilities: {} };
     }
-    const { features, timezone, dateFormat, emailNotifications, smsNotifications } = await withTenant(pool, u.tenantId, async (db) => ({
+    const { features, timezone, dateFormat, emailNotifications } = await withTenant(pool, u.tenantId, async (db) => ({
       emailNotifications: (await db.query<{ e: boolean }>('SELECT email_notifications AS e FROM users WHERE id=$1', [u.userId])).rows[0]?.e ?? true,
-      smsNotifications: (await db.query<{ s: boolean }>('SELECT sms_notifications AS s FROM users WHERE id=$1', [u.userId])).rows[0]?.s ?? true,
       features: await evaluateFeatures(db, u.tenantId!),
       timezone: await getSettingValue<string>(db, u.tenantId!, 'general.timezone'),
       dateFormat: await getSettingValue<string>(db, u.tenantId!, 'general.date_format'),
@@ -122,7 +121,7 @@ export async function authRoutes(app: FastifyInstance, opts: { publicConfig: Pub
       permissions: [...u.permissions].sort(),
       csrfToken: deriveCsrf(token),
       organization: { id: host.id, name: host.name },
-      preferences: { timezone, dateFormat, emailNotifications, smsNotifications },
+      preferences: { timezone, dateFormat, emailNotifications },
       // Central capability map: the UI decides module visibility from this only.
       capabilities: Object.fromEntries([...features.values()].map((f) => [f.key, f.usable])),
     };
@@ -153,10 +152,10 @@ export async function authRoutes(app: FastifyInstance, opts: { publicConfig: Pub
   app.put('/auth/preferences', async (req) => {
     const u = req.ctx.user;
     if (!u || !u.tenantId) throw unauthorized();
-    const body = z.object({ emailNotifications: z.boolean().optional(), smsNotifications: z.boolean().optional() }).parse(req.body);
+    const body = z.object({ emailNotifications: z.boolean().optional() }).parse(req.body);
     await withTenant(pool, u.tenantId, async (db) => {
-      await db.query('UPDATE users SET email_notifications=coalesce($3, email_notifications), sms_notifications=coalesce($4, sms_notifications), updated_at=now() WHERE tenant_id=$1 AND id=$2',
-        [u.tenantId, u.userId, body.emailNotifications ?? null, body.smsNotifications ?? null]);
+      await db.query('UPDATE users SET email_notifications=coalesce($3, email_notifications), updated_at=now() WHERE tenant_id=$1 AND id=$2',
+        [u.tenantId, u.userId, body.emailNotifications ?? null]);
       await audit(db, { tenantId: u.tenantId, actorId: u.userId, action: 'user.preferences_updated', category: 'data', metadata: body, requestId: req.id, ip: req.ip });
     });
     return { ok: true };

@@ -94,9 +94,6 @@ Base path `/api/v1`. JSON in and out. Each installation serves one organization;
 | GET `/accounting/sources` | accounting.export | Finalized/paid runs and approved/paid batches with their last export |
 | GET `/accounting/payroll-runs/:id/journal` · `/reimbursement-batches/:id/journal` | accounting.export | Voucher preview with `missing` heads and `balanced` |
 | GET `/accounting/payroll-runs/:id/export?format=csv\|tally_xml` · `/reimbursement-batches/:id/export` | accounting.export | Download (refused while heads are unmapped); logged and audited |
-| **SMS** (module `notifications.sms`; see SMS.md) | | |
-| GET `/sms/templates` · PUT / DELETE `/sms/templates/:kind` | settings.manage | DLT templates per notification kind `{dltTemplateId, text, enabled}` |
-| GET `/sms/outbox?status` · POST `/sms/test {phone, kind}` | settings.manage | Recent SMS (numbers masked); send a template now to check the provider |
 | **Advanced reporting** (module `reports.advanced`; see REPORTS.md) | | |
 | GET / POST `/reports/saved` · DELETE `/reports/saved/:id` | can run the report | My saved reports `{reportKey, name, params}` |
 | GET `/reports/saved/:id/recipients` | owner | Who may receive it (organization-wide access) |

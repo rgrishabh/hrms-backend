@@ -4,6 +4,7 @@
 
 ### Removed
 
+* SMS, entirely: the `sms_templates` and `sms_outbox` tables and `users.sms_notifications` (migration 039), `notifications.sms`, `/api/v1/sms/*`, `SMS_*`, `smsNotifications` in `/auth/me` and `PATCH /auth/preferences`.
 * `JOBS_ENABLED`: replaced by `PROCESS_ROLE=api|worker`. Only the worker runs the scheduler and sends email.
 
 ### Changed

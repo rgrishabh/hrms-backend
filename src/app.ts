@@ -36,7 +36,6 @@ import { fieldDutyRoutes } from './modules/field-duty/routes.js';
 import { travelRoutes } from './modules/travel/routes.js';
 import { loanRoutes } from './modules/loans/routes.js';
 import { accountingRoutes } from './modules/accounting/routes.js';
-import { smsRoutes } from './modules/sms/routes.js';
 import { assetRoutes } from './modules/assets/routes.js';
 import { reportRoutes } from './modules/reports/routes.js';
 import { dashboardRoutes } from './modules/dashboard/routes.js';
@@ -172,7 +171,6 @@ export async function buildApp(deps: AppDeps): Promise<FastifyInstance> {
   await app.register(travelRoutes, { prefix: '/api/v1/travel' });
   await app.register(loanRoutes, { prefix: '/api/v1/loans' });
   await app.register(accountingRoutes, { prefix: '/api/v1/accounting' });
-  await app.register(smsRoutes, { prefix: '/api/v1/sms' });
   await app.register(reportRoutes, { prefix: '/api/v1/reports' });
   await app.register(dashboardRoutes, { prefix: '/api/v1/dashboard' });
   await app.register(deviceIngestRoutes, { prefix: '/api/v1/devices' });
