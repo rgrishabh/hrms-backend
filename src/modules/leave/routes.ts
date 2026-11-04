@@ -1,7 +1,7 @@
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import { Decimal } from 'decimal.js';
-import { tenantActor, tenantActorAny, requireFeature, type TenantActor } from '../../core/http/context.js';
+import { tenantActor, tenantActorAny, requireFeature, type TenantActor, gateFeatures } from '../../core/http/context.js';
 import { audit } from '../../core/audit/audit.js';
 import { badRequest, conflict, forbidden, notFound } from '../../core/http/errors.js';
 import { IsoDate, PageQuery, offsetOf, paged, Uuid } from '../../core/http/pagination.js';
@@ -97,6 +97,7 @@ async function evaluateRequest(db: Db, a: TenantActor, body: z.infer<typeof Requ
 }
 
 export async function leaveRoutes(app: FastifyInstance) {
+  gateFeatures(app, 'leave');
   registerApprovalHandler('leave_request', {
     feature: 'leave', label: 'Leave request', requesterLink: '/leave',
     async onApproved(db, tenantId, requestId, actorId) {

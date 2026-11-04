@@ -1,6 +1,6 @@
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
-import { tenantActor, requireFeature, type TenantActor } from '../../core/http/context.js';
+import { tenantActor, requireFeature, type TenantActor, gateFeatures } from '../../core/http/context.js';
 import { audit } from '../../core/audit/audit.js';
 import { badRequest, conflict, forbidden, notFound } from '../../core/http/errors.js';
 import { IsoDate, Uuid } from '../../core/http/pagination.js';
@@ -32,6 +32,7 @@ async function goalAccess(db: Db, a: TenantActor, cycleId: string, employeeId: s
 }
 
 export async function performanceRoutes(app: FastifyInstance) {
+  gateFeatures(app, 'performance');
   app.get('/cycles', async (req) => {
     const a = tenantActor(req);
     return a.tx(async (db) => {

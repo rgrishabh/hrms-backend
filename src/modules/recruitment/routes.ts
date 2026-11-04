@@ -1,7 +1,7 @@
 import type { FastifyInstance, FastifyRequest } from 'fastify';
 import { z } from 'zod';
 import { createHash } from 'node:crypto';
-import { tenantActor, tenantActorAny, requireFeature, type TenantActor } from '../../core/http/context.js';
+import { tenantActor, tenantActorAny, requireFeature, type TenantActor, gateFeatures } from '../../core/http/context.js';
 import { audit } from '../../core/audit/audit.js';
 import { AppError, badRequest, conflict, forbidden, notFound } from '../../core/http/errors.js';
 import { IsoDate, PageQuery, offsetOf, paged, Uuid } from '../../core/http/pagination.js';
@@ -112,6 +112,7 @@ async function readMultipart(req: FastifyRequest, maxBytes: number) {
 }
 
 export async function recruitmentRoutes(app: FastifyInstance) {
+  gateFeatures(app, 'recruitment');
   const maxBytes = app.deps.env.STORAGE_MAX_FILE_MB * 1024 * 1024;
 
   // ------------------------------------------------------------ approvals

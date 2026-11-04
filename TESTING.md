@@ -19,7 +19,7 @@ scripts/smoke.sh                                  # end-to-end against a running
 | Check | Result |
 |---|---|
 | `npm run typecheck` (API + web) | exit 0 |
-| `npm test` | **259 passed, 0 failed** (28 files) |
+| `npm test` | **263 passed, 0 failed** (29 files) |
 | `npm run build` (API + web) | exit 0 |
 | `npm audit --omit=dev` | 0 vulnerabilities |
 | `scripts/smoke.sh` (dev installation via Vite proxy) | **16 passed** (incl. leave balances and preview) |

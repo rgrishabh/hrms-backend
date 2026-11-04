@@ -2,7 +2,7 @@ import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import { createHash } from 'node:crypto';
 import { Decimal } from 'decimal.js';
-import { tenantActor, tenantActorAny, requireFeature, type TenantActor } from '../../core/http/context.js';
+import { tenantActor, tenantActorAny, requireFeature, type TenantActor, gateFeatures } from '../../core/http/context.js';
 import { audit } from '../../core/audit/audit.js';
 import { AppError, badRequest, conflict, forbidden, notFound } from '../../core/http/errors.js';
 import { IsoDate, PageQuery, offsetOf, paged, Uuid } from '../../core/http/pagination.js';
@@ -52,6 +52,7 @@ async function recomputeTotal(db: Db, tenantId: string, claimId: string) {
 }
 
 export async function expenseRoutes(app: FastifyInstance) {
+  gateFeatures(app, 'expenses');
   registerApprovalHandler('expense_claim', {
     feature: 'expenses', label: 'Expense claim', requesterLink: '/expenses',
     async onApproved(db, tenantId, id) {
