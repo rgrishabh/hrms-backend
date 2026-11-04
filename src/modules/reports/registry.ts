@@ -21,11 +21,12 @@ export interface ParamDef {
   default: (c: DefaultCtx) => string | number | Promise<string | number>;
 }
 export type Params = Record<string, string | number>;
-export interface ReportCtx { db: Db; tenantId: string; today: string; /** null = whole organization */ team: string[] | null; has: (p: string) => boolean }
+export interface ReportCtx { db: Db; tenantId: string; today: string; /** null = whole organization */ team: string[] | null; has: (p: string) => boolean;
+  /** Whether a module is usable (cross-module reports leave out the parts that are not). */ usable: (f: string) => boolean }
 export interface ReportResult { columns: Column[]; rows: Row[]; totals: Row | null; notes: string[] }
 export interface ReportDef {
   key: string; name: string; description: string;
-  category: 'People' | 'Time & leave' | 'Pay & expenses' | 'Training & competency';
+  category: 'People' | 'Time & leave' | 'Pay & expenses' | 'Training & competency' | 'Across modules';
   feature?: string;
   access: { all: string[]; team?: string[] };
   params: ParamDef[];
@@ -397,7 +398,69 @@ const authorizationReviews: ReportDef = {
   },
 };
 
-export const REPORTS: readonly ReportDef[] = [headcount, attrition, joinersLeavers, attendance, leaveTaken, leaveBalances, payrollCost, expenses, trainingExpiry, authorizationReviews];
+/**
+ * One row per department across modules. Each block of columns appears only when its module is in use AND the
+ * person running the report may see that data (attendance, leave, overtime, expenses, payroll cost).
+ */
+const departmentOverview: ReportDef = {
+  key: 'department_overview', name: 'Department overview', category: 'Across modules', feature: 'reports.advanced',
+  description: 'Headcount, joiners and leavers, attendance, leave, overtime, expenses and payroll cost per department, for one period.',
+  access: { all: ['employees.read'] },
+  params: [fromDate(monthStart), toDate],
+  check: dateRange(366),
+  async run(c, p) {
+    const from = String(p.from); const to = String(p.to);
+    const rows = new Map<string, Row>();
+    const row = (dept: string) => { let r = rows.get(dept); if (!r) { r = { department: dept }; rows.set(dept, r); } return r; };
+    const merge = (list: Record<string, unknown>[], keys: string[]) => { for (const x of list) { const r = row(String(x.department)); for (const k of keys) r[k] = x[k] == null ? null : Number(x[k]); } };
+    const columns: Column[] = [{ key: 'department', label: 'Department', type: 'text' }, { key: 'headcount', label: 'Headcount', type: 'int' },
+      { key: 'joiners', label: 'Joined', type: 'int' }, { key: 'leavers', label: 'Left', type: 'int' }];
+    const notes: string[] = [];
+    merge((await c.db.query(`SELECT ${DEPT} AS department, count(*) FILTER (WHERE ${onDate('$3')})::int AS headcount,
+        count(*) FILTER (WHERE e.status <> 'pre_joining' AND e.date_of_joining BETWEEN $2 AND $3)::int AS joiners,
+        count(*) FILTER (WHERE e.exit_date BETWEEN $2 AND $3)::int AS leavers
+      FROM employees e ${EMP_JOINS} WHERE e.tenant_id=$1 GROUP BY 1`, [c.tenantId, from, to])).rows, ['headcount', 'joiners', 'leavers']);
+    const blocks: { on: boolean; cols: Column[]; sql: string; keys: string[] }[] = [
+      { on: c.usable('attendance') && c.has('attendance.read'), cols: [{ key: 'attendance_pct', label: 'Attendance %', type: 'percent' }],
+        keys: ['present', 'half', 'working', 'leave'],
+        sql: `SELECT ${DEPT} AS department, count(*) FILTER (WHERE ad.status IN ('present','on_duty'))::int AS present, count(*) FILTER (WHERE ad.status='half_day')::int AS half,
+            count(*) FILTER (WHERE ad.day_type='working' AND ad.status <> 'not_joined')::int AS working, count(*) FILTER (WHERE ad.status='on_leave')::int AS leave
+          FROM attendance_daily ad JOIN employees e ON e.tenant_id=ad.tenant_id AND e.id=ad.employee_id ${EMP_JOINS} WHERE ad.tenant_id=$1 AND ad.work_date BETWEEN $2 AND $3 GROUP BY 1` },
+      { on: c.usable('leave') && c.has('leave.read'), cols: [{ key: 'leave_days', label: 'Leave days', type: 'number' }], keys: ['leave_days'],
+        sql: `SELECT ${DEPT} AS department, round(sum(r.days),1) AS leave_days FROM leave_requests r JOIN employees e ON e.tenant_id=r.tenant_id AND e.id=r.employee_id ${EMP_JOINS}
+          WHERE r.tenant_id=$1 AND r.status='approved' AND r.start_date <= $3 AND r.end_date >= $2 GROUP BY 1` },
+      { on: c.usable('overtime') && c.has('overtime.read'), cols: [{ key: 'overtime_hours', label: 'Overtime approved (h)', type: 'number' }], keys: ['overtime_hours'],
+        sql: `SELECT ${DEPT} AS department, round(sum(o.minutes)/60.0,1) AS overtime_hours FROM overtime_claims o JOIN employees e ON e.tenant_id=o.tenant_id AND e.id=o.employee_id ${EMP_JOINS}
+          WHERE o.tenant_id=$1 AND o.status='approved' AND o.work_date BETWEEN $2 AND $3 GROUP BY 1` },
+      { on: c.usable('expenses') && c.has('expenses.read'), cols: [{ key: 'expenses', label: 'Expenses approved', type: 'money' }], keys: ['expenses'],
+        sql: `SELECT ${DEPT} AS department, sum(x.total) AS expenses FROM expense_claims x JOIN employees e ON e.tenant_id=x.tenant_id AND e.id=x.employee_id ${EMP_JOINS}
+          WHERE x.tenant_id=$1 AND x.status IN ('approved','paid') AND x.approved_at::date BETWEEN $2 AND $3 GROUP BY 1` },
+      { on: c.usable('payroll') && c.has('payroll.read'), cols: [{ key: 'payroll_gross', label: 'Payroll gross', type: 'money' }, { key: 'employer_cost', label: 'Employer cost', type: 'money' }],
+        keys: ['payroll_gross', 'employer_cost'],
+        sql: `SELECT ${DEPT} AS department, sum(pi.gross) AS payroll_gross, sum(pi.employer_cost) AS employer_cost
+          FROM payroll_items pi JOIN payroll_runs r ON r.tenant_id=pi.tenant_id AND r.id=pi.run_id JOIN employees e ON e.tenant_id=pi.tenant_id AND e.id=pi.employee_id ${EMP_JOINS}
+          WHERE pi.tenant_id=$1 AND r.status IN ('finalized','paid') AND r.period BETWEEN to_char($2::date,'YYYY-MM') AND to_char($3::date,'YYYY-MM') GROUP BY 1` },
+    ];
+    for (const b of blocks) {
+      if (!b.on) continue;
+      columns.push(...b.cols);
+      merge((await c.db.query(b.sql, [c.tenantId, from, to])).rows, b.keys);
+    }
+    const hidden = blocks.filter((b) => !b.on).flatMap((b) => b.cols.map((x) => x.label));
+    if (hidden.length) notes.push(`Not shown (module not in use, or not visible to you): ${hidden.join(', ')}.`);
+    notes.push('Departments are the employees\' current departments. Payroll covers finalized runs for the months in the period.');
+    const out = [...rows.values()].filter((r) => Object.keys(r).length > 1).sort((a, b) => String(a.department).localeCompare(String(b.department)));
+    const sum = (k: string) => out.reduce((t, r) => t + (Number(r[k]) || 0), 0);
+    for (const r of out) {
+      if ('working' in r) { r.attendance_pct = pct((Number(r.present) || 0) + (Number(r.half) || 0) / 2, (Number(r.working) || 0) - (Number(r.leave) || 0)); delete r.present; delete r.half; delete r.working; delete r.leave; }
+    }
+    const totals: Row = { department: 'All departments' };
+    for (const col of columns.slice(1)) if (col.type !== 'percent') totals[col.key] = sum(col.key);
+    return { columns, rows: out, totals, notes };
+  },
+};
+
+export const REPORTS: readonly ReportDef[] = [headcount, attrition, joinersLeavers, attendance, leaveTaken, leaveBalances, payrollCost, expenses, trainingExpiry, authorizationReviews, departmentOverview];
 export const REPORT_MAP: ReadonlyMap<string, ReportDef> = new Map(REPORTS.map((r) => [r.key, r]));
 
 /** Validate the query against the report's parameters; missing ones take their defaults. */

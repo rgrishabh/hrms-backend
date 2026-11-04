@@ -36,3 +36,35 @@ chosen from a list; no user text reaches SQL.
 - Results are capped at 5000 rows (the response says when it was truncated).
 - CSV downloads are `Cache-Control: no-store`, neutralize spreadsheet formulas (`=`, `+`, `-`, `@` …), and are
   audited as `reports.exported` with the report key, parameters, scope and row count. On-screen views are not audited.
+
+## Advanced reporting (module `reports.advanced`)
+
+Code: `src/modules/reports/service.ts`, `routes.ts`. Tests: `test/reports-advanced.test.ts`.
+
+### Department overview
+
+The **department overview** report covers one period, with one row per department. It always shows:
+- headcount at the end of the period;
+- joiners and leavers.
+
+These columns appear only when the module is in use and the person running the report may see that data:
+- attendance %, with field duty counted as attended (`attendance.read`);
+- approved leave days (`leave.read`);
+- approved overtime hours (`overtime.read`);
+- approved expenses (`expenses.read`);
+- payroll gross and employer cost from finalized runs (`payroll.read`).
+
+The notes say which columns were left out. Departments are each employee's *current* department.
+
+### Saved and scheduled reports
+
+- **Saved reports.** Anyone who can run a report can save it with its parameters under a name. Saved reports are personal.
+- **Schedules.** A saved report can run daily, weekly (on a chosen weekday) or monthly (on day 1–28).
+  - The period can be kept as saved, or move with each run: yesterday, last 7 days, last month, month to date, or year to date.
+  - The `reports.scheduled` job (06:30) runs due schedules **as their owner, with the owner's access at that moment**. If the owner can no longer run the report, the schedule stops.
+- **Recipients.** Recipients other than the owner must be able to see that report for the **whole organization** themselves. A manager's team-only report can only be scheduled for that manager.
+  - This is checked when the schedule is saved, and again at every run. A recipient who has lost access is left out.
+- **Delivery.** Recipients are notified in HRMS (and by email if that's on) that the report is ready. **The report data is never put in an email.** It stays in HRMS as a snapshot and is opened after signing in.
+  - Opening a snapshot checks access again.
+  - CSV downloads are audited.
+  - Snapshots are kept for 90 days.
