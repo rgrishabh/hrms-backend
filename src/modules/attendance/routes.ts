@@ -9,7 +9,7 @@ import { createApprovalRequest, registerApprovalHandler, type StepSpec } from '.
 import { randomToken, sha256 } from '../../core/crypto/index.js';
 import type { Db } from '../../db/tx.js';
 import { employeeTimezone, lockedDates, recalcForEvent, recalculateRange, recordEvent, teamEmployeeIds } from './service.js';
-import { daysBetween, localDate, addDays, zonedToInstant } from './time.js';
+import { daysBetween, localDate, addDays, zonedToInstant, todaysPunches } from './time.js';
 import { evaluateFeatures } from '../../core/features/state.js';
 
 const TimeOfDay = z.string().regex(/^([01]\d|2[0-3]):[0-5]\d$/, 'Use HH:MM (24-hour)');
@@ -103,11 +103,14 @@ export async function attendanceRoutes(app: FastifyInstance) {
     return a.tx(async (db) => {
       const { tz } = await employeeTimezone(db, a.tenantId, a.user.employeeId!);
       const today = localDate(new Date(), tz);
-      const events = await db.query(`SELECT id, event_time, direction, source FROM attendance_events WHERE tenant_id=$1 AND employee_id=$2 AND status='accepted'
-        AND event_time > now() - interval '20 hours' ORDER BY event_time`, [a.tenantId, a.user.employeeId]);
+      const recent = (await db.query<{ id: string; event_time: Date; direction: string; source: string; is_today: boolean }>(`SELECT id, event_time, direction, source,
+          event_time >= ($3::date::timestamp AT TIME ZONE $4) AS is_today
+        FROM attendance_events WHERE tenant_id=$1 AND employee_id=$2 AND status='accepted'
+        AND event_time > now() - interval '20 hours' ORDER BY event_time`, [a.tenantId, a.user.employeeId, today, tz])).rows;
+      const events = { rows: todaysPunches(recent).map(({ is_today: _t, ...e }) => e) };
       const daily = await db.query(`SELECT * FROM attendance_daily WHERE tenant_id=$1 AND employee_id=$2 AND work_date=$3`, [a.tenantId, a.user.employeeId, today]);
       const states = await evaluateFeatures(db, a.tenantId);
-      const last = events.rows[events.rows.length - 1];
+      const last = recent[recent.length - 1];
       return { linked: true, today, timezone: tz, events: events.rows, daily: daily.rows[0] ?? null, nextDirection: last?.direction === 'in' ? 'out' : 'in',
         channels: { web: states.get('attendance.web')!.usable, mobile: states.get('attendance.mobile')!.usable },
         locationMode: await getSettingValue<string>(db, a.tenantId, 'attendance.mobile_location_mode') };
