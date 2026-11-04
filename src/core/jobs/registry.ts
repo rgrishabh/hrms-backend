@@ -4,6 +4,7 @@ import { runAccruals } from '../../modules/leave/jobs.js';
 import { leaveYearOf, leaveYearBounds, yearStartMonth } from '../../modules/leave/service.js';
 import { addDays } from '../../modules/attendance/time.js';
 import { getSettingValue } from '../settings/service.js';
+import { getStore } from '../storage/index.js';
 import { notifyUsers, usersWithPermission } from '../notify/service.js';
 import { trainingExpiry, authorizationReview } from '../../modules/competency/jobs.js';
 import { policyAckReminders } from '../../modules/policies/jobs.js';
@@ -16,7 +17,7 @@ import { escalateOverdue, reassignStranded, stepRecipients, blockedUsers } from 
 
 /**
  * Background jobs. Schedules are in the organization's timezone (general.timezone).
- * A job runs only when its module is usable. Every job must be idempotent: it may be
+ * A job runs only when its module is usable, except retention jobs. Every job must be idempotent: it may be
  * retried after a failure or re-run manually.
  */
 export type Schedule = { kind: 'daily'; at: string } | { kind: 'monthly'; day: number; at: string };
@@ -36,6 +37,8 @@ export interface JobDefinition {
   schedule: Schedule;
   /** Module that must be usable for the job to run; with a list, any one of them. */
   feature?: string | readonly string[];
+  /** Erases data at the end of its retention. Runs even while its module is off: data must not outlive its date. */
+  retention?: boolean;
   /** Permission needed to trigger a manual run. */
   runPermission: string;
   run(db: Db, tenantId: string, ctx: JobContext): Promise<Record<string, unknown>>;
@@ -173,8 +176,30 @@ export const JOBS: readonly JobDefinition[] = [
     description: 'Anonymizes candidates (and deletes resumes) after the retention period, unless hired or still in an open process.',
     schedule: { kind: 'daily', at: '04:00' },
     feature: 'recruitment',
+    retention: true,
     runPermission: 'recruitment.manage',
     run: (db, tenantId, ctx) => recruitmentRetention(db, tenantId, ctx.localDate),
+  },
+  {
+    key: 'attendance.selfie_retention',
+    name: 'Check-in selfie retention',
+    description: 'Erases check-in selfies at the end of the retention period, and those never used for a clock-in after a day.',
+    schedule: { kind: 'daily', at: '04:15' },
+    feature: 'attendance.selfie',
+    retention: true,
+    runPermission: 'attendance.configure',
+    async run(db, tenantId) {
+      const due = await db.query<{ id: string; storage_key: string }>(`SELECT id, storage_key FROM attendance_selfies WHERE tenant_id=$1 AND erased_at IS NULL AND storage_key IS NOT NULL
+        AND (retain_until <= now() OR (event_id IS NULL AND created_at < now() - interval '1 day')) ORDER BY retain_until LIMIT 2000 FOR UPDATE SKIP LOCKED`, [tenantId]);
+      if (!due.rowCount) return { erased: 0 };
+      const store = getStore();
+      if (!store) throw new Error('Selfies are due for erasure but no storage is configured');
+      for (const s of due.rows) {
+        await store.delete(s.storage_key);
+        await db.query(`UPDATE attendance_selfies SET storage_key=NULL, erased_at=now() WHERE tenant_id=$1 AND id=$2`, [tenantId, s.id]);
+      }
+      return { erased: due.rowCount };
+    },
   },
   {
     key: 'lifecycle.daily',
@@ -227,7 +252,7 @@ export const JOBS: readonly JobDefinition[] = [
 
 /** Whether a job may run, given which modules are usable. */
 export function jobActive(job: JobDefinition, isUsable: (key: string) => boolean) {
-  if (!job.feature) return true;
+  if (!job.feature || job.retention) return true;
   return (typeof job.feature === 'string' ? [job.feature] : job.feature).some(isUsable);
 }
 

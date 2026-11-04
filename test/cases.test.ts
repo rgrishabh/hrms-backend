@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import type { FastifyInstance } from 'fastify';
-import { makeApp, createTenant, Client, ownerQuery, type TenantFixture } from './helpers.js';
+import { makeApp, createTenant, Client, ownerQuery, type TenantFixture, flags } from './helpers.js';
 import { addDays, localDate } from '../src/modules/attendance/time.js';
 
 const today = localDate(new Date(), 'Asia/Kolkata');
@@ -12,7 +12,7 @@ const detail = async (c: Client, id: string) => c.get(`/api/v1/cases/${id}`);
 const version = async (c: Client, id: string) => (await detail(c, id)).json().version as number;
 
 beforeAll(async () => {
-  app = await makeApp({ ENABLED_MODULES: 'default,posh,grievance' });
+  app = await makeApp({ ...flags('default,posh,grievance') });
   T = await createTenant();
   admin = await Client.login(app, T.host, T.users.admin!.email);
   hr = await Client.login(app, T.host, T.users.hr!.email);
@@ -137,8 +137,8 @@ describe('grievances', () => {
     await ownerQuery(`UPDATE cases SET inquiry_due=$2::date + 7 WHERE id=$1`, [c.json().id, today]);
     expect((await hr.runJob('cases.deadlines')).json().status).toBe('succeeded');
     expect((await ownerQuery(`SELECT 1 FROM notifications WHERE tenant_id=$1 AND user_id=$2 AND kind='cases.deadline'`, [T.id, T.users.it!.id])).length).toBe(1);
-    const off = await makeApp({ ENABLED_MODULES: 'default' });
-    try { expect((await (await Client.login(off, T.host, T.users.employee!.email)).get('/api/v1/cases?kind=grievance')).json().error.code).toBe('feature_unavailable'); }
+    const off = await makeApp({ ...flags('default') });
+    try { expect((await (await Client.login(off, T.host, T.users.employee!.email)).get('/api/v1/cases?kind=grievance')).json().error.code).toBe('not_found'); }
     finally { await off.close(); }
   });
 });

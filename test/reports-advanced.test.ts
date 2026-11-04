@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import type { FastifyInstance } from 'fastify';
-import { makeApp, createTenant, Client, ownerQuery, type TenantFixture } from './helpers.js';
+import { makeApp, createTenant, Client, ownerQuery, type TenantFixture, flags } from './helpers.js';
 import { periodParams, nextRun } from '../src/modules/reports/service.js';
 import { REPORT_MAP } from '../src/modules/reports/registry.js';
 
@@ -9,7 +9,7 @@ let admin: Client; let hr: Client; let emp: Client; let pay: Client; let mgr: Cl
 const today = new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Kolkata' }).format(new Date());
 
 beforeAll(async () => {
-  app = await makeApp({ ENABLED_MODULES: 'default,reports.advanced' });
+  app = await makeApp({ ...flags('default,reports.advanced') });
   T = await createTenant();
   admin = await Client.login(app, T.host, T.users.admin!.email);
   hr = await Client.login(app, T.host, T.users.hr!.email);
@@ -101,7 +101,7 @@ describe('F-10 snapshots follow the reader, not the owner', () => {
     VALUES ($1,$2,$3,'Snap','{}','all',$4,$5,$6,'[]',$7,$8, now() + interval '1 day') RETURNING id`, [W.id, W.users.payroll!.id, reportKey, JSON.stringify(cols), JSON.stringify(rows), JSON.stringify(totals), rows.length, recipients]))[0]!.id;
 
   beforeAll(async () => {
-    payrollApp = await makeApp({ ENABLED_MODULES: 'default,payroll,reports.advanced' });
+    payrollApp = await makeApp({ ...flags('default,payroll,reports.advanced') });
     W = await createTenant();
     const [u] = await ownerQuery<{ id: string }>(`INSERT INTO users (tenant_id, email, display_name, password_hash) SELECT tenant_id, $2, 'exec', password_hash FROM users WHERE id=$1 RETURNING id`, [W.users.hr!.id, `exec@${W.host}`]);
     await ownerQuery(`INSERT INTO user_roles (user_id, tenant_id, role_key) VALUES ($1,$2,'hr_executive')`, [u!.id, W.id]);
@@ -133,10 +133,10 @@ describe('F-10 snapshots follow the reader, not the owner', () => {
   });
 
   it('a snapshot is unavailable once its module is off, and module columns go with it', async () => {
-    const off = await makeApp({ ENABLED_MODULES: 'default,reports.advanced' });
+    const off = await makeApp({ ...flags('default,reports.advanced') });
     const c = await Client.login(off, W.host, W.users.payroll!.email);
     const whole = await snapshot('payroll_cost', [{ key: 'gross', label: 'Gross', type: 'money' }], [{ gross: 1 }], null, [W.users.payroll!.id]);
-    expect((await c.get(`/api/v1/reports/snapshots/${whole}`)).statusCode).toBe(403);
+    expect((await c.get(`/api/v1/reports/snapshots/${whole}`)).statusCode).toBe(404);
     const partial = await snapshot('department_overview', columns, body, totals, [W.users.payroll!.id]);
     const r = await c.get(`/api/v1/reports/snapshots/${partial}`);
     expect(r.statusCode).toBe(200);

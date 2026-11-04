@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import pg from 'pg';
 import type { FastifyInstance } from 'fastify';
-import { makeApp, createTenant, Client, ownerQuery, type TenantFixture } from './helpers.js';
+import { makeApp, createTenant, Client, ownerQuery, type TenantFixture, flags } from './helpers.js';
 import { TEST_OWNER_URL } from './env.js';
 import { plannedRecoveries } from '../src/modules/loans/service.js';
 import type { Db } from '../src/db/tx.js';
@@ -15,7 +15,7 @@ const credit = (days: number, typeId = cl) => hr.post('/api/v1/leave/adjustments
 const req = (startDate: string, o: Record<string, unknown> = {}) => hr.post('/api/v1/leave/requests', { leaveTypeId: cl, startDate, endDate: startDate, reason: 'Fixture leave', employeeId: empId, ...o });
 
 beforeAll(async () => {
-  app = await makeApp({ ENABLED_MODULES: 'default,payroll,advances_loans,leave' });
+  app = await makeApp({ ...flags('default,payroll,loans,salary_advance,leave') });
   T = await createTenant();
   hr = await Client.login(app, T.host, T.users.hr!.email);
   pay = await Client.login(app, T.host, T.users.payroll!.email);

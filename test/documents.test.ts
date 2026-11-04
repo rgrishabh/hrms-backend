@@ -180,7 +180,8 @@ describe('storage not configured', () => {
     const off = await makeApp({}, { storeOverride: true });
     const c = await Client.login(off, T.host, T.users.hr!.email);
     const r = await c.get('/api/v1/documents');
-    expect(r.statusCode).toBe(403);
+    expect(r.statusCode).toBe(409);
+    expect(r.json().error.code).toBe('feature_not_configured');
     expect(r.json().error.message).toMatch(/Document storage not configured/);
     await off.close();
     setStore(new LocalStore(root));

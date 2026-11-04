@@ -121,3 +121,16 @@ A request is an approval request (`lab_authorization`) routed to holders of `com
 **Decision:** `node:24-alpine` for both stages, `engines.node >= 24.7`, and a build step that fails if `crypto.argon2` is missing, so a stale base image can't ship.
 **Reason:** no native dependency in an image that deliberately carries little.
 
+## D31 — Selfies, geofence and comp off: what each new flag decides
+**Selfie.** The contract says "camera selfie at check-in". Upload first, then send its id with the clock-in, so a failed punch does not lose the photo and a retried one does not store two. It goes through the storage layer under `<org>/selfies/<employee>/`; the row records `data_class='L3'`. A setting decides whether it is required (default yes) and for how long it is kept (default 90 days), and `attendance.selfie_retention` erases blob and key on that date, and unused uploads after a day. Without storage the upload answers `feature_not_configured`, and clock-in does not demand a selfie: a store nobody set up should not stop people recording attendance.
+**Geofence.** No geofence existed; only a location mode. The new `branch_geofences` table sits apart from `branches` so the org listing cannot leak it. Outside the fence is flagged on the event, or refused if `attendance.geofence_enforce` is on. As before, location is captured on the mobile channel only, so this flag does nothing useful without `FEATURE_ATTENDANCE_MOBILE`.
+**Split flags and approvals.** A pending approval leaves the inbox with its feature, and the handler holds one feature, so salary advances and comp-off claims got their own entity types (`salary_advance`, `overtime_comp_off`). Migration 040 relabels existing requests. Tables and screens stay shared; a row of the off kind answers 404.
+**Reason:** the smallest change that lets each flag act alone.
+
+## D32 — Web push on `node:crypto`, with a fixed payload
+**Context:** `FEATURE_PUSH_NOTIFICATIONS` needs RFC 8291 encryption and RFC 8292 VAPID. Payloads must carry no L3 or L4 data.
+**Options:** the `web-push` package; implement on `node:crypto`.
+**Decision:** about 60 lines on `node:crypto`, checked against the RFC 8291 appendix A vector, a decrypt round trip and a signature check. The payload is built from the notification's kind alone (`pushPayload`), and the outbox stores only the kind, so a title with a name or an amount cannot reach it by mistake. Subscribe endpoints are client-supplied URLs the worker will call, so only the browsers' push service hosts are accepted, and redirects are refused.
+**Reason:** `web-push` brings several transitive crypto packages to do what the platform already does. The fixed payload makes the rule structural instead of a review item.
+**Not in the contract:** `VAPID_*` are new variable names. Without them the feature answers `feature_not_configured`.
+

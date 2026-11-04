@@ -1,5 +1,6 @@
 import { isIP } from 'node:net';
 import { z } from 'zod';
+import { resolveFeatures } from '../core/features/registry.js';
 
 /**
  * Deployment configuration. One installation = one customer; everything that
@@ -80,11 +81,16 @@ const schema = z.object({
   STORAGE_PATH: z.string().optional(),
   STORAGE_MAX_FILE_MB: z.coerce.number().int().min(1).max(50).default(10),
 
-  /** Minimum MFA enforcement for this installation (organizations may only make it stricter). */
-  MFA_ENFORCEMENT: z.enum(['off', 'privileged', 'all']).default('privileged'),
+  // ---- security and modes. Dev leaves MFA off, production defaults to on (see loadEnv).
+  MFA_AVAILABLE: z.enum(['true', 'false']).optional(),
+  MFA_ENFORCED: bool('false'),
+  MFA_METHODS: list,
+  ORG_MANAGEMENT_MODE: z.enum(['single', 'single_hr', 'multi']).default('multi'),
 
-  // ---- modules (see core/features/registry.ts). 'default' = the registry defaults.
-  ENABLED_MODULES: z.string().default('default'),
+  // ---- web push (notifications.push). Base64url of the raw P-256 keys; without them the feature answers feature_not_configured.
+  VAPID_PUBLIC_KEY: z.string().regex(/^[A-Za-z0-9_-]+$/).refine((v) => Buffer.from(v, 'base64url').length === 65, 'must be base64url of a 65-byte P-256 public key').optional(),
+  VAPID_PRIVATE_KEY: z.string().regex(/^[A-Za-z0-9_-]+$/).refine((v) => Buffer.from(v, 'base64url').length === 32, 'must be base64url of a 32-byte P-256 private key').optional(),
+  VAPID_SUBJECT: z.string().regex(/^(mailto:\S+@\S+|https:\/\/\S+)$/, 'must be a mailto: or https:// contact').optional(),
 
   // ---- branding (public; shown in the UI, page title, documents)
   PRODUCT_NAME: z.string().trim().min(1).max(60).default('LabHRMS'),
@@ -117,19 +123,38 @@ const schema = z.object({
   AWS_S3_BUCKET: z.string().optional(),
 });
 
-export type Env = z.infer<typeof schema>;
+type ParsedEnv = z.infer<typeof schema>;
+/** Parsed configuration, plus what the FEATURE_* variables resolve to and the MFA flags with their production defaults applied. */
+export type Env = Omit<ParsedEnv, 'MFA_AVAILABLE'> & { MFA_AVAILABLE: boolean; enabledFeatures: ReadonlySet<string> };
 
 /** Docker Compose passes unset optional variables as ''. Treat empty as "not set". */
 const nonEmpty = (source: NodeJS.ProcessEnv) => Object.fromEntries(Object.entries(source).filter(([, v]) => v !== undefined && v !== ''));
 
+/** Variables that must be gone: leaving one set means the deployment still believes in something that no longer exists. */
+function removedVariables(source: NodeJS.ProcessEnv): string[] {
+  const out: string[] = [];
+  if (source.ENABLED_MODULES) out.push('ENABLED_MODULES: removed; use one FEATURE_* variable per module');
+  if (source.MFA_ENFORCEMENT) out.push('MFA_ENFORCEMENT: removed; use MFA_AVAILABLE and MFA_ENFORCED');
+  for (const name of Object.keys(source)) if (name.startsWith('SMS_') && source[name]) out.push(`${name}: removed; there is no SMS channel`);
+  return out;
+}
+
 export function loadEnv(source: NodeJS.ProcessEnv = process.env): Env {
+  const flags = resolveFeatures(source);
+  const early = [...removedVariables(source), ...flags.problems];
   const parsed = schema.safeParse(nonEmpty(source));
   if (!parsed.success) {
-    const issues = parsed.error.issues.map((i) => `  - ${i.path.join('.')}: ${i.message}`).join('\n');
+    const issues = [...early, ...parsed.error.issues.map((i) => `${i.path.join('.')}: ${i.message}`)].map((i) => `  - ${i}`).join('\n');
     throw new Error(`Invalid deployment configuration:\n${issues}`);
   }
-  const env = parsed.data;
-  const problems: string[] = [];
+  const { MFA_AVAILABLE, ...rest } = parsed.data;
+  const prod = rest.NODE_ENV === 'production';
+  const env: Env = { ...rest, MFA_AVAILABLE: MFA_AVAILABLE === undefined ? prod : MFA_AVAILABLE === 'true', enabledFeatures: flags.features,
+    MFA_METHODS: rest.MFA_METHODS.length || !prod ? rest.MFA_METHODS : ['totp', 'email'] };
+  const problems: string[] = [...early];
+  if (env.MFA_ENFORCED && !env.MFA_AVAILABLE) problems.push('MFA_ENFORCED=true is invalid with MFA_AVAILABLE=false');
+  for (const m of env.MFA_METHODS) if (m !== 'totp' && m !== 'email') problems.push(`MFA_METHODS: '${m}' is not one of totp, email`);
+  if (!!env.VAPID_PUBLIC_KEY !== !!env.VAPID_PRIVATE_KEY) problems.push('Set both VAPID_PUBLIC_KEY and VAPID_PRIVATE_KEY, or neither');
   if (env.NODE_ENV === 'production') {
     if (!env.COOKIE_SECURE) problems.push('COOKIE_SECURE must be true in production (serve over HTTPS)');
     if (!env.APP_URL.startsWith('https://')) problems.push('APP_URL must be https:// in production');

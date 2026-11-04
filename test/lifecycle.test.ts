@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import type { FastifyInstance } from 'fastify';
-import { makeApp, createTenant, Client, ownerQuery, PASSWORD, type TenantFixture } from './helpers.js';
+import { makeApp, createTenant, Client, ownerQuery, PASSWORD, type TenantFixture, flags } from './helpers.js';
 import { hashPassword } from '../src/core/crypto/index.js';
 import { addDays, localDate } from '../src/modules/attendance/time.js';
 
@@ -23,7 +23,7 @@ const approve = async (c: Client, entityId: string) => {
 const mine = async (c: Client) => (await c.get('/api/v1/lifecycle/tasks/mine')).json().items as { id: string; owner: string; title: string; employee_id: string }[];
 
 beforeAll(async () => {
-  app = await makeApp({ ENABLED_MODULES: 'default,core.onboarding,core.offboarding' });
+  app = await makeApp({ ...flags('default,core.onboarding,core.offboarding') });
   T = await createTenant();
   empId = T.users.employee!.employeeId!; otherId = T.users.other!.employeeId!;
   hr = await Client.login(app, T.host, T.users.hr!.email);
@@ -169,8 +169,8 @@ describe('separations', () => {
   });
 
   it('module off → 403', async () => {
-    const off = await makeApp({ ENABLED_MODULES: 'default' });
-    try { expect((await (await Client.login(off, T.host, T.users.hr!.email)).get('/api/v1/lifecycle/separations')).json().error.code).toBe('feature_unavailable'); }
+    const off = await makeApp({ ...flags('default') });
+    try { expect((await (await Client.login(off, T.host, T.users.hr!.email)).get('/api/v1/lifecycle/separations')).json().error.code).toBe('not_found'); }
     finally { await off.close(); }
   });
 });

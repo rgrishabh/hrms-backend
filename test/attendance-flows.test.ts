@@ -1,10 +1,10 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import type { FastifyInstance } from 'fastify';
-import { makeApp, createTenant, Client, ownerQuery, type TenantFixture } from './helpers.js';
+import { makeApp, createTenant, Client, ownerQuery, flags, type TenantFixture } from './helpers.js';
 import { addDays, localDate, weekday } from '../src/modules/attendance/time.js';
 
 let app: FastifyInstance;
-beforeAll(async () => { app = await makeApp(); });
+beforeAll(async () => { app = await makeApp({ ...flags('default,attendance.mobile,attendance.biometric,attendance.geofence') }); });
 afterAll(async () => { await app.close(); });
 
 const TZ = 'Asia/Kolkata';

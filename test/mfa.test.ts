@@ -1,4 +1,5 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
+import { setMfaFloor } from '../src/core/auth/mfa.js';
 import type { FastifyInstance } from 'fastify';
 import { makeApp, createTenant, Client, ownerQuery, type TenantFixture } from './helpers.js';
 import { base32Decode, base32Encode, hotp, verifyTotp, timeStep } from '../src/core/auth/totp.js';
@@ -24,8 +25,9 @@ describe('TOTP (RFC 6238 / 4226)', () => {
 });
 
 let app: FastifyInstance; let T: TenantFixture;
-beforeAll(async () => { app = await makeApp({ MFA_ENFORCEMENT: 'privileged' }); T = await createTenant(); });
-afterAll(async () => { await app.close(); });
+// MFA_AVAILABLE and MFA_ENFORCED cannot express 'privileged'; the flows behind that floor are reworked in the auth batch.
+beforeAll(async () => { app = await makeApp(); setMfaFloor('privileged'); T = await createTenant(); });
+afterAll(async () => { setMfaFloor('off'); await app.close(); });
 
 async function enrol(c: Client) {
   const s = (await c.post('/api/v1/auth/mfa/setup')).json();

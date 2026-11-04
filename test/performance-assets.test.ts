@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import type { FastifyInstance } from 'fastify';
-import { makeApp, createTenant, Client, ownerQuery, type TenantFixture } from './helpers.js';
+import { makeApp, createTenant, Client, ownerQuery, type TenantFixture, flags } from './helpers.js';
 import { addDays, localDate } from '../src/modules/attendance/time.js';
 
 const today = localDate(new Date(), 'Asia/Kolkata');
@@ -10,7 +10,7 @@ let empId: string; let cycleId: string; let reviewId: string;
 const rv = async (c: Client) => (await c.get(`/api/v1/performance/reviews/${reviewId}`)).json();
 
 beforeAll(async () => {
-  app = await makeApp({ ENABLED_MODULES: 'default,performance,assets,core.offboarding' });
+  app = await makeApp({ ...flags('default,performance,assets,core.offboarding') });
   T = await createTenant();
   empId = T.users.employee!.employeeId!;
   hr = await Client.login(app, T.host, T.users.hr!.email);

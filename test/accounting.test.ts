@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import type { FastifyInstance } from 'fastify';
-import { makeApp, createTenant, Client, ownerQuery, PASSWORD, type TenantFixture } from './helpers.js';
+import { makeApp, createTenant, Client, ownerQuery, PASSWORD, type TenantFixture, flags } from './helpers.js';
 import { hashPassword } from '../src/core/crypto/index.js';
 
 let app: FastifyInstance; let T: TenantFixture;
@@ -16,7 +16,7 @@ const approve = async (c: Client, entityId: string) => {
 };
 
 beforeAll(async () => {
-  app = await makeApp({ ENABLED_MODULES: 'default,payroll,expenses,accounting_exports' });
+  app = await makeApp({ ...flags('default,payroll,expenses,accounting_exports') });
   T = await createTenant();
   empId = T.users.employee!.employeeId!;
   emp = await Client.login(app, T.host, T.users.employee!.email);

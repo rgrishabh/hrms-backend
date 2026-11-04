@@ -3,7 +3,7 @@ import { getSettingValue } from '../../core/settings/service.js';
 import { featureOn } from '../lifecycle/service.js';
 import { addDays, daysBetween } from '../attendance/time.js';
 import { calculate, CALC_VERSION, RULE_PARAMS, type Component, type RuleKind, type CalcInput } from './calc.js';
-import { plannedRecoveries, applyRecoveries } from '../loans/service.js';
+import { plannedRecoveries, applyRecoveries, enabledLoanKinds } from '../loans/service.js';
 import { overtimeForRun } from '../overtime/service.js';
 
 export function periodBounds(period: string) {
@@ -106,7 +106,7 @@ export async function computeRun(db: Db, tenantId: string, runId: string) {
   const statutoryOn = await featureOn(db, tenantId, 'payroll.statutory');
   const attendanceOn = await featureOn(db, tenantId, 'attendance');
   const overtimeOn = await featureOn(db, tenantId, 'overtime');
-  const loansOn = await featureOn(db, tenantId, 'advances_loans');
+  const loansOn = enabledLoanKinds().length > 0;
   // A recompute starts clean: overtime and loan instalments this run picked up before are offered to it again.
   await db.query('UPDATE overtime_claims SET payroll_run_id=NULL WHERE tenant_id=$1 AND payroll_run_id=$2', [tenantId, runId]);
   await db.query('DELETE FROM loan_recoveries WHERE tenant_id=$1 AND payroll_run_id=$2', [tenantId, runId]);

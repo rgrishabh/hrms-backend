@@ -18,10 +18,10 @@ export interface BlobStore {
 }
 
 const UUID = '[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}';
-const KEY_RE = new RegExp(`^${UUID}/(employees/${UUID}|company|expenses/${UUID}|policies|recruitment)/${UUID}$`);
+const KEY_RE = new RegExp(`^${UUID}/(employees/${UUID}|company|expenses/${UUID}|selfies/${UUID}|policies|recruitment)/${UUID}$`);
 export function assertKey(key: string) { if (!KEY_RE.test(key)) throw new Error('invalid storage key'); }
-export function newKey(tenantId: string, employeeId: string | null, area: 'documents' | 'expenses' | 'policies' | 'recruitment' = 'documents') {
-  const key = area === 'policies' || area === 'recruitment' ? `${tenantId}/${area}/${randomUUID()}` : area === 'expenses' ? `${tenantId}/expenses/${employeeId}/${randomUUID()}` : `${tenantId}/${employeeId ? `employees/${employeeId}` : 'company'}/${randomUUID()}`;
+export function newKey(tenantId: string, employeeId: string | null, area: 'documents' | 'expenses' | 'selfies' | 'policies' | 'recruitment' = 'documents') {
+  const key = area === 'policies' || area === 'recruitment' ? `${tenantId}/${area}/${randomUUID()}` : area === 'expenses' || area === 'selfies' ? `${tenantId}/${area}/${employeeId}/${randomUUID()}` : `${tenantId}/${employeeId ? `employees/${employeeId}` : 'company'}/${randomUUID()}`;
   assertKey(key);
   return key;
 }

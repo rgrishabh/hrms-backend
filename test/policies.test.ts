@@ -3,7 +3,7 @@ import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import type { FastifyInstance } from 'fastify';
-import { makeApp, createTenant, Client, ownerQuery, multipart, PASSWORD, type TenantFixture } from './helpers.js';
+import { makeApp, createTenant, Client, ownerQuery, multipart, PASSWORD, type TenantFixture, flags } from './helpers.js';
 import { readXlsx } from './helpers.js';
 import { LocalStore, setStore } from '../src/core/storage/index.js';
 import { hashPassword } from '../src/core/crypto/index.js';
@@ -25,7 +25,7 @@ const ack = async (c: Client, versionId: string) => {
 
 beforeAll(async () => {
   setStore(new LocalStore(mkdtempSync(path.join(tmpdir(), 'hrms-pol-'))));
-  app = await makeApp({ ENABLED_MODULES: 'default,core.policies' }, { storeOverride: true });
+  app = await makeApp({ ...flags('default,core.policies') }, { storeOverride: true });
   T = await createTenant();
   hr = await Client.login(app, T.host, T.users.hr!.email);
   emp = await Client.login(app, T.host, T.users.employee!.email);
@@ -127,8 +127,8 @@ describe('policies', () => {
   });
 
   it('is unavailable when the module is off', async () => {
-    const off = await makeApp({ ENABLED_MODULES: 'default' });
-    try { expect((await (await Client.login(off, T.host, T.users.hr!.email)).get('/api/v1/policies')).json().error.code).toBe('feature_unavailable'); }
+    const off = await makeApp({ ...flags('default') });
+    try { expect((await (await Client.login(off, T.host, T.users.hr!.email)).get('/api/v1/policies')).json().error.code).toBe('not_found'); }
     finally { await off.close(); }
   });
 });

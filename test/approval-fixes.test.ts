@@ -2,7 +2,7 @@ import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import pg from 'pg';
 import { randomUUID } from 'node:crypto';
 import type { FastifyInstance } from 'fastify';
-import { makeApp, createTenant, Client, ownerQuery, type TenantFixture } from './helpers.js';
+import { makeApp, createTenant, Client, ownerQuery, type TenantFixture, flags } from './helpers.js';
 import { TEST_OWNER_URL } from './env.js';
 import { createApprovalRequest, type StepSpec } from '../src/core/workflow/engine.js';
 import type { Db } from '../src/db/tx.js';
@@ -15,7 +15,7 @@ const login = (T: TenantFixture, key: string) => Client.login(app, T.host, T.use
 const disable = (admin: Client, id: string) => admin.patch(`/api/v1/tenant/users/${id}`, { status: 'disabled' });
 
 beforeAll(async () => {
-  app = await makeApp({ ENABLED_MODULES: 'default,leave,core.offboarding' });
+  app = await makeApp({ ...flags('default,leave,core.offboarding') });
   c = new pg.Client({ connectionString: TEST_OWNER_URL });
   await c.connect();
 });

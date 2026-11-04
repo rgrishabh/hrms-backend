@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import type { FastifyInstance } from 'fastify';
-import { makeApp, createTenant, Client, type TenantFixture } from './helpers.js';
+import { makeApp, createTenant, Client, type TenantFixture, flags } from './helpers.js';
 
 const ID = '00000000-0000-4000-8000-000000000001';
 const code = (r: { json: () => { error?: { code?: string } } }) => r.json().error?.code;
@@ -13,7 +13,7 @@ describe('module-wide feature gates', () => {
   let off: FastifyInstance; let T: TenantFixture; let admin: Client; let hr: Client;
   // Onboarding on, offboarding off; expenses, assets, payroll, cases, performance off.
   beforeAll(async () => {
-    off = await makeApp({ ENABLED_MODULES: 'core.employees,core.onboarding,attendance,leave' });
+    off = await makeApp({ ...flags('core.employees,core.onboarding,attendance,leave') });
     T = await createTenant();
     admin = await Client.login(off, T.host, T.users.admin!.email);
     hr = await Client.login(off, T.host, T.users.hr!.email);
@@ -28,21 +28,21 @@ describe('module-wide feature gates', () => {
       ['GET', '/api/v1/recruitment/requisitions'], ['GET', '/api/v1/policies'],
     ] as const) {
       const r = await admin.req(method, url, method === 'POST' ? {} : undefined);
-      expect([url, r.statusCode, code(r)]).toEqual([url, 403, 'feature_unavailable']);
+      expect([url, r.statusCode, code(r)]).toEqual([url, 404, 'not_found']);
     }
   });
 
   it('a module made of two features stays open for the one that is on, and each route checks its own', async () => {
     expect((await hr.get('/api/v1/lifecycle/checklists')).statusCode).toBe(200);
     expect((await hr.get('/api/v1/lifecycle/tasks/mine')).statusCode).toBe(200);
-    expect(code(await admin.get(`/api/v1/lifecycle/separations/${ID}`))).toBe('feature_unavailable');
-    expect(code(await admin.post(`/api/v1/lifecycle/separations/${ID}/withdraw`, { reason: 'test' }))).toBe('feature_unavailable');
+    expect(code(await admin.get(`/api/v1/lifecycle/separations/${ID}`))).toBe('not_found');
+    expect(code(await admin.post(`/api/v1/lifecycle/separations/${ID}/withdraw`, { reason: 'test' }))).toBe('not_found');
   });
 
   it('shift and holiday screens follow their own modules', async () => {
-    expect(code(await admin.get('/api/v1/attendance/shifts'))).toBe('feature_unavailable');
-    expect(code(await admin.get('/api/v1/attendance/holidays?year=2026'))).toBe('feature_unavailable');
-    expect(code(await admin.del(`/api/v1/attendance/holidays/${ID}`))).toBe('feature_unavailable');
+    expect(code(await admin.get('/api/v1/attendance/shifts'))).toBe('not_found');
+    expect(code(await admin.get('/api/v1/attendance/holidays?year=2026'))).toBe('not_found');
+    expect(code(await admin.del(`/api/v1/attendance/holidays/${ID}`))).toBe('not_found');
     expect((await hr.get('/api/v1/attendance/locks')).statusCode).toBe(200);
   });
 

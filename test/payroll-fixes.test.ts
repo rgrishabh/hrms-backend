@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import type { FastifyInstance } from 'fastify';
-import { makeApp, createTenant, Client, ownerQuery, type TenantFixture } from './helpers.js';
+import { makeApp, createTenant, Client, ownerQuery, type TenantFixture, flags } from './helpers.js';
 import { activeRule, activeSalary, approveEntity, compute, createRun, day, itemOf, lineOf, seedComponents } from './payroll-helpers.js';
 import { calculateDay, type DayInput } from '../src/modules/attendance/calc.js';
 import { csvCell } from '../src/core/http/csv.js';
@@ -9,7 +9,7 @@ const MODULES = 'default,payroll,payroll.payslips,payroll.statutory';
 let app: FastifyInstance; let T: TenantFixture; let pay: Client; let emp: string;
 
 beforeAll(async () => {
-  app = await makeApp({ ENABLED_MODULES: MODULES });
+  app = await makeApp({ ...flags(MODULES) });
   T = await createTenant();
   pay = await Client.login(app, T.host, T.users.payroll!.email);
   emp = T.users.employee!.employeeId!;
@@ -337,7 +337,7 @@ describe('F-12 held pay', () => {
   let W: TenantFixture; let p: Client; let f: Client; let e: string; let loan: string; let run: string;
   let loansApp: FastifyInstance;
   beforeAll(async () => {
-    loansApp = await makeApp({ ENABLED_MODULES: `${MODULES},advances_loans` });
+    loansApp = await makeApp({ ...flags(`${MODULES},loans,salary_advance`) });
     W = await createTenant();
     p = await Client.login(loansApp, W.host, W.users.payroll!.email);
     const email = `fin@${W.host}`;

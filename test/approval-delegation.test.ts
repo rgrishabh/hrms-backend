@@ -2,7 +2,7 @@ import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import pg from 'pg';
 import { randomUUID } from 'node:crypto';
 import type { FastifyInstance } from 'fastify';
-import { makeApp, createTenant, Client, ownerQuery, type TenantFixture } from './helpers.js';
+import { makeApp, createTenant, Client, ownerQuery, type TenantFixture, flags } from './helpers.js';
 import { TEST_OWNER_URL } from './env.js';
 import { createApprovalRequest, registerApprovalHandler, type StepSpec } from '../src/core/workflow/engine.js';
 import type { Db } from '../src/db/tx.js';
@@ -21,7 +21,7 @@ const revokeAll = () => ownerQuery(`UPDATE approval_delegations SET revoked_at=n
 const notes = (key: string, kind: string) => ownerQuery<{ title: string }>(`SELECT title FROM notifications WHERE tenant_id=$1 AND user_id=$2 AND kind=$3 ORDER BY created_at`, [T.id, T.users[key]!.id, kind]);
 
 beforeAll(async () => {
-  app = await makeApp({ ENABLED_MODULES: 'default,leave' });
+  app = await makeApp({ ...flags('default,leave') });
   registerApprovalHandler('delegation_test', { label: 'Test request', onApproved: async () => {}, onRejected: async () => {} });
   T = await createTenant();
   c = new pg.Client({ connectionString: TEST_OWNER_URL });

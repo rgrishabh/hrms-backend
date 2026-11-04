@@ -3,7 +3,7 @@ import { existsSync, mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import type { FastifyInstance } from 'fastify';
-import { makeApp, createTenant, Client, ownerQuery, multipart, PASSWORD, type TenantFixture } from './helpers.js';
+import { makeApp, createTenant, Client, ownerQuery, multipart, PASSWORD, type TenantFixture, flags } from './helpers.js';
 import { LocalStore, setStore } from '../src/core/storage/index.js';
 import { hashPassword } from '../src/core/crypto/index.js';
 import { addDays, localDate } from '../src/modules/attendance/time.js';
@@ -36,7 +36,7 @@ const move = async (stage: string, extra: Record<string, unknown> = {}) => hr.po
 beforeAll(async () => {
   storeDir = mkdtempSync(path.join(tmpdir(), 'hrms-rec-'));
   setStore(new LocalStore(storeDir));
-  app = await makeApp({ ENABLED_MODULES: 'default,recruitment' }, { storeOverride: true });
+  app = await makeApp({ ...flags('default,recruitment') }, { storeOverride: true });
   T = await createTenant();
   hr = await Client.login(app, T.host, T.users.hr!.email);
   mgr = await Client.login(app, T.host, T.users.manager!.email);
@@ -220,8 +220,8 @@ describe('retention and erasure', () => {
     const ravi = (await ownerQuery<{ id: string }>(`SELECT id FROM candidates WHERE tenant_id=$1 AND email='ravi@mail.example'`, [T.id]))[0]!.id;
     expect((await hrExec.post(`/api/v1/recruitment/candidates/${ravi}/anonymize`, { reason: 'Candidate asked us to delete their data' })).statusCode).toBe(200);
     expect((await hrExec.post(`/api/v1/recruitment/candidates/${ravi}/anonymize`, { reason: 'again' })).statusCode).toBe(404);
-    const off = await makeApp({ ENABLED_MODULES: 'default' });
-    try { expect((await (await Client.login(off, T.host, T.users.hr!.email)).get('/api/v1/recruitment/requisitions')).json().error.code).toBe('feature_unavailable'); }
+    const off = await makeApp({ ...flags('default') });
+    try { expect((await (await Client.login(off, T.host, T.users.hr!.email)).get('/api/v1/recruitment/requisitions')).json().error.code).toBe('not_found'); }
     finally { await off.close(); }
   });
 });

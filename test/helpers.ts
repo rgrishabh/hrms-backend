@@ -6,6 +6,7 @@ import { buildApp } from '../src/app.js';
 import { createPool } from '../src/db/pool.js';
 import { FieldCipher, hashPassword } from '../src/core/crypto/index.js';
 import { loadEnv } from '../src/config/env.js';
+import { FEATURES, FEATURE_MAP, type FeatureDefinition } from '../src/core/features/registry.js';
 import { runQueued } from '../src/core/jobs/scheduler.js';
 import { TEST_APP_URL, TEST_OWNER_URL } from './env.js';
 
@@ -13,16 +14,26 @@ const SILENT_LOG = { info: () => undefined, error: () => undefined };
 export const PASSWORD = 'Test-Password-123!';
 let pwHash: string | null = null;
 
-export async function makeApp(overrides: Record<string, string> = {}, opts: { mailerOverride?: boolean; storeOverride?: boolean } = {}): Promise<FastifyInstance> {
+/**
+ * Every FEATURE_* variable, so that a test says exactly which modules exist in its app. Tokens are registry keys,
+ * comma-separated; 'default' stands for the registry's defaults.
+ */
+export function flags(spec: string): Record<string, string> {
+  const tokens = spec.split(',').map((t) => t.trim()).filter(Boolean);
+  const on = (d: FeatureDefinition) => tokens.includes(d.key) || (tokens.includes('default') && d.defaultEnabled);
+  for (const t of tokens) if (t !== 'default' && !FEATURE_MAP.has(t)) throw new Error(`unknown feature ${t}`);
+  return Object.fromEntries(FEATURES.filter((d) => d.envName).map((d) => [d.envName!, String(on(d))]));
+}
+
+export async function makeApp(overrides: Record<string, string> = {}, opts: { mailerOverride?: boolean; storeOverride?: boolean; pushOverride?: boolean } = {}): Promise<FastifyInstance> {
   const env = loadEnv({
     NODE_ENV: 'test', DATABASE_URL: TEST_APP_URL, COOKIE_SECURE: 'false',
-    ENABLED_MODULES: 'default,attendance.mobile,attendance.biometric',
+    ...flags('default,attendance.mobile,attendance.biometric'),
     DATA_ENCRYPTION_KEY: Buffer.alloc(32, 7).toString('base64'), SESSION_TTL_HOURS: '24', AUTH_RATE_LIMIT_PER_MINUTE: '10000', AUTH_ACCOUNT_RATE_LIMIT_PER_MINUTE: '10000',
-    MFA_ENFORCEMENT: 'off', // the MFA suite turns enforcement on explicitly
     ...overrides,
   });
   const pool = createPool(env.DATABASE_URL, 5);
-  const app = await buildApp({ env, pool, cipher: new FieldCipher(env.DATA_ENCRYPTION_KEY), mailerOverride: opts.mailerOverride, storeOverride: opts.storeOverride });
+  const app = await buildApp({ env, pool, cipher: new FieldCipher(env.DATA_ENCRYPTION_KEY), mailerOverride: opts.mailerOverride, storeOverride: opts.storeOverride, pushOverride: opts.pushOverride });
   app.addHook('onClose', async () => { await pool.end(); });
   return app;
 }

@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import type { FastifyInstance } from 'fastify';
-import { makeApp, createTenant, Client, ownerQuery, PASSWORD, type TenantFixture } from './helpers.js';
+import { makeApp, createTenant, Client, ownerQuery, PASSWORD, type TenantFixture, flags } from './helpers.js';
 import { hashPassword } from '../src/core/crypto/index.js';
 
 // Per-diem and mileage: the organization's effective-dated rates price items from days or km.
@@ -13,7 +13,7 @@ const item = (claimId: string, b: Record<string, unknown>) => emp.post(`/api/v1/
 const newClaim = async () => (await emp.post('/api/v1/expenses/claims', { title: 'Site visits this week', purpose: 'Sampling at client sites' })).json().id as string;
 
 beforeAll(async () => {
-  app = await makeApp({ ENABLED_MODULES: 'default,expenses,travel' });
+  app = await makeApp({ ...flags('default,expenses,travel') });
   T = await createTenant();
   const [u] = await ownerQuery<{ id: string }>(`INSERT INTO users (tenant_id, email, display_name, password_hash) VALUES ($1,$2,'finance',$3) RETURNING id`, [T.id, `finance@${T.host}`, await hashPassword(PASSWORD)]);
   await ownerQuery(`INSERT INTO user_roles (user_id, tenant_id, role_key) VALUES ($1,$2,'finance_manager')`, [u!.id, T.id]);

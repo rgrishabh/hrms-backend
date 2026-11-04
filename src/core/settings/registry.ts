@@ -23,8 +23,8 @@ export interface SettingDefinition<T = unknown> {
   scopes: readonly ('tenant' | 'branch')[];
   /** Permission needed to change it. Reading effective values needs settings.read. */
   editPermission: string;
-  /** Module whose settings page shows this key. */
-  feature?: string;
+  /** Module whose settings page shows this key; with a list, any one of them. */
+  feature?: string | readonly string[];
   /** Upper bound imposed by deployment configuration (layer 2). */
   deploymentCeiling?: (env: DeploymentLimits) => T;
 }
@@ -46,9 +46,15 @@ export const SETTINGS: readonly SettingDefinition[] = [
     control: 'number', schema: z.number().int().min(0).max(900), default: 60, scopes: ['tenant'], editPermission: 'attendance.configure' }),
   def({ key: 'attendance.regularization_window_days', group: 'attendance', feature: 'attendance.regularization', label: 'Regularization window (days)', description: 'How many days back an employee may request an attendance correction.',
     control: 'number', schema: z.number().int().min(1).max(60), default: 7, scopes: ['tenant'], editPermission: 'attendance.configure' }),
-  def({ key: 'attendance.mobile_location_mode', group: 'attendance', feature: 'attendance.mobile', label: 'Mobile location capture', description: 'Whether mobile clock-in asks for the device location. Location is captured only at punch time — never tracked continuously.',
+  def({ key: 'attendance.mobile_location_mode', group: 'attendance', feature: 'attendance.geofence', label: 'Mobile location capture', description: 'Whether mobile clock-in asks for the device location. Location is captured only at punch time — never tracked continuously.',
     control: 'select', options: [{ value: 'off', label: 'Off' }, { value: 'optional', label: 'Optional' }, { value: 'required', label: 'Required' }],
     schema: z.enum(['off', 'optional', 'required']), default: 'off', scopes: ['tenant', 'branch'], editPermission: 'attendance.configure' }),
+  def({ key: 'attendance.geofence_enforce', group: 'attendance', feature: 'attendance.geofence', label: 'Refuse clock-in outside the geofence', description: 'Off: a clock-in outside the branch geofence is recorded and flagged. On: it is refused.',
+    control: 'boolean', schema: z.boolean(), default: false, scopes: ['tenant', 'branch'], editPermission: 'attendance.configure' }),
+  def({ key: 'attendance.selfie_required', group: 'attendance', feature: 'attendance.selfie', label: 'Selfie required at clock-in', description: 'Clock-in on the web or mobile app needs a camera photo.',
+    control: 'boolean', schema: z.boolean(), default: true, scopes: ['tenant', 'branch'], editPermission: 'attendance.configure' }),
+  def({ key: 'attendance.selfie_retention_days', group: 'attendance', feature: 'attendance.selfie', label: 'Keep check-in selfies for (days)', description: 'Selfies are erased after this many days. Changing it applies to new photos.',
+    control: 'number', schema: z.number().int().min(1).max(730), default: 90, scopes: ['tenant'], editPermission: 'attendance.configure' }),
   def({ key: 'attendance.max_device_clock_drift_seconds', group: 'attendance', feature: 'attendance.biometric', label: 'Max tolerated device clock drift (seconds)', description: 'Devices reporting a clock further off than this are flagged; their events are corrected using the reported drift.',
     control: 'number', schema: z.number().int().min(0).max(3600), default: 300, scopes: ['tenant'], editPermission: 'attendance.configure' }),
   def({ key: 'attendance.overtime_enabled', group: 'attendance', feature: 'attendance', label: 'Calculate overtime minutes', description: 'Record overtime minutes on daily results for shifts that define an overtime threshold. Payout requires the Overtime/Payroll modules.',
@@ -72,9 +78,9 @@ export const SETTINGS: readonly SettingDefinition[] = [
   def({ key: 'overtime.esi_wages', group: 'attendance', feature: 'overtime', label: 'Overtime pay and ESI', description: 'Whether overtime pay counts toward ESI contribution wages (it never decides ESI coverage). Confirm the treatment for your establishment. Not set = overtime cannot be paid.',
     control: 'select', options: [{ value: '', label: 'Not set' }, { value: 'include', label: 'Include in ESI contribution wages' }, { value: 'exclude', label: 'Exclude from ESI wages' }],
     schema: z.enum(['', 'include', 'exclude']), default: '', scopes: ['tenant'], editPermission: 'overtime.manage' }),
-  def({ key: 'overtime.comp_off_leave_type', group: 'attendance', feature: 'overtime', label: 'Compensatory off: leave type', description: 'Code of the leave type credited when an employee takes compensatory off instead of pay (e.g. COMP). Empty = compensatory off is not offered.',
+  def({ key: 'overtime.comp_off_leave_type', group: 'attendance', feature: 'comp_off', label: 'Compensatory off: leave type', description: 'Code of the leave type credited when an employee takes compensatory off instead of pay (e.g. COMP). Empty = compensatory off is not offered.',
     control: 'text', schema: z.string().trim().toUpperCase().regex(/^([A-Z][A-Z0-9_]{0,19})?$/, 'Use a leave type code'), default: '', scopes: ['tenant'], editPermission: 'overtime.manage' }),
-  def({ key: 'overtime.comp_off_day_minutes', group: 'attendance', feature: 'overtime', label: 'Compensatory off: overtime minutes per day off', description: 'Overtime worth one day off; half of it earns half a day. Smaller claims cannot be taken as compensatory off.',
+  def({ key: 'overtime.comp_off_day_minutes', group: 'attendance', feature: 'comp_off', label: 'Compensatory off: overtime minutes per day off', description: 'Overtime worth one day off; half of it earns half a day. Smaller claims cannot be taken as compensatory off.',
     control: 'number', schema: z.number().int().min(60).max(1440), default: 480, scopes: ['tenant'], editPermission: 'overtime.manage' }),
 
   // Field duty.
@@ -97,15 +103,15 @@ export const SETTINGS: readonly SettingDefinition[] = [
   def({ key: 'travel.finance_approval_above', group: 'general', feature: 'travel', label: 'Travel: finance approves estimates from (₹)', description: 'Trips estimated at or above this also need finance approval. Empty = only trips with an advance, trips abroad and trips of people without a manager.',
     control: 'number', schema: z.number().min(0).nullable(), default: null, scopes: ['tenant'], editPermission: 'travel.manage' }),
   // Salary advances and loans (the organization's policy).
-  def({ key: 'loans.advance_max_installments', group: 'general', feature: 'advances_loans', label: 'Salary advance: most instalments', description: 'A salary advance is recovered in at most this many monthly instalments.',
+  def({ key: 'loans.advance_max_installments', group: 'general', feature: 'salary_advance', label: 'Salary advance: most instalments', description: 'A salary advance is recovered in at most this many monthly instalments.',
     control: 'number', schema: z.number().int().min(1).max(24), default: 3, scopes: ['tenant'], editPermission: 'loans.manage' }),
-  def({ key: 'loans.max_installments', group: 'general', feature: 'advances_loans', label: 'Loan: most instalments', description: 'A loan is recovered in at most this many monthly instalments.',
+  def({ key: 'loans.max_installments', group: 'general', feature: 'loans', label: 'Loan: most instalments', description: 'A loan is recovered in at most this many monthly instalments.',
     control: 'number', schema: z.number().int().min(1).max(120), default: 24, scopes: ['tenant'], editPermission: 'loans.manage' }),
-  def({ key: 'loans.max_advance_amount', group: 'general', feature: 'advances_loans', label: 'Salary advance: largest amount (₹)', description: 'Empty = no limit (finance decides at approval).',
+  def({ key: 'loans.max_advance_amount', group: 'general', feature: 'salary_advance', label: 'Salary advance: largest amount (₹)', description: 'Empty = no limit (finance decides at approval).',
     control: 'number', schema: z.number().int().positive().nullable(), default: null, scopes: ['tenant'], editPermission: 'loans.manage' }),
-  def({ key: 'loans.max_loan_amount', group: 'general', feature: 'advances_loans', label: 'Loan: largest amount (₹)', description: 'Empty = no limit (finance decides at approval).',
+  def({ key: 'loans.max_loan_amount', group: 'general', feature: 'loans', label: 'Loan: largest amount (₹)', description: 'Empty = no limit (finance decides at approval).',
     control: 'number', schema: z.number().int().positive().nullable(), default: null, scopes: ['tenant'], editPermission: 'loans.manage' }),
-  def({ key: 'loans.one_at_a_time', group: 'general', feature: 'advances_loans', label: 'One advance and one loan at a time', description: 'Refuse a new salary advance (or loan) while another is pending, approved or not yet repaid.',
+  def({ key: 'loans.one_at_a_time', group: 'general', feature: ['loans', 'salary_advance'], label: 'One advance and one loan at a time', description: 'Refuse a new salary advance (or loan) while another is pending, approved or not yet repaid.',
     control: 'boolean', schema: z.boolean(), default: true, scopes: ['tenant'], editPermission: 'loans.manage' }),
   // Accounting exports (Tally import).
   def({ key: 'accounting.tally_company', group: 'general', feature: 'accounting_exports', label: 'Tally: company name', description: 'Exact company name in Tally to import into. Empty = the company open in Tally at import.',

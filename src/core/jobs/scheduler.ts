@@ -4,7 +4,7 @@ import { withPlatformBypass, withTenant } from '../../db/tx.js';
 import { getSettingValue } from '../settings/service.js';
 import { evaluateFeatures } from '../features/state.js';
 import { JOBS, JOB_MAP, duePeriod, jobActive, type JobDefinition } from './registry.js';
-import { deliverOutbox } from '../notify/service.js';
+import { deliverOutbox, deliverPushOutbox } from '../notify/service.js';
 
 /**
  * Database-backed scheduler, run by the worker. Every `intervalMs` each worker instance:
@@ -149,6 +149,7 @@ export class Scheduler {
       this.hooks.onPassStart?.();
       try { await tick(this.pool, this.log); } catch (e) { this.log.error({ err: (e as Error).message }, 'scheduler tick failed'); }
       try { await deliverOutbox(this.pool, this.log); } catch (e) { this.log.error({ err: (e as Error).message }, 'email delivery pass failed'); }
+      try { await deliverPushOutbox(this.pool, this.log); } catch (e) { this.log.error({ err: (e as Error).message }, 'push delivery pass failed'); }
       this.hooks.onPassEnd?.();
     })().finally(() => { this.running = null; });
     return this.running;

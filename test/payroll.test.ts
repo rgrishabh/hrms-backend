@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import type { FastifyInstance } from 'fastify';
-import { makeApp, createTenant, Client, ownerQuery, PASSWORD, type TenantFixture } from './helpers.js';
+import { makeApp, createTenant, Client, ownerQuery, PASSWORD, type TenantFixture, flags } from './helpers.js';
 import { readXlsx } from './helpers.js';
 import { hashPassword } from '../src/core/crypto/index.js';
 
@@ -31,7 +31,7 @@ const rule = async (kind: string, scope: string, params: unknown) => {
 };
 
 beforeAll(async () => {
-  app = await makeApp({ ENABLED_MODULES: 'default,payroll,payroll.payslips,payroll.statutory' });
+  app = await makeApp({ ...flags('default,payroll,payroll.payslips,payroll.statutory') });
   T = await createTenant();
   empId = T.users.employee!.employeeId!;
   pay = await Client.login(app, T.host, T.users.payroll!.email);
@@ -162,8 +162,8 @@ describe('payroll run', () => {
 
   it('F&F runs need an approved separation; module off → 403', async () => {
     expect((await pay.post('/api/v1/payroll/runs', { period: PERIOD, legalEntityId: T.legalEntityId, kind: 'fnf', employeeId: empId })).statusCode).toBe(409);
-    const off = await makeApp({ ENABLED_MODULES: 'default' });
-    try { expect((await (await Client.login(off, T.host, T.users.payroll!.email)).get('/api/v1/payroll/runs')).json().error.code).toBe('feature_unavailable'); }
+    const off = await makeApp({ ...flags('default') });
+    try { expect((await (await Client.login(off, T.host, T.users.payroll!.email)).get('/api/v1/payroll/runs')).json().error.code).toBe('not_found'); }
     finally { await off.close(); }
     void hr;
   });

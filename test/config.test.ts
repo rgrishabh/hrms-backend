@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { loadEnv, deploymentDomains } from '../src/config/env.js';
 import { buildPublicConfig } from '../src/config/installation.js';
+import { FEATURE_BY_ENV, FEATURE_MAP } from '../src/core/features/registry.js';
 
 const KEY = Buffer.alloc(32, 9).toString('base64');
 const base = { DATABASE_URL: 'postgres://hrms_app:pw@db:5432/hrms', DATA_ENCRYPTION_KEY: KEY };
@@ -62,10 +63,73 @@ describe('deployment configuration', () => {
 
 describe('docker compose style environment', () => {
   it('treats empty optional variables as unset', () => {
-    const e = loadEnv({ ...base, BRAND_LOGO_URL: '', BRAND_SUPPORT_EMAIL: '', ENABLED_MODULES: '', DATABASE_SSL: '' });
+    const e = loadEnv({ ...base, BRAND_LOGO_URL: '', BRAND_SUPPORT_EMAIL: '', FEATURE_LEAVE: '', ENABLED_MODULES: '', DATABASE_SSL: '' });
     expect(e.BRAND_LOGO_URL).toBeUndefined();
     expect(e.BRAND_SUPPORT_EMAIL).toBeUndefined();
-    expect(e.ENABLED_MODULES).toBe('default');
+    expect(e.enabledFeatures.has('leave')).toBe(true);
     expect(e.DATABASE_SSL).toBeUndefined();
+  });
+});
+
+describe('feature flags', () => {
+  const problems = (env: Record<string, string>) => { try { loadEnv({ ...base, ...env }); return ''; } catch (e) { return (e as Error).message; } };
+
+  it('every flag of the contract is in the registry with the contract default and dependencies', () => {
+    const table: [string, boolean, string[]][] = [
+      ['FEATURE_DOCUMENTS', true, []], ['FEATURE_ONBOARDING', false, []], ['FEATURE_OFFBOARDING', false, []], ['FEATURE_POLICIES', false, []],
+      ['FEATURE_ATTENDANCE', true, []], ['FEATURE_ATTENDANCE_WEB', true, ['ATTENDANCE']], ['FEATURE_ATTENDANCE_MOBILE', false, ['ATTENDANCE']],
+      ['FEATURE_ATTENDANCE_GEOFENCE', false, ['ATTENDANCE']], ['FEATURE_ATTENDANCE_SELFIE', false, ['ATTENDANCE']], ['FEATURE_ATTENDANCE_BIOMETRIC', false, ['ATTENDANCE']],
+      ['FEATURE_ATTENDANCE_REGULARIZATION', true, ['ATTENDANCE']], ['FEATURE_SHIFTS', true, ['ATTENDANCE']], ['FEATURE_HOLIDAYS', true, ['ATTENDANCE']], ['FEATURE_LEAVE', true, []],
+      ['FEATURE_OVERTIME', false, ['ATTENDANCE']], ['FEATURE_COMP_OFF', false, ['LEAVE', 'OVERTIME']], ['FEATURE_FIELD_DUTY', false, ['ATTENDANCE']], ['FEATURE_PAYROLL', false, ['ATTENDANCE']],
+      ['FEATURE_PAYSLIPS', false, ['PAYROLL']], ['FEATURE_PAYROLL_STATUTORY', false, ['PAYROLL']], ['FEATURE_LOANS', false, ['PAYROLL']], ['FEATURE_SALARY_ADVANCE', false, ['PAYROLL']],
+      ['FEATURE_ACCOUNTING_EXPORTS', false, ['PAYROLL']], ['FEATURE_EXPENSE_CLAIMS', false, []], ['FEATURE_TRAVEL', false, ['EXPENSE_CLAIMS']], ['FEATURE_RECRUITMENT', false, []],
+      ['FEATURE_PERFORMANCE_REVIEW', false, []], ['FEATURE_TRAINING', false, []], ['FEATURE_LAB_COMPETENCY', false, ['TRAINING']], ['FEATURE_ASSET_MANAGEMENT', false, []],
+      ['FEATURE_GRIEVANCE', false, []], ['FEATURE_POSH', false, []], ['FEATURE_REPORTS_ADVANCED', false, []], ['FEATURE_EMAIL_NOTIFICATIONS', true, []], ['FEATURE_PUSH_NOTIFICATIONS', false, []],
+    ];
+    expect([...FEATURE_BY_ENV.keys()].sort()).toEqual(table.map((t) => t[0]).sort());
+    for (const [name, def, deps] of table) {
+      const d = FEATURE_BY_ENV.get(name)!;
+      expect([name, d.defaultEnabled]).toEqual([name, def]);
+      expect([name, d.dependencies.filter((k) => !FEATURE_MAP.get(k)!.core).map((k) => FEATURE_MAP.get(k)!.envName!.replace('FEATURE_', '')).sort()]).toEqual([name, [...deps].sort()]);
+    }
+  });
+
+  it('refuses a typo, a value other than true or false, and a feature on without what it needs, all at once', () => {
+    const m = problems({ FEATURE_PAYROL: 'true', FEATURE_LEAVE: 'yes', FEATURE_PAYSLIPS: 'true' });
+    expect(m).toMatch(/FEATURE_PAYROL: not a known feature flag/);
+    expect(m).toMatch(/FEATURE_LEAVE: must be true or false/);
+    expect(m).toMatch(/FEATURE_PAYSLIPS: is on but requires FEATURE_PAYROLL/);
+  });
+
+  it('a feature on by default still needs what it depends on', () => {
+    expect(problems({ FEATURE_ATTENDANCE: 'false' })).toMatch(/FEATURE_ATTENDANCE_WEB: is on by default but requires FEATURE_ATTENDANCE/);
+  });
+
+  it('comp off needs both leave and overtime', () => {
+    expect(problems({ FEATURE_COMP_OFF: 'true' })).toMatch(/FEATURE_COMP_OFF: is on but requires FEATURE_OVERTIME/);
+    expect(problems({ FEATURE_COMP_OFF: 'true', FEATURE_OVERTIME: 'true', FEATURE_LEAVE: 'false' })).toMatch(/requires FEATURE_LEAVE/);
+    expect(problems({ FEATURE_COMP_OFF: 'true', FEATURE_OVERTIME: 'true' })).toBe('');
+  });
+
+  it('refuses the removed variables', () => {
+    expect(problems({ ENABLED_MODULES: 'default' })).toMatch(/ENABLED_MODULES: removed/);
+    expect(problems({ MFA_ENFORCEMENT: 'off' })).toMatch(/MFA_ENFORCEMENT: removed/);
+    expect(problems({ SMS_TRANSPORT: 'log' })).toMatch(/SMS_TRANSPORT: removed/);
+    expect(problems({ SMS_HTTP_URL: '' })).toBe('');
+  });
+
+  it('MFA flags: enforced needs available, methods are a subset, production defaults are on', () => {
+    expect(problems({ MFA_AVAILABLE: 'false', MFA_ENFORCED: 'true' })).toMatch(/MFA_ENFORCED=true is invalid with MFA_AVAILABLE=false/);
+    expect(problems({ MFA_METHODS: 'totp,sms-otp' })).toMatch(/MFA_METHODS/);
+    expect(loadEnv(base).MFA_AVAILABLE).toBe(false);
+    expect(loadEnv(prod)).toMatchObject({ MFA_AVAILABLE: true, MFA_ENFORCED: false, MFA_METHODS: ['totp', 'email'] });
+  });
+
+  it('VAPID keys come as a pair, in the right shape', () => {
+    const pub = Buffer.alloc(65, 4).toString('base64url');
+    const priv = Buffer.alloc(32, 5).toString('base64url');
+    expect(problems({ VAPID_PUBLIC_KEY: pub })).toMatch(/both VAPID_PUBLIC_KEY and VAPID_PRIVATE_KEY/);
+    expect(problems({ VAPID_PUBLIC_KEY: 'short', VAPID_PRIVATE_KEY: priv })).toMatch(/VAPID_PUBLIC_KEY/);
+    expect(problems({ VAPID_PUBLIC_KEY: pub, VAPID_PRIVATE_KEY: priv })).toBe('');
   });
 });

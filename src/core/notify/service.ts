@@ -4,6 +4,7 @@ import { SYSTEM_ROLES } from '../auth/permissions.js';
 import { isModuleEnabled } from '../features/state.js';
 import { getFrom, getMailer } from './mailer.js';
 import { renderEmail, type EmailBrand } from './templates.js';
+import { getPushSender, pushPayload } from './push.js';
 
 /**
  * Notifications are written in the CALLER's transaction (outbox pattern): if the
@@ -24,6 +25,7 @@ export interface NotifyMessage {
   /** Same key + same user = one notification (e.g. daily reminders). */
   dedupeKey?: string;
   email?: boolean;
+  push?: boolean;
 }
 
 export async function notifyUsers(db: Db, tenantId: string, userIds: string[], msg: NotifyMessage) {
@@ -42,6 +44,13 @@ export async function notifyUsers(db: Db, tenantId: string, userIds: string[], m
       ON CONFLICT (tenant_id, to_email, dedupe_key) WHERE dedupe_key IS NOT NULL DO NOTHING`,
       [tenantId, ids, rendered.subject, rendered.text, rendered.html, msg.kind, msg.dedupeKey ?? null]);
     emails = r.rowCount ?? 0;
+  }
+  if (msg.push !== false && getPushSender() && isModuleEnabled('notifications.push')) {
+    // Only the kind is kept: the outbox holds nothing a push could leak.
+    await db.query(`INSERT INTO push_outbox (tenant_id, to_user_id, kind, dedupe_key)
+      SELECT $1, u.id, $3, $4 FROM users u WHERE u.tenant_id=$1 AND u.id = ANY($2) AND u.status='active'
+        AND EXISTS (SELECT 1 FROM push_subscriptions p WHERE p.tenant_id=u.tenant_id AND p.user_id=u.id)
+      ON CONFLICT (tenant_id, to_user_id, dedupe_key) WHERE dedupe_key IS NOT NULL DO NOTHING`, [tenantId, ids, msg.kind, msg.dedupeKey ?? null]);
   }
   return { inApp: inApp.rowCount ?? 0, emails };
 }
@@ -85,6 +94,47 @@ export async function deliverOutbox(pool: Pool, log: { error: (o: object, m?: st
       await withPlatformBypass(pool, (db) => db.query(`UPDATE email_outbox SET last_error=$2,
           status = CASE WHEN attempts >= ${MAX_EMAIL_ATTEMPTS} THEN 'failed' ELSE 'queued' END,
           next_attempt_at = now() + make_interval(mins => power(2, attempts)::int) WHERE id=$1`, [m.id, err]));
+    }
+  }
+  return { sent, failed };
+}
+
+const MAX_PUSH_ATTEMPTS = 5;
+
+/** Deliver queued pushes like email: claimed with SKIP LOCKED, back-off, at most 5 attempts. Dead subscriptions are removed. */
+export async function deliverPushOutbox(pool: Pool, log: { error: (o: object, m?: string) => void }, limit = 50) {
+  const push = getPushSender();
+  if (!push) return { sent: 0, failed: 0 };
+  const claimed = await withPlatformBypass(pool, async (db) => {
+    await db.query(`DELETE FROM push_outbox WHERE status IN ('sent','failed') AND created_at < now() - interval '30 days'`);
+    await db.query(`UPDATE push_outbox SET status='queued' WHERE status='sending' AND next_attempt_at < now() - interval '10 minutes'`);
+    return (await db.query<{ id: string; tenant_id: string; to_user_id: string; kind: string; attempts: number }>(
+      `UPDATE push_outbox SET status='sending', attempts=attempts+1, next_attempt_at=now()
+        WHERE id IN (SELECT id FROM push_outbox WHERE status='queued' AND next_attempt_at <= now() ORDER BY created_at LIMIT $1 FOR UPDATE SKIP LOCKED)
+        RETURNING id, tenant_id, to_user_id, kind, attempts`, [limit])).rows;
+  });
+  let sent = 0; let failed = 0;
+  for (const m of claimed) {
+    const subs = await withPlatformBypass(pool, async (db) => (await db.query<{ id: string; endpoint: string; p256dh: string; auth: string }>(
+      'SELECT id, endpoint, p256dh, auth FROM push_subscriptions WHERE tenant_id=$1 AND user_id=$2', [m.tenant_id, m.to_user_id])).rows);
+    const payload = pushPayload(m.kind, brand.productName);
+    let lastError: string | null = null;
+    for (const sub of subs) {
+      try {
+        const r = await push.send(sub, payload);
+        if (r.ok) await withPlatformBypass(pool, (db) => db.query('UPDATE push_subscriptions SET last_used_at=now() WHERE id=$1', [sub.id]));
+        else if (r.gone) await withPlatformBypass(pool, (db) => db.query('DELETE FROM push_subscriptions WHERE id=$1', [sub.id]));
+        else lastError = r.error;
+      } catch (e) { lastError = ((e as Error).message ?? 'send failed').slice(0, 500); }
+    }
+    if (lastError) {
+      failed++;
+      log.error({ pushId: m.id, attempts: m.attempts, err: lastError }, 'push delivery failed');
+      await withPlatformBypass(pool, (db) => db.query(`UPDATE push_outbox SET last_error=$2, status = CASE WHEN attempts >= ${MAX_PUSH_ATTEMPTS} THEN 'failed' ELSE 'queued' END,
+        next_attempt_at = now() + make_interval(mins => power(2, attempts)::int) WHERE id=$1`, [m.id, lastError]));
+    } else {
+      sent++;
+      await withPlatformBypass(pool, (db) => db.query(`UPDATE push_outbox SET status='sent', sent_at=now(), last_error=NULL WHERE id=$1`, [m.id]));
     }
   }
   return { sent, failed };

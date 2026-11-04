@@ -1,7 +1,7 @@
 import type { FastifyInstance, FastifyRequest } from 'fastify';
 import type { HostResolution } from '../tenancy/resolve.js';
 import type { SessionUser } from '../auth/session.js';
-import { forbidden, unauthorized, AppError, featureUnavailable } from './errors.js';
+import { forbidden, notFound, unauthorized, AppError, featureNotConfigured } from './errors.js';
 import type { Pool } from '../../db/pool.js';
 import { withTenant, type Db } from '../../db/tx.js';
 import { assertFeatureUsable, evaluateFeatures } from '../features/state.js';
@@ -20,7 +20,7 @@ declare module 'fastify' {
   interface FastifyInstance { deps: AppDeps }
 }
 
-export interface AppDeps { env: Env; pool: Pool; cipher: FieldCipher; /** Tests: keep an injected mailer instead of building one from env. */ mailerOverride?: boolean; storeOverride?: boolean; }
+export interface AppDeps { env: Env; pool: Pool; cipher: FieldCipher; /** Tests: keep an injected mailer instead of building one from env. */ mailerOverride?: boolean; storeOverride?: boolean; pushOverride?: boolean }
 
 export interface TenantActor {
   tenantId: string;
@@ -76,6 +76,7 @@ export function gateFeatures(app: FastifyInstance, ...keys: [string, ...string[]
     if (host.kind !== 'tenant' || !user || user.tenantId !== host.tenant.id) return;
     const states = await withTenant(req.server.deps.pool, host.tenant.id, (db) => evaluateFeatures(db, host.tenant.id));
     if (keys.some((k) => states.get(k)?.usable)) return;
-    throw featureUnavailable(keys[0], states.get(keys[0])?.blockers.join('; ') ?? '');
+    if (!keys.some((k) => states.get(k)?.enabled)) throw notFound();
+    throw featureNotConfigured(keys[0], states.get(keys[0])?.blockers.join('; ') ?? '');
   });
 }

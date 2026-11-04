@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import type { FastifyInstance } from 'fastify';
-import { makeApp, createTenant, Client, ownerQuery, PASSWORD, type TenantFixture } from './helpers.js';
+import { makeApp, createTenant, Client, ownerQuery, PASSWORD, type TenantFixture, flags } from './helpers.js';
 import { hashPassword } from '../src/core/crypto/index.js';
 import { addDays, localDate } from '../src/modules/attendance/time.js';
 
@@ -28,7 +28,7 @@ const approve = async (c: Client, entityId: string) => c.post(`/api/v1/approvals
 const check = (c: Client, employeeId: string) => c.get(`/api/v1/competency/check?employeeId=${employeeId}&methodCode=WAT-PH&activity=perform`);
 
 beforeAll(async () => {
-  app = await makeApp({ ENABLED_MODULES: 'default,training,lab.competency' });
+  app = await makeApp({ ...flags('default,training,lab.competency') });
   T = await createTenant();
   empId = T.users.employee!.employeeId!; otherId = T.users.other!.employeeId!;
   hr = await Client.login(app, T.host, T.users.hr!.email);
@@ -188,12 +188,11 @@ describe('exited staff', () => {
 
 describe('module switch', () => {
   it('is unavailable when not enabled', async () => {
-    const off = await makeApp({ ENABLED_MODULES: 'default' });
+    const off = await makeApp({ ...flags('default') });
     try {
       const c = await Client.login(off, T.host, T.users.hr!.email);
       const r = await c.get('/api/v1/competency/courses');
-      expect(r.statusCode).toBe(403);
-      expect(r.json().error.code).toBe('feature_unavailable');
+      expect(r.statusCode).toBe(404);
     } finally { await off.close(); }
   });
 });

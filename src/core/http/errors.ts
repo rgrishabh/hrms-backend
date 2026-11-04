@@ -8,5 +8,6 @@ export const unauthorized = (msg = 'Authentication required') => new AppError(40
 export const forbidden = (msg = 'You do not have permission to perform this action') => new AppError(403, 'forbidden', msg);
 export const notFound = (msg = 'Not found') => new AppError(404, 'not_found', msg);
 export const conflict = (msg: string, details?: unknown) => new AppError(409, 'conflict', msg, details);
-export const featureUnavailable = (key: string, reason: string) =>
-  new AppError(403, 'feature_unavailable', `Module '${key}' is not available: ${reason}`, { feature: key, reason });
+/** The module is on but needs setting up first: an overtime setting, a registered device, a configured store. */
+export const featureNotConfigured = (key: string, reason: string) =>
+  new AppError(409, 'feature_not_configured', `'${key}' is on but not set up yet: ${reason}`, { feature: key, reason });

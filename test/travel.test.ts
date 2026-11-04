@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import type { FastifyInstance } from 'fastify';
-import { makeApp, createTenant, Client, ownerQuery, PASSWORD, type TenantFixture } from './helpers.js';
+import { makeApp, createTenant, Client, ownerQuery, PASSWORD, type TenantFixture, flags } from './helpers.js';
 import { hashPassword } from '../src/core/crypto/index.js';
 
 let app: FastifyInstance; let T: TenantFixture;
@@ -34,7 +34,7 @@ const claimFor = async (tripId: string, amount: number) => {
 const claim = async (id: string) => (await ownerQuery<{ status: string; advance_adjusted: string; payment_reference: string | null }>(`SELECT status, advance_adjusted::text, payment_reference FROM expense_claims WHERE id=$1`, [id]))[0]!;
 
 beforeAll(async () => {
-  app = await makeApp({ ENABLED_MODULES: 'default,expenses,field_duty,travel' });
+  app = await makeApp({ ...flags('default,expenses,field_duty,travel') });
   T = await createTenant();
   empId = T.users.employee!.employeeId!;
   emp = await Client.login(app, T.host, T.users.employee!.email);

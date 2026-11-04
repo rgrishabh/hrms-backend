@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import pg from 'pg';
 import type { FastifyInstance } from 'fastify';
-import { makeApp, createTenant, Client, ownerQuery, type TenantFixture } from './helpers.js';
+import { makeApp, createTenant, Client, ownerQuery, type TenantFixture, flags } from './helpers.js';
 import { TEST_OWNER_URL } from './env.js';
 import { nonWorkingDates } from '../src/modules/leave/service.js';
 import type { Db } from '../src/db/tx.js';
@@ -21,7 +21,7 @@ const daily = async (empKey: string, date: string) => (await ownerQuery<{ day_ty
   `SELECT day_type, shift_id, policy_snapshot FROM attendance_daily WHERE tenant_id=$1 AND employee_id=$2 AND work_date=$3`, [T.id, T.users[empKey]!.employeeId, date]))[0];
 
 beforeAll(async () => {
-  app = await makeApp({ ENABLED_MODULES: 'default,leave' });
+  app = await makeApp({ ...flags('default,leave') });
   T = await createTenant();
   c = new pg.Client({ connectionString: TEST_OWNER_URL });
   await c.connect();

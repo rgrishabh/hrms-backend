@@ -1,8 +1,12 @@
 import { Decimal } from 'decimal.js';
 import type { Db } from '../../db/tx.js';
+import { isModuleEnabled } from '../../core/features/state.js';
 import type { Adjustment } from '../payroll/calc.js';
 
 export const KIND_LABEL: Record<string, string> = { salary_advance: 'Salary advance', loan: 'Loan' };
+/** The two kinds share a table and a screen, but each has its own flag. */
+export const KIND_FEATURE: Record<string, string> = { salary_advance: 'salary_advance', loan: 'loans' };
+export const enabledLoanKinds = () => Object.keys(KIND_FEATURE).filter((k) => isModuleEnabled(KIND_FEATURE[k]!));
 
 /** Equal whole-rupee instalments; the last one is smaller when the amount does not divide evenly. */
 export const installmentOf = (amount: number, n: number) => Math.ceil(amount / n);
@@ -35,7 +39,7 @@ interface Planned { loanId: string; kind: string; amount: Decimal; label: string
 export async function plannedRecoveries(db: Db, tenantId: string, runId: string, employeeId: string, period: string, fnf: boolean): Promise<Planned[]> {
   const loans = (await db.query<{ id: string; kind: string; installments: number; installment_amount: string; first_period: string; skip_periods: string[] }>(
     `SELECT id, kind, installments, installment_amount::text, first_period, skip_periods FROM employee_loans
-      WHERE tenant_id=$1 AND employee_id=$2 AND status='disbursed' ORDER BY disbursed_at, id FOR UPDATE`, [tenantId, employeeId])).rows;
+      WHERE tenant_id=$1 AND employee_id=$2 AND status='disbursed' AND kind = ANY($3) ORDER BY disbursed_at, id FOR UPDATE`, [tenantId, employeeId, enabledLoanKinds()])).rows;
   const out: Planned[] = [];
   for (const l of loans) {
     if (!fnf && (period < l.first_period || l.skip_periods.includes(period))) continue;

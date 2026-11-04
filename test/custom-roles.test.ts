@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import type { FastifyInstance } from 'fastify';
-import { makeApp, createTenant, Client, ownerQuery, type TenantFixture } from './helpers.js';
+import { makeApp, createTenant, Client, ownerQuery, type TenantFixture, flags } from './helpers.js';
 
 // The organization's own roles: defined within the grant limits, applied at once, never a way around MFA.
 let app: FastifyInstance; let T: TenantFixture;
@@ -10,7 +10,7 @@ const me = async (c: Client) => (await c.get('/api/v1/auth/me')).json();
 const roles = async (c: Client) => (await c.get('/api/v1/tenant/roles')).json();
 
 beforeAll(async () => {
-  app = await makeApp({ ENABLED_MODULES: 'default,leave,training' });
+  app = await makeApp({ ...flags('default,leave,training') });
   T = await createTenant();
   admin = await login('admin'); it_ = await login('it');
 });

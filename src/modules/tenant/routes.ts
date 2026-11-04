@@ -31,7 +31,7 @@ export async function tenantAdminRoutes(app: FastifyInstance, opts: { publicConf
         const eff = await resolveSetting(db, a.tenantId, d.key, q.branchId);
         items.push({
           key: d.key, group: d.group, label: d.label, description: d.description, control: d.control, options: d.options ?? null,
-          scopes: d.scopes, feature: d.feature ?? null, featureEnabled: d.feature ? features.get(d.feature)?.enabled ?? false : true,
+          scopes: d.scopes, feature: d.feature ?? null, featureEnabled: !d.feature || (typeof d.feature === 'string' ? [d.feature] : d.feature).some((k) => features.get(k)?.enabled),
           editable: a.has(d.editPermission), editPermission: d.editPermission,
           effective: eff.value, source: eff.source, defaultValue: eff.defaultValue, platformValue: eff.platformValue ?? null,
           tenantValue: eff.tenantValue ?? null, branchValue: eff.branchValue ?? null, version: eff.version ?? null,

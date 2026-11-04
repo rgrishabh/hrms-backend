@@ -3,7 +3,7 @@ import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import type { FastifyInstance } from 'fastify';
-import { makeApp, createTenant, Client, ownerQuery, multipart, PASSWORD, type TenantFixture } from './helpers.js';
+import { makeApp, createTenant, Client, ownerQuery, multipart, PASSWORD, type TenantFixture, flags } from './helpers.js';
 import { LocalStore, setStore } from '../src/core/storage/index.js';
 import { hashPassword } from '../src/core/crypto/index.js';
 import { addDays, localDate } from '../src/modules/attendance/time.js';
@@ -28,7 +28,7 @@ const newClaim = async (c: Client, title = 'Client visit — Pune STP sampling')
 
 beforeAll(async () => {
   setStore(new LocalStore(mkdtempSync(path.join(tmpdir(), 'hrms-exp-'))));
-  app = await makeApp({ ENABLED_MODULES: 'default,expenses' }, { storeOverride: true });
+  app = await makeApp({ ...flags('default,expenses') }, { storeOverride: true });
   T = await createTenant();
   emp = await Client.login(app, T.host, T.users.employee!.email);
   mgr = await Client.login(app, T.host, T.users.manager!.email);

@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import type { FastifyInstance } from 'fastify';
-import { makeApp, createTenant, Client, ownerQuery, type TenantFixture } from './helpers.js';
+import { makeApp, createTenant, Client, ownerQuery, type TenantFixture, flags } from './helpers.js';
 import { tick } from '../src/core/jobs/scheduler.js';
 import { JOB_MAP, duePeriod, nextRun } from '../src/core/jobs/registry.js';
 import { addDays, localDate } from '../src/modules/attendance/time.js';
@@ -36,7 +36,7 @@ describe('scheduler', () => {
     await ownerQuery(`INSERT INTO sessions (token_hash, csrf_hash, user_id, tenant_id, expires_at) VALUES ('old-'||gen_random_uuid(),'x',$1,$2, now() - interval '30 days')`, [T.users.employee!.id, T.id]);
     await tick(app.deps.pool, quiet, at(today, '23:00'));
     const runs = await runsOf(T.id);
-    expect(runs.map((r) => `${r.job_key}:${r.status}`)).toEqual(['approvals.escalation:succeeded', 'approvals.reminder:succeeded', 'attendance.close_day:succeeded', 'leave.accrual:succeeded', 'sessions.cleanup:succeeded']);
+    expect(runs.map((r) => `${r.job_key}:${r.status}`)).toEqual(['approvals.escalation:succeeded', 'approvals.reminder:succeeded', 'attendance.close_day:succeeded', 'attendance.selfie_retention:succeeded', 'leave.accrual:succeeded', 'recruitment.retention:succeeded', 'sessions.cleanup:succeeded']);
     const close = runs.find((r) => r.job_key === 'attendance.close_day')!;
     expect(close).toMatchObject({ period_key: today, result: { date: addDays(today, -1) } });
     const days = await ownerQuery(`SELECT 1 FROM attendance_daily WHERE tenant_id=$1 AND work_date=$2`, [T.id, addDays(today, -1)]);
@@ -44,15 +44,15 @@ describe('scheduler', () => {
     expect(runs.find((r) => r.job_key === 'leave.accrual')!.result.credited).toBe(4);
     expect(runs.find((r) => r.job_key === 'sessions.cleanup')!.result.deleted).toBeGreaterThanOrEqual(1);
     await tick(app.deps.pool, quiet, at(today, '23:30'));
-    expect((await runsOf(T.id)).length).toBe(5); // nothing re-runs within the same period
+    expect((await runsOf(T.id)).length).toBe(7); // nothing re-runs within the same period
   });
 
   it('two instances ticking at the same moment still run each job exactly once', async () => {
     const U = await createTenant();
     const [a, b] = await Promise.all([tick(app.deps.pool, quiet, at(today, '23:00')), tick(app.deps.pool, quiet, at(today, '23:00'))]);
     const mine = [...a, ...b].filter((r) => r.tenantId === U.id);
-    expect(mine.map((r) => r.job).sort()).toEqual(['approvals.escalation', 'approvals.reminder', 'attendance.close_day', 'leave.accrual', 'sessions.cleanup']);
-    expect((await runsOf(U.id)).length).toBe(5);
+    expect(mine.map((r) => r.job).sort()).toEqual(['approvals.escalation', 'approvals.reminder', 'attendance.close_day', 'attendance.selfie_retention', 'leave.accrual', 'recruitment.retention', 'sessions.cleanup']);
+    expect((await runsOf(U.id)).length).toBe(7);
   });
 
   it('does not run before the scheduled time', async () => {
@@ -90,7 +90,7 @@ describe('scheduler', () => {
   });
 
   it('skips jobs whose module is disabled', async () => {
-    const off = await makeApp({ ENABLED_MODULES: 'attendance,attendance.web,attendance.regularization,shifts,holidays' });
+    const off = await makeApp({ ...flags('attendance,attendance.web,attendance.regularization,shifts,holidays') });
     const Y = await createTenant();
     await tick(off.deps.pool, quiet, at(today, '23:00'));
     expect((await runsOf(Y.id)).map((r) => r.job_key)).not.toContain('leave.accrual');

@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import type { FastifyInstance } from 'fastify';
-import { makeApp, createTenant, Client, ownerQuery, type TenantFixture } from './helpers.js';
+import { makeApp, createTenant, Client, ownerQuery, type TenantFixture, flags } from './helpers.js';
 
 const MODULES = 'default,payroll,payroll.payslips,payroll.statutory,overtime,core.offboarding';
 let app: FastifyInstance;
@@ -13,7 +13,7 @@ async function world(): Promise<World> {
 }
 const balanceOf = async (c: Client, code: string, year: number) => (await c.get(`/api/v1/leave/balances?year=${year}`)).json().items.find((x: { code: string }) => x.code === code);
 
-beforeAll(async () => { app = await makeApp({ ENABLED_MODULES: MODULES }); });
+beforeAll(async () => { app = await makeApp({ ...flags(MODULES) }); });
 afterAll(async () => { await app.close(); });
 
 describe('F-2 year-end carry-forward', () => {

@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import pg from 'pg';
 import type { FastifyInstance } from 'fastify';
-import { makeApp, createTenant, Client, ownerQuery, multipart, type TenantFixture } from './helpers.js';
+import { makeApp, createTenant, Client, ownerQuery, multipart, type TenantFixture, flags } from './helpers.js';
 import { TEST_OWNER_URL } from './env.js';
 import { caseDeadlines } from '../src/modules/cases/routes.js';
 import { addDays, localDate } from '../src/modules/attendance/time.js';
@@ -9,7 +9,7 @@ import type { Db } from '../src/db/tx.js';
 
 const today = localDate(new Date(), 'Asia/Kolkata');
 let app: FastifyInstance;
-beforeAll(async () => { app = await makeApp({ ENABLED_MODULES: 'default,recruitment,posh,grievance' }); });
+beforeAll(async () => { app = await makeApp({ ...flags('default,recruitment,posh,grievance') }); });
 afterAll(async () => { await app.close(); });
 
 describe('recruitment requisition checks', () => {

@@ -1,16 +1,19 @@
 import type { FastifyInstance } from 'fastify';
+import { createHash } from 'node:crypto';
 import { z } from 'zod';
 import { tenantActor, tenantActorAny, requireFeature, type TenantActor, gateFeatures } from '../../core/http/context.js';
 import { audit } from '../../core/audit/audit.js';
-import { badRequest, conflict, forbidden, notFound } from '../../core/http/errors.js';
+import { AppError, badRequest, conflict, forbidden, notFound } from '../../core/http/errors.js';
 import { IsoDate, PageQuery, offsetOf, paged, Uuid, QueryBool } from '../../core/http/pagination.js';
 import { getSettingValue } from '../../core/settings/service.js';
 import { createApprovalRequest, registerApprovalHandler, type StepSpec } from '../../core/workflow/engine.js';
 import { randomToken, sha256 } from '../../core/crypto/index.js';
 import type { Db } from '../../db/tx.js';
-import { employeeTimezone, lockedDates, recalcForEvent, recalculateRange, recordEvent, teamEmployeeIds } from './service.js';
+import { distanceMeters, employeeTimezone, lockedDates, recalcForEvent, recalculateRange, recordEvent, teamEmployeeIds } from './service.js';
 import { daysBetween, localDate, addDays, zonedToInstant, todaysPunches } from './time.js';
-import { evaluateFeatures } from '../../core/features/state.js';
+import { evaluateFeatures, isModuleEnabled } from '../../core/features/state.js';
+import { getStore, newKey } from '../../core/storage/index.js';
+import { detectFile } from '../../core/storage/sniff.js';
 import { rosterRoutes, endRosters } from './roster-routes.js';
 
 const TimeOfDay = z.string().regex(/^([01]\d|2[0-3]):[0-5]\d$/, 'Use HH:MM (24-hour)');
@@ -63,6 +66,7 @@ export async function attendanceRoutes(app: FastifyInstance) {
   const PunchBody = z.object({
     channel: z.enum(['web', 'mobile']), direction: z.enum(['in', 'out']).optional(),
     idempotencyKey: z.string().min(8).max(100), latitude: z.number().min(-90).max(90).optional(), longitude: z.number().min(-180).max(180).optional(),
+    selfieId: Uuid.optional(),
   });
   app.post('/punch', { config: { rateLimit: { max: 12, timeWindow: '1 minute' } } }, async (req) => {
     const a = tenantActor(req, 'attendance.self');
@@ -73,11 +77,23 @@ export async function attendanceRoutes(app: FastifyInstance) {
       await requireFeature(db, a.tenantId, body.channel === 'web' ? 'attendance.web' : 'attendance.mobile');
       const emp = await db.query<{ status: string; branch_id: string }>('SELECT status, branch_id FROM employees WHERE tenant_id=$1 AND id=$2', [a.tenantId, employeeId]);
       if (!['active', 'on_notice'].includes(emp.rows[0]!.status)) throw forbidden('Only active employees can record attendance');
+      const branchId = emp.rows[0]!.branch_id;
       let lat = body.latitude ?? null; let lng = body.longitude ?? null;
-      if (body.channel === 'mobile') {
-        const mode = await getSettingValue<string>(db, a.tenantId, 'attendance.mobile_location_mode', emp.rows[0]!.branch_id);
+      let outside: boolean | null = null;
+      if (body.channel === 'mobile' && isModuleEnabled('attendance.geofence')) {
+        const mode = await getSettingValue<string>(db, a.tenantId, 'attendance.mobile_location_mode', branchId);
         if (mode === 'required' && (lat === null || lng === null)) throw badRequest('Location is required for mobile attendance at your branch');
         if (mode === 'off') { lat = null; lng = null; }   // never store location the policy did not ask for
+        if (lat !== null && lng !== null) {
+          const fence = (await db.query<{ latitude: string; longitude: string; radius_m: number }>(
+            'SELECT latitude, longitude, radius_m FROM branch_geofences WHERE tenant_id=$1 AND branch_id=$2', [a.tenantId, branchId])).rows[0];
+          if (fence) {
+            outside = distanceMeters(lat, lng, Number(fence.latitude), Number(fence.longitude)) > fence.radius_m;
+            if (outside && await getSettingValue<boolean>(db, a.tenantId, 'attendance.geofence_enforce', branchId)) {
+              throw new AppError(403, 'outside_geofence', 'You are outside the area allowed for clock-in at your branch');
+            }
+          }
+        }
       } else { lat = null; lng = null; }
       // Server time is authoritative; the client clock is never trusted.
       const now = new Date();
@@ -87,11 +103,97 @@ export async function attendanceRoutes(app: FastifyInstance) {
           AND event_time > now() - interval '16 hours' ORDER BY event_time DESC LIMIT 1`, [a.tenantId, employeeId]);
         direction = last.rows[0]?.direction === 'in' ? 'out' : 'in';
       }
+      const selfieOn = (await evaluateFeatures(db, a.tenantId)).get('attendance.selfie')!.usable;
+      if (selfieOn && direction === 'in' && !body.selfieId && await getSettingValue<boolean>(db, a.tenantId, 'attendance.selfie_required', branchId)) {
+        throw new AppError(400, 'selfie_required', 'A selfie is required to clock in');
+      }
       const ev = await recordEvent(db, a.tenantId, { employeeId, source: body.channel, sourceRef: `${a.user.userId}:${body.idempotencyKey}`, eventTime: now,
-        direction, latitude: lat, longitude: lng, createdBy: a.user.userId });
+        direction, latitude: lat, longitude: lng, outsideGeofence: outside, createdBy: a.user.userId });
       if (!ev) return { duplicate: true };
+      if (selfieOn && body.selfieId) {
+        const linked = await db.query(`UPDATE attendance_selfies SET event_id=$4 WHERE tenant_id=$1 AND id=$2 AND employee_id=$3 AND event_id IS NULL AND erased_at IS NULL`, [a.tenantId, body.selfieId, employeeId, ev.id]);
+        if (!linked.rowCount) throw badRequest('That selfie cannot be used for this clock-in');
+      }
       await recalcForEvent(db, a.tenantId, employeeId, now);
-      return { duplicate: false, id: ev.id, direction, eventTime: now };
+      return { duplicate: false, id: ev.id, direction, eventTime: now, ...(outside === null ? {} : { outsideGeofence: outside }) };
+    });
+  });
+
+  // ------------------------------------------------------------ check-in selfie (feature attendance.selfie)
+  const MAX_SELFIE_BYTES = 5 * 1024 * 1024;
+  /** multipart/form-data, one image from the camera. Returns the id to send with the clock-in. Unused ones go at the next retention run. */
+  app.post('/selfies', { config: { rateLimit: { max: 12, timeWindow: '1 minute' } } }, async (req, reply) => {
+    const a = tenantActor(req, 'attendance.self');
+    const employeeId = a.user.employeeId;
+    if (!employeeId) throw badRequest('Your account is not linked to an employee record');
+    await a.tx((db) => requireFeature(db, a.tenantId, 'attendance.selfie'));
+    if (!req.isMultipart()) throw badRequest('Upload as multipart/form-data');
+    const part = await req.file();
+    if (!part) throw badRequest('Choose a photo');
+    const buf = await part.toBuffer().catch((e: { code?: string }) => {
+      if (e.code === 'FST_REQ_FILE_TOO_LARGE') throw new AppError(413, 'file_too_large', 'That photo is too large');
+      throw e;
+    });
+    if (!buf.length) throw badRequest('Choose a photo');
+    if (buf.length > MAX_SELFIE_BYTES) throw new AppError(413, 'file_too_large', 'That photo is too large');
+    const detected = detectFile(buf, part.filename || 'selfie');
+    if ('error' in detected || !detected.contentType.startsWith('image/')) throw new AppError(415, 'unsupported_file', 'A selfie must be a PNG, JPEG or WebP image');
+    const key = newKey(a.tenantId, employeeId, 'selfies');
+    await getStore()!.put(key, buf, detected.contentType);
+    return a.tx(async (db) => {
+      const days = await getSettingValue<number>(db, a.tenantId, 'attendance.selfie_retention_days');
+      const id = (await db.query<{ id: string }>(`INSERT INTO attendance_selfies (tenant_id, employee_id, storage_key, content_type, size_bytes, sha256, retain_until)
+        VALUES ($1,$2,$3,$4,$5,$6, now() + make_interval(days => $7)) RETURNING id`,
+        [a.tenantId, employeeId, key, detected.contentType, buf.length, createHash('sha256').update(buf).digest('hex'), days])).rows[0]!.id;
+      reply.code(201);
+      return { id };
+    });
+  });
+
+  /** The person themselves, or whoever may see their attendance. Looking at someone else's photo is audited. */
+  app.get('/selfies/:id', async (req, reply) => {
+    const a = tenantActor(req);
+    const { id } = z.object({ id: Uuid }).parse(req.params);
+    const s = await a.tx(async (db) => {
+      await requireFeature(db, a.tenantId, 'attendance.selfie');
+      const row = (await db.query<{ employee_id: string; storage_key: string | null; content_type: string }>(
+        'SELECT employee_id, storage_key, content_type FROM attendance_selfies WHERE tenant_id=$1 AND id=$2 AND erased_at IS NULL', [a.tenantId, id])).rows[0];
+      if (!row?.storage_key) throw notFound('Selfie not found');
+      await assertCanViewEmployee(db, a, row.employee_id).catch((e: unknown) => { if (e instanceof AppError && e.status === 403) throw notFound('Selfie not found'); throw e; });
+      if (row.employee_id !== a.user.employeeId) await audit(db, { ...a.auditBase, action: 'attendance.selfie_viewed', category: 'data', targetType: 'employee', targetId: row.employee_id, metadata: { selfieId: id } });
+      return row;
+    });
+    return reply.header('content-type', s.content_type).header('cache-control', 'private, no-store').header('x-content-type-options', 'nosniff').send(await getStore()!.get(s.storage_key!));
+  });
+
+  // ------------------------------------------------------------ geofences (feature attendance.geofence)
+  app.get('/geofences', async (req) => {
+    const a = tenantActorAny(req, 'attendance.configure', 'attendance.read');
+    return a.tx(async (db) => ({ items: (await db.query(`SELECT g.branch_id, b.name AS branch_name, g.latitude, g.longitude, g.radius_m, g.updated_at
+      FROM branch_geofences g JOIN branches b ON b.tenant_id=g.tenant_id AND b.id=g.branch_id WHERE g.tenant_id=$1 ORDER BY b.name`, [a.tenantId])).rows }));
+  });
+
+  app.put('/geofences/:branchId', async (req) => {
+    const a = tenantActor(req, 'attendance.configure');
+    const { branchId } = z.object({ branchId: Uuid }).parse(req.params);
+    const b = z.object({ latitude: z.number().min(-90).max(90), longitude: z.number().min(-180).max(180), radiusMeters: z.number().int().min(10).max(100000) }).parse(req.body);
+    return a.tx(async (db) => {
+      if (!(await db.query('SELECT 1 FROM branches WHERE tenant_id=$1 AND id=$2', [a.tenantId, branchId])).rowCount) throw notFound('Branch not found');
+      await db.query(`INSERT INTO branch_geofences (tenant_id, branch_id, latitude, longitude, radius_m, updated_by) VALUES ($1,$2,$3,$4,$5,$6)
+        ON CONFLICT (tenant_id, branch_id) DO UPDATE SET latitude=$3, longitude=$4, radius_m=$5, updated_by=$6, updated_at=now()`, [a.tenantId, branchId, b.latitude, b.longitude, b.radiusMeters, a.user.userId]);
+      await audit(db, { ...a.auditBase, action: 'attendance.geofence_set', category: 'configuration', targetType: 'branch', targetId: branchId, metadata: b });
+      return { ok: true };
+    });
+  });
+
+  app.delete('/geofences/:branchId', async (req) => {
+    const a = tenantActor(req, 'attendance.configure');
+    const { branchId } = z.object({ branchId: Uuid }).parse(req.params);
+    return a.tx(async (db) => {
+      const r = await db.query('DELETE FROM branch_geofences WHERE tenant_id=$1 AND branch_id=$2', [a.tenantId, branchId]);
+      if (!r.rowCount) throw notFound('No geofence for this branch');
+      await audit(db, { ...a.auditBase, action: 'attendance.geofence_removed', category: 'configuration', targetType: 'branch', targetId: branchId });
+      return { ok: true };
     });
   });
 
@@ -119,7 +221,8 @@ export async function attendanceRoutes(app: FastifyInstance) {
       const last = recent[recent.length - 1];
       return { linked: true, today, timezone: tz, events: events.rows, daily: daily.rows[0] ?? null, nextDirection: last?.direction === 'in' ? 'out' : 'in',
         channels: { web: states.get('attendance.web')!.usable, mobile: states.get('attendance.mobile')!.usable },
-        locationMode: await getSettingValue<string>(db, a.tenantId, 'attendance.mobile_location_mode') };
+        locationMode: isModuleEnabled('attendance.geofence') ? await getSettingValue<string>(db, a.tenantId, 'attendance.mobile_location_mode') : 'off',
+        ...(states.get('attendance.selfie')!.usable ? { selfieRequired: await getSettingValue<boolean>(db, a.tenantId, 'attendance.selfie_required') } : {}) };
     });
   });
 

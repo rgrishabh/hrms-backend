@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import type { FastifyInstance } from 'fastify';
-import { makeApp, createTenant, Client, ownerQuery, type TenantFixture } from './helpers.js';
+import { makeApp, createTenant, Client, ownerQuery, type TenantFixture, flags } from './helpers.js';
 import { lossOfPay } from '../src/modules/payroll/service.js';
 import type { Db } from '../src/db/tx.js';
 
@@ -26,7 +26,7 @@ const day = async (date: string) => (await ownerQuery<{ status: string; duty_fra
 const set = (key: string, value: unknown) => hr.put(`/api/v1/tenant/settings/${key}`, { value });
 
 beforeAll(async () => {
-  app = await makeApp({ ENABLED_MODULES: 'default,field_duty' });
+  app = await makeApp({ ...flags('default,field_duty') });
   T = await createTenant();
   empId = T.users.employee!.employeeId!;
   hr = await Client.login(app, T.host, T.users.hr!.email);

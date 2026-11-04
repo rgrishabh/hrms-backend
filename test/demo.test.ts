@@ -2,7 +2,7 @@ import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import pg from 'pg';
 import { randomBytes } from 'node:crypto';
 import type { FastifyInstance } from 'fastify';
-import { makeApp, createTenant, Client, ownerQuery } from './helpers.js';
+import { makeApp, createTenant, Client, ownerQuery, flags } from './helpers.js';
 import { TEST_OWNER_URL } from './env.js';
 import { generateDemo } from '../src/db/demo.js';
 import { addDays, localDate } from '../src/modules/attendance/time.js';
@@ -13,7 +13,7 @@ let app: FastifyInstance; let c: pg.Client;
 let tid: string; let host: string;
 
 beforeAll(async () => {
-  app = await makeApp({ ENABLED_MODULES: 'default,leave,overtime,field_duty,expenses,travel,payroll,advances_loans' });
+  app = await makeApp({ ...flags('default,leave,comp_off,overtime,field_duty,expenses,travel,payroll,loans,salary_advance') });
   c = new pg.Client({ connectionString: TEST_OWNER_URL });
   await c.connect();
   // A bare, freshly bootstrapped organization: domain + one administrator, no employees.

@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import type { FastifyInstance } from 'fastify';
-import { makeApp, createTenant, Client, ownerQuery, PASSWORD, type TenantFixture } from './helpers.js';
+import { makeApp, createTenant, Client, ownerQuery, PASSWORD, type TenantFixture, flags } from './helpers.js';
 import { hashPassword } from '../src/core/crypto/index.js';
 import { compOffDays } from '../src/modules/overtime/service.js';
 import pg from 'pg';
@@ -29,7 +29,7 @@ const claim = (c: Client, workDate: string, minutes: number, payout: 'pay' | 'co
 const status = async (id: string) => (await emp.get(`/api/v1/overtime/claims/${id}`)).json().status;
 
 beforeAll(async () => {
-  app = await makeApp({ ENABLED_MODULES: 'default,payroll,overtime' });
+  app = await makeApp({ ...flags('default,payroll,overtime,comp_off') });
   T = await createTenant();
   empId = T.users.employee!.employeeId!;
   hr = await Client.login(app, T.host, T.users.hr!.email);
@@ -54,7 +54,7 @@ afterAll(async () => { await app.close(); });
 
 describe('overtime', () => {
   it('is usable only once attendance records overtime', async () => {
-    expect((await emp.get('/api/v1/overtime/eligible')).json().error.code).toBe('feature_unavailable');
+    expect((await emp.get('/api/v1/overtime/eligible')).json().error.code).toBe('feature_not_configured');
     expect((await set('attendance.overtime_enabled', true)).statusCode).toBe(200);
     const e = (await emp.get('/api/v1/overtime/eligible')).json();
     expect(e.items.map((d: { work_date: string }) => d.work_date)).toEqual([D1, D2, D3, D4]);

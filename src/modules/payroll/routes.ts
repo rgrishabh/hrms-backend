@@ -1,5 +1,5 @@
 import type { FastifyInstance } from 'fastify';
-import { closeRepaid } from '../loans/service.js';
+import { closeRepaid, enabledLoanKinds } from '../loans/service.js';
 import { featureOn } from '../lifecycle/service.js';
 import { z } from 'zod';
 import { tenantActor, tenantActorAny, requireFeature, type TenantActor, gateFeatures } from '../../core/http/context.js';
@@ -385,7 +385,7 @@ export async function payrollRoutes(app: FastifyInstance) {
       const u = await db.query(`UPDATE payroll_items SET hold=false, hold_released_at=now(), hold_released_by=$4, hold_release_reason=$5 WHERE tenant_id=$1 AND run_id=$2 AND employee_id=$3 AND hold AND net >= 0`,
         [a.tenantId, id, employeeId, a.user.userId, reason]);
       if (!u.rowCount) throw conflict('No held pay to release for this employee (or its net pay is negative)');
-      if (await featureOn(db, a.tenantId, 'advances_loans')) await closeRepaid(db, a.tenantId, [employeeId]);
+      if (enabledLoanKinds().length) await closeRepaid(db, a.tenantId, [employeeId]);
       const user = (await db.query<{ user_id: string | null }>('SELECT user_id FROM employees WHERE tenant_id=$1 AND id=$2', [a.tenantId, employeeId])).rows[0]?.user_id;
       if (user) await notifyUsers(db, a.tenantId, [user], { kind: 'payroll.payslip', title: `Your payslip for ${r.period} is available`, body: 'Open HRMS to view or print it.', link: '/payslips', actionLabel: 'View payslip', dedupeKey: `payslip:${id}:${employeeId}` });
       await audit(db, { ...a.auditBase, action: 'payroll.hold_released', category: 'security', targetType: 'payroll_run', targetId: id, metadata: { employeeId, reason } });
@@ -436,7 +436,7 @@ export async function payrollRoutes(app: FastifyInstance) {
       if (stale) throw conflict(`${stale}. Reopen the run, recompute it and send it for approval again.`);
       await db.query(`UPDATE payroll_runs SET status='finalized', finalized_at=now() WHERE tenant_id=$1 AND id=$2`, [a.tenantId, id]);
       // Loans whose last instalment was in this run are now fully recovered.
-      if (await featureOn(db, a.tenantId, 'advances_loans')) await closeRepaid(db, a.tenantId, (await db.query<{ employee_id: string }>(`SELECT employee_id FROM payroll_items WHERE tenant_id=$1 AND run_id=$2`, [a.tenantId, id])).rows.map((x) => x.employee_id));
+      if (enabledLoanKinds().length) await closeRepaid(db, a.tenantId, (await db.query<{ employee_id: string }>(`SELECT employee_id FROM payroll_items WHERE tenant_id=$1 AND run_id=$2`, [a.tenantId, id])).rows.map((x) => x.employee_id));
       const users = (await db.query<{ user_id: string }>(`SELECT e.user_id FROM payroll_items i JOIN employees e ON e.tenant_id=i.tenant_id AND e.id=i.employee_id
         WHERE i.tenant_id=$1 AND i.run_id=$2 AND NOT i.hold AND e.user_id IS NOT NULL`, [a.tenantId, id])).rows.map((x) => x.user_id);
       await notifyUsers(db, a.tenantId, users, { kind: 'payroll.payslip', title: `Your payslip for ${r.period} is available`, body: 'Open HRMS to view or print it.', link: '/payslips', actionLabel: 'View payslip', dedupeKey: `payslip:${id}` });

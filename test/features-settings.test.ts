@@ -1,7 +1,6 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import type { FastifyInstance } from 'fastify';
-import { makeApp, createTenant, Client, ownerQuery, type TenantFixture } from './helpers.js';
-import { resolveEnabledModules } from '../src/core/features/state.js';
+import { makeApp, createTenant, Client, ownerQuery, type TenantFixture, flags } from './helpers.js';
 import { FEATURES } from '../src/core/features/registry.js';
 
 // A module listed but not built yet (if any remain in this release).
@@ -13,22 +12,9 @@ afterAll(async () => { await app.close(); });
 
 const mod = async (c: Client, key: string) => (await c.get('/api/v1/tenant/installation')).json().modules.find((m: { key: string }) => m.key === key);
 
-describe('ENABLED_MODULES validation (startup)', () => {
-  it("expands 'default', always includes core modules, accepts extra modules", () => {
-    const s = resolveEnabledModules('default,attendance.biometric');
-    expect(s.has('core.employees')).toBe(true);
-    expect(s.has('attendance.web')).toBe(true);
-    expect(s.has('attendance.biometric')).toBe(true);
-    expect(s.has('attendance.mobile')).toBe(false);
-  });
-  it('rejects unknown, unimplemented and dependency-missing modules with clear messages', () => {
-    expect(() => resolveEnabledModules('default,nope')).toThrow(/unknown module 'nope'/);
-    if (PLANNED) expect(() => resolveEnabledModules(`default,${PLANNED}`)).toThrow(new RegExp(`'${PLANNED.replace('.', '\\.')}' is not available in this release`));
-    expect(() => resolveEnabledModules('attendance.web')).toThrow(/'attendance.web' requires 'attendance'/);
-  });
-  it('the app refuses to build with an invalid module list', async () => {
-    await expect(makeApp({ ENABLED_MODULES: 'default,nope' })).rejects.toThrow(/unknown module 'nope'/);
-    if (PLANNED) await expect(makeApp({ ENABLED_MODULES: `default,${PLANNED}` })).rejects.toThrow(/not available in this release/);
+describe('feature flags at startup', () => {
+  it('the app refuses to build with an invalid flag', async () => {
+    await expect(makeApp({ FEATURE_NOPE: 'true' })).rejects.toThrow(/FEATURE_NOPE: not a known feature flag/);
   });
 });
 
@@ -36,7 +22,7 @@ describe('deployment-controlled modules', () => {
   let app2: FastifyInstance; let T: TenantFixture; let admin: Client; let deviceKey = '';
   // Web attendance deliberately NOT enabled for this installation.
   beforeAll(async () => {
-    app2 = await makeApp({ ENABLED_MODULES: 'attendance,attendance.regularization,shifts,holidays,attendance.biometric' });
+    app2 = await makeApp({ ...flags('attendance,attendance.regularization,shifts,holidays,attendance.biometric') });
     T = await createTenant();
     admin = await Client.login(app2, T.host, T.users.admin!.email);
   });
@@ -54,8 +40,7 @@ describe('deployment-controlled modules', () => {
       [T.id, T.users.employee!.employeeId]);
     const emp = await Client.login(app2, T.host, T.users.employee!.email);
     const r = await emp.post('/api/v1/attendance/punch', { channel: 'web', idempotencyKey: 'disabled-1' });
-    expect(r.statusCode).toBe(403);
-    expect(r.json().error.code).toBe('feature_unavailable');
+    expect(r.statusCode).toBe(404);
     expect((await emp.get('/api/v1/auth/me')).json().capabilities['attendance.web']).toBe(false);
     expect((await ownerQuery(`SELECT 1 FROM attendance_events WHERE tenant_id=$1`, [T.id])).length).toBe(1);
   });
@@ -75,11 +60,10 @@ describe('deployment-controlled modules', () => {
 
   it('a module disabled in deployment config rejects even valid device credentials', async () => {
     // Same database, redeployed with biometric removed from ENABLED_MODULES (module state is per process).
-    const app3 = await makeApp({ ENABLED_MODULES: 'default' });
+    const app3 = await makeApp({ ...flags('default') });
     const r = await app3.inject({ method: 'POST', url: '/api/v1/devices/events', headers: { host: 'x', 'x-device-key': deviceKey },
       payload: { deviceTime: new Date().toISOString(), events: [{ eventId: 'e1', deviceUserId: '1', timestamp: new Date().toISOString() }] } });
-    expect(r.statusCode).toBe(403);
-    expect(r.json().error.code).toBe('feature_unavailable');
+    expect(r.statusCode).toBe(404);
     await app3.close();
     await makeApp().then((a) => a.close()); // restore the default test module set for the rest of this file
   });

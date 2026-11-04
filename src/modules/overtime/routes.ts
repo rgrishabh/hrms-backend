@@ -1,13 +1,14 @@
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import { Decimal } from 'decimal.js';
-import { tenantActor, tenantActorAny, gateFeatures, type TenantActor } from '../../core/http/context.js';
+import { tenantActor, tenantActorAny, gateFeatures, requireFeature, type TenantActor } from '../../core/http/context.js';
 import { audit } from '../../core/audit/audit.js';
 import { badRequest, conflict, forbidden, notFound } from '../../core/http/errors.js';
 import { IsoDate, PageQuery, offsetOf, paged, Uuid } from '../../core/http/pagination.js';
-import { createApprovalRequest, registerApprovalHandler, cancelRequest, type StepSpec } from '../../core/workflow/engine.js';
+import { createApprovalRequest, registerApprovalHandler, cancelRequest, type ApprovalHandler, type StepSpec } from '../../core/workflow/engine.js';
 import { getSettingValue } from '../../core/settings/service.js';
 import { featureOn } from '../lifecycle/service.js';
+import { isModuleEnabled } from '../../core/features/state.js';
 import { teamEmployeeIds } from '../attendance/service.js';
 import { addDays } from '../attendance/time.js';
 import { orgToday } from '../competency/service.js';
@@ -21,7 +22,7 @@ interface Claim { id: string; employee_id: string; work_date: string; minutes: n
 
 const CLAIM_COLS = `c.id, c.employee_id, c.work_date::text, c.minutes, c.recorded_minutes, c.payout, c.reason, c.status, c.comp_off_days, c.payroll_run_id, c.created_at, c.decided_at, c.cancel_reason,
   e.employee_code, e.user_id, trim(e.first_name||' '||coalesce(e.last_name,'')) AS name, r.period AS payroll_period, r.status AS payroll_status,
-  (SELECT ar.id FROM approval_requests ar WHERE ar.tenant_id=c.tenant_id AND ar.entity_type='overtime_claim' AND ar.entity_id=c.id ORDER BY ar.created_at DESC LIMIT 1) AS approval_request_id`;
+  (SELECT ar.id FROM approval_requests ar WHERE ar.tenant_id=c.tenant_id AND ar.entity_type IN ('overtime_claim','overtime_comp_off') AND ar.entity_id=c.id ORDER BY ar.created_at DESC LIMIT 1) AS approval_request_id`;
 const CLAIM_FROM = `overtime_claims c JOIN employees e ON e.tenant_id=c.tenant_id AND e.id=c.employee_id
   LEFT JOIN payroll_runs r ON r.tenant_id=c.tenant_id AND r.id=c.payroll_run_id AND r.status <> 'cancelled'`;
 
@@ -48,11 +49,11 @@ async function loadClaim(db: Db, a: TenantActor, id: string, lock = false): Prom
   const c = (await db.query<Claim>(`SELECT c.id, c.employee_id, c.work_date::text, c.minutes, c.payout, c.status, c.comp_off_days, c.payroll_run_id, e.user_id,
       trim(e.first_name||' '||coalesce(e.last_name,'')) AS name FROM overtime_claims c JOIN employees e ON e.tenant_id=c.tenant_id AND e.id=c.employee_id
      WHERE c.tenant_id=$1 AND c.id=$2${lock ? ' FOR UPDATE OF c' : ''}`, [a.tenantId, id])).rows[0];
-  if (!c) throw notFound('Overtime claim not found');
+  if (!c || (c.payout === 'comp_off' && !isModuleEnabled('comp_off'))) throw notFound('Overtime claim not found');
   if (c.employee_id === a.user.employeeId || a.has('overtime.read') || a.has('overtime.approve') || a.has('overtime.manage')) return c;
   if (a.has('overtime.team.read') && a.user.employeeId && (await teamEmployeeIds(db, a.tenantId, a.user.employeeId)).includes(c.employee_id)) return c;
   const r = await db.query(`SELECT 1 FROM approval_requests r JOIN approval_steps s ON s.tenant_id=r.tenant_id AND s.request_id=r.id
-    WHERE r.tenant_id=$1 AND r.entity_type='overtime_claim' AND r.entity_id=$2 AND (s.approver_user_id=$3 OR s.acted_by=$3)`, [a.tenantId, id, a.user.userId]);
+    WHERE r.tenant_id=$1 AND r.entity_type IN ('overtime_claim','overtime_comp_off') AND r.entity_id=$2 AND (s.approver_user_id=$3 OR s.acted_by=$3)`, [a.tenantId, id, a.user.userId]);
   if (r.rowCount) return c;
   throw notFound('Overtime claim not found');
 }
@@ -60,7 +61,7 @@ async function loadClaim(db: Db, a: TenantActor, id: string, lock = false): Prom
 /** What this person may claim with: pay (payroll on and the rate set) and/or compensatory off (a leave type configured). */
 async function payoutOptions(db: Db, tenantId: string) {
   const pay = await featureOn(db, tenantId, 'payroll') ? await overtimePaySettings(db, tenantId) : null;
-  const comp = await featureOn(db, tenantId, 'leave') ? await compOffType(db, tenantId) : null;
+  const comp = await featureOn(db, tenantId, 'comp_off') ? await compOffType(db, tenantId) : null;
   return {
     pay: !!pay && !pay.missing.length,
     payBlocker: !pay ? 'Payroll is not in use' : pay.missing.length ? `Overtime pay is not set up (${pay.missing.join(', ')})` : null,
@@ -70,8 +71,8 @@ async function payoutOptions(db: Db, tenantId: string) {
 
 /** Approval effects. Registered once at startup (core/runtime), whether or not the module's routes are. */
 export function registerOvertimeApprovals() {
-  registerApprovalHandler('overtime_claim', {
-    feature: F, label: 'Overtime claim', requesterLink: '/overtime',
+  const handler = (feature: string): ApprovalHandler => ({
+    feature, label: 'Overtime claim', requesterLink: '/overtime',
     async onApproved(db, tenantId, id, actorId) {
       const c = (await db.query<{ employee_id: string; work_date: string; minutes: number; payout: string; status: string }>(
         `SELECT employee_id, work_date::text, minutes, payout, status FROM overtime_claims WHERE tenant_id=$1 AND id=$2 FOR UPDATE`, [tenantId, id])).rows[0];
@@ -97,6 +98,8 @@ export function registerOvertimeApprovals() {
         WHERE tenant_id=$1 AND id=$2 AND status='pending'`, [tenantId, id, status, actorId]);
     },
   });
+  registerApprovalHandler('overtime_claim', handler('overtime'));
+  registerApprovalHandler('overtime_comp_off', handler('comp_off'));
 }
 
 export async function overtimeRoutes(app: FastifyInstance) {
@@ -135,6 +138,7 @@ export async function overtimeRoutes(app: FastifyInstance) {
       if (!day || day.overtime_minutes <= 0) throw conflict('Attendance shows no overtime on this day (correct the attendance first)');
       if (b.minutes > day.overtime_minutes) throw badRequest(`Attendance shows ${day.overtime_minutes} minutes of overtime on this day; you cannot claim more`);
       const opts = await payoutOptions(db, a.tenantId);
+      if (b.payout === 'comp_off') await requireFeature(db, a.tenantId, 'comp_off');
       if (b.payout === 'pay' && !opts.pay) throw conflict(`Overtime cannot be paid yet: ${opts.payBlocker}`);
       if (b.payout === 'comp_off') {
         if (!opts.compOff) throw conflict('Compensatory off is not offered');
@@ -151,7 +155,7 @@ export async function overtimeRoutes(app: FastifyInstance) {
       if (mgr.user_id && mgr.user_id !== a.user.userId) steps.push({ kind: 'user', userId: mgr.user_id });
       steps.push({ kind: 'permission', permission: 'overtime.approve' });
       const h = Math.round((b.minutes / 60) * 100) / 100;
-      const approvalId = await createApprovalRequest(db, a.tenantId, { entityType: 'overtime_claim', entityId: id, requesterId: a.user.userId,
+      const approvalId = await createApprovalRequest(db, a.tenantId, { entityType: b.payout === 'comp_off' ? 'overtime_comp_off' : 'overtime_claim', entityId: id, requesterId: a.user.userId,
         summary: `${mgr.name}: ${h} h overtime on ${b.workDate} (${b.payout === 'pay' ? 'paid' : 'compensatory off'})`, steps, excludeUserIds: [a.user.userId] });
       await audit(db, { ...a.auditBase, action: 'overtime.claimed', targetType: 'overtime_claim', targetId: id, metadata: { workDate: b.workDate, minutes: b.minutes, payout: b.payout, approvalId } });
       reply.code(201); return { id };
@@ -167,8 +171,8 @@ export async function overtimeRoutes(app: FastifyInstance) {
       if (q.scope === 'all') { if (!(a.has('overtime.read') || a.has('overtime.approve') || a.has('overtime.manage'))) throw forbidden(); ids = null; }
       else if (q.scope === 'team') ids = a.user.employeeId && a.has('overtime.team.read') ? await teamEmployeeIds(db, a.tenantId, a.user.employeeId) : [];
       else ids = a.user.employeeId ? [a.user.employeeId] : [];
-      const where = `c.tenant_id=$1 AND ($2::uuid[] IS NULL OR c.employee_id = ANY($2)) AND ($3::text IS NULL OR c.status=$3) AND ($4::text IS NULL OR to_char(c.work_date,'YYYY-MM')=$4)`;
-      const args = [a.tenantId, ids, q.status ?? null, q.period ?? null];
+      const where = `c.tenant_id=$1 AND ($2::uuid[] IS NULL OR c.employee_id = ANY($2)) AND ($3::text IS NULL OR c.status=$3) AND ($4::text IS NULL OR to_char(c.work_date,'YYYY-MM')=$4) AND ($5 OR c.payout <> 'comp_off')`;
+      const args = [a.tenantId, ids, q.status ?? null, q.period ?? null, isModuleEnabled('comp_off')];
       const total = Number((await db.query<{ n: string }>(`SELECT count(*) AS n FROM overtime_claims c WHERE ${where}`, args)).rows[0]!.n);
       const sums = (await db.query<{ status: string; minutes: string }>(`SELECT status, sum(minutes)::text AS minutes FROM overtime_claims c WHERE ${where} GROUP BY status`, args)).rows;
       const rows = (await db.query(`SELECT ${CLAIM_COLS} FROM ${CLAIM_FROM} WHERE ${where} ORDER BY c.work_date DESC, e.employee_code LIMIT ${q.pageSize} OFFSET ${offsetOf(q)}`, args)).rows;
@@ -193,7 +197,7 @@ export async function overtimeRoutes(app: FastifyInstance) {
       const c = await loadClaim(db, a, id, true);
       if (c.employee_id !== a.user.employeeId) throw forbidden('Only the claimant can withdraw this claim');
       if (c.status !== 'pending') throw conflict(`This claim is ${c.status}`);
-      const r = (await db.query<{ id: string }>(`SELECT id FROM approval_requests WHERE tenant_id=$1 AND entity_type='overtime_claim' AND entity_id=$2 AND status='pending'`, [a.tenantId, id])).rows[0];
+      const r = (await db.query<{ id: string }>(`SELECT id FROM approval_requests WHERE tenant_id=$1 AND entity_type IN ('overtime_claim','overtime_comp_off') AND entity_id=$2 AND status='pending'`, [a.tenantId, id])).rows[0];
       if (r) await cancelRequest(db, a.tenantId, r.id, a.user.userId, { requestId: a.auditBase.requestId, ip: a.auditBase.ip });
       else await db.query(`UPDATE overtime_claims SET status='cancelled', cancelled_by=$3 WHERE tenant_id=$1 AND id=$2`, [a.tenantId, id, a.user.userId]);
       await audit(db, { ...a.auditBase, action: 'overtime.withdrawn', targetType: 'overtime_claim', targetId: id });

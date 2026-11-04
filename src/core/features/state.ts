@@ -1,48 +1,20 @@
 import type { Db } from '../../db/tx.js';
 import { FEATURES, FEATURE_MAP, type FeatureDefinition } from './registry.js';
-import { featureUnavailable } from '../http/errors.js';
+import { featureNotConfigured, notFound } from '../http/errors.js';
 import { resolveSetting } from '../settings/service.js';
 
 /**
  * Module state for this installation:
  *   supported   — implemented in this release
- *   enabled     — listed in the deployment's ENABLED_MODULES (or core)
+ *   enabled     — its FEATURE_* variable is on (or it is core)
  *   configured  — required settings / resources present
  *   operational — measurable health, where meaningful
  * Enablement is deployment-controlled: administrators cannot change it in the UI.
  * Disabling a module never deletes data; it only blocks new operations.
  */
 
-// Process-wide: one installation per process (set once by buildApp from ENABLED_MODULES).
-let enabledModules: ReadonlySet<string> = resolveEnabledModules('default');
-
-/**
- * Parse and validate ENABLED_MODULES. 'default' expands to the registry
- * defaults and can be combined with extra keys ("default,attendance.biometric").
- * Throws a descriptive error for unknown, unimplemented or dependency-missing modules.
- */
-export function resolveEnabledModules(spec: string): ReadonlySet<string> {
-  const tokens = spec.split(',').map((s) => s.trim()).filter(Boolean);
-  const set = new Set(FEATURES.filter((d) => d.core).map((d) => d.key));
-  const problems: string[] = [];
-  for (const t of tokens.length ? tokens : ['default']) {
-    if (t === 'default') {
-      FEATURES.filter((d) => d.defaultEnabled && d.availability !== 'planned').forEach((d) => set.add(d.key));
-      continue;
-    }
-    const d = FEATURE_MAP.get(t);
-    if (!d) { problems.push(`unknown module '${t}'`); continue; }
-    if (d.availability === 'planned') { problems.push(`module '${t}' is not available in this release`); continue; }
-    set.add(t);
-  }
-  for (const k of set) {
-    for (const dep of FEATURE_MAP.get(k)!.dependencies) {
-      if (!set.has(dep)) problems.push(`module '${k}' requires '${dep}' to be enabled`);
-    }
-  }
-  if (problems.length) throw new Error(`Invalid ENABLED_MODULES:\n${problems.map((p) => `  - ${p}`).join('\n')}`);
-  return set;
-}
+// Process-wide: one installation per process (set by initRuntime from the FEATURE_* variables).
+let enabledModules: ReadonlySet<string> = new Set(FEATURES.filter((d) => d.core || d.defaultEnabled).map((d) => d.key));
 
 export function setEnabledModules(set: ReadonlySet<string>) { enabledModules = set; }
 export function isModuleEnabled(key: string) { return enabledModules.has(key); }
@@ -67,6 +39,8 @@ let emailTransportConfigured = false;
 let storageConfigured = false;
 export function setStorageConfigured(v: boolean) { storageConfigured = v; }
 export function setEmailTransportConfigured(v: boolean) { emailTransportConfigured = v; }
+let pushConfigured = false;
+export function setPushConfigured(v: boolean) { pushConfigured = v; }
 
 /** Per-feature configuration checks beyond required settings. */
 const CONFIG_CHECKS: Record<string, (db: Db, tenantId: string) => Promise<{ configured: boolean; operational: FeatureState['operational']; note?: string }>> = {
@@ -77,6 +51,14 @@ const CONFIG_CHECKS: Record<string, (db: Db, tenantId: string) => Promise<{ conf
   'notifications.email': async () => ({
     configured: emailTransportConfigured, operational: 'not_applicable',
     note: emailTransportConfigured ? undefined : 'Email transport not configured (MAIL_TRANSPORT / SMTP_* deployment settings)',
+  }),
+  'notifications.push': async () => ({
+    configured: pushConfigured, operational: 'not_applicable',
+    note: pushConfigured ? undefined : 'Web push is not configured (VAPID_PUBLIC_KEY and VAPID_PRIVATE_KEY deployment settings)',
+  }),
+  'attendance.selfie': async () => ({
+    configured: storageConfigured, operational: 'not_applicable',
+    note: storageConfigured ? undefined : 'Selfie storage not configured (STORAGE_DRIVER deployment setting)',
   }),
   overtime: async (db, tenantId) => {
     const on = (await resolveSetting(db, tenantId, 'attendance.overtime_enabled')).value === true;
@@ -140,5 +122,7 @@ export async function evaluateFeatures(db: Db, tenantId: string): Promise<Map<st
 export async function assertFeatureUsable(db: Db, tenantId: string, key: string): Promise<void> {
   const s = (await evaluateFeatures(db, tenantId)).get(key);
   if (!s) throw new Error(`Unknown feature ${key}`);
-  if (!s.usable) throw featureUnavailable(key, s.blockers.join('; '));
+  // Off means the module does not exist for this deployment. On but not usable means it needs setting up.
+  if (!s.enabled || !s.supported) throw notFound();
+  if (!s.usable) throw featureNotConfigured(key, s.blockers.join('; '));
 }

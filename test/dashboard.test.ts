@@ -2,7 +2,7 @@ import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import pg from 'pg';
 import { randomBytes } from 'node:crypto';
 import type { FastifyInstance } from 'fastify';
-import { makeApp, Client, ownerQuery } from './helpers.js';
+import { makeApp, Client, ownerQuery, flags } from './helpers.js';
 import { TEST_OWNER_URL } from './env.js';
 import { generateDemo } from '../src/db/demo.js';
 import { localDate } from '../src/modules/attendance/time.js';
@@ -29,7 +29,7 @@ const tile = (s: Summary, key: string) => s.sections.flatMap((x) => x.tiles).fin
 const section = (s: Summary, key: string) => s.sections.find((x) => x.key === key);
 
 beforeAll(async () => {
-  app = await makeApp({ ENABLED_MODULES: MODULES });
+  app = await makeApp({ ...flags(MODULES) });
   const slug = 'h' + randomBytes(5).toString('hex');
   host = `${slug}.test`;
   const [t] = await ownerQuery<{ id: string }>(`INSERT INTO tenants (slug, name) VALUES ($1,'Dash Labs') RETURNING id`, [slug]);

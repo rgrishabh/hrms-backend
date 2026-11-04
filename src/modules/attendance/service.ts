@@ -18,6 +18,7 @@ export interface EventInput {
   deviceUserId?: string | null;
   latitude?: number | null;
   longitude?: number | null;
+  outsideGeofence?: boolean | null;
   status?: 'accepted' | 'unmapped';
   createdBy?: string | null;
 }
@@ -25,12 +26,19 @@ export interface EventInput {
 /** Idempotent insert keyed on (tenant, source, source_ref). Returns null when it was a duplicate. */
 export async function recordEvent(db: Db, tenantId: string, e: EventInput): Promise<{ id: string } | null> {
   const r = await db.query<{ id: string }>(`INSERT INTO attendance_events (tenant_id, employee_id, source, source_ref, event_time, device_time,
-      direction, device_id, device_user_id, latitude, longitude, status, created_by)
-    VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)
+      direction, device_id, device_user_id, latitude, longitude, status, created_by, outside_geofence)
+    VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)
     ON CONFLICT (tenant_id, source, source_ref) DO NOTHING RETURNING id`,
     [tenantId, e.employeeId, e.source, e.sourceRef, e.eventTime, e.deviceTime ?? null, e.direction ?? 'unknown', e.deviceId ?? null,
-     e.deviceUserId ?? null, e.latitude ?? null, e.longitude ?? null, e.status ?? 'accepted', e.createdBy ?? null]);
+     e.deviceUserId ?? null, e.latitude ?? null, e.longitude ?? null, e.status ?? 'accepted', e.createdBy ?? null, e.outsideGeofence ?? null]);
   return r.rows[0] ?? null;
+}
+
+/** Distance in metres between two points (haversine). */
+export function distanceMeters(lat1: number, lng1: number, lat2: number, lng2: number) {
+  const rad = (d: number) => (d * Math.PI) / 180;
+  const h = Math.sin(rad(lat2 - lat1) / 2) ** 2 + Math.cos(rad(lat1)) * Math.cos(rad(lat2)) * Math.sin(rad(lng2 - lng1) / 2) ** 2;
+  return 2 * 6_371_000 * Math.asin(Math.sqrt(h));
 }
 
 export async function employeeTimezone(db: Db, tenantId: string, employeeId: string): Promise<{ tz: string; branchId: string }> {

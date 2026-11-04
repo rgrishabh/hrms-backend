@@ -2,7 +2,7 @@ import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import pg from 'pg';
 import { randomBytes } from 'node:crypto';
 import type { FastifyInstance } from 'fastify';
-import { makeApp, Client, ownerQuery } from './helpers.js';
+import { makeApp, Client, ownerQuery, flags } from './helpers.js';
 import { readXlsx } from './helpers.js';
 import { TEST_OWNER_URL } from './env.js';
 import { generateDemo } from '../src/db/demo.js';
@@ -18,7 +18,7 @@ const as: Record<string, Client> = {};
 type Report = { columns: { key: string; type: string }[]; rows: Record<string, unknown>[]; totals: Record<string, unknown> | null; notes: string[]; scope: string };
 
 beforeAll(async () => {
-  app = await makeApp({ ENABLED_MODULES: MODULES });
+  app = await makeApp({ ...flags(MODULES) });
   const slug = 'r' + randomBytes(5).toString('hex');
   host = `${slug}.test`;
   const [t] = await ownerQuery<{ id: string }>(`INSERT INTO tenants (slug, name) VALUES ($1,'Report Labs') RETURNING id`, [slug]);
@@ -190,13 +190,13 @@ describe('reports', () => {
   });
   // Last: the enabled-module list is process-wide, so a second app changes it for the rest of the file.
   it('hides reports whose module is not enabled for the installation', async () => {
-    const app2 = await makeApp({ ENABLED_MODULES: 'default,leave' });
+    const app2 = await makeApp({ ...flags('default,leave') });
     try {
       const hr = await Client.login(app2, host, `hr.head@${host}`, password);
       const keys = ((await hr.get('/api/v1/reports')).json().items as { key: string }[]).map((i) => i.key);
       expect(keys).toContain('headcount');
       expect(keys).not.toContain('payroll_cost');
-      expect((await hr.get('/api/v1/reports/payroll_cost')).statusCode).toBe(403);
+      expect((await hr.get('/api/v1/reports/payroll_cost')).statusCode).toBe(404);
     } finally { await app2.close(); }
   });
 });

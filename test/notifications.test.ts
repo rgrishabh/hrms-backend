@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeAll, afterAll, beforeEach } from 'vitest';
 import type { FastifyInstance } from 'fastify';
-import { makeApp, createTenant, Client, ownerQuery, type TenantFixture } from './helpers.js';
+import { makeApp, createTenant, Client, ownerQuery, type TenantFixture, flags } from './helpers.js';
 import { setMailer, type OutgoingMail } from '../src/core/notify/mailer.js';
 import { deliverOutbox } from '../src/core/notify/service.js';
 import { tick } from '../src/core/jobs/scheduler.js';
@@ -17,7 +17,7 @@ const ist = (d: string, t: string) => `${d}T${t}:00+05:30`;
 let app: FastifyInstance; let T: TenantFixture;
 beforeAll(async () => {
   setMailer(capture, '"Acme Labs" <hr@acme.test>');
-  app = await makeApp({ ENABLED_MODULES: 'default,notifications.email,attendance.mobile,attendance.biometric', BRAND_NAME: 'Acme Labs', BRAND_PRIMARY_COLOR: '#14532D',
+  app = await makeApp({ ...flags('default,notifications.email,attendance.mobile,attendance.biometric'), BRAND_NAME: 'Acme Labs', BRAND_PRIMARY_COLOR: '#14532D',
     APP_URL: 'https://hrms.acme.test' }, { mailerOverride: true });
   T = await createTenant();
 });
@@ -110,14 +110,14 @@ describe('email delivery', () => {
   });
 
   it('queues no email when the email module is not enabled', async () => {
-    const off = await makeApp({ ENABLED_MODULES: 'default' }, { mailerOverride: true });
+    const off = await makeApp({ ...flags('default'), FEATURE_EMAIL_NOTIFICATIONS: 'false' }, { mailerOverride: true });
     const U = await createTenant();
     const u = await Client.login(off, U.host, U.users.employee!.email);
     await u.post('/api/v1/auth/password', { currentPassword: 'Test-Password-123!', newPassword: 'Changed-Password-000!' });
     expect(await ownerQuery(`SELECT 1 FROM email_outbox WHERE tenant_id=$1`, [U.id])).toHaveLength(0);
     expect(await ownerQuery(`SELECT 1 FROM notifications WHERE tenant_id=$1`, [U.id])).toHaveLength(1);
     await off.close();
-    await makeApp({ ENABLED_MODULES: 'default,notifications.email' }, { mailerOverride: true }).then((x) => x.close());
+    await makeApp({ ...flags('default,notifications.email') }, { mailerOverride: true }).then((x) => x.close());
   });
 });
 

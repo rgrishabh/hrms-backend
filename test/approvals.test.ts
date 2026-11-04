@@ -2,7 +2,7 @@ import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import pg from 'pg';
 import { randomUUID } from 'node:crypto';
 import type { FastifyInstance } from 'fastify';
-import { makeApp, createTenant, Client, type TenantFixture } from './helpers.js';
+import { makeApp, createTenant, Client, type TenantFixture, flags } from './helpers.js';
 import { TEST_OWNER_URL } from './env.js';
 import { createApprovalRequest } from '../src/core/workflow/engine.js';
 import type { Db } from '../src/db/tx.js';
@@ -15,7 +15,7 @@ const create = (p: Partial<Parameters<typeof createApprovalRequest>[2]>) => crea
 const inInbox = async (cl: Client, id: string) => (await cl.get('/api/v1/approvals/inbox')).json().items.some((x: { id: string }) => x.id === id);
 
 beforeAll(async () => {
-  app = await makeApp({ ENABLED_MODULES: 'default,leave' }); // registers the approval handlers
+  app = await makeApp({ ...flags('default,leave') }); // registers the approval handlers
   T = await createTenant();
   c = new pg.Client({ connectionString: TEST_OWNER_URL });
   await c.connect();

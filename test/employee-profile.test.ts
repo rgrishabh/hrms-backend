@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import type { FastifyInstance } from 'fastify';
-import { makeApp, createTenant, Client, ownerQuery, type TenantFixture } from './helpers.js';
+import { makeApp, createTenant, Client, ownerQuery, type TenantFixture, flags } from './helpers.js';
 
 let app: FastifyInstance; let T: TenantFixture;
 let hr: Client; let emp: Client; let mgr: Client; let other: Client; let pay: Client;
@@ -23,7 +23,7 @@ const ADDRESSES = [
 ];
 
 beforeAll(async () => {
-  app = await makeApp({ ENABLED_MODULES: 'default,payroll,payroll.statutory' });
+  app = await makeApp({ ...flags('default,payroll,payroll.statutory') });
   T = await createTenant();
   hr = await Client.login(app, T.host, T.users.hr!.email);
   emp = await Client.login(app, T.host, T.users.employee!.email);

@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import type { FastifyInstance } from 'fastify';
-import { makeApp, createTenant, Client, ownerQuery, type TenantFixture } from './helpers.js';
+import { makeApp, createTenant, Client, ownerQuery, type TenantFixture, flags } from './helpers.js';
 import { addDays, localDate, weekday } from '../src/modules/attendance/time.js';
 import { CALC_VERSION } from '../src/modules/attendance/calc.js';
 
@@ -214,11 +214,10 @@ describe('year-end', () => {
 
 describe('module disabled', () => {
   it('rejects leave APIs when leave is not in ENABLED_MODULES', async () => {
-    const off = await makeApp({ ENABLED_MODULES: 'attendance,attendance.web,attendance.regularization,shifts,holidays' });
+    const off = await makeApp({ ...flags('attendance,attendance.web,attendance.regularization,shifts,holidays') });
     const c = await Client.login(off, T.host, T.users.employee!.email);
     const r = await c.get('/api/v1/leave/types');
-    expect(r.statusCode).toBe(403);
-    expect(r.json().error.code).toBe('feature_unavailable');
+    expect(r.statusCode).toBe(404);
     await off.close();
     await makeApp().then((x) => x.close()); // restore the default module set for this process
   });
