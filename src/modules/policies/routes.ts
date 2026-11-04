@@ -1,7 +1,7 @@
 import type { FastifyInstance, FastifyRequest } from 'fastify';
 import { z } from 'zod';
 import { createHash } from 'node:crypto';
-import { tenantActor, requireFeature, type TenantActor } from '../../core/http/context.js';
+import { tenantActor, requireFeature, type TenantActor, gateFeatures } from '../../core/http/context.js';
 import { audit } from '../../core/audit/audit.js';
 import { AppError, badRequest, conflict, forbidden, notFound } from '../../core/http/errors.js';
 import { IsoDate, PageQuery, offsetOf, paged, Uuid } from '../../core/http/pagination.js';
@@ -67,6 +67,7 @@ const idList = z.string().optional().transform((s, ctx) => {
 });
 
 export async function policyRoutes(app: FastifyInstance) {
+  gateFeatures(app, 'core.policies');
   const maxBytes = app.deps.env.STORAGE_MAX_FILE_MB * 1024 * 1024;
 
   // ------------------------------------------------------------ policies

@@ -156,6 +156,13 @@ describe('authentication & session security', () => {
     // an administrator can grant any role
     const admin = await Client.login(app, T.host, T.users.admin!.email);
     expect((await admin.patch(`/api/v1/tenant/users/${ok.json().id}`, { roles: ['hr_admin'] })).statusCode).toBe(200);
+    // the role list tells each of them which roles they may grant, matching what the server enforces
+    const grantable = async (c: Client) => (await c.get('/api/v1/tenant/roles')).json().system
+      .filter((r: { grantable: boolean }) => r.grantable).map((r: { key: string }) => r.key) as string[];
+    const itMay = await grantable(itAdmin);
+    expect(itMay).toEqual(expect.arrayContaining(['employee', 'it_admin']));
+    for (const k of ['hr_admin', 'tenant_admin', 'payroll_manager']) expect(itMay).not.toContain(k);
+    expect(await grantable(admin)).toContain('tenant_admin');
   });
 
   it('an account created by an administrator must change its initial password at first sign-in', async () => {

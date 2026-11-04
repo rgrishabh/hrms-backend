@@ -1,7 +1,7 @@
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import { createHash } from 'node:crypto';
-import { tenantActor, requireFeature, type TenantActor } from '../../core/http/context.js';
+import { tenantActor, requireFeature, type TenantActor, gateFeatures } from '../../core/http/context.js';
 import { audit } from '../../core/audit/audit.js';
 import { AppError, badRequest, forbidden, notFound } from '../../core/http/errors.js';
 import { IsoDate, PageQuery, offsetOf, paged, Uuid } from '../../core/http/pagination.js';
@@ -42,6 +42,7 @@ async function loadCategory(db: Db, tenantId: string, id: string) {
 }
 
 export async function documentRoutes(app: FastifyInstance) {
+  gateFeatures(app, 'core.documents');
   const { env } = app.deps;
   const maxBytes = env.STORAGE_MAX_FILE_MB * 1024 * 1024;
 

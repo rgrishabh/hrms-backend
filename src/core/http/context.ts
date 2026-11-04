@@ -1,10 +1,10 @@
-import type { FastifyRequest } from 'fastify';
+import type { FastifyInstance, FastifyRequest } from 'fastify';
 import type { HostResolution } from '../tenancy/resolve.js';
 import type { SessionUser } from '../auth/session.js';
-import { forbidden, unauthorized, AppError } from './errors.js';
+import { forbidden, unauthorized, AppError, featureUnavailable } from './errors.js';
 import type { Pool } from '../../db/pool.js';
 import { withTenant, type Db } from '../../db/tx.js';
-import { assertFeatureUsable } from '../features/state.js';
+import { assertFeatureUsable, evaluateFeatures } from '../features/state.js';
 import type { FieldCipher } from '../crypto/index.js';
 import type { Env } from '../../config/env.js';
 
@@ -62,4 +62,20 @@ export function tenantActorAny(req: FastifyRequest, ...perms: string[]): TenantA
 
 export async function requireFeature(db: Db, tenantId: string, key: string) {
   await assertFeatureUsable(db, tenantId, key);
+}
+
+/**
+ * Module-wide feature gate: every route of the plugin is refused unless at least one of
+ * `keys` is usable for the signed-in user's organization. Routes that belong to a narrower
+ * feature (shifts, POSH, statutory rules…) still call `requireFeature` themselves.
+ * Requests without a session for this tenant pass through, so handlers answer 401 as before.
+ */
+export function gateFeatures(app: FastifyInstance, ...keys: [string, ...string[]]) {
+  app.addHook('preHandler', async (req) => {
+    const host = req.ctx.host; const user = req.ctx.user;
+    if (host.kind !== 'tenant' || !user || user.tenantId !== host.tenant.id) return;
+    const states = await withTenant(req.server.deps.pool, host.tenant.id, (db) => evaluateFeatures(db, host.tenant.id));
+    if (keys.some((k) => states.get(k)?.usable)) return;
+    throw featureUnavailable(keys[0], states.get(keys[0])?.blockers.join('; ') ?? '');
+  });
 }
