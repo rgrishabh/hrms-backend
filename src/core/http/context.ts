@@ -20,7 +20,7 @@ declare module 'fastify' {
   interface FastifyInstance { deps: AppDeps }
 }
 
-export interface AppDeps { env: Env; pool: Pool; cipher: FieldCipher; /** Tests: keep an injected mailer instead of building one from env. */ mailerOverride?: boolean; storeOverride?: boolean }
+export interface AppDeps { env: Env; pool: Pool; cipher: FieldCipher; /** Tests: keep an injected mailer instead of building one from env. */ mailerOverride?: boolean; storeOverride?: boolean; /** Tests: keep an injected SMS sender. */ smsOverride?: boolean }
 
 export interface TenantActor {
   tenantId: string;

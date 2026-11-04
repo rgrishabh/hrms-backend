@@ -4,6 +4,7 @@ import { SYSTEM_ROLES } from '../auth/permissions.js';
 import { isModuleEnabled } from '../features/state.js';
 import { getFrom, getMailer } from './mailer.js';
 import { renderEmail, type EmailBrand } from './templates.js';
+import { getSmsSender, normalizePhone, renderSms } from './sms.js';
 
 /**
  * Notifications are written in the CALLER's transaction (outbox pattern): if the
@@ -24,6 +25,8 @@ export interface NotifyMessage {
   /** Same key + same user = one notification (e.g. daily reminders). */
   dedupeKey?: string;
   email?: boolean;
+  /** SMS is sent only for kinds the organization has a DLT template for. */
+  sms?: boolean;
 }
 
 export async function notifyUsers(db: Db, tenantId: string, userIds: string[], msg: NotifyMessage) {
@@ -43,7 +46,20 @@ export async function notifyUsers(db: Db, tenantId: string, userIds: string[], m
       [tenantId, ids, rendered.subject, rendered.text, rendered.html, msg.kind, msg.dedupeKey ?? null]);
     emails = r.rowCount ?? 0;
   }
-  return { inApp: inApp.rowCount ?? 0, emails };
+  let sms = 0;
+  if (msg.sms !== false && getSmsSender() && isModuleEnabled('notifications.sms')) {
+    const t = (await db.query<{ dlt_template_id: string; text: string }>(`SELECT dlt_template_id, text FROM sms_templates WHERE tenant_id=$1 AND kind=$2 AND enabled`, [tenantId, msg.kind])).rows[0];
+    if (t) {
+      // Users who have not opted out and have a mobile number on their employee record.
+      const r = await db.query(`INSERT INTO sms_outbox (tenant_id, to_user_id, to_phone, kind, dlt_template_id, text, dedupe_key)
+        SELECT $1, u.id, e.phone, $3, $4, $5, $6 FROM users u JOIN employees e ON e.tenant_id=u.tenant_id AND e.user_id=u.id
+         WHERE u.tenant_id=$1 AND u.id = ANY($2) AND u.status='active' AND u.sms_notifications AND coalesce(e.phone,'') <> ''
+        ON CONFLICT (tenant_id, to_user_id, dedupe_key) WHERE dedupe_key IS NOT NULL DO NOTHING`,
+        [tenantId, ids, msg.kind, t.dlt_template_id, renderSms(t.text, [msg.title, msg.body]), msg.dedupeKey ?? null]);
+      sms = r.rowCount ?? 0;
+    }
+  }
+  return { inApp: inApp.rowCount ?? 0, emails, sms };
 }
 
 /** Active users holding a permission through system or custom roles. */
@@ -85,6 +101,41 @@ export async function deliverOutbox(pool: Pool, log: { error: (o: object, m?: st
       await withPlatformBypass(pool, (db) => db.query(`UPDATE email_outbox SET last_error=$2,
           status = CASE WHEN attempts >= ${MAX_EMAIL_ATTEMPTS} THEN 'failed' ELSE 'queued' END,
           next_attempt_at = now() + make_interval(mins => power(2, attempts)::int) WHERE id=$1`, [m.id, err]));
+    }
+  }
+  return { sent, failed };
+}
+
+const MAX_SMS_ATTEMPTS = 5;
+
+/** Deliver queued SMS like email: claimed with SKIP LOCKED, exponential back-off, at most 5 attempts. Invalid numbers fail at once. */
+export async function deliverSmsOutbox(pool: Pool, log: { error: (o: object, m?: string) => void }, limit = 50) {
+  const s = getSmsSender();
+  if (!s) return { sent: 0, failed: 0 };
+  const claimed = await withPlatformBypass(pool, async (db) => {
+    await db.query(`UPDATE sms_outbox SET status='queued' WHERE status='sending' AND next_attempt_at < now() - interval '10 minutes'`);
+    return (await db.query<{ id: string; to_phone: string; text: string; dlt_template_id: string; attempts: number }>(
+      `UPDATE sms_outbox SET status='sending', attempts=attempts+1, next_attempt_at=now()
+        WHERE id IN (SELECT id FROM sms_outbox WHERE status='queued' AND next_attempt_at <= now() ORDER BY created_at LIMIT $1 FOR UPDATE SKIP LOCKED)
+        RETURNING id, to_phone, text, dlt_template_id, attempts`, [limit])).rows;
+  });
+  let sent = 0; let failed = 0;
+  for (const m of claimed) {
+    const to = normalizePhone(m.to_phone);
+    if (!to) {
+      await withPlatformBypass(pool, (db) => db.query(`UPDATE sms_outbox SET status='failed', last_error='Not a valid mobile number' WHERE id=$1`, [m.id]));
+      failed++; continue;
+    }
+    try {
+      const r = await s.send({ to, text: m.text, templateId: m.dlt_template_id });
+      await withPlatformBypass(pool, (db) => db.query(`UPDATE sms_outbox SET status='sent', sent_at=now(), last_error=NULL, provider_ref=$2 WHERE id=$1`, [m.id, r.ref]));
+      sent++;
+    } catch (e) {
+      const final = m.attempts >= MAX_SMS_ATTEMPTS;
+      await withPlatformBypass(pool, (db) => db.query(`UPDATE sms_outbox SET status=$2, last_error=$3, next_attempt_at=now() + make_interval(mins => $4) WHERE id=$1`,
+        [m.id, final ? 'failed' : 'queued', (e as Error).message.slice(0, 500), 2 ** m.attempts]));
+      log.error({ smsId: m.id, attempt: m.attempts, err: (e as Error).message }, 'sms delivery failed');
+      failed++;
     }
   }
   return { sent, failed };

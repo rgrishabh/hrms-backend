@@ -10,7 +10,7 @@ import { TEST_APP_URL, TEST_OWNER_URL } from './env.js';
 export const PASSWORD = 'Test-Password-123!';
 let pwHash: string | null = null;
 
-export async function makeApp(overrides: Record<string, string> = {}, opts: { mailerOverride?: boolean; storeOverride?: boolean } = {}): Promise<FastifyInstance> {
+export async function makeApp(overrides: Record<string, string> = {}, opts: { mailerOverride?: boolean; storeOverride?: boolean; smsOverride?: boolean } = {}): Promise<FastifyInstance> {
   const env = loadEnv({
     NODE_ENV: 'test', DATABASE_URL: TEST_APP_URL, COOKIE_SECURE: 'false',
     ENABLED_MODULES: 'default,attendance.mobile,attendance.biometric',
@@ -19,7 +19,7 @@ export async function makeApp(overrides: Record<string, string> = {}, opts: { ma
     ...overrides,
   });
   const pool = createPool(env.DATABASE_URL, 5);
-  const app = await buildApp({ env, pool, cipher: new FieldCipher(env.DATA_ENCRYPTION_KEY), mailerOverride: opts.mailerOverride, storeOverride: opts.storeOverride });
+  const app = await buildApp({ env, pool, cipher: new FieldCipher(env.DATA_ENCRYPTION_KEY), mailerOverride: opts.mailerOverride, storeOverride: opts.storeOverride, smsOverride: opts.smsOverride });
   app.addHook('onClose', async () => { await pool.end(); });
   return app;
 }
