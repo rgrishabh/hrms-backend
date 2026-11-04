@@ -13,7 +13,7 @@ let app: FastifyInstance; let c: pg.Client;
 let tid: string; let host: string;
 
 beforeAll(async () => {
-  app = await makeApp({ ENABLED_MODULES: 'default,leave,overtime,field_duty,expenses,travel' });
+  app = await makeApp({ ENABLED_MODULES: 'default,leave,overtime,field_duty,expenses,travel,payroll,advances_loans' });
   c = new pg.Client({ connectionString: TEST_OWNER_URL });
   await c.connect();
   // A bare, freshly bootstrapped organization: domain + one administrator, no employees.
@@ -63,6 +63,10 @@ describe('demo data generator', () => {
     const e = (await analyst.get('/api/v1/overtime/eligible')).json();
     expect(e.items.filter((d: { overtime_minutes: number }) => d.overtime_minutes >= 240).length).toBeGreaterThan(0);
     expect(e.payout).toMatchObject({ pay: false, compOff: { code: 'COMP' } }); // pay rate is the organization's to set
+
+    // advances and loans: the analyst's salary advance, paid out, recovered from this month
+    const loans = (await analyst.get('/api/v1/loans/requests')).json().items;
+    expect(loans).toEqual([expect.objectContaining({ kind: 'salary_advance', status: 'disbursed', installment_amount: '5000.00', outstanding: '15000.00' })]);
 
     // field duty: the sampler's site visits are on-duty days without office punches; one visit still to report on; out today
     const sampler = await Client.login(app, host, `sampler@${host}`, password);
