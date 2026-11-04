@@ -11,6 +11,8 @@ export const paged = <T>(items: T[], total: number, p: { page: number; pageSize:
   ({ items, page: p.page, pageSize: p.pageSize, total });
 
 /** A real calendar date: 2024-02-30 is rejected here (JavaScript would roll it over to 1 March; PostgreSQL would fail with a 500). */
+/** A boolean in a query string. z.coerce.boolean would make "false" true, as any non-empty string is. */
+export const QueryBool = z.enum(['true', 'false', '1', '0']).transform((v) => v === 'true' || v === '1');
 export const IsoDate = z.string().regex(/^\d{4}-\d{2}-\d{2}$/, 'Use YYYY-MM-DD').refine((s) => {
   const t = Date.parse(s + 'T00:00:00Z');
   return !Number.isNaN(t) && new Date(t).toISOString().slice(0, 10) === s;

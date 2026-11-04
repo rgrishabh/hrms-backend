@@ -1,14 +1,14 @@
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import { tenantActor } from '../../core/http/context.js';
-import { PageQuery, offsetOf, paged, Uuid } from '../../core/http/pagination.js';
+import { PageQuery, offsetOf, paged, Uuid, QueryBool } from '../../core/http/pagination.js';
 import { notFound } from '../../core/http/errors.js';
 
 /** A user's own in-app notifications. Every query is scoped to (organization, user). */
 export async function notificationRoutes(app: FastifyInstance) {
   app.get('/', async (req) => {
     const a = tenantActor(req);
-    const q = PageQuery.extend({ unread: z.coerce.boolean().optional() }).parse(req.query);
+    const q = PageQuery.extend({ unread: QueryBool.optional() }).parse(req.query);
     return a.tx(async (db) => {
       const params = [a.tenantId, a.user.userId, q.unread ?? false];
       const where = `tenant_id=$1 AND user_id=$2 AND (NOT $3 OR read_at IS NULL)`;

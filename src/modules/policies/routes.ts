@@ -5,7 +5,7 @@ import { createHash } from 'node:crypto';
 import { tenantActor, requireFeature, type TenantActor, gateFeatures } from '../../core/http/context.js';
 import { audit } from '../../core/audit/audit.js';
 import { AppError, badRequest, conflict, forbidden, notFound } from '../../core/http/errors.js';
-import { IsoDate, PageQuery, offsetOf, paged, Uuid } from '../../core/http/pagination.js';
+import { IsoDate, PageQuery, offsetOf, paged, Uuid, QueryBool } from '../../core/http/pagination.js';
 import { getStore, newKey } from '../../core/storage/index.js';
 import { detectFile, safeFileName } from '../../core/storage/sniff.js';
 import { notifyUsers } from '../../core/notify/service.js';
@@ -277,7 +277,7 @@ export async function policyRoutes(app: FastifyInstance) {
       req.log.error({ policyVersionId: id }, 'policy file integrity check failed');
       throw new AppError(500, 'integrity_failed', 'The stored file failed its integrity check. Contact your administrator.');
     }
-    const q = z.object({ inline: z.coerce.boolean().default(false) }).parse(req.query);
+    const q = z.object({ inline: QueryBool.default(false) }).parse(req.query);
     return reply.header('content-type', 'application/pdf')
       .header('content-disposition', `${q.inline ? 'inline' : 'attachment'}; filename="${v.file_name!.replace(/"/g, '')}"; filename*=UTF-8''${encodeURIComponent(v.file_name!)}`)
       .header('cache-control', 'private, no-store').header('x-content-type-options', 'nosniff').send(buf);

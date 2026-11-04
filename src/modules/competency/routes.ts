@@ -3,7 +3,7 @@ import { z } from 'zod';
 import { tenantActor, tenantActorAny, requireFeature, type TenantActor, gateFeatures } from '../../core/http/context.js';
 import { audit } from '../../core/audit/audit.js';
 import { AppError, badRequest, conflict, forbidden, notFound } from '../../core/http/errors.js';
-import { IsoDate, PageQuery, offsetOf, paged, Uuid } from '../../core/http/pagination.js';
+import { IsoDate, PageQuery, offsetOf, paged, Uuid, QueryBool } from '../../core/http/pagination.js';
 import { createApprovalRequest, registerApprovalHandler, cancelRequest } from '../../core/workflow/engine.js';
 import { getSettingValue } from '../../core/settings/service.js';
 import { daysBetween } from '../attendance/time.js';
@@ -115,7 +115,7 @@ export async function competencyRoutes(app: FastifyInstance) {
   app.get('/training-records', async (req) => {
     const a = tenantActor(req);
     const q = PageQuery.extend({ employeeId: Uuid.optional(), courseId: Uuid.optional(), expiringWithinDays: z.coerce.number().int().min(0).max(365).optional(),
-      includeRevoked: z.coerce.boolean().default(false) }).parse(req.query);
+      includeRevoked: QueryBool.default(false) }).parse(req.query);
     const employeeId = scopeEmployee(a, q.employeeId, 'training.manage', 'competency.read');
     return a.tx(async (db) => {
       await requireFeature(db, a.tenantId, 'training');

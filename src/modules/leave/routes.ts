@@ -4,7 +4,7 @@ import { Decimal } from 'decimal.js';
 import { tenantActor, tenantActorAny, requireFeature, type TenantActor, gateFeatures } from '../../core/http/context.js';
 import { audit } from '../../core/audit/audit.js';
 import { badRequest, conflict, forbidden, notFound } from '../../core/http/errors.js';
-import { IsoDate, PageQuery, offsetOf, paged, Uuid } from '../../core/http/pagination.js';
+import { IsoDate, PageQuery, offsetOf, paged, Uuid, QueryBool } from '../../core/http/pagination.js';
 import { createApprovalRequest, registerApprovalHandler, type StepSpec } from '../../core/workflow/engine.js';
 import { orgToday } from '../../core/workflow/engine.js';
 import type { Db } from '../../db/tx.js';
@@ -139,7 +139,7 @@ export async function leaveRoutes(app: FastifyInstance) {
   // ------------------------------------------------------------ types
   app.get('/types', async (req) => {
     const a = tenantActorAny(req, 'leave.self', 'leave.manage', 'leave.read');
-    const q = z.object({ includeInactive: z.coerce.boolean().optional() }).parse(req.query);
+    const q = z.object({ includeInactive: QueryBool.optional() }).parse(req.query);
     return a.tx(async (db) => {
       await requireFeature(db, a.tenantId, 'leave');
       const all = q.includeInactive && a.has('leave.manage');

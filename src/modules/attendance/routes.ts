@@ -3,7 +3,7 @@ import { z } from 'zod';
 import { tenantActor, tenantActorAny, requireFeature, type TenantActor, gateFeatures } from '../../core/http/context.js';
 import { audit } from '../../core/audit/audit.js';
 import { badRequest, conflict, forbidden, notFound } from '../../core/http/errors.js';
-import { IsoDate, PageQuery, offsetOf, paged, Uuid } from '../../core/http/pagination.js';
+import { IsoDate, PageQuery, offsetOf, paged, Uuid, QueryBool } from '../../core/http/pagination.js';
 import { getSettingValue } from '../../core/settings/service.js';
 import { createApprovalRequest, registerApprovalHandler, type StepSpec } from '../../core/workflow/engine.js';
 import { randomToken, sha256 } from '../../core/crypto/index.js';
@@ -129,7 +129,7 @@ export async function attendanceRoutes(app: FastifyInstance) {
 
   app.get('/daily', async (req) => {
     const a = tenantActorAny(req, 'attendance.read', 'attendance.team.read');
-    const q = PageQuery.extend({ date: IsoDate, branchId: Uuid.optional(), status: z.string().max(20).optional(), exceptionsOnly: z.coerce.boolean().optional() }).parse(req.query);
+    const q = PageQuery.extend({ date: IsoDate, branchId: Uuid.optional(), status: z.string().max(20).optional(), exceptionsOnly: QueryBool.optional() }).parse(req.query);
     return a.tx(async (db) => {
       let scope: string[] | null = null;
       if (!a.has('attendance.read')) scope = a.user.employeeId ? await teamEmployeeIds(db, a.tenantId, a.user.employeeId) : [];
