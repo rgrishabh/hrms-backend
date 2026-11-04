@@ -40,7 +40,7 @@ async function loadLoan(db: Db, a: TenantActor, id: string, lock = false): Promi
 }
 
 /** The planned instalments from the first month, skipping deferred months, until the amount is covered. */
-function schedule(l: { amount: string; installment_amount: string; first_period: string; skip_periods: string[] }) {
+export function schedule(l: { amount: string; installment_amount: string; first_period: string; skip_periods: string[] }) {
   const out: { period: string; amount: string }[] = [];
   let left = new Decimal(l.amount);
   let [y, m] = l.first_period.split('-').map(Number) as [number, number];
