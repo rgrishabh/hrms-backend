@@ -1,4 +1,4 @@
-# Attendance calculation rules (CALC_VERSION 1)
+# Attendance calculation rules (CALC_VERSION 3)
 
 Source: `apps/api/src/modules/attendance/calc.ts` (pure function) and `service.ts` (data loading). Tests: `test/attendance-calc.test.ts`, `test/attendance-flows.test.ts`.
 
@@ -29,11 +29,15 @@ Source: `apps/api/src/modules/attendance/calc.ts` (pure function) and `service.t
 8. **Status on a working day.** worked ≥ full-day minimum → `present`. ≥ half-day minimum → `half_day` (`short_hours`). Otherwise `absent` (`insufficient_hours`). No punches → `absent`. Defaults without a shift: 480 / 240 minutes.
 9. **Weekly off / holiday.** Status stays `weekly_off` / `holiday`. Any punches add `worked_on_<type>`, and with overtime enabled all worked minutes count as overtime (input for future comp-off/OT modules).
 10. **Overtime on working days.** `max(0, worked − overtime_after_minutes)` when enabled, the shift defines a threshold, and pairing is complete.
+11. **Leave (v2).** Approved full-day leave on a working day → `on_leave` (punches add `worked_on_leave`). Half-day leave → the other half must be worked: worked ≥ half-day minimum → `present`, otherwise `half_day`. Leave on a weekly off or holiday doesn't change the day.
+12. **Field duty (v3, docs/FIELD_DUTY.md).** When approved field duty covers the whole working day (on its own, or half-day duty with half-day leave) → `on_duty`. The day is paid, with or without punches. Punches still give worked minutes and overtime, but never lateness or early exit. Half-day field duty is treated like half-day leave: the other half must be worked. Full-day leave takes precedence (`duty_on_leave`). Field duty on a weekly off or holiday doesn't change the day; any work there is overtime as usual. `duty_fraction` records the share of the day on duty.
 
 ## When results are recalculated
 
 - After every accepted event: the event's local date and the previous date (overnight windows).
 - After a regularization is approved: that work date.
+- After leave is approved or cancelled: its dates.
+- After field duty is approved or cancelled: its dates up to today (later dates are calculated as they close).
 - After a device enrolment ID is mapped: the dates of the reprocessed events.
 - On `POST /attendance/recalculate` (≤ 62 days; skips locked days).
 - On period lock: every employee for the whole period, then rows are locked.
@@ -52,4 +56,3 @@ An employee requests in and/or out times for a date within `attendance.regulariz
 
 - Different shifts on consecutive days can make punch windows overlap or leave a gap (e.g. NIGHT then GEN the next day). The punch is counted in both overlapping windows. Rotating rosters will need explicit window boundaries.
 - The `attendance.close_day` job (daily 01:30) materializes the previous day for everyone; between its runs, days with no events show as "Not calculated".
-- Leave is not integrated yet (no `on_leave` status).

@@ -58,7 +58,7 @@ export const FEATURES: readonly FeatureDefinition[] = [
   f({ key: 'holidays', name: 'Holiday calendars', description: 'Tenant and branch holiday calendars.', category: 'workforce', availability: 'available', defaultEnabled: true, dependencies: ['attendance'] }),
   f({ key: 'leave', name: 'Leave management', description: 'Leave types, balance ledger, accruals, requests with approval, and attendance integration.', category: 'workforce', availability: 'available', defaultEnabled: true, dependencies: ['core.employees'], requiredSettings: ['leave.year_start_month'] }),
   f({ key: 'overtime', name: 'Overtime', description: 'Overtime claims from calculated attendance, approved by the manager and HR, paid through payroll at the rate the organization sets, or taken as compensatory off.', category: 'workforce', availability: 'available', dependencies: ['attendance'] }),
-  f({ key: 'field_duty', name: 'Field duty', description: 'Field sampling and client-site duty records.', category: 'workforce', availability: 'planned', dependencies: ['attendance'] }),
+  f({ key: 'field_duty', name: 'Field duty', description: 'Field sampling, client-site and other duty away from the workplace, counted as paid days in attendance.', category: 'workforce', availability: 'available', dependencies: ['attendance'] }),
 
   // ---- Payroll & finance
   f({ key: 'payroll', name: 'Payroll', description: 'Components, approved effective-dated salaries, payroll runs from attendance (LOP), approval and locking, payslips, bank/PF/ESI/register exports, F&F runs.', category: 'payroll_finance', availability: 'available', dependencies: ['core.employees', 'attendance'] }),

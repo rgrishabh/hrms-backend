@@ -61,6 +61,10 @@ Base path `/api/v1`. JSON in and out. Each installation serves one organization;
 | POST `/leave/requests/:id/cancel` | requester or `leave.manage` | Reverses consumed days if approved |
 | GET `/leave/calendar?from&to` | team / `leave.read` | Pending + approved leave intervals (≤ 92 days) |
 | POST `/leave/accruals`, `/leave/year-end`, `/leave/adjustments` | `leave.manage` | Idempotent jobs; audited |
+| **Field duty** (module `field_duty`; see FIELD_DUTY.md) | | |
+| POST `/field-duty/requests` | field_duty.self / manage | Request `{startDate, endDate, dayPart, purpose, place, clientName?, reference?, reason}`, or record it for an employee (`employeeId`, manage). Manager approves, then HR if `field_duty.hr_approval` is on |
+| GET `/field-duty/requests?scope=mine\|team\|all&status&on&from&to` · GET `/field-duty/requests/:id` | field_duty.self / team.read / read | List / detail |
+| POST `/field-duty/requests/:id/withdraw` · `/cancel` · `/report` | employee / field_duty.manage | Withdraw pending; cancel approved (employee before it starts, HR until the dates are locked); report the outcome once started |
 | **Overtime** (module `overtime`; see OVERTIME.md) | | |
 | GET `/overtime/eligible` | overtime.self | My days with recorded overtime still to claim, and the payout options |
 | POST `/overtime/claims` | overtime.self | Claim `{workDate, minutes, payout, reason}` → manager, then HR approval |

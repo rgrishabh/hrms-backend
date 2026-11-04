@@ -163,6 +163,36 @@ export async function generateDemo(c: pg.Client | pg.PoolClient, opts: { passwor
     for (let d = start; d <= end; d = addDays(d, 1)) onLeave.add(`${e.id}:${d}`);
   }
 
+  // ---- field duty: sample collection staff spend days at client sites (no office punches there). Approved, as the approval
+  // writes it; attendance then shows those days as on duty. The sampler has a two-day trip, a visit not yet reported on, and is out today.
+  const SITES: [string, string | null, string][] = [
+    ['Chakan MIDC — STP outlet', 'Kiran Auto Components Pvt Ltd', 'field_sampling'], ['Taloja MIDC — ETP', 'Shreeji Dyes & Intermediates', 'field_sampling'],
+    ['Hinjewadi Phase 2 — DG stacks', 'Megapolis IT Park', 'field_sampling'], ['Ranjangaon — borewells', 'Ranjangaon Industrial Association', 'field_sampling'],
+    ['Vashi — client office', 'Navi Mumbai Municipal Corporation', 'client_visit'], ['Pirangut — ambient air stations', null, 'field_sampling'],
+  ];
+  const dutyPlan: { e: Emp; start: string; end: string; site: [string, string | null, string]; reported: boolean }[] = [];
+  const onDuty = new Set<string>();
+  const isSunday = (d: string) => new Date(`${d}T00:00:00Z`).getUTCDay() === 0;
+  const freeDay = (e: Emp, d: string) => !isSunday(d) && !onLeave.has(`${e.id}:${d}`) && !onDuty.has(`${e.id}:${d}`) && d >= e.joined;
+  const planDuty = (e: Emp, start: string, end: string, site: [string, string | null, string], reported = true) => {
+    for (let d = start; d <= end; d = addDays(d, 1)) if (!freeDay(e, d)) return;
+    dutyPlan.push({ e, start, end, site, reported });
+    for (let d = start; d <= end; d = addDays(d, 1)) onDuty.add(`${e.id}:${d}`);
+  };
+  {
+    const s = personas.sampler!;
+    // Working days only: back from `k` days ago (forward for the next one), so the plan holds whatever weekday today is.
+    const back = (k: number, len = 1) => { let d = addDays(today, -k); while ([...Array(len).keys()].some((i) => isSunday(addDays(d, i)))) d = addDays(d, -1); return d; };
+    let next = today; while (isSunday(next)) next = addDays(next, 1);
+    const trip = back(12, 2);
+    planDuty(s, trip, addDays(trip, 1), SITES[0]!);
+    planDuty(s, back(5), back(5), SITES[4]!, false);
+    planDuty(s, next, next, SITES[1]!, false);
+    for (const [i, e] of emps.filter((x) => x.dept === 'FIELD' && !personaIds.has(x.id)).entries()) {
+      for (let k = 27 - i; k >= 2; k -= 6 + (i % 3)) planDuty(e, addDays(today, -k), addDays(today, -k + (k % 4 === 0 ? 1 : 0)), SITES[(i + k) % SITES.length]!);
+    }
+  }
+
   // ---- attendance: last 30 days of punches, calculated by the engine (overtime recorded for the GEN shift after 9 h)
   for (const [k, v] of [['attendance.overtime_enabled', true], ['overtime.comp_off_leave_type', 'COMP']] as const)
     await q(`INSERT INTO tenant_settings (tenant_id, setting_key, setting_value, updated_by) VALUES ($1,$2,$3,$4) ON CONFLICT DO NOTHING`, [tid, k, JSON.stringify(v), adminId]);
@@ -174,13 +204,22 @@ export async function generateDemo(c: pg.Client | pg.PoolClient, opts: { passwor
     if (!['WATER', 'FIELD', 'FOOD', 'AIR'].includes(e.dept)) return 0;
     return (Number(d.slice(8)) + Number(e.code.slice(3))) % 11 === 0 ? 150 + (Number(e.code.slice(3)) % 4) * 20 : 0;
   };
+  for (const p of dutyPlan) {
+    const [place, client, purpose] = p.site;
+    await q(`INSERT INTO field_duty_requests (tenant_id, employee_id, start_date, end_date, purpose, place, client_name, reference, reason, status, outcome, outcome_note, reported_at, created_by, decided_at)
+      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,'approved',$10,$11,$12,$13,now())`,
+      [tid, p.e.id, p.start, p.end, purpose, place, client, `WO-${p.start.replace(/-/g, '').slice(2)}-${p.e.code.slice(3)}`,
+       purpose === 'client_visit' ? 'Discuss the monitoring schedule and hand over test reports' : 'Grab and composite samples as per the work order; chain of custody to the lab',
+       p.reported ? 'completed' : null, p.reported ? 'Samples collected and handed over to sample receipt' : null, p.reported ? new Date() : null, p.e.userId ?? uid('hr.head')]);
+  }
+  say(`field duty: ${dutyPlan.length} approved requests for sample collection staff`);
   const from = addDays(today, -30); const to = addDays(today, -1);
   let punches = 0;
   for (const e of emps) {
     if (e.joined > to || e.id === joiner.id) continue;
     for (let d = from > e.joined ? from : e.joined; d <= to; d = addDays(d, 1)) {
       if (new Date(`${d}T00:00:00Z`).getUTCDay() === 0) continue; // Sunday weekly off
-      if (onLeave.has(`${e.id}:${d}`)) continue;
+      if (onLeave.has(`${e.id}:${d}`) || onDuty.has(`${e.id}:${d}`)) continue;
       const extra = lateMinutes(e, d);
       const r0 = rnd(); const r = extra ? 0.5 : r0; // a late evening is a full day with both punches
       if (r < 0.035) continue; // absent

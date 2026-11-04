@@ -188,12 +188,12 @@ const joinersLeavers: ReportDef = {
 
 const ATT_METRICS = `count(*) FILTER (WHERE ad.day_type='working' AND ad.status <> 'not_joined')::int AS working,
   count(*) FILTER (WHERE ad.status='present')::int AS present, count(*) FILTER (WHERE ad.status='half_day')::int AS half_day,
-  count(*) FILTER (WHERE ad.status='on_leave')::int AS on_leave, count(*) FILTER (WHERE ad.status='absent')::int AS absent,
+  count(*) FILTER (WHERE ad.status='on_leave')::int AS on_leave, count(*) FILTER (WHERE ad.status='on_duty')::int AS on_duty, count(*) FILTER (WHERE ad.status='absent')::int AS absent,
   count(*) FILTER (WHERE ad.status='missing_punch')::int AS missing_punch, count(*) FILTER (WHERE ad.late_minutes > 0)::int AS late_days,
   round(sum(ad.worked_minutes) / 60.0, 1) AS worked_hours, round(sum(ad.overtime_minutes) / 60.0, 1) AS overtime_hours`;
 const attendance: ReportDef = {
   key: 'attendance_summary', name: 'Attendance summary', category: 'Time & leave', feature: 'attendance',
-  description: 'Working days, present, half days, leave, absences, missing punches, late days, hours and overtime per employee or department.',
+  description: 'Working days, present, half days, leave, field duty, absences, missing punches, late days, hours and overtime per employee or department.',
   access: { all: ['attendance.read'], team: ['attendance.team.read'] },
   params: [fromDate(monthStart), toDate,
     { key: 'groupBy', label: 'Group by', type: 'select', default: () => 'employee', options: [{ value: 'employee', label: 'Employee' }, { value: 'department', label: 'Department' }] }],
@@ -204,7 +204,7 @@ const attendance: ReportDef = {
       ? [{ key: 'employee_code', label: 'Code', type: 'text' }, { key: 'name', label: 'Name', type: 'text' }, { key: 'department', label: 'Department', type: 'text' }]
       : [{ key: 'department', label: 'Department', type: 'text' }, { key: 'employees', label: 'Employees', type: 'int' }];
     const columns: Column[] = [...head, { key: 'working', label: 'Working days', type: 'int' }, { key: 'present', label: 'Present', type: 'int' },
-      { key: 'half_day', label: 'Half days', type: 'int' }, { key: 'on_leave', label: 'On leave', type: 'int' }, { key: 'absent', label: 'Absent', type: 'int' },
+      { key: 'half_day', label: 'Half days', type: 'int' }, { key: 'on_leave', label: 'On leave', type: 'int' }, { key: 'on_duty', label: 'Field duty', type: 'int' }, { key: 'absent', label: 'Absent', type: 'int' },
       { key: 'missing_punch', label: 'Missing punch', type: 'int' }, { key: 'late_days', label: 'Late days', type: 'int' },
       { key: 'worked_hours', label: 'Hours worked', type: 'number' }, { key: 'overtime_hours', label: 'Overtime hours', type: 'number' },
       { key: 'attendance_pct', label: 'Attendance %', type: 'percent' }];
@@ -216,11 +216,11 @@ const attendance: ReportDef = {
       GROUP BY GROUPING SETS (${sets}, ()) ORDER BY is_total, ${byEmp ? 'e.employee_code' : 'department'} LIMIT ${MAX_ROWS + 2}`, [c.tenantId, p.from, p.to, c.team])).rows;
     const { rows, totals } = shape([...columns, { key: 'employees', label: '', type: 'int' }], raw);
     for (const r of [...rows, ...(totals ? [totals] : [])]) {
-      r.attendance_pct = pct((r.present as number) + (r.half_day as number) / 2, (r.working as number) - (r.on_leave as number));
+      r.attendance_pct = pct((r.present as number) + (r.on_duty as number) + (r.half_day as number) / 2, (r.working as number) - (r.on_leave as number));
       if (byEmp) delete r.employees;
     }
     if (totals && byEmp) { totals.employee_code = null; totals.name = null; totals.department = null; }
-    return { columns, rows, totals, notes: ['Attendance % = (present + ½ half days) ÷ (working days − leave days). From calculated attendance; recalculate first if punches changed.'] };
+    return { columns, rows, totals, notes: ['Attendance % = (present + field duty + ½ half days) ÷ (working days − leave days). From calculated attendance; recalculate first if punches changed.'] };
   },
 };
 

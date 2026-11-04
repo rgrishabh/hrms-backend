@@ -24,20 +24,25 @@ const LIST_MAX = 8;
 
 interface Ctx { db: Db; a: TenantActor; tenantId: string; today: string; usable: (f: string) => boolean }
 
-/** Today's attendance for a set of employees (null = everyone): expected, clocked in, on leave, not yet in, late. */
+/** Today's attendance for a set of employees (null = everyone): expected, clocked in, on leave, on field duty, not yet in, late. */
 async function attendanceToday(c: Ctx, ids: string[] | null) {
-  const r = (await c.db.query<{ expected: number; clocked_in: number; on_leave: number; late: number; off_today: number }>(`
+  const r = (await c.db.query<{ expected: number; clocked_in: number; on_leave: number; on_duty: number; late: number; off_today: number }>(`
     WITH emp AS (SELECT e.id FROM employees e WHERE e.tenant_id=$1 AND ${ACTIVE} AND e.date_of_joining <= $2 AND ($3::uuid[] IS NULL OR e.id = ANY($3))),
     lv AS (SELECT DISTINCT r.employee_id FROM leave_requests r JOIN emp ON emp.id=r.employee_id
-      WHERE r.tenant_id=$1 AND r.status='approved' AND r.start_date <= $2 AND r.end_date >= $2)
+      WHERE r.tenant_id=$1 AND r.status='approved' AND r.start_date <= $2 AND r.end_date >= $2),
+    fd AS (SELECT DISTINCT f.employee_id FROM field_duty_requests f JOIN emp ON emp.id=f.employee_id
+      WHERE f.tenant_id=$1 AND f.status='approved' AND f.start_date <= $2 AND f.end_date >= $2
+        AND NOT EXISTS (SELECT 1 FROM lv WHERE lv.employee_id=f.employee_id))
     SELECT (SELECT count(*) FROM emp)::int AS expected,
       count(*) FILTER (WHERE d.first_in IS NOT NULL AND lv.employee_id IS NULL)::int AS clocked_in,
       (SELECT count(*) FROM lv)::int AS on_leave,
+      count(*) FILTER (WHERE fd.employee_id IS NOT NULL AND d.first_in IS NULL)::int AS on_duty,
       count(*) FILTER (WHERE d.late_minutes > 0)::int AS late,
-      count(*) FILTER (WHERE d.day_type <> 'working' AND d.first_in IS NULL AND lv.employee_id IS NULL)::int AS off_today
+      count(*) FILTER (WHERE d.day_type <> 'working' AND d.first_in IS NULL AND lv.employee_id IS NULL AND fd.employee_id IS NULL)::int AS off_today
     FROM emp LEFT JOIN attendance_daily d ON d.tenant_id=$1 AND d.employee_id=emp.id AND d.work_date=$2
-    LEFT JOIN lv ON lv.employee_id=emp.id`, [c.tenantId, c.today, ids])).rows[0]!;
-  return { ...r, not_in: Math.max(0, r.expected - r.clocked_in - r.on_leave - r.off_today) };
+    LEFT JOIN lv ON lv.employee_id=emp.id LEFT JOIN fd ON fd.employee_id=emp.id`, [c.tenantId, c.today, ids])).rows[0]!;
+  // Away on field duty without punching in is accounted for, not "not in yet".
+  return { ...r, not_in: Math.max(0, r.expected - r.clocked_in - r.on_leave - r.on_duty - r.off_today) };
 }
 
 async function missingPunches(c: Ctx, ids: string[] | null) {
@@ -61,6 +66,7 @@ function attendanceTiles(prefix: string, t: Awaited<ReturnType<typeof attendance
   return [
     { key: `${prefix}_in`, label: `Clocked in${sfx}`, value: t.clocked_in, detail: `of ${t.expected}`, href, tone: 'neutral' },
     { key: `${prefix}_leave`, label: `On leave${sfx}`, value: t.on_leave, href: '/leave' },
+    { key: `${prefix}_duty`, label: `On field duty${sfx}`, value: t.on_duty, href: '/field-duty' },
     { key: `${prefix}_not_in`, label: 'Not clocked in yet', value: t.not_in, href, tone: t.not_in ? 'warn' : 'good' },
     { key: `${prefix}_late`, label: `Late${sfx}`, value: t.late, href, tone: t.late ? 'warn' : 'neutral' },
   ];
@@ -110,13 +116,14 @@ export async function dashboardSummary(db: Db, a: TenantActor) {
   // ---- team (managers without organization-wide access)
   const teamAtt = usable('attendance') && a.has('attendance.team.read') && !a.has('attendance.read');
   const teamLeave = usable('leave') && a.has('leave.team.read') && !a.has('leave.read');
+  const fieldDuty = usable('field_duty') && a.has('field_duty.team.read');
   const team = a.user.employeeId && (teamAtt || teamLeave) ? await teamEmployeeIds(db, tenantId, a.user.employeeId) : [];
   if (team.length) {
     const size = (await db.query<{ n: number }>(`SELECT count(*)::int AS n FROM employees e WHERE e.tenant_id=$1 AND e.id = ANY($2) AND ${ACTIVE}`, [tenantId, team])).rows[0]!.n;
     const tiles: Tile[] = [{ key: 'team_size', label: 'People in your team', value: size, href: '/attendance/team' }];
     if (teamAtt) {
       const t = await attendanceToday(c, team);
-      tiles.push(...attendanceTiles('team', t, '/attendance/team').filter((x) => teamLeave || x.key !== 'team_leave'));
+      tiles.push(...attendanceTiles('team', t, '/attendance/team').filter((x) => (teamLeave || x.key !== 'team_leave') && (fieldDuty || x.key !== 'team_duty')));
       const mp = await missingPunches(c, team);
       if (mp) attention.push({ key: 'team_missing_punch', label: 'Missing punches in your team', value: mp, detail: 'last 7 days', href: '/attendance/team', tone: 'warn' });
     }
@@ -143,7 +150,8 @@ export async function dashboardSummary(db: Db, a: TenantActor) {
   }
   if (usable('attendance') && a.has('attendance.read')) {
     const t = await attendanceToday(c, null);
-    todayTiles.push(...attendanceTiles('org', t, '/attendance/team').filter((x) => (a.has('leave.read') && usable('leave')) || x.key !== 'org_leave'));
+    todayTiles.push(...attendanceTiles('org', t, '/attendance/team').filter((x) => ((a.has('leave.read') && usable('leave')) || x.key !== 'org_leave')
+      && ((usable('field_duty') && a.has('field_duty.read')) || x.key !== 'org_duty')));
     const mp = await missingPunches(c, null);
     if (mp) attention.push({ key: 'missing_punch', label: 'Missing punches', value: mp, detail: 'last 7 days', href: '/attendance/team', tone: 'warn' });
   }

@@ -33,7 +33,7 @@ Modules: `payroll` (components, salaries, runs, exports), `payroll.payslips` (em
 
 1. **Create** a run for a legal entity and month (one regular run per entity and month) and **compute** it. Every active or leaving employee of the entity with an active salary is included.
    - **Employed days** = days in the month between joining and exit.
-   - **Loss of pay** (LOP) comes from calculated attendance: absent = 1, unresolved missing punch = 1 (setting `payroll.missing_punch_is_lop`), a half day not covered by paid leave = 0.5, unpaid leave = its fraction. Days without calculated attendance are paid and reported as warnings.
+   - **Loss of pay** (LOP) comes from calculated attendance: absent = 1, unresolved missing punch = 1 (setting `payroll.missing_punch_is_lop`), a half day not covered by paid leave = 0.5, unpaid leave = its fraction (also on a day otherwise worked or on field duty). Field duty (`on_duty`) is paid. Days without calculated attendance are paid and reported as warnings.
    - **Paid days** = employed days − LOP. Proration = paid days / calendar days of the month.
 2. **Adjust:** add one-off earnings/deductions (arrears, allowances, recoveries) and LOP corrections. Any change sends the run back to draft, so it must be recomputed.
 3. **Warnings:** review them (missing rules, uncalculated attendance, negative net, which is put on hold) and **acknowledge** them with a note.

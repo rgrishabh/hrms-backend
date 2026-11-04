@@ -4,6 +4,7 @@ import { calculateDay, CALC_VERSION, type ShiftPolicy, type Punch, type DayResul
 import { addDays, dateRange, localDate, weekday, zonedToInstant } from './time.js';
 import { notFound } from '../../core/http/errors.js';
 import { approvedLeaveByDate } from '../leave/service.js';
+import { approvedDutyByDate } from '../field-duty/service.js';
 
 export interface EventInput {
   employeeId: string | null;
@@ -90,6 +91,7 @@ export async function recalculateRange(db: Db, tenantId: string, employeeId: str
     .map((r) => ({ id: r.id, time: r.event_time, direction: r.direction }));
   const locked = await lockedDates(db, tenantId, from, to);
   const leaves = await approvedLeaveByDate(db, tenantId, employeeId, from, to);
+  const duties = await approvedDutyByDate(db, tenantId, employeeId, from, to);
 
   const results: (DayResult & { locked: boolean })[] = [];
   const rows: unknown[][] = [];
@@ -99,11 +101,11 @@ export async function recalculateRange(db: Db, tenantId: string, employeeId: str
     const shift = asg ? toShift(asg) : null;
     const dayType = holidays.has(date) ? 'holiday' : weeklyOffs.includes(weekday(date)) ? 'weekly_off' : 'working';
     const res = calculateDay({ workDate: date, timezone: tz, shift, dayType, punches, minGapSeconds: minGap, overtimeEnabled,
-      employment: { joiningDate: e.date_of_joining, exitDate: e.exit_date }, leave: leaves.get(date) ?? null });
+      employment: { joiningDate: e.date_of_joining, exitDate: e.exit_date }, leave: leaves.get(date) ?? null, duty: duties.get(date) ?? null });
     results.push({ ...res, locked: false });
     rows.push([date, res.shiftId, res.dayType, res.status, res.firstIn, res.lastOut, res.punchCount, res.workedMinutes, res.lateMinutes,
       res.earlyExitMinutes, res.overtimeMinutes, res.exceptions,
-      JSON.stringify({ timezone: tz, weeklyOffs, minGapSeconds: minGap, overtimeEnabled, shift: shift?.code ?? null }), res.leaveFraction, res.leaveTypeCode]);
+      JSON.stringify({ timezone: tz, weeklyOffs, minGapSeconds: minGap, overtimeEnabled, shift: shift?.code ?? null }), res.leaveFraction, res.leaveTypeCode, res.dutyFraction]);
   }
   if (rows.length) {
     const values: unknown[] = [tenantId, employeeId, CALC_VERSION];
@@ -113,13 +115,13 @@ export async function recalculateRange(db: Db, tenantId: string, employeeId: str
       return `($1,$2,${r.map((_, i) => `$${base + i + 1}`).join(',')},$3,now())`;
     });
     await db.query(`INSERT INTO attendance_daily (tenant_id, employee_id, work_date, shift_id, day_type, status, first_in, last_out, punch_count,
-        worked_minutes, late_minutes, early_exit_minutes, overtime_minutes, exceptions, policy_snapshot, leave_fraction, leave_type_code, calc_version, calculated_at)
+        worked_minutes, late_minutes, early_exit_minutes, overtime_minutes, exceptions, policy_snapshot, leave_fraction, leave_type_code, duty_fraction, calc_version, calculated_at)
       VALUES ${tuples.join(',')}
       ON CONFLICT (tenant_id, employee_id, work_date) DO UPDATE SET shift_id=EXCLUDED.shift_id, day_type=EXCLUDED.day_type, status=EXCLUDED.status,
         first_in=EXCLUDED.first_in, last_out=EXCLUDED.last_out, punch_count=EXCLUDED.punch_count, worked_minutes=EXCLUDED.worked_minutes,
         late_minutes=EXCLUDED.late_minutes, early_exit_minutes=EXCLUDED.early_exit_minutes, overtime_minutes=EXCLUDED.overtime_minutes,
         exceptions=EXCLUDED.exceptions, policy_snapshot=EXCLUDED.policy_snapshot, leave_fraction=EXCLUDED.leave_fraction,
-        leave_type_code=EXCLUDED.leave_type_code, calc_version=EXCLUDED.calc_version, calculated_at=now()
+        leave_type_code=EXCLUDED.leave_type_code, duty_fraction=EXCLUDED.duty_fraction, calc_version=EXCLUDED.calc_version, calculated_at=now()
       WHERE NOT attendance_daily.locked`, values);
   }
   return { results, skippedLocked: [...locked] };
