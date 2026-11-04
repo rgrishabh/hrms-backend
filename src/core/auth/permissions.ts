@@ -108,6 +108,9 @@ export const SYSTEM_ROLES: readonly RoleDefinition[] = [
   { key: 'quality_manager', name: 'Quality Manager', scope: 'tenant', permissions: P(...SELF, 'org.read', 'training.manage',
     'competency.read', 'competency.manage', 'competency.assess', 'competency.authorize', 'policies.read', 'policies.manage', 'policies.publish') },
   { key: 'reporting_manager', name: 'Reporting Manager', scope: 'tenant', permissions: P(...SELF, 'attendance.team.read', 'leave.team.read', 'expenses.team.read', 'recruitment.requisition') },
+  // Management sign-off on hiring (e.g. the laboratory director): approves requisitions and offers, sees compensation, cannot change the pipeline.
+  // A second approver besides HR, so an offer drafted by the only HR administrator can still be approved (never by its requester).
+  { key: 'hiring_approver', name: 'Hiring Approver', scope: 'tenant', permissions: P(...SELF, 'org.read', 'recruitment.read', 'recruitment.approve', 'recruitment.compensation') },
   { key: 'it_admin', name: 'IT Administrator', scope: 'tenant', permissions: P(...SELF, 'settings.read', 'users.manage', 'attendance.devices.manage', 'org.read', 'assets.manage') },
   { key: 'employee', name: 'Employee', scope: 'tenant', permissions: SELF },
   { key: 'auditor', name: 'Auditor / Read-only Reviewer', scope: 'tenant', permissions: P(...SELF, 'settings.read', 'audit.read', 'org.read',

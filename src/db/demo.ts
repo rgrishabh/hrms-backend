@@ -48,7 +48,7 @@ const DEPTS = [
 ] as const;
 // Named personas: the demo logins (role keys from the permission catalogue).
 const PERSONAS = [
-  { key: 'director', first: 'Suresh', last: 'Menon', dept: 'QA', designation: 'Laboratory Director', roles: ['department_head', 'reporting_manager', 'employee'], grade: 'L7' },
+  { key: 'director', first: 'Suresh', last: 'Menon', dept: 'QA', designation: 'Laboratory Director', roles: ['department_head', 'reporting_manager', 'hiring_approver', 'employee'], grade: 'L7' },
   { key: 'hr.head', first: 'Ananya', last: 'Iyer', dept: 'HR', designation: 'HR Manager', roles: ['hr_admin', 'employee'], grade: 'L5' },
   { key: 'hr.exec', first: 'Rohit', last: 'Kulkarni', dept: 'HR', designation: 'HR Executive', roles: ['hr_executive', 'employee'], grade: 'L2' },
   { key: 'payroll', first: 'Sneha', last: 'Patil', dept: 'FIN', designation: 'Payroll Manager', roles: ['payroll_manager', 'employee'], grade: 'L4' },
