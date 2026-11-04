@@ -29,6 +29,8 @@ export interface ReportDef {
   category: 'People' | 'Time & leave' | 'Pay & expenses' | 'Training & competency' | 'Across modules';
   feature?: string;
   access: { all: string[]; team?: string[] };
+  /** Columns needing more than the report itself: a stored snapshot shows them only to readers who pass, today. */
+  columnGuards?: Record<string, { permission: string; feature?: string }>;
   params: ParamDef[];
   check?: (p: Params) => string | null;
   run: (c: ReportCtx, p: Params) => Promise<ReportResult>;
@@ -160,6 +162,7 @@ const joinersLeavers: ReportDef = {
   key: 'joiners_leavers', name: 'Joiners and leavers', category: 'People',
   description: 'Everyone who joined or left in a period, with department, branch and (for HR) the type of separation.',
   access: { all: ['employees.read'] },
+  columnGuards: { separation: { permission: 'lifecycle.read' } },
   params: [fromDate((t) => monthStart(addDays(monthStart(t), -1))), toDate,
     { key: 'event', label: 'Show', type: 'select', default: () => 'all', options: [{ value: 'all', label: 'Joiners and leavers' }, { value: 'joined', label: 'Joiners' }, { value: 'left', label: 'Leavers' }] }],
   check: dateRange(3660),
@@ -406,6 +409,9 @@ const departmentOverview: ReportDef = {
   key: 'department_overview', name: 'Department overview', category: 'Across modules', feature: 'reports.advanced',
   description: 'Headcount, joiners and leavers, attendance, leave, overtime, expenses and payroll cost per department, for one period.',
   access: { all: ['employees.read'] },
+  columnGuards: { attendance_pct: { permission: 'attendance.read', feature: 'attendance' }, leave_days: { permission: 'leave.read', feature: 'leave' },
+    overtime_hours: { permission: 'overtime.read', feature: 'overtime' }, expenses: { permission: 'expenses.read', feature: 'expenses' },
+    payroll_gross: { permission: 'payroll.read', feature: 'payroll' }, employer_cost: { permission: 'payroll.read', feature: 'payroll' } },
   params: [fromDate(monthStart), toDate],
   check: dateRange(366),
   async run(c, p) {

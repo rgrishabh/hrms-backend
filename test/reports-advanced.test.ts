@@ -92,3 +92,56 @@ describe('advanced reporting', () => {
     expect((await mgr.put(`/api/v1/reports/saved/${s}/schedule`, { frequency: 'monthly', dayOfMonth: 1, period: 'last_month' })).statusCode).toBe(200);
   });
 });
+
+describe('F-10 snapshots follow the reader, not the owner', () => {
+  let W: TenantFixture; let exec: Client; let owner: Client; let payrollApp: FastifyInstance;
+  const columns = [{ key: 'department', label: 'Department', type: 'text' }, { key: 'headcount', label: 'Headcount', type: 'int' }, { key: 'leave_days', label: 'Leave days', type: 'number' },
+    { key: 'payroll_gross', label: 'Payroll gross', type: 'money' }, { key: 'employer_cost', label: 'Employer cost', type: 'money' }];
+  const snapshot = async (reportKey: string, cols: unknown[], rows: unknown[], totals: unknown, recipients: string[]) => (await ownerQuery<{ id: string }>(`INSERT INTO report_snapshots (tenant_id, owner_id, report_key, name, params, scope, columns, rows, totals, notes, row_count, recipient_ids, expires_at)
+    VALUES ($1,$2,$3,'Snap','{}','all',$4,$5,$6,'[]',$7,$8, now() + interval '1 day') RETURNING id`, [W.id, W.users.payroll!.id, reportKey, JSON.stringify(cols), JSON.stringify(rows), JSON.stringify(totals), rows.length, recipients]))[0]!.id;
+
+  beforeAll(async () => {
+    payrollApp = await makeApp({ ENABLED_MODULES: 'default,payroll,reports.advanced' });
+    W = await createTenant();
+    const [u] = await ownerQuery<{ id: string }>(`INSERT INTO users (tenant_id, email, display_name, password_hash) SELECT tenant_id, $2, 'exec', password_hash FROM users WHERE id=$1 RETURNING id`, [W.users.hr!.id, `exec@${W.host}`]);
+    await ownerQuery(`INSERT INTO user_roles (user_id, tenant_id, role_key) VALUES ($1,$2,'hr_executive')`, [u!.id, W.id]);
+    W.users.exec = { id: u!.id, email: `exec@${W.host}` };
+    exec = await Client.login(payrollApp, W.host, `exec@${W.host}`);
+    owner = await Client.login(payrollApp, W.host, W.users.payroll!.email);
+  });
+  afterAll(async () => { await payrollApp.close(); });
+
+  const body = [{ department: 'Lab', headcount: 4, leave_days: 2, payroll_gross: 100000, employer_cost: 120000 }];
+  const totals = { department: 'All departments', headcount: 4, leave_days: 2, payroll_gross: 100000, employer_cost: 120000 };
+
+  it('a recipient without payroll.read gets no payroll columns, in the view or the export', async () => {
+    const id = await snapshot('department_overview', columns, body, totals, [W.users.payroll!.id, W.users.exec!.id]);
+    const r = await exec.get(`/api/v1/reports/snapshots/${id}`);
+    expect(r.statusCode, r.body).toBe(200);
+    expect(r.json().columns.map((c: { key: string }) => c.key)).not.toContain('payroll_gross');
+    expect(JSON.stringify(r.json().rows) + JSON.stringify(r.json().totals)).not.toMatch(/100000|120000/);
+    expect(r.json().rows[0].headcount).toBe(4);
+    expect(r.json().notes.join(' ')).toMatch(/Payroll gross/);
+    const csv = await exec.get(`/api/v1/reports/snapshots/${id}/export.csv`);
+    expect(csv.body).not.toMatch(/100000|Payroll gross/);
+  });
+
+  it('a recipient with payroll.read still sees them', async () => {
+    const id = await snapshot('department_overview', columns, body, totals, [W.users.payroll!.id]);
+    const r = (await owner.get(`/api/v1/reports/snapshots/${id}`)).json();
+    expect(r.rows[0].payroll_gross).toBe(100000);
+  });
+
+  it('a snapshot is unavailable once its module is off, and module columns go with it', async () => {
+    const off = await makeApp({ ENABLED_MODULES: 'default,reports.advanced' });
+    const c = await Client.login(off, W.host, W.users.payroll!.email);
+    const whole = await snapshot('payroll_cost', [{ key: 'gross', label: 'Gross', type: 'money' }], [{ gross: 1 }], null, [W.users.payroll!.id]);
+    expect((await c.get(`/api/v1/reports/snapshots/${whole}`)).statusCode).toBe(403);
+    const partial = await snapshot('department_overview', columns, body, totals, [W.users.payroll!.id]);
+    const r = await c.get(`/api/v1/reports/snapshots/${partial}`);
+    expect(r.statusCode).toBe(200);
+    expect(JSON.stringify(r.json().rows)).not.toContain('100000');
+    await off.close();
+    await makeApp().then((x) => x.close());
+  });
+});

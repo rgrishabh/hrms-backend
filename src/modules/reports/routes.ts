@@ -9,7 +9,7 @@ import { Uuid } from '../../core/http/pagination.js';
 import { evaluateFeatures } from '../../core/features/state.js';
 import { orgToday } from '../competency/service.js';
 import { REPORTS, REPORT_MAP, type Column, type Row } from './registry.js';
-import { runReport, scopeOf, viewerOf, nextRun, type Viewer } from './service.js';
+import { runReport, scopeOf, snapshotForReader, viewerOf, nextRun, type Viewer } from './service.js';
 import type { Db } from '../../db/tx.js';
 
 /** Permissions that can open at least one report (the UI shows the Reports menu for these). */
@@ -183,7 +183,9 @@ export async function reportRoutes(app: FastifyInstance) {
       if (!s || !def) throw notFound('Report not found');
       const mine = scopeOf(def, viewer(a));
       if (!mine || (s.scope === 'all' && mine !== 'all')) throw notFound('Report not found');
-      return s;
+      if (def.feature) await requireFeature(db, a.tenantId, def.feature);
+      const features = await evaluateFeatures(db, a.tenantId);
+      return snapshotForReader(def, s, a.has, (f) => !!features.get(f)?.usable);
     });
   }
   app.get('/snapshots/:id', async (req) => {

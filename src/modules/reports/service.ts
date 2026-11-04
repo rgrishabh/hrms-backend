@@ -7,7 +7,7 @@ import { notifyUsers } from '../../core/notify/service.js';
 import { orgToday } from '../competency/service.js';
 import { teamEmployeeIds } from '../attendance/service.js';
 import { addDays } from '../attendance/time.js';
-import { MAX_ROWS, REPORT_MAP, resolveParams, type ReportDef, type ReportResult, type Params } from './registry.js';
+import { MAX_ROWS, REPORT_MAP, resolveParams, type Column, type ReportDef, type ReportResult, type Params, type Row } from './registry.js';
 
 export interface Viewer { userId: string; employeeId: string | null; has: (p: string) => boolean }
 
@@ -37,6 +37,18 @@ export async function runReport(db: Db, tenantId: string, key: string, rawParams
   if (scope === 'team') out.notes.unshift('Your reporting team only.');
   if (truncated) out.notes.unshift(`Only the first ${MAX_ROWS} rows are shown; narrow the period or filters.`);
   return { def, scope, params, today, truncated, ...out };
+}
+
+/**
+ * A stored snapshot as this reader may see it. It was generated with its owner's access, so columns the reader could not
+ * have run for themselves, or whose module is now off, are removed from the columns, rows and totals.
+ */
+export function snapshotForReader<S extends { columns: Column[]; rows: Row[]; totals: Row | null; notes: string[] }>(def: ReportDef, s: S, has: (p: string) => boolean, usable: (f: string) => boolean): S {
+  const hidden = s.columns.filter((c) => { const g = def.columnGuards?.[c.key]; return g && (!has(g.permission) || (g.feature && !usable(g.feature))); });
+  if (!hidden.length) return s;
+  const keep = (r: Row) => Object.fromEntries(Object.entries(r).filter(([k]) => !hidden.some((c) => c.key === k))) as Row;
+  return { ...s, columns: s.columns.filter((c) => !hidden.includes(c)), rows: s.rows.map(keep), totals: s.totals && keep(s.totals),
+    notes: [...s.notes, `Not shown (module not in use, or not visible to you): ${hidden.map((c) => c.label).join(', ')}.`] };
 }
 
 /** The viewer as of now: active user, current roles (a schedule never outlives its owner's access). */
