@@ -210,6 +210,7 @@ export async function recruitmentRoutes(app: FastifyInstance) {
     return a.tx(async (db) => {
       await requireFeature(db, a.tenantId, FEATURE);
       const r = await loadRequisition(db, a, id, true);
+      if (!a.has('recruitment.manage') && r.created_by !== a.user.userId) throw forbidden('Only the requester or HR can submit this requisition');
       if (!['draft', 'rejected'].includes(r.status)) throw conflict(`A ${r.status} requisition cannot be submitted`);
       await db.query(`UPDATE job_requisitions SET status='pending', version=version+1 WHERE tenant_id=$1 AND id=$2`, [a.tenantId, id]);
       const approvalId = await createApprovalRequest(db, a.tenantId, { entityType: 'job_requisition', entityId: id, requesterId: a.user.userId,
@@ -561,6 +562,7 @@ export async function recruitmentRoutes(app: FastifyInstance) {
       await requireFeature(db, a.tenantId, FEATURE);
       const ap = await loadApplication(db, a, id, true);
       if (ap.stage !== 'offer') throw conflict('Move the application to the offer stage first');
+      if (ap.req_status !== 'approved') throw conflict('The requisition is not open');
       if (b.joiningDate < await orgToday(db, a.tenantId)) throw badRequest('Joining date cannot be in the past');
       await checkOrgRefs(db, a.tenantId, b);
       const above = await offerBudgetFlag(db, a.tenantId, ap.requisition_id, b.annualCtc);
@@ -606,6 +608,7 @@ export async function recruitmentRoutes(app: FastifyInstance) {
       await requireFeature(db, a.tenantId, FEATURE);
       const { o, ap } = await loadOffer(db, a, id);
       if (!['draft', 'rejected'].includes(o.status)) throw conflict(`A ${o.status} offer cannot be submitted`);
+      if (ap.req_status !== 'approved') throw conflict('The requisition is not open');
       const cand = (await db.query<{ first_name: string; last_name: string | null }>('SELECT first_name, last_name FROM candidates WHERE tenant_id=$1 AND id=$2', [a.tenantId, ap.candidate_id])).rows[0]!;
       await db.query(`UPDATE job_offers SET status='pending' WHERE tenant_id=$1 AND id=$2`, [a.tenantId, id]);
       // The summary goes into notifications and email: no compensation figures in it.
@@ -647,7 +650,8 @@ export async function recruitmentRoutes(app: FastifyInstance) {
       const off = (await db.query<{ legal_entity_id: string; branch_id: string; department_id: string | null; employment_type: string; joining_date: string; probation_months: number | null; contract_end_date: string | null }>(
         `SELECT legal_entity_id, branch_id, department_id, employment_type, joining_date::text, probation_months, contract_end_date::text FROM job_offers WHERE tenant_id=$1 AND id=$2`, [a.tenantId, id])).rows[0]!;
       const cand = (await db.query<{ first_name: string; last_name: string | null; phone: string | null }>('SELECT first_name, last_name, phone FROM candidates WHERE tenant_id=$1 AND id=$2', [a.tenantId, ap.candidate_id])).rows[0]!;
-      const req0 = (await db.query<{ hiring_manager_id: string | null; positions: number; filled: number }>('SELECT hiring_manager_id, positions, filled FROM job_requisitions WHERE tenant_id=$1 AND id=$2 FOR UPDATE', [a.tenantId, ap.requisition_id])).rows[0]!;
+      const req0 = (await db.query<{ hiring_manager_id: string | null; positions: number; filled: number; status: string }>('SELECT hiring_manager_id, positions, filled, status FROM job_requisitions WHERE tenant_id=$1 AND id=$2 FOR UPDATE', [a.tenantId, ap.requisition_id])).rows[0]!;
+      if (req0.status !== 'approved') throw conflict('The requisition is not open');
       if (req0.filled >= req0.positions) throw conflict('All positions of this requisition are already filled');
       const probationEnd = off.probation_months ? (await db.query<{ d: string }>(`SELECT ($1::date + make_interval(months => $2))::date::text AS d`, [off.joining_date, off.probation_months])).rows[0]!.d : undefined;
       const input = EmployeeInput.parse({

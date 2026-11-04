@@ -129,3 +129,30 @@ describe('bulk import', () => {
     expect((await ownerQuery(`SELECT 1 FROM employees WHERE tenant_id=$1 AND employee_code='M20'`, [T.id])).length).toBe(0);
   });
 });
+
+describe('PATCH status guard (AUDIT 4.2)', () => {
+  const load = async (id: string) => (await hr.get(`/api/v1/employees/${id}`)).json();
+  it('exit through PATCH needs a date, which stops pay and ends the login', async () => {
+    const id = T.users.other!.employeeId!;
+    const version = (await load(id)).version as number;
+    const none = await hr.patch(`/api/v1/employees/${id}`, { changes: { status: 'exited' }, expectedVersion: version });
+    expect(none.statusCode).toBe(400);
+    expect(none.json().error.message).toMatch(/exit date/i);
+    const before = await hr.patch(`/api/v1/employees/${id}`, { changes: { status: 'exited' }, exitDate: '2000-01-01', expectedVersion: version });
+    expect(before.statusCode).toBe(400);
+    const c = await Client.login(app, T.host, T.users.other!.email);
+    const ok = await hr.patch(`/api/v1/employees/${id}`, { changes: { status: 'exited' }, exitDate: '2026-01-31', expectedVersion: version });
+    expect(ok.statusCode, ok.body).toBe(200);
+    const [row] = await ownerQuery<{ exit_date: string; status: string }>(`SELECT exit_date::text, status FROM employees WHERE id=$1`, [id]);
+    expect(row).toEqual({ exit_date: '2026-01-31', status: 'exited' });
+    const [u] = await ownerQuery<{ status: string }>(`SELECT status FROM users WHERE id=$1`, [T.users.other!.id]);
+    expect(u!.status).toBe('disabled');
+    expect((await c.get('/api/v1/auth/me')).statusCode).toBe(401);
+  });
+
+  it('an exit date cannot be set without the exit', async () => {
+    const id = T.users.manager!.employeeId!;
+    const version = (await load(id)).version as number;
+    expect((await hr.patch(`/api/v1/employees/${id}`, { changes: { designation: 'Lead' }, exitDate: '2026-01-31', expectedVersion: version })).statusCode).toBe(400);
+  });
+});

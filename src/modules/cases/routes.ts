@@ -25,6 +25,11 @@ const ref = (kind: Kind, n: number) => `${kind === 'posh' ? 'IC' : 'GR'}-${Strin
 async function isCommittee(db: Db, tenantId: string, userId: string) {
   return ((await db.query('SELECT 1 FROM posh_committee_members WHERE tenant_id=$1 AND user_id=$2', [tenantId, userId])).rowCount ?? 0) > 0;
 }
+async function userOfEmployee(db: Db, tenantId: string, employeeId: string | null | undefined) {
+  if (!employeeId) return null;
+  return (await db.query<{ user_id: string | null }>('SELECT user_id FROM employees WHERE tenant_id=$1 AND id=$2', [tenantId, employeeId])).rows[0]?.user_id ?? null;
+}
+
 async function committeeUsers(db: Db, tenantId: string) {
   return (await db.query<{ user_id: string }>('SELECT user_id FROM posh_committee_members WHERE tenant_id=$1', [tenantId])).rows.map((r) => r.user_id);
 }
@@ -138,7 +143,8 @@ export async function caseRoutes(app: FastifyInstance) {
         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15) RETURNING id`,
         [a.tenantId, b.kind, n, b.category, b.anonymous ? null : a.user.employeeId, a.user.userId, b.anonymous, b.respondentEmployeeId, enc(b.respondentText), b.incidentDate,
           enc(b.description), enc(late ? b.lateReason : null), b.kind === 'posh' ? 'received' : 'open', b.kind === 'posh' ? addDays(today, 90) : null, sla])).rows[0]!.id;
-      const to = b.kind === 'posh' ? await committeeUsers(db, a.tenantId) : await usersWithPermission(db, a.tenantId, 'grievance.manage');
+      const respondentUser = await userOfEmployee(db, a.tenantId, b.respondentEmployeeId);
+      const to = (b.kind === 'posh' ? await committeeUsers(db, a.tenantId) : await usersWithPermission(db, a.tenantId, 'grievance.manage')).filter((u) => u !== respondentUser);
       // Notifications (and email) carry no names or details.
       await notifyUsers(db, a.tenantId, to.filter((u) => u !== a.user.userId), { kind: `cases.${b.kind}`, title: `New ${b.kind === 'posh' ? 'POSH complaint' : 'grievance'} ${ref(b.kind, n)}`,
         body: 'Open HRMS to view it. Keep it confidential.', link: `/cases?case=${id}`, actionLabel: 'Open case' });
@@ -242,10 +248,12 @@ export async function caseRoutes(app: FastifyInstance) {
     return a.tx(async (db) => {
       const { c } = await loadCase(db, a, id, true);
       if (c.kind !== 'grievance') throw badRequest('POSH complaints are handled by the Internal Committee');
-      if (userId === c.complainant_user) throw badRequest('The complainant cannot handle their own grievance');
+      // One message for every party: naming the reason would tell a handler trying IDs who filed an anonymous grievance.
+      const NOT_ASSIGNABLE = 'This person cannot be assigned to this grievance';
+      if (userId === c.complainant_user) throw badRequest(NOT_ASSIGNABLE);
       const u = (await db.query<{ employee_id: string | null }>(`SELECT e.id AS employee_id FROM users u LEFT JOIN employees e ON e.tenant_id=u.tenant_id AND e.user_id=u.id WHERE u.tenant_id=$1 AND u.id=$2 AND u.status='active'`, [a.tenantId, userId])).rows[0];
       if (!u) throw badRequest('Unknown user');
-      if (u.employee_id && u.employee_id === c.respondent_id) throw badRequest('The respondent cannot handle the grievance');
+      if (u.employee_id && u.employee_id === c.respondent_id) throw badRequest(NOT_ASSIGNABLE);
       await db.query(`UPDATE cases SET assignee_user=$3, status=CASE WHEN status='open' THEN 'in_progress' ELSE status END, version=version+1 WHERE tenant_id=$1 AND id=$2`, [a.tenantId, id, userId]);
       await db.query(`INSERT INTO case_events (tenant_id, case_id, type, actor_user) VALUES ($1,$2,'assignment',$3)`, [a.tenantId, id, a.user.userId]);
       await notifyUsers(db, a.tenantId, [userId], { kind: 'cases.assigned', title: `Grievance ${ref(c.kind, c.number)} assigned to you`, body: 'Keep it confidential.', link: `/cases?case=${id}`, actionLabel: 'Open' });
@@ -291,19 +299,21 @@ export async function caseRoutes(app: FastifyInstance) {
 /** Daily: POSH inquiry/report due in 7 days or overdue → IC; grievances past their response target → handlers. */
 export async function caseDeadlines(db: Db, tenantId: string, today: string) {
   let reminders = 0;
-  const posh = (await db.query<{ id: string; number: number; due: string; what: string }>(`SELECT id, number, CASE WHEN status='report_submitted' THEN report_due ELSE inquiry_due END::text AS due,
+  const posh = (await db.query<{ id: string; number: number; due: string; what: string; respondent_id: string | null }>(`SELECT id, number, respondent_id, CASE WHEN status='report_submitted' THEN report_due ELSE inquiry_due END::text AS due,
       CASE WHEN status='report_submitted' THEN 'report' ELSE 'inquiry' END AS what
     FROM cases WHERE tenant_id=$1 AND kind='posh' AND status IN ('received','conciliation','inquiry','report_submitted')
       AND (CASE WHEN status='report_submitted' THEN report_due ELSE inquiry_due END) - $2::date IN (7, 0, -7, -14, -21, -28)`, [tenantId, today])).rows;
   const ic = posh.length ? await committeeUsers(db, tenantId) : [];
   for (const c of posh) {
-    const r = await notifyUsers(db, tenantId, ic, { kind: 'cases.deadline', title: `${ref('posh', c.number)}: ${c.what} due ${c.due}`, body: 'Statutory timeline under the POSH Act.', link: `/cases?case=${c.id}`, dedupeKey: `posh:${c.id}:${c.what}:${today}` });
+    const respondent = await userOfEmployee(db, tenantId, c.respondent_id);
+    const r = await notifyUsers(db, tenantId, ic.filter((u) => u !== respondent), { kind: 'cases.deadline', title: `${ref('posh', c.number)}: ${c.what} due ${c.due}`, body: 'Statutory timeline under the POSH Act.', link: `/cases?case=${c.id}`, dedupeKey: `posh:${c.id}:${c.what}:${today}` });
     reminders += r.inApp;
   }
-  const gr = (await db.query<{ id: string; number: number; assignee_user: string | null }>(`SELECT id, number, assignee_user FROM cases WHERE tenant_id=$1 AND kind='grievance'
+  const gr = (await db.query<{ id: string; number: number; assignee_user: string | null; respondent_id: string | null }>(`SELECT id, number, assignee_user, respondent_id FROM cases WHERE tenant_id=$1 AND kind='grievance'
     AND status IN ('open','in_progress','reopened') AND sla_due < $2::date AND ($2::date - sla_due) % 7 = 1`, [tenantId, today])).rows;
   for (const g of gr) {
-    const to = g.assignee_user ? [g.assignee_user] : await usersWithPermission(db, tenantId, 'grievance.manage');
+    const respondent = await userOfEmployee(db, tenantId, g.respondent_id);
+    const to = (g.assignee_user ? [g.assignee_user] : await usersWithPermission(db, tenantId, 'grievance.manage')).filter((u) => u !== respondent);
     const r = await notifyUsers(db, tenantId, to, { kind: 'cases.overdue', title: `Grievance ${ref('grievance', g.number)} is past its response target`, body: 'Respond to the employee or update the case.', link: `/cases?case=${g.id}`, dedupeKey: `gr:${g.id}:${today}` });
     reminders += r.inApp;
   }

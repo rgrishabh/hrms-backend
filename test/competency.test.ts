@@ -174,6 +174,18 @@ describe('technical authorization', () => {
   });
 });
 
+describe('exited staff', () => {
+  it('an authorization does not hold for someone who has left', async () => {
+    const exitedReason = (r: { reasons: string[] }) => r.reasons.some((x) => /no longer employed/i.test(x));
+    const first = await check(qm, empId); expect(first.statusCode, first.body).toBe(200); expect(exitedReason(first.json())).toBe(false);
+    await ownerQuery(`UPDATE employees SET status='exited', exit_date=$2 WHERE id=$1`, [empId, addDays(today, -1)]);
+    const r = (await check(qm, empId)).json();
+    expect(r.authorized).toBe(false);
+    expect(exitedReason(r)).toBe(true);
+    await ownerQuery(`UPDATE employees SET status='active', exit_date=NULL WHERE id=$1`, [empId]);
+  });
+});
+
 describe('module switch', () => {
   it('is unavailable when not enabled', async () => {
     const off = await makeApp({ ENABLED_MODULES: 'default' });

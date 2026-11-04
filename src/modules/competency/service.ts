@@ -57,6 +57,8 @@ export async function checkAuthorization(db: Db, tenantId: string, employeeId: s
     `SELECT id, status, valid_from::text, review_due::text FROM lab_authorizations WHERE tenant_id=$1 AND employee_id=$2 AND method_id=$3 AND activity=$4
        AND status IN ('authorized','suspended')`, [tenantId, employeeId, methodId, activity])).rows[0];
   const reasons: string[] = [];
+  const emp = (await db.query<{ status: string; exit_date: string | null }>('SELECT status, exit_date::text FROM employees WHERE tenant_id=$1 AND id=$2', [tenantId, employeeId])).rows[0];
+  if (!emp || ['exited', 'inactive'].includes(emp.status) || (emp.exit_date && emp.exit_date < today)) reasons.push('Employee is no longer employed');
   if (!a) reasons.push('No technical authorization for this method and activity');
   else {
     if (a.status === 'suspended') reasons.push('Authorization is suspended');

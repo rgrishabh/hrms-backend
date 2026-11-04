@@ -3,7 +3,8 @@ import { z } from 'zod';
 import { tenantActor, tenantActorAny } from '../../core/http/context.js';
 import { audit } from '../../core/audit/audit.js';
 import { badRequest, conflict, forbidden, notFound } from '../../core/http/errors.js';
-import { PageQuery, offsetOf, paged, Uuid } from '../../core/http/pagination.js';
+import { IsoDate, PageQuery, offsetOf, paged, Uuid } from '../../core/http/pagination.js';
+import { endAccess } from '../lifecycle/service.js';
 import {
   EmployeeInput, COLS, DIRECTORY_SELECT, FULL_SELECT, FROM_JOINS, EMPLOYEE_STATUSES,
   insertEmployee, validateReferences, findDuplicates,
@@ -101,7 +102,7 @@ export async function employeeRoutes(app: FastifyInstance) {
   app.patch('/:id', async (req) => {
     const a = tenantActor(req, 'employees.manage');
     const { id } = z.object({ id: Uuid }).parse(req.params);
-    const body = z.object({ changes: z.record(z.string(), z.unknown()), expectedVersion: z.number().int() }).parse(req.body);
+    const body = z.object({ changes: z.record(z.string(), z.unknown()), expectedVersion: z.number().int(), exitDate: IsoDate.optional() }).parse(req.body);
     return a.tx(async (db) => {
       const cur = await db.query(`SELECT * FROM employees WHERE tenant_id=$1 AND id=$2 FOR UPDATE`, [a.tenantId, id]);
       const row = cur.rows[0];
@@ -114,6 +115,11 @@ export async function employeeRoutes(app: FastifyInstance) {
       const next = EmployeeInput.parse({ ...currentInput, ...body.changes });
       await validateReferences(db, a.tenantId, next, id);
       const changed = (Object.keys(COLS) as (keyof typeof COLS)[]).filter((k) => (next[k] ?? null) !== (currentInput[k] ?? null));
+      // Marking someone exited outside the separation flow still has to stop their pay and end their login.
+      const exiting = changed.includes('status') && next.status === 'exited';
+      if (exiting && !body.exitDate) throw badRequest('Marking an employee as exited needs an exit date');
+      if (!exiting && body.exitDate) throw badRequest('An exit date goes with changing the status to exited');
+      if (body.exitDate && body.exitDate < next.dateOfJoining) throw badRequest('The exit date cannot be before the date of joining');
       if (!changed.length) return { ok: true, version: row.version, changed: [] };
       if (changed.includes('workEmail') || changed.includes('phone')) {
         const d = await findDuplicates(db, a.tenantId, { workEmail: next.workEmail, phone: next.phone }, id);
@@ -122,8 +128,14 @@ export async function employeeRoutes(app: FastifyInstance) {
       const sets = changed.map((k, i) => `${COLS[k]}=$${i + 3}`).join(', ');
       const r = await db.query<{ version: number }>(`UPDATE employees SET ${sets}, version=version+1, updated_at=now() WHERE tenant_id=$1 AND id=$2 RETURNING version`,
         [a.tenantId, id, ...changed.map((k) => next[k] ?? null)]);
+      if (exiting) {
+        await db.query('UPDATE employees SET exit_date=$3 WHERE tenant_id=$1 AND id=$2', [a.tenantId, id, body.exitDate]);
+        await endAccess(db, a.tenantId, id);
+      } else if (changed.includes('status') && currentInput.status === 'exited') {
+        await db.query('UPDATE employees SET exit_date=NULL WHERE tenant_id=$1 AND id=$2', [a.tenantId, id]);
+      }
       await audit(db, { ...a.auditBase, action: 'employee.updated', targetType: 'employee', targetId: id,
-        metadata: { changes: Object.fromEntries(changed.map((k) => [k, { from: currentInput[k] ?? null, to: next[k] ?? null }])) } });
+        metadata: { changes: Object.fromEntries(changed.map((k) => [k, { from: currentInput[k] ?? null, to: next[k] ?? null }])), ...(exiting ? { exitDate: body.exitDate } : {}) } });
       return { ok: true, version: r.rows[0]!.version, changed };
     });
   });

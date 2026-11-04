@@ -5,16 +5,15 @@ import { tenantActor, tenantActorAny, requireFeature, type TenantActor, gateFeat
 import { audit } from '../../core/audit/audit.js';
 import { badRequest, conflict, forbidden, notFound } from '../../core/http/errors.js';
 import { IsoDate, PageQuery, offsetOf, paged, Uuid } from '../../core/http/pagination.js';
-import { createApprovalRequest, registerApprovalHandler, cancelRequest, reassignStepsOf, type StepSpec } from '../../core/workflow/engine.js';
+import { createApprovalRequest, registerApprovalHandler, cancelRequest, type StepSpec } from '../../core/workflow/engine.js';
 import { notifyUsers, usersWithPermission } from '../../core/notify/service.js';
 import { getSettingValue } from '../../core/settings/service.js';
-import { revokeAllSessionsForUser } from '../../core/auth/session.js';
 import { orgToday } from '../competency/service.js';
 import { daysBetween } from '../attendance/time.js';
 import type { Db } from '../../db/tx.js';
 import { openAssets } from '../assets/routes.js';
 import { balancesAt } from '../leave/service.js';
-import { OWNERS, OWNER_PERMISSION, type Owner, canActOnTask, createChecklist, featureOn, loadEmp, maybeCompleteChecklist, taskAssignees } from './service.js';
+import { endAccess, OWNERS, OWNER_PERMISSION, type Owner, canActOnTask, createChecklist, featureOn, loadEmp, maybeCompleteChecklist, taskAssignees } from './service.js';
 
 const ON = 'core.onboarding';
 const OFF = 'core.offboarding';
@@ -26,16 +25,6 @@ const TemplateBody = z.object({
   tasks: z.array(z.object({ title: z.string().trim().min(2).max(200), description: Text(1000), owner: z.enum(OWNERS), offsetDays: z.number().int().min(-90).max(180).default(0) })).min(1).max(60),
 });
 const SEPARATION_KINDS = ['resignation', 'termination', 'retirement', 'contract_end', 'death', 'absconding', 'mutual'] as const;
-
-/** Ends a person's access: disables the login and revokes every session. */
-async function endAccess(db: Db, tenantId: string, employeeId: string) {
-  const u = (await db.query<{ user_id: string | null }>('SELECT user_id FROM employees WHERE tenant_id=$1 AND id=$2', [tenantId, employeeId])).rows[0]?.user_id;
-  if (!u) return false;
-  await db.query(`UPDATE users SET status='disabled', updated_at=now() WHERE tenant_id=$1 AND id=$2 AND status <> 'disabled'`, [tenantId, u]);
-  await revokeAllSessionsForUser(db, u);
-  await reassignStepsOf(db, tenantId, u);
-  return true;
-}
 
 export async function lifecycleRoutes(app: FastifyInstance) {
   gateFeatures(app, ON, OFF);

@@ -1,3 +1,5 @@
+import { revokeAllSessionsForUser } from '../../core/auth/session.js';
+import { reassignStepsOf } from '../../core/workflow/engine.js';
 import type { Db } from '../../db/tx.js';
 import { assertFeatureUsable } from '../../core/features/state.js';
 import { usersWithPermission, notifyUsers } from '../../core/notify/service.js';
@@ -56,4 +58,14 @@ export async function createChecklist(db: Db, tenantId: string, p: { kind: 'onbo
 export async function maybeCompleteChecklist(db: Db, tenantId: string, checklistId: string) {
   await db.query(`UPDATE checklists c SET status='completed', completed_at=now() WHERE c.tenant_id=$1 AND c.id=$2 AND c.status='open'
     AND NOT EXISTS (SELECT 1 FROM checklist_tasks t WHERE t.tenant_id=c.tenant_id AND t.checklist_id=c.id AND t.status='pending')`, [tenantId, checklistId]);
+}
+
+/** Ends a person's access: disables the login, revokes every session and hands over approvals waiting on them. */
+export async function endAccess(db: Db, tenantId: string, employeeId: string) {
+  const u = (await db.query<{ user_id: string | null }>('SELECT user_id FROM employees WHERE tenant_id=$1 AND id=$2', [tenantId, employeeId])).rows[0]?.user_id;
+  if (!u) return false;
+  await db.query(`UPDATE users SET status='disabled', updated_at=now() WHERE tenant_id=$1 AND id=$2 AND status <> 'disabled'`, [tenantId, u]);
+  await revokeAllSessionsForUser(db, u);
+  await reassignStepsOf(db, tenantId, u);
+  return true;
 }
