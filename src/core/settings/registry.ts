@@ -77,6 +77,16 @@ export const SETTINGS: readonly SettingDefinition[] = [
   def({ key: 'overtime.comp_off_day_minutes', group: 'attendance', feature: 'overtime', label: 'Compensatory off: overtime minutes per day off', description: 'Overtime worth one day off; half of it earns half a day. Smaller claims cannot be taken as compensatory off.',
     control: 'number', schema: z.number().int().min(60).max(1440), default: 480, scopes: ['tenant'], editPermission: 'overtime.manage' }),
 
+  // Field duty.
+  def({ key: 'field_duty.backdate_days', group: 'attendance', feature: 'field_duty', label: 'Field duty: days back a request may start', description: 'Field duty can be recorded after the event up to this many days back (0 = only from today).',
+    control: 'number', schema: z.number().int().min(0).max(60), default: 7, scopes: ['tenant'], editPermission: 'field_duty.manage' }),
+  def({ key: 'field_duty.advance_days', group: 'attendance', feature: 'field_duty', label: 'Field duty: days ahead a request may start', description: 'How far ahead field duty can be planned.',
+    control: 'number', schema: z.number().int().min(1).max(365), default: 90, scopes: ['tenant'], editPermission: 'field_duty.manage' }),
+  def({ key: 'field_duty.max_days', group: 'attendance', feature: 'field_duty', label: 'Field duty: longest request (days)', description: 'Longer assignments are split into several requests.',
+    control: 'number', schema: z.number().int().min(1).max(92), default: 31, scopes: ['tenant'], editPermission: 'field_duty.manage' }),
+  def({ key: 'field_duty.hr_approval', group: 'attendance', feature: 'field_duty', label: 'Field duty: HR approves after the manager', description: 'When off, the reporting manager\'s approval is enough. HR always approves when the employee has no manager with an account.',
+    control: 'boolean', schema: z.boolean(), default: false, scopes: ['tenant'], editPermission: 'field_duty.manage' }),
+
   def({ key: 'leave.year_start_month', group: 'attendance', feature: 'leave', label: 'Leave year starts in', description: 'Month in which the leave year begins (balances, accruals and carry-forward follow this year).',
     control: 'select', options: ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'].map((m, i) => ({ value: String(i + 1), label: m })),
     schema: z.coerce.number().int().min(1).max(12), default: 1, scopes: ['tenant'], editPermission: 'leave.manage' }),

@@ -127,12 +127,16 @@ export async function actOnRequest(db: Db, tenantId: string, requestId: string, 
   return { status: final ?? 'pending' };
 }
 
-export async function cancelRequest(db: Db, tenantId: string, requestId: string, actorId: string, audBase: { requestId: string; ip: string }) {
+/**
+ * Withdraw a pending request. Only its requester, unless the module has already decided the actor may
+ * (`subjectMayWithdraw`: the employee a request was filed for on their behalf).
+ */
+export async function cancelRequest(db: Db, tenantId: string, requestId: string, actorId: string, audBase: { requestId: string; ip: string }, opts: { subjectMayWithdraw?: boolean } = {}) {
   const rq = await db.query<{ entity_type: string; entity_id: string; requester_id: string; status: string }>(
     'SELECT entity_type, entity_id, requester_id, status FROM approval_requests WHERE tenant_id=$1 AND id=$2 FOR UPDATE', [tenantId, requestId]);
   const req = rq.rows[0];
   if (!req) throw notFound('Approval request not found');
-  if (req.requester_id !== actorId) throw forbidden('Only the requester can cancel this request');
+  if (req.requester_id !== actorId && !opts.subjectMayWithdraw) throw forbidden('Only the requester can cancel this request');
   if (req.status !== 'pending') throw conflict(`This request is already ${req.status}`);
   await db.query(`UPDATE approval_requests SET status='cancelled', decided_at=now() WHERE tenant_id=$1 AND id=$2`, [tenantId, requestId]);
   await db.query(`UPDATE approval_steps SET status='skipped' WHERE tenant_id=$1 AND request_id=$2 AND status IN ('waiting','active')`, [tenantId, requestId]);

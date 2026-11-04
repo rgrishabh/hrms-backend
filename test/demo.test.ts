@@ -13,7 +13,7 @@ let app: FastifyInstance; let c: pg.Client;
 let tid: string; let host: string;
 
 beforeAll(async () => {
-  app = await makeApp({ ENABLED_MODULES: 'default,leave,overtime' });
+  app = await makeApp({ ENABLED_MODULES: 'default,leave,overtime,field_duty' });
   c = new pg.Client({ connectionString: TEST_OWNER_URL });
   await c.connect();
   // A bare, freshly bootstrapped organization: domain + one administrator, no employees.
@@ -63,5 +63,14 @@ describe('demo data generator', () => {
     const e = (await analyst.get('/api/v1/overtime/eligible')).json();
     expect(e.items.filter((d: { overtime_minutes: number }) => d.overtime_minutes >= 240).length).toBeGreaterThan(0);
     expect(e.payout).toMatchObject({ pay: false, compOff: { code: 'COMP' } }); // pay rate is the organization's to set
+
+    // field duty: the sampler's site visits are on-duty days without office punches; one visit still to report on; out today
+    const sampler = await Client.login(app, host, `sampler@${host}`, password);
+    const duty = (await sampler.get('/api/v1/field-duty/requests')).json().items;
+    expect(duty.length).toBe(3);
+    expect(duty.every((d: { status: string }) => d.status === 'approved')).toBe(true);
+    expect(duty.filter((d: { outcome: string | null; start_date: string }) => !d.outcome && d.start_date < today)).toHaveLength(1);
+    const days = (await sampler.get(`/api/v1/attendance/me?from=${addDays(today, -16)}&to=${addDays(today, -1)}`)).json().days;
+    expect(days.filter((d: { status: string; punch_count: number }) => d.status === 'on_duty' && d.punch_count === 0).length).toBeGreaterThanOrEqual(2);
   });
 });

@@ -443,7 +443,7 @@ function newDeviceKey() {
 
 async function employeeAttendance(db: Db, tenantId: string, employeeId: string, from: string, to: string) {
   const days = await db.query(`SELECT d.work_date, d.day_type, d.status, d.first_in, d.last_out, d.punch_count, d.worked_minutes, d.late_minutes,
-      d.early_exit_minutes, d.overtime_minutes, d.exceptions, d.locked, d.calc_version, d.leave_fraction, d.leave_type_code, s.code AS shift_code
+      d.early_exit_minutes, d.overtime_minutes, d.exceptions, d.locked, d.calc_version, d.leave_fraction, d.leave_type_code, d.duty_fraction, s.code AS shift_code
     FROM attendance_daily d LEFT JOIN shifts s ON s.tenant_id=d.tenant_id AND s.id=d.shift_id
     WHERE d.tenant_id=$1 AND d.employee_id=$2 AND d.work_date BETWEEN $3 AND $4 ORDER BY d.work_date`, [tenantId, employeeId, from, to]);
   const { tz } = await employeeTimezone(db, tenantId, employeeId);
