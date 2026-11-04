@@ -161,3 +161,30 @@ describe("today's punches on the clock-in card", () => {
     expect(todaysPunches([])).toEqual([]);
   });
 });
+
+describe('calculateDay — field duty (v3)', () => {
+  it('a full day of field duty is on duty, paid, without any punches', () => {
+    const r = calculateDay(day({ duty: { fraction: 1 } }));
+    expect(r).toMatchObject({ status: 'on_duty', dutyFraction: 1, workedMinutes: 0, lateMinutes: 0 });
+  });
+  it('punches on a field-duty day give hours and overtime, never lateness', () => {
+    const r = calculateDay(day({ duty: { fraction: 1 }, overtimeEnabled: true, punches: [p('2026-03-10', '11:15'), p('2026-03-10', '22:15')] }));
+    expect(r).toMatchObject({ status: 'on_duty', lateMinutes: 0, earlyExitMinutes: 0, workedMinutes: 660 - 30, overtimeMinutes: 630 - 540 });
+    expect(r.exceptions).not.toContain('late_arrival');
+  });
+  it('half a day of field duty: the other half must be worked, as with half-day leave', () => {
+    expect(calculateDay(day({ duty: { fraction: 0.5 }, punches: [p('2026-03-10', '13:30'), p('2026-03-10', '18:00')] })).status).toBe('present');
+    expect(calculateDay(day({ duty: { fraction: 0.5 } })).status).toBe('half_day');
+    expect(calculateDay(day({ duty: { fraction: 0.5 }, punches: [p('2026-03-10', '16:00'), p('2026-03-10', '18:00')] })).status).toBe('half_day');
+  });
+  it('half-day leave and half-day field duty cover the day; full-day leave wins over field duty', () => {
+    expect(calculateDay(day({ duty: { fraction: 0.5 }, leave: { fraction: 0.5, code: 'CL' } }))).toMatchObject({ status: 'on_duty', leaveFraction: 0.5, dutyFraction: 0.5 });
+    const r = calculateDay(day({ duty: { fraction: 1 }, leave: { fraction: 1, code: 'SL' } }));
+    expect(r.status).toBe('on_leave');
+    expect(r.exceptions).toContain('duty_on_leave');
+  });
+  it('field duty on a weekly off does not change the day; work there is overtime as usual', () => {
+    const r = calculateDay(day({ dayType: 'weekly_off', duty: { fraction: 1 }, overtimeEnabled: true, punches: [p('2026-03-10', '09:00'), p('2026-03-10', '13:00')] }));
+    expect(r).toMatchObject({ status: 'weekly_off', overtimeMinutes: 240 - 30 });
+  });
+});

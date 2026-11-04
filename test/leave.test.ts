@@ -2,6 +2,7 @@ import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import type { FastifyInstance } from 'fastify';
 import { makeApp, createTenant, Client, ownerQuery, type TenantFixture } from './helpers.js';
 import { addDays, localDate, weekday } from '../src/modules/attendance/time.js';
+import { CALC_VERSION } from '../src/modules/attendance/calc.js';
 
 const today = () => localDate(new Date(), 'Asia/Kolkata');
 /** A Monday at least `minAhead` days ahead whose whole week (Mon–Sun) is in one calendar year. */
@@ -170,7 +171,7 @@ describe('attendance integration', () => {
       `SELECT work_date, status, leave_fraction, leave_type_code, calc_version FROM attendance_daily WHERE employee_id=$1 AND work_date = ANY($2) ORDER BY work_date`,
       [T.users.employee!.employeeId, [day1, day2]]);
     const byDate = Object.fromEntries(rows.map((r) => [r.work_date, r]));
-    expect(byDate[day1]).toMatchObject({ status: 'on_leave', leave_fraction: '1.00', leave_type_code: 'CL', calc_version: 2 });
+    expect(byDate[day1]).toMatchObject({ status: 'on_leave', leave_fraction: '1.00', leave_type_code: 'CL', calc_version: CALC_VERSION });
     expect(byDate[day2]).toMatchObject({ status: 'present', leave_fraction: '0.50' });
   });
 

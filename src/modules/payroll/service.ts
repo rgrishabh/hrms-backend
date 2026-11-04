@@ -23,7 +23,8 @@ async function rule(db: Db, tenantId: string, kind: RuleKind, scope: string, at:
 
 /**
  * Loss-of-pay days from calculated attendance within [from, to]:
- * absent 1; missing punch 1 (setting) ; half day 0.5 unless the other half is paid leave; unpaid leave its fraction.
+ * absent 1; missing punch 1 (setting) ; half day 0.5 unless the other half is paid leave; unpaid leave its fraction,
+ * also on a day otherwise worked or on field duty. Field duty (on_duty) is paid.
  * Days without a calculated row are paid but reported.
  */
 export async function lossOfPay(db: Db, tenantId: string, employeeId: string, from: string, to: string) {
@@ -38,6 +39,8 @@ export async function lossOfPay(db: Db, tenantId: string, employeeId: string, fr
     else if (r.status === 'missing_punch') { missingPunch++; if (missingIsLop) lop += 1; }
     else if (r.status === 'half_day') lop += lf > 0 && r.paid !== false ? 0 : 0.5;
     else if (r.status === 'on_leave' && r.paid === false) lop += lf || 1;
+    // A worked (or on-duty) day that includes half a day of unpaid leave loses that half.
+    else if ((r.status === 'present' || r.status === 'on_duty') && lf > 0 && r.paid === false) lop += lf;
   }
   return { lop, missingPunch, uncalculated: Math.max(0, daysBetween(from, to) + 1 - rows.length) };
 }

@@ -24,8 +24,14 @@ import { zonedToInstant, addDays, minutesBetween } from './time.js';
  *    flag `worked_on_leave`). Half-day leave → the other half must be worked:
  *    worked ≥ half-day minimum → `present`, otherwise `half_day`. Leave on a
  *    weekly off / holiday does not change the day status.
+ *  - (v3) Approved field duty on a working day: when field duty (with any half-day
+ *    leave) covers the whole day → `on_duty`, paid, with or without punches; punches
+ *    still give worked minutes and overtime, never lateness. Half-day field duty →
+ *    the other half must be worked, exactly as with half-day leave. Full-day leave
+ *    takes precedence (`duty_on_leave`). Field duty on a weekly off / holiday does
+ *    not change the day: work there is overtime as usual.
  */
-export const CALC_VERSION = 2;
+export const CALC_VERSION = 3;
 
 export interface ShiftPolicy {
   id: string;
@@ -53,9 +59,11 @@ export interface DayInput {
   overtimeEnabled: boolean;
   /** Approved leave covering this date (fraction 0.5 or 1). */
   leave?: { fraction: number; code: string } | null;
+  /** Approved field duty covering this date (fraction 0.5 or 1). */
+  duty?: { fraction: number } | null;
 }
 
-export type DayStatus = 'present' | 'half_day' | 'absent' | 'missing_punch' | 'weekly_off' | 'holiday' | 'not_joined' | 'on_leave';
+export type DayStatus = 'present' | 'half_day' | 'absent' | 'missing_punch' | 'weekly_off' | 'holiday' | 'not_joined' | 'on_leave' | 'on_duty';
 
 export interface DayResult {
   workDate: string;
@@ -73,6 +81,7 @@ export interface DayResult {
   usedPunchIds: string[];
   leaveFraction: number;
   leaveTypeCode: string | null;
+  dutyFraction: number;
 }
 
 export function shiftWindow(workDate: string, tz: string, shift: ShiftPolicy | null) {
@@ -88,7 +97,7 @@ export function calculateDay(input: DayInput): DayResult {
   const base: DayResult = {
     workDate, shiftId: shift?.id ?? null, dayType, status: 'absent', firstIn: null, lastOut: null, punchCount: 0,
     workedMinutes: 0, lateMinutes: 0, earlyExitMinutes: 0, overtimeMinutes: 0, exceptions: [], usedPunchIds: [],
-    leaveFraction: 0, leaveTypeCode: null,
+    leaveFraction: 0, leaveTypeCode: null, dutyFraction: 0,
   };
   if (workDate < input.employment.joiningDate || (input.employment.exitDate && workDate > input.employment.exitDate)) {
     return { ...base, status: 'not_joined' };
@@ -130,7 +139,11 @@ export function calculateDay(input: DayInput): DayResult {
   let worked = sessions.reduce((sum, s) => sum + minutesBetween(s.in, s.out), 0);
   if (shift && sessions.length === 1 && worked > shift.breakMinutes) worked -= shift.breakMinutes;
 
-  const result: DayResult = { ...base, firstIn, lastOut, punchCount: kept.length, workedMinutes: worked, usedPunchIds: kept.map((p) => p.id), exceptions };
+  const duty = input.duty && input.duty.fraction > 0 ? (input.duty.fraction >= 1 ? 1 : 0.5) : 0;
+  const result: DayResult = { ...base, firstIn, lastOut, punchCount: kept.length, workedMinutes: worked, usedPunchIds: kept.map((p) => p.id), exceptions, dutyFraction: duty };
+  const overtimeOverShift = () => {
+    if (input.overtimeEnabled && shift && shift.overtimeAfterMinutes !== null && !unmatched) result.overtimeMinutes = Math.max(0, worked - shift.overtimeAfterMinutes);
+  };
 
   if (dayType !== 'working') {
     result.status = dayType;
@@ -146,11 +159,19 @@ export function calculateDay(input: DayInput): DayResult {
   if (leave && result.leaveFraction === 1) {
     result.status = 'on_leave';
     if (kept.length) exceptions.push('worked_on_leave');
+    if (duty) exceptions.push('duty_on_leave');
     return result;
   }
-  if (!kept.length) { result.status = leave ? 'half_day' : 'absent'; return result; }
+  // Leave and field duty together: the part of the day already accounted for (0, 0.5 or 1).
+  const covered = Math.min(1, result.leaveFraction + duty);
+  if (duty && covered >= 1) {
+    result.status = 'on_duty';
+    if (kept.length) overtimeOverShift();
+    return result;
+  }
+  if (!kept.length) { result.status = covered > 0 ? 'half_day' : 'absent'; return result; }
 
-  if (shift && win.shiftStart && win.shiftEnd) {
+  if (shift && win.shiftStart && win.shiftEnd && !duty) {
     if (firstIn) {
       const late = minutesBetween(win.shiftStart, firstIn);
       if (late > shift.graceMinutes) { result.lateMinutes = late; exceptions.push('late_arrival'); }
@@ -159,17 +180,15 @@ export function calculateDay(input: DayInput): DayResult {
       const early = minutesBetween(lastOut, win.shiftEnd);
       if (early > shift.earlyExitGraceMinutes) { result.earlyExitMinutes = early; exceptions.push('early_exit'); }
     }
-    if (input.overtimeEnabled && shift.overtimeAfterMinutes !== null && !unmatched) {
-      result.overtimeMinutes = Math.max(0, worked - shift.overtimeAfterMinutes);
-    }
   }
+  overtimeOverShift();
   if (unmatched) { result.status = 'missing_punch'; return result; }
   const half = shift?.halfDayMinMinutes ?? 240;
-  // With half-day leave, working the other half (≥ half-day minimum) completes the day.
-  const full = leave ? half : shift?.fullDayMinMinutes ?? 480;
+  // With half-day leave or field duty, working the other half (≥ half-day minimum) completes the day.
+  const full = covered > 0 ? half : shift?.fullDayMinMinutes ?? 480;
   if (worked >= full) result.status = 'present';
   else if (worked >= half) { result.status = 'half_day'; exceptions.push('short_hours'); }
-  else if (leave) { result.status = 'half_day'; exceptions.push('insufficient_hours'); }
+  else if (covered > 0) { result.status = 'half_day'; exceptions.push('insufficient_hours'); }
   else { result.status = 'absent'; exceptions.push('insufficient_hours'); }
   return result;
 }
