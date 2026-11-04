@@ -179,6 +179,26 @@ describe('offers and hire', () => {
   });
 });
 
+describe('hiring approver', () => {
+  it('management signs off requisitions and offers an HR administrator drafted, sees pay, but cannot run the pipeline', async () => {
+    const director = await user('director', ['hiring_approver']);
+    // HR (the only HR administrator here) drafts and submits; the director is the second approver.
+    const r = await hrHead.post('/api/v1/recruitment/requisitions', { title: 'Microbiologist — Food lab', legalEntityId: T.legalEntityId, branchId: T.branchId, departmentId: T.deptId,
+      positions: 1, justification: 'New scope: pathogen testing', budgetCtcMax: 700000 });
+    expect(r.statusCode).toBe(201);
+    expect((await hrHead.post(`/api/v1/recruitment/requisitions/${r.json().id}/submit`)).statusCode).toBe(200);
+    expect((await approveFor(director, r.json().id)).statusCode).toBe(200);
+    const req = (await director.get(`/api/v1/recruitment/requisitions/${r.json().id}`)).json();
+    expect(req).toMatchObject({ status: 'approved', budget_ctc_max: '700000.00' });
+    // read access to the pipeline, including compensation on offers
+    expect((await director.get(`/api/v1/recruitment/applications/${appId}`)).json().offers[0].annual_ctc).toBe('950000.00');
+    // but no changes to candidates, stages or offers
+    expect((await addCandidate(director, { email: 'x.y@mail.example' })).statusCode).toBe(403);
+    expect((await director.post('/api/v1/recruitment/applications', { requisitionId: r.json().id, candidateId: candId })).statusCode).toBe(403);
+    expect((await director.post(`/api/v1/recruitment/offers/${offerId}/withdraw`, {})).statusCode).toBe(403);
+  });
+});
+
 describe('retention and erasure', () => {
   it('anonymizes expired candidates, deletes their resume, and keeps hired ones', async () => {
     const c = await addCandidate(hr, { firstName: 'Old', email: 'old@mail.example', phone: '' }, PDF);

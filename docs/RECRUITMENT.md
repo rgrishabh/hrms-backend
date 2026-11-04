@@ -41,10 +41,12 @@ The legal assessment (lawful basis, notice text, retention period, cross-border 
 | Permission | Default roles |
 |---|---|
 | `recruitment.requisition` | reporting manager, department head, laboratory manager, HR |
-| `recruitment.read` | HR administrator, HR executive, auditor |
+| `recruitment.read` | HR administrator, HR executive, hiring approver, auditor |
 | `recruitment.manage` | HR administrator, HR executive |
-| `recruitment.approve` | HR administrator |
-| `recruitment.compensation` | HR administrator, finance manager |
+| `recruitment.approve` | HR administrator, hiring approver |
+| `recruitment.compensation` | HR administrator, hiring approver, finance manager |
+
+The **Hiring Approver** role is management sign-off, for example the laboratory director. It can approve requisitions and offers and see compensation, but cannot change candidates or the pipeline. Give it to someone besides HR. Otherwise an organization with a single HR administrator cannot approve offers, because nobody approves their own request.
 
 Hiring managers see their own requisitions and the pipeline of those requisitions. Interviewers see their interviews. No special permission is needed for either.
 
