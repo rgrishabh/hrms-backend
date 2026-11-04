@@ -91,3 +91,9 @@ A request is an approval request (`lab_authorization`) routed to holders of `com
 **Options, TDS:** annualize everything; spread the one-off over the remaining months; tax it fully in the month paid.
 **Decision, TDS:** each taxable adjustment, overtime and encashment is a one-off. Regular salary is projected to 12 months and its tax spread over 12. The one-off adds the difference between the year's tax with and without it, all in the month paid, including any rebate it forfeits.
 **Reason:** this is the mainstream Indian payroll treatment. YTD true-up, declarations and marginal relief at the rebate limit remain unimplemented. **Both need confirmation by a qualified reviewer; see `INDIAN_PAYROLL_COMPLIANCE.md`.**
+
+## D26 — Bank changes approved by a separate permission
+**Context:** F-9. `employees.bank.manage` wrote directly. HR Admin was the only holder, so a second holder of the same permission would not exist in most organizations.
+**Options:** require two holders of `employees.bank.manage`; add an approve permission; use `payroll.approve`.
+**Decision:** new `employees.bank.approve`, held by HR Admin and Finance Manager. Every change including the first entry goes through approval, and the proposer and the employee are excluded. The employee is told when it is proposed and when it applies.
+**Reason:** it works out of the box where one HR admin exists, and it keeps Payroll Manager, who runs the bank file, out of both sides.
