@@ -4,7 +4,7 @@ import { withPlatformBypass, withTenant } from '../../db/tx.js';
 import { getSettingValue } from '../settings/service.js';
 import { evaluateFeatures } from '../features/state.js';
 import { JOBS, JOB_MAP, duePeriod, jobActive, type JobDefinition } from './registry.js';
-import { deliverOutbox } from '../notify/service.js';
+import { deliverOutbox, deliverSmsOutbox } from '../notify/service.js';
 
 /**
  * Database-backed scheduler. Every `intervalMs` each app instance:
@@ -103,7 +103,8 @@ export class Scheduler {
       if (this.busy) return;
       this.busy = true;
       try { await tick(this.pool, this.log); } catch (e) { this.log.error({ err: (e as Error).message }, 'scheduler tick failed'); }
-      try { await deliverOutbox(this.pool, this.log); } catch (e) { this.log.error({ err: (e as Error).message }, 'email delivery pass failed'); } finally { this.busy = false; }
+      try { await deliverOutbox(this.pool, this.log); } catch (e) { this.log.error({ err: (e as Error).message }, 'email delivery pass failed'); }
+      try { await deliverSmsOutbox(this.pool, this.log); } catch (e) { this.log.error({ err: (e as Error).message }, 'sms delivery pass failed'); } finally { this.busy = false; }
     };
     setTimeout(loop, 10_000).unref();
     this.timer = setInterval(loop, this.intervalMs);

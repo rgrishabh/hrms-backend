@@ -79,6 +79,9 @@ Base path `/api/v1`. JSON in and out. Each installation serves one organization;
 | GET `/accounting/sources` | accounting.export | Finalized/paid runs and approved/paid batches with their last export |
 | GET `/accounting/payroll-runs/:id/journal` · `/reimbursement-batches/:id/journal` | accounting.export | Voucher preview with `missing` heads and `balanced` |
 | GET `/accounting/payroll-runs/:id/export?format=csv\|tally_xml` · `/reimbursement-batches/:id/export` | accounting.export | Download (refused while heads are unmapped); logged and audited |
+| **SMS** (module `notifications.sms`; see SMS.md) | | |
+| GET `/sms/templates` · PUT / DELETE `/sms/templates/:kind` | settings.manage | DLT templates per notification kind `{dltTemplateId, text, enabled}` |
+| GET `/sms/outbox?status` · POST `/sms/test {phone, kind}` | settings.manage | Recent SMS (numbers masked); send a template now to check the provider |
 | **Overtime** (module `overtime`; see OVERTIME.md) | | |
 | GET `/overtime/eligible` | overtime.self | My days with recorded overtime still to claim, and the payout options |
 | POST `/overtime/claims` | overtime.self | Claim `{workDate, minutes, payout, reason}` → manager, then HR approval |
