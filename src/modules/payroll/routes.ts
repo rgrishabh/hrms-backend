@@ -13,6 +13,7 @@ import type { Db } from '../../db/tx.js';
 import { RULE_PARAMS, type RuleKind } from './calc.js';
 import { attendanceLocked, computeRun, periodBounds } from './service.js';
 import { csv } from '../../core/http/csv.js';
+import { xlsx, XLSX_TYPE } from '../../core/http/xlsx.js';
 
 const F = 'payroll';
 const Period = z.string().regex(/^[0-9]{4}-(0[1-9]|1[0-2])$/, 'Use YYYY-MM');
@@ -420,8 +421,9 @@ export async function payrollRoutes(app: FastifyInstance) {
   });
 
   // ------------------------------------------------------------ exports (finalized runs)
-  const exportRun = (name: string, build: (db: Db, a: TenantActor, run: { id: string; period: string }) => Promise<unknown[][]>, perm = 'payroll.read') =>
-    app.get(`/runs/:id/${name}.csv`, async (req, reply) => {
+  // Statutory and bank files keep their CSV layouts; the salary register is also offered as an Excel workbook.
+  const exportRun = (name: string, build: (db: Db, a: TenantActor, run: { id: string; period: string }) => Promise<unknown[][]>, perm = 'payroll.read', formats: readonly ('csv' | 'xlsx')[] = ['csv']) =>
+    formats.forEach((format) => app.get(`/runs/:id/${name}.${format}`, async (req, reply) => {
       const a = tenantActorAny(req, perm, 'payroll.manage');
       const { id } = z.object({ id: Uuid }).parse(req.params);
       const { rows, period } = await a.tx(async (db) => {
@@ -429,11 +431,18 @@ export async function payrollRoutes(app: FastifyInstance) {
         const r = await loadRun(db, a, id);
         if (!['finalized', 'paid'].includes(r.status) && name !== 'register') throw conflict('Exports are available once the run is finalized');
         const rows = await build(db, a, r);
-        await audit(db, { ...a.auditBase, action: `payroll.export_${name}`, category: 'access', targetType: 'payroll_run', targetId: id, metadata: { rows: rows.length - 1 } });
+        await audit(db, { ...a.auditBase, action: `payroll.export_${name}`, category: 'access', targetType: 'payroll_run', targetId: id, metadata: { rows: rows.length - 1, format } });
         return { rows, period: r.period };
       });
-      return reply.header('content-type', 'text/csv; charset=utf-8').header('content-disposition', `attachment; filename="payroll-${period}-${name}.csv"`).header('cache-control', 'private, no-store').send(csv(rows));
-    });
+      const file = `payroll-${period}-${name}.${format}`;
+      if (format === 'xlsx') {
+        // Employee codes and names stay text (leading zeros); amounts and days become numbers.
+        const [head = [], ...body] = rows;
+        const book = xlsx([{ name: `${name} ${period}`, columns: head.map((h, i) => ({ label: String(h), type: i < 2 ? 'text' : 'auto' })), rows: body }]);
+        return reply.header('content-type', XLSX_TYPE).header('content-disposition', `attachment; filename="${file}"`).header('cache-control', 'private, no-store').send(book);
+      }
+      return reply.header('content-type', 'text/csv; charset=utf-8').header('content-disposition', `attachment; filename="${file}"`).header('cache-control', 'private, no-store').send(csv(rows));
+    }));
   const itemsOf = (db: Db, tenantId: string, runId: string) => db.query<{ employee_code: string; name: string; employee_id: string; lines: { code: string; amount: number; kind: string }[]; gross: string; deductions: string; net: string; paid_days: string; lop_days: string; hold: boolean }>(
     `SELECT e.employee_code, trim(e.first_name||' '||coalesce(e.last_name,'')) AS name, i.employee_id, i.lines, i.gross, i.deductions, i.net, i.paid_days, i.lop_days, i.hold
      FROM payroll_items i JOIN employees e ON e.tenant_id=i.tenant_id AND e.id=i.employee_id WHERE i.tenant_id=$1 AND i.run_id=$2 ORDER BY e.employee_code`, [tenantId, runId]);
@@ -444,7 +453,7 @@ export async function payrollRoutes(app: FastifyInstance) {
     const codes = [...new Set(items.flatMap((i) => i.lines.map((l) => l.code)))];
     return [['employee_code', 'name', 'paid_days', 'lop_days', ...codes, 'gross', 'deductions', 'net', 'hold'],
       ...items.map((i) => [i.employee_code, i.name, i.paid_days, i.lop_days, ...codes.map((c) => amt(i.lines, c)), i.gross, i.deductions, i.net, i.hold ? 'yes' : ''])];
-  });
+  }, 'payroll.read', ['csv', 'xlsx']);
   exportRun('bank', async (db, a, run) => {
     const full = a.has('employees.bank.read');
     const items = (await itemsOf(db, a.tenantId, run.id)).rows.filter((i) => !i.hold && Number(i.net) > 0);

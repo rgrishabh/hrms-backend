@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import type { FastifyInstance } from 'fastify';
 import { makeApp, createTenant, Client, ownerQuery, PASSWORD, type TenantFixture } from './helpers.js';
+import { readXlsx } from './helpers.js';
 import { hashPassword } from '../src/core/crypto/index.js';
 
 // Rule values here are TEST FIXTURES that exercise the engine — not statutory rates.
@@ -143,6 +144,12 @@ describe('payroll run', () => {
     expect((await pay.get(`/api/v1/payroll/runs/${runId}/pf.csv`)).body.split('\r\n')[1]).toMatch(/^100200300400,/);
     expect((await pay.get(`/api/v1/payroll/runs/${runId}/register.csv`)).body.split('\r\n')[0]).toMatch(/^employee_code,name,paid_days,lop_days,BASIC/);
     expect((await ownerQuery(`SELECT 1 FROM audit_logs WHERE tenant_id=$1 AND action LIKE 'payroll.export_%'`, [T.id])).length).toBe(4);
+    const reg = await pay.get(`/api/v1/payroll/runs/${runId}/register.xlsx`);
+    expect(reg.headers['content-type']).toMatch(/spreadsheetml/);
+    const regSheet = readXlsx(reg.rawPayload)['xl/worksheets/sheet1.xml']!;
+    expect(regSheet).toMatch(/<c r="A2" t="inlineStr"><is><t xml:space="preserve">E\d+<\/t>/);   // codes stay text
+    expect(regSheet).toMatch(/<c r="C2"><v>\d+(\.\d+)?<\/v><\/c>/);                              // paid days are numbers
+    expect((await pay.get(`/api/v1/payroll/runs/${runId}/bank.xlsx`)).statusCode).toBe(404);          // bank files stay CSV
     expect((await pay.post(`/api/v1/payroll/runs/${runId}/paid`, { paymentReference: 'NEFT-2026-09-001' })).statusCode).toBe(200);
   });
 

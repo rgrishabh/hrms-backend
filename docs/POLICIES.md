@@ -8,7 +8,7 @@ Module key: `core.policies` (not in `default`; add it to `ENABLED_MODULES` / `en
 2. **Draft a version** (`policies.manage`): what changed, effective date, the policy text and/or a PDF (checked by content; PDFs with scripts or embedded files are refused), whether acknowledgement is required and within how many days, and optionally an **audience** limited to branches and/or departments (none selected = everyone). One draft per policy at a time.
 3. **Publish** (`policies.publish`) by **someone other than the author** (API check and database CHECK). Publishing supersedes the previous version and notifies everyone in the audience in-app (and by email when `notifications.email` is on).
 4. **Employees** see their current policies under *Policies* and on the dashboard, open the text or PDF, tick "I have read and understood…" and **Acknowledge**.
-5. **Reports** per version: acknowledged / not yet, with CSV export (audited). The daily job `policies.ack_reminder` (10:00) reminds each overdue employee once a week.
+5. **Reports** per version: acknowledged / not yet, with CSV or Excel export (audited). The daily job `policies.ack_reminder` (10:00) reminds each overdue employee once a week.
 6. **Withdraw** a version or **retire** a policy (`policies.publish`, reason required). History and acknowledgements are kept.
 
 ## What an acknowledgement proves
