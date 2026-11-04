@@ -3,7 +3,7 @@
 
 CREATE TABLE accounting_ledger_map (
   tenant_id    uuid NOT NULL REFERENCES tenants(id),
-  map_key      text NOT NULL CHECK (map_key ~ '^(earning|deduction|employer_expense|employer_payable|expense):([A-Z0-9_]{1,30}|\*)$' OR map_key IN ('net_pay','reimbursement_payable')),
+  map_key      text NOT NULL CHECK (map_key ~ '^(earning|deduction|employer_expense|employer_payable|expense):([A-Z0-9_]{1,30}|\*)$' OR map_key IN ('net_pay','reimbursement_payable','travel_advance')),
   ledger_name  text NOT NULL CHECK (length(ledger_name) BETWEEN 1 AND 200),
   updated_by   uuid REFERENCES users(id),
   updated_at   timestamptz NOT NULL DEFAULT now(),

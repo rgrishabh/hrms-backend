@@ -67,7 +67,7 @@ export async function payrollJournal(db: Db, tenantId: string, runId: string): P
 
 /**
  * An approved or paid reimbursement batch as a journal voucher: Dr each expense category (the items claimed),
- * Cr reimbursements payable (what the batch pays).
+ * Cr travel advances for the part of trip claims set off against an advance, Cr reimbursements payable (what the batch pays).
  */
 export async function reimbursementJournal(db: Db, tenantId: string, batchId: string): Promise<Journal> {
   const b = (await db.query<{ status: string; total: string; approved_at: string | null; paid_at: string | null; created_at: string }>(
@@ -77,8 +77,12 @@ export async function reimbursementJournal(db: Db, tenantId: string, batchId: st
   const cats = (await db.query<{ code: string; name: string; amount: string }>(`SELECT cat.code, cat.name, sum(i.amount)::text AS amount
     FROM expense_items i JOIN expense_claims c ON c.tenant_id=i.tenant_id AND c.id=i.claim_id JOIN expense_categories cat ON cat.tenant_id=i.tenant_id AND cat.id=i.category_id
     WHERE i.tenant_id=$1 AND c.batch_id=$2 GROUP BY cat.code, cat.name`, [tenantId, batchId])).rows;
+  const adjusted = new Decimal((await db.query<{ a: string }>(`SELECT coalesce(sum(advance_adjusted),0)::text AS a FROM expense_claims WHERE tenant_id=$1 AND batch_id=$2`, [tenantId, batchId])).rows[0]!.a);
   const rows: Parameters<typeof journal>[1] = cats.map((c) => ({ key: `expense:${c.code}`, label: c.name, side: 'dr' as const, amount: new Decimal(c.amount) }));
-  rows.push({ key: 'reimbursement_payable', label: 'Reimbursements payable', side: 'cr', amount: cats.reduce((s, c) => s.plus(c.amount), new Decimal(0)) });
+  const claimed = cats.reduce((s, c) => s.plus(c.amount), new Decimal(0));
+  // A trip's claim first uses up its travel advance: that part clears the advance; only the rest is payable.
+  if (adjusted.gt(0)) rows.push({ key: 'travel_advance', label: 'Travel advances (set off)', side: 'cr', amount: adjusted });
+  rows.push({ key: 'reimbursement_payable', label: 'Reimbursements payable', side: 'cr', amount: claimed.minus(adjusted) });
   const map = await ledgerMap(db, tenantId);
   const date = (b.paid_at ?? b.approved_at ?? b.created_at).slice(0, 10);
   return journal(map, rows, { date, number: `EXP-${date.replace(/-/g, '')}-${batchId.slice(0, 6).toUpperCase()}`, narration: `Employee expense reimbursements, batch ${batchId.slice(0, 8)}` });

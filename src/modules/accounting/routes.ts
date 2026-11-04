@@ -8,7 +8,7 @@ import { getSettingValue } from '../../core/settings/service.js';
 import { featureOn } from '../lifecycle/service.js';
 import { payrollJournal, reimbursementJournal, toCsv, toTallyXml, type Journal } from './service.js';
 
-const KEY = /^(earning|deduction|employer_expense|employer_payable|expense):([A-Z0-9_]{1,30}|\*)$|^(net_pay|reimbursement_payable)$/;
+const KEY = /^(earning|deduction|employer_expense|employer_payable|expense):([A-Z0-9_]{1,30}|\*)$|^(net_pay|reimbursement_payable|travel_advance)$/;
 
 export async function accountingRoutes(app: FastifyInstance) {
   gateFeatures(app, 'accounting_exports');
@@ -33,6 +33,7 @@ export async function accountingRoutes(app: FastifyInstance) {
       if (await featureOn(db, a.tenantId, 'expenses')) {
         for (const c of (await db.query<{ code: string; name: string }>(`SELECT code, name FROM expense_categories WHERE tenant_id=$1 ORDER BY name`, [a.tenantId])).rows) heads.push({ key: `expense:${c.code}`, label: c.name });
         heads.push({ key: 'expense:*', label: 'Other expense categories' }, { key: 'reimbursement_payable', label: 'Reimbursements payable' });
+        if (await featureOn(db, a.tenantId, 'travel')) heads.push({ key: 'travel_advance', label: 'Travel advances (employee advances account)' });
       }
       return { items, heads };
     });

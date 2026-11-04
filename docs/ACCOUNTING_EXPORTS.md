@@ -16,6 +16,7 @@ Every head in a journal must map to one of your ledger names. Nothing is guessed
 | `net_pay` | Cr | Net salary payable |
 | `expense:<CATEGORY>` | Dr | `expense:LOCAL_TRAVEL` |
 | `reimbursement_payable` | Cr | What a reimbursement batch pays |
+| `travel_advance` | Cr | The part of a trip's claim set off against its travel advance (module `travel`) |
 
 `earning:*`, `deduction:*`, `employer_expense:*`, `employer_payable:*` and `expense:*` are catch-alls for heads without their own mapping, such as one-off adjustments (`ADJ1`…) or a second loan (`LOAN2`). `GET /accounting/ledger-map` lists the heads this installation uses.
 
@@ -28,7 +29,7 @@ Every head in a journal must map to one of your ledger names. Nothing is guessed
   - Full-and-final runs are separate vouchers.
 - **Reimbursement batch**, dated the day it was paid (or approved).
   - **Debit:** each expense category claimed.
-  - **Credit:** reimbursements payable.
+  - **Credit:** the travel advances that trip claims used up, and reimbursements payable for the rest.
 
 A journal that doesn't balance is never exported.
 

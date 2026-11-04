@@ -36,7 +36,7 @@ Module key: `expenses` (not in `default`; add it to `ENABLED_MODULES` / `enabled
 
 ## Not included / to verify
 
-- Travel requests and advances, per-diem rules, mileage rates, multi-currency and corporate cards are not built.
+- Per-diem rules, mileage rates, multi-currency and corporate cards are not built. Travel requests and advances are in the `travel` module (docs/TRAVEL.md). A trip's claim first uses up its advance, and only the rest is reimbursed.
 - Tax treatment of reimbursements (e.g. whether an item is a perquisite) and GST input-credit eligibility are **decisions for the organization's finance and tax advisers**; the module only captures the data.
 - The CSV export is a generic layout; banks' upload formats differ and must be mapped per customer.
 - Receipts are not OCR-read or malware-scanned beyond content-type detection.

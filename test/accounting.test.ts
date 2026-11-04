@@ -97,5 +97,10 @@ describe('accounting exports', () => {
     expect(j).toMatchObject({ balanced: true, total: '740.00', missing: [] });
     expect(j.entries).toEqual([expect.objectContaining({ key: 'expense:LOCAL', ledger: 'Conveyance', debit: '740.00' }), expect.objectContaining({ key: 'reimbursement_payable', ledger: 'Reimbursements Payable', credit: '740.00' })]);
     expect((await pay.get(`/api/v1/accounting/reimbursement-batches/${batchId}/export?format=csv`)).statusCode).toBe(200);
+    // Part of a trip's claim covered by its travel advance clears the advance instead of being payable.
+    await ownerQuery(`UPDATE expense_claims SET advance_adjusted=240 WHERE tenant_id=$1 AND batch_id=$2`, [T.id, batchId]);
+    const t = (await pay.get(`/api/v1/accounting/reimbursement-batches/${batchId}/journal`)).json();
+    expect(t).toMatchObject({ balanced: true, missing: ['travel_advance'] });
+    expect(t.entries).toEqual(expect.arrayContaining([expect.objectContaining({ key: 'travel_advance', credit: '240.00' }), expect.objectContaining({ key: 'reimbursement_payable', credit: '500.00' })]));
   });
 });
