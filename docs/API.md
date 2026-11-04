@@ -75,6 +75,8 @@ Base path `/api/v1`. JSON in and out. Each installation serves one organization;
 | POST `/field-duty/requests/:id/withdraw` · `/cancel` · `/report` | employee / field_duty.manage | Withdraw pending; cancel approved (employee before it starts, HR until the dates are locked); report the outcome once started |
 | **Travel** (module `travel`; see TRAVEL.md) | | |
 | POST `/travel/requests` | travel.self | Request `{purpose, tripType, origin, destination, startDate, endDate, travelMode, accommodation, project?, estimate{travel,stay,local,meals,other}, advance, markOnDuty}`. Manager approves, plus finance for advances, trips abroad and large estimates |
+| GET `/expenses/allowance-rates`, POST (expenses.manage) `{kind: per_diem, tier, grade?, rate, effectiveFrom, note?}` or `{kind: mileage, vehicle, rate, effectiveFrom}`, DELETE `/:id` (not yet in force) | expenses.self / travel.self to read | Per-diem and mileage policy rates; `state` current / scheduled / superseded |
+| GET `/expenses/allowance-quote?kind&date&to?&tier?&vehicle?&km?` | expenses.self / travel.self | What an allowance comes to for the employee's grade; `{rate: null}` when no rate |
 | GET `/travel/requests?scope=mine\|team\|all&status&advance=to_pay\|outstanding&on` · GET `/travel/requests/:id` | travel.self / team.read / read, expenses.pay | List / detail with `settlement` |
 | POST `/travel/requests/:id/withdraw` · `/cancel` · `/complete` · `/claim` | traveller (cancel: also travel.approve) | Withdraw pending; cancel approved; mark completed; start the trip's expense claim |
 | POST `/travel/requests/:id/advance-paid` · `/advance-returned` · `/close` | expenses.pay | Record the advance paid `{reference}`; record unspent advance returned `{amount, note}`; close a settled trip |
