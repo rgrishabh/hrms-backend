@@ -65,3 +65,7 @@ Base path `/api/v1`. JSON in and out. Each installation serves one organization;
 | GET `/approvals/inbox`, `/approvals/mine`, `/approvals/:id` | session | |
 | POST `/approvals/:id/act` | current-step approver (never the requester) | `{action: approve|reject|return, comment}` (comment required unless approving) |
 | POST `/approvals/:id/cancel` | requester | |
+| **Reports** (see REPORTS.md) | | |
+| GET `/reports` | session | Reports the caller may run (permission + module), with `scope` (`all` or `team`) and parameter definitions with defaults |
+| GET `/reports/:key?…params` | the report's permissions | `{columns, rows, totals, notes, scope, params, truncated}`; ≤ 5000 rows |
+| GET `/reports/:key/export.csv?…params` | the report's permissions | Same data as CSV (UTF-8 BOM, formulas neutralized, `no-store`); audited `reports.exported` |
