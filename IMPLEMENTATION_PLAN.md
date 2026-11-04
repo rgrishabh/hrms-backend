@@ -22,7 +22,7 @@ Every module in the feature registry (34) is built and `available`; none is `pla
 | 13 | Mobile attendance | 🟡 | Responsive web, policy-driven location | Offline queueing, native apps ⬜ |
 | 14 | Leave & holidays | ✅ | Configurable types, append-only ledger, accruals, carry/lapse, half days, sandwich rule, approval, cancellation with reversal, comp-off credit from overtime, notifications, scheduled jobs (docs/LEAVE.md) | Leave encashment outside F&F ⬜; attachments on leave ⬜ |
 | 15 | Payroll & statutory | 🟡 | Components, effective-dated salaries, verified statutory rule register (no shipped rates), runs from attendance LOP, adjustments, second-person approval, finalize lock, payslips, bank / PF / ESI / register exports, F&F; loan and advance recovery (docs/ADVANCES_LOANS.md); accounting journals as CSV / Tally XML (docs/ACCOUNTING_EXPORTS.md) | Employee tax declarations and proofs ⬜; Form 16 / 24Q / EPFO ECR files ⬜ (formats need the compliance review in INDIAN_PAYROLL_COMPLIANCE.md) |
-| 16 | Expenses & travel | 🟡 | Expenses with GST rules, receipts, approvals, payment batches, bank CSV; travel requests with estimates, advances, settlement against the trip's claim (docs/EXPENSES.md, docs/TRAVEL.md) | Per-diem and mileage rates ⬜ |
+| 16 | Expenses & travel | ✅ | Expenses with GST rules, receipts, approvals, payment batches, bank CSV; per-diem and mileage allowances from effective-dated policy rates; travel requests with estimates, advances, settlement against the trip's claim (docs/EXPENSES.md, docs/TRAVEL.md) | Multi-currency, corporate cards ⬜ |
 | 17 | Policies & handbook | ✅ | Versioned text/PDF, maker-checker publication, audiences, hash-bound acknowledgements, reminders (docs/POLICIES.md) | Quizzes, e-signature ⬜ |
 | 18 | POSH & grievance | ✅ | IC membership, encrypted complaints with statutory timelines, anonymous grievances with SLA (docs/CASES.md) | Hearing minutes, attachments ⬜ |
 | 19 | Lab competency & training | ✅ | Training records with validity; competency, technical authorizations with maker-checker, expiry, suspension, matrix, `/check` for LIMS (docs/COMPETENCY.md) | Training sessions, effectiveness evaluation, LIMS API keys ⬜ |
@@ -48,7 +48,7 @@ Every module in the feature registry (34) is built and `available`; none is `pla
 2. ~~Workflow delegation and escalation~~ (done: docs/APPROVALS.md).
 3. ~~Custom-role management~~ (done: Settings → Roles).
 4. ~~Rotating shift rosters~~ (done: docs/ATTENDANCE.md → Rotating rosters).
-5. **Travel per diem and mileage.**
+5. ~~Travel per diem and mileage~~ (done: docs/EXPENSES.md → Allowances).
 6. **XLSX export** for reports and registers.
 7. **Tax declarations, then Form 16 / 24Q / ECR**: only after the compliance register review (INDIAN_PAYROLL_COMPLIANCE.md).
 8. **AWS go-live**: Organizations / Control Tower, first real `plan` / `apply`, RDS restore rehearsal (infra/README.md). Needs explicit approval.

@@ -15,6 +15,7 @@ import { teamEmployeeIds, employeeTimezone } from '../attendance/service.js';
 import { localDate, daysBetween } from '../attendance/time.js';
 import type { Db } from '../../db/tx.js';
 import { setOffAdvance } from '../travel/service.js';
+import { allowanceRoutes, priceAllowance } from './allowances.js';
 
 const Money = z.union([z.number(), z.string()]).transform((v, ctx) => {
   const d = new Decimal(v);
@@ -24,6 +25,8 @@ const Money = z.union([z.number(), z.string()]).transform((v, ctx) => {
 const CategoryBody = z.object({
   code: z.string().trim().toUpperCase().regex(/^[A-Z][A-Z0-9_]{0,19}$/), name: z.string().trim().min(2).max(80), description: z.string().trim().max(300).nullable().optional(),
   requiresReceipt: z.boolean().default(true), maxAmount: z.number().positive().nullable().default(null), gstApplicable: z.boolean().default(false), status: z.enum(['active', 'inactive']).default('active'),
+  // Computed from days × per-diem rate or km × mileage rate (docs/EXPENSES.md → Allowances).
+  calc: z.enum(['per_diem', 'mileage']).nullable().default(null),
 });
 const ClaimBody = z.object({ title: z.string().trim().min(3).max(200), purpose: z.string().trim().min(3).max(1000), project: z.string().trim().max(100).nullable().optional() });
 
@@ -67,23 +70,25 @@ export async function expenseRoutes(app: FastifyInstance) {
     },
   });
 
+  await allowanceRoutes(app);
+
   // ------------------------------------------------------------ categories
   app.get('/categories', async (req) => {
     const a = tenantActorAny(req, 'expenses.self', 'expenses.manage', 'expenses.read');
     return a.tx(async (db) => {
       await requireFeature(db, a.tenantId, 'expenses');
-      return { items: (await db.query(`SELECT id, code, name, description, requires_receipt, max_amount, gst_applicable, status FROM expense_categories
+      return { items: (await db.query(`SELECT id, code, name, description, requires_receipt, max_amount, gst_applicable, status, calc FROM expense_categories
         WHERE tenant_id=$1 AND ($2 OR status='active') ORDER BY name`, [a.tenantId, a.has('expenses.manage')])).rows };
     });
   });
-  const catCols = (b: z.infer<typeof CategoryBody>) => [b.code, b.name, b.description ?? null, b.requiresReceipt, b.maxAmount, b.gstApplicable, b.status];
+  const catCols = (b: z.infer<typeof CategoryBody>) => [b.code, b.name, b.description ?? null, b.requiresReceipt, b.maxAmount, b.gstApplicable, b.status, b.calc];
   app.post('/categories', async (req, reply) => {
     const a = tenantActor(req, 'expenses.manage');
     const b = CategoryBody.parse(req.body);
     return a.tx(async (db) => {
       await requireFeature(db, a.tenantId, 'expenses');
-      const r = await db.query<{ id: string }>(`INSERT INTO expense_categories (tenant_id, code, name, description, requires_receipt, max_amount, gst_applicable, status)
-        VALUES ($1,$2,$3,$4,$5,$6,$7,$8) RETURNING id`, [a.tenantId, ...catCols(b)]);
+      const r = await db.query<{ id: string }>(`INSERT INTO expense_categories (tenant_id, code, name, description, requires_receipt, max_amount, gst_applicable, status, calc)
+        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9) RETURNING id`, [a.tenantId, ...catCols(b)]);
       await audit(db, { ...a.auditBase, action: 'expenses.category_created', category: 'configuration', targetType: 'expense_category', targetId: r.rows[0]!.id, metadata: b });
       reply.code(201); return { id: r.rows[0]!.id };
     });
@@ -93,7 +98,7 @@ export async function expenseRoutes(app: FastifyInstance) {
     const { id } = z.object({ id: Uuid }).parse(req.params);
     const b = CategoryBody.parse(req.body);
     return a.tx(async (db) => {
-      const r = await db.query(`UPDATE expense_categories SET code=$3, name=$4, description=$5, requires_receipt=$6, max_amount=$7, gst_applicable=$8, status=$9
+      const r = await db.query(`UPDATE expense_categories SET code=$3, name=$4, description=$5, requires_receipt=$6, max_amount=$7, gst_applicable=$8, status=$9, calc=$10
         WHERE tenant_id=$1 AND id=$2`, [a.tenantId, id, ...catCols(b)]);
       if (!r.rowCount) throw notFound();
       await audit(db, { ...a.auditBase, action: 'expenses.category_updated', category: 'configuration', targetType: 'expense_category', targetId: id, metadata: b });
@@ -147,7 +152,7 @@ export async function expenseRoutes(app: FastifyInstance) {
         LEFT JOIN LATERAL (SELECT id FROM approval_requests WHERE tenant_id=c.tenant_id AND entity_type='expense_claim' AND entity_id=c.id ORDER BY created_at DESC LIMIT 1) ar ON true
         WHERE c.tenant_id=$1 AND c.id=$2`, [a.tenantId, id])).rows[0];
       const items = (await db.query(`SELECT i.id, i.expense_date, i.amount, i.description, i.merchant, i.invoice_number, i.gstin, i.receipt_name, i.receipt_key IS NOT NULL AS has_receipt,
-          i.duplicate_of, c.name AS category_name, c.code AS category_code FROM expense_items i JOIN expense_categories c ON c.tenant_id=i.tenant_id AND c.id=i.category_id
+          i.duplicate_of, c.name AS category_name, c.code AS category_code, c.calc, i.quantity, i.rate, i.tier, i.vehicle FROM expense_items i JOIN expense_categories c ON c.tenant_id=i.tenant_id AND c.id=i.category_id
         WHERE i.tenant_id=$1 AND i.claim_id=$2 ORDER BY i.expense_date, i.created_at`, [a.tenantId, id])).rows;
       return { ...claim, items, editable: ['draft', 'returned'].includes(claim.status) && claim.employee_id === a.user.employeeId };
     });
@@ -178,7 +183,8 @@ export async function expenseRoutes(app: FastifyInstance) {
         } else fields[part.fieldname] = String(part.value);
       }
     } else Object.assign(fields, req.body as Record<string, string>);
-    const b = z.object({ categoryId: Uuid, expenseDate: IsoDate, amount: Money, description: z.string().trim().min(2).max(500),
+    const b = z.object({ categoryId: Uuid, expenseDate: IsoDate, amount: Money.optional(), description: z.string().trim().min(2).max(500),
+      quantity: z.coerce.number().positive().optional(), tier: z.string().trim().toUpperCase().max(20).optional(), vehicle: z.enum(['car', 'two_wheeler']).optional(),
       merchant: z.string().trim().max(150).optional(), invoiceNumber: z.string().trim().max(50).optional(),
       gstin: z.string().trim().toUpperCase().regex(/^[0-9]{2}[A-Z0-9]{13}$/, 'GSTIN must be 15 characters').optional() }).parse(
       Object.fromEntries(Object.entries(fields).filter(([, v]) => v !== '')));
@@ -188,15 +194,35 @@ export async function expenseRoutes(app: FastifyInstance) {
       await requireFeature(db, a.tenantId, 'expenses');
       const c = await loadClaim(db, a, id, true);
       assertEditable(a, c);
-      const cat = (await db.query<{ name: string; requires_receipt: boolean; max_amount: string | null; status: string; gst_applicable: boolean }>(
-        `SELECT name, requires_receipt, max_amount, status, gst_applicable FROM expense_categories WHERE tenant_id=$1 AND id=$2`, [a.tenantId, b.categoryId])).rows[0];
+      const cat = (await db.query<{ name: string; requires_receipt: boolean; max_amount: string | null; status: string; gst_applicable: boolean; calc: 'per_diem' | 'mileage' | null }>(
+        `SELECT name, requires_receipt, max_amount, status, gst_applicable, calc FROM expense_categories WHERE tenant_id=$1 AND id=$2`, [a.tenantId, b.categoryId])).rows[0];
       if (!cat || cat.status !== 'active') throw badRequest('Choose an active expense category');
+      // Per diem and mileage are worked out from days or km and the organization's rate on the date.
+      let priced: Awaited<ReturnType<typeof priceAllowance>> | null = null;
+      if (cat.calc) {
+        if (!b.quantity) throw badRequest(cat.calc === 'per_diem' ? 'Enter the number of days' : 'Enter the distance in km');
+        priced = await priceAllowance(db, a.tenantId, { kind: cat.calc, employeeId: c.employee_id, date: b.expenseDate, quantity: new Decimal(b.quantity),
+          tier: b.tier, vehicle: b.vehicle, claimed: b.amount ?? null });
+        if (cat.calc === 'per_diem') {
+          // On a trip's claim, per diem stays within the trip's dates and days.
+          const trip = (await db.query<{ start_date: string; end_date: string; days: number; claimed: string }>(
+            `SELECT t.start_date::text, t.end_date::text, (t.end_date - t.start_date + 1) AS days,
+                    coalesce((SELECT sum(i.quantity) FROM expense_items i JOIN expense_categories k ON k.tenant_id=i.tenant_id AND k.id=i.category_id
+                       WHERE i.tenant_id=x.tenant_id AND i.claim_id=x.id AND k.calc='per_diem'), 0)::text AS claimed
+               FROM expense_claims x JOIN travel_requests t ON t.tenant_id=x.tenant_id AND t.id=x.travel_request_id WHERE x.tenant_id=$1 AND x.id=$2`, [a.tenantId, id])).rows[0];
+          if (trip) {
+            if (b.expenseDate < trip.start_date || b.expenseDate > trip.end_date) throw badRequest(`Per diem for this trip must fall between ${trip.start_date} and ${trip.end_date}`);
+            if (new Decimal(trip.claimed).plus(b.quantity).gt(trip.days)) throw badRequest(`The trip lasts ${trip.days} day(s); ${trip.claimed} already claimed as per diem`);
+          }
+        }
+      } else if (!b.amount) throw badRequest('Enter the amount');
+      const amount = priced ? priced.amount : b.amount!;
       const { tz } = await employeeTimezone(db, a.tenantId, c.employee_id);
       const today = localDate(new Date(), tz);
       const window = await getSettingValue<number>(db, a.tenantId, 'expenses.claim_window_days');
       if (b.expenseDate > today) throw badRequest('Expense date cannot be in the future');
       if (daysBetween(b.expenseDate, today) > window) throw badRequest(`Expenses older than ${window} days cannot be claimed`);
-      if (cat.max_amount !== null && b.amount.gt(cat.max_amount)) throw badRequest(`${cat.name} is limited to ${cat.max_amount} per item`);
+      if (cat.max_amount !== null && amount.gt(cat.max_amount)) throw badRequest(`${cat.name} is limited to ${cat.max_amount} per item`);
       if (cat.requires_receipt && !file) throw badRequest(`${cat.name} needs a receipt`);
       if ((b.gstin && !b.invoiceNumber) || (b.invoiceNumber && cat.gst_applicable && !b.gstin)) throw badRequest('For GST invoices enter both the supplier GSTIN and the invoice number');
       if (b.gstin && b.invoiceNumber) {
@@ -207,7 +233,7 @@ export async function expenseRoutes(app: FastifyInstance) {
       // Possible duplicate: same employee, date, amount and category on another live claim → flag for the approver.
       const similar = await db.query<{ id: string }>(`SELECT i.id FROM expense_items i JOIN expense_claims c ON c.tenant_id=i.tenant_id AND c.id=i.claim_id
         WHERE i.tenant_id=$1 AND c.employee_id=$2 AND i.expense_date=$3 AND i.amount=$4 AND i.category_id=$5 AND c.status NOT IN ('cancelled','rejected') LIMIT 1`,
-        [a.tenantId, c.employee_id, b.expenseDate, b.amount.toFixed(2), b.categoryId]);
+        [a.tenantId, c.employee_id, b.expenseDate, amount.toFixed(2), b.categoryId]);
       let key: string | null = null;
       if (file && detected && !('error' in detected)) {
         const store = getStore();
@@ -216,12 +242,14 @@ export async function expenseRoutes(app: FastifyInstance) {
         await store.put(key, file.buf, detected.contentType);
       }
       const ins = await db.query<{ id: string }>(`INSERT INTO expense_items (tenant_id, claim_id, category_id, expense_date, amount, description, merchant, invoice_number, gstin,
-          receipt_key, receipt_name, receipt_type, receipt_sha256, duplicate_of) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14) RETURNING id`,
-        [a.tenantId, id, b.categoryId, b.expenseDate, b.amount.toFixed(2), b.description, b.merchant ?? null, b.invoiceNumber ?? null, b.gstin ?? null,
+          receipt_key, receipt_name, receipt_type, receipt_sha256, duplicate_of, quantity, rate, rate_id, tier, vehicle)
+          VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19) RETURNING id`,
+        [a.tenantId, id, b.categoryId, b.expenseDate, amount.toFixed(2), b.description, b.merchant ?? null, b.invoiceNumber ?? null, b.gstin ?? null,
          key, file && detected && !('error' in detected) ? safeFileName(file.name, detected.ext) : null, detected && !('error' in detected) ? detected.contentType : null,
-         file ? createHash('sha256').update(file.buf).digest('hex') : null, similar.rows[0]?.id ?? null]);
+         file ? createHash('sha256').update(file.buf).digest('hex') : null, similar.rows[0]?.id ?? null,
+         priced ? b.quantity : null, priced?.rate.rate ?? null, priced?.rate.id ?? null, priced && cat.calc === 'per_diem' ? b.tier : null, priced && cat.calc === 'mileage' ? b.vehicle : null]);
       await recomputeTotal(db, a.tenantId, id);
-      reply.code(201); return { id: ins.rows[0]!.id, possibleDuplicate: !!similar.rowCount };
+      reply.code(201); return { id: ins.rows[0]!.id, possibleDuplicate: !!similar.rowCount, ...(priced ? { amount: amount.toFixed(2), rate: priced.rate.rate, allowance: priced.allowance.toFixed(2) } : {}) };
     });
   });
 
