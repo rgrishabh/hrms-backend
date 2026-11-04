@@ -42,7 +42,7 @@ export async function approvalRoutes(app: FastifyInstance) {
     const { id } = z.object({ id: Uuid }).parse(req.params);
     const b = z.object({ userId: Uuid, reason: z.string().trim().min(5).max(500) }).parse(req.body);
     return a.tx(async (db) => {
-      await reassignRequest(db, a.tenantId, id, a.user.userId, b.userId, b.reason, { requestId: req.id, ip: req.ip });
+      await reassignRequest(db, a.tenantId, id, a.user.userId, b.userId, b.reason, { requestId: req.id, ip: req.ip }, { onlyIfStuck: !a.has(ESCALATION_PERMISSION) });
       return { ok: true };
     });
   });

@@ -27,8 +27,8 @@ const ComponentBody = z.object({
 }).refine((c) => c.calc !== 'percent' || c.baseCodes.length > 0, { message: 'Percent components need base components', path: ['baseCodes'] });
 
 async function loadRun(db: Db, a: TenantActor, id: string, lock = false) {
-  const r = (await db.query<{ id: string; period: string; legal_entity_id: string; kind: string; employee_id: string | null; status: string; created_by: string; warnings: number; warnings_acknowledged: boolean; computed_at: Date | null }>(
-    `SELECT id, period, legal_entity_id, kind, employee_id, status, created_by, warnings, warnings_acknowledged, computed_at FROM payroll_runs WHERE tenant_id=$1 AND id=$2${lock ? ' FOR UPDATE' : ''}`, [a.tenantId, id])).rows[0];
+  const r = (await db.query<{ id: string; period: string; legal_entity_id: string; kind: string; employee_id: string | null; status: string; created_by: string; warnings: number; warnings_acknowledged: boolean; computed_at: Date | null; computed_by: string | null }>(
+    `SELECT id, period, legal_entity_id, kind, employee_id, status, created_by, warnings, warnings_acknowledged, computed_at, computed_by FROM payroll_runs WHERE tenant_id=$1 AND id=$2${lock ? ' FOR UPDATE' : ''}`, [a.tenantId, id])).rows[0];
   if (!r) throw notFound('Payroll run not found');
   return r;
 }
@@ -379,6 +379,7 @@ export async function payrollRoutes(app: FastifyInstance) {
       const r = await loadRun(db, a, id, true);
       if (!['finalized', 'paid'].includes(r.status)) throw conflict('Only held pay in a finalized run is released here; before that, take it off hold');
       if (employeeId === a.user.employeeId) throw forbidden('You cannot release your own held pay');
+      if (r.computed_by === a.user.userId) throw forbidden('Someone other than the person who computed this run must release it');
       const u = await db.query(`UPDATE payroll_items SET hold=false, hold_released_at=now(), hold_released_by=$4, hold_release_reason=$5 WHERE tenant_id=$1 AND run_id=$2 AND employee_id=$3 AND hold AND net >= 0`,
         [a.tenantId, id, employeeId, a.user.userId, reason]);
       if (!u.rowCount) throw conflict('No held pay to release for this employee (or its net pay is negative)');

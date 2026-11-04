@@ -51,7 +51,7 @@ A request never waits on someone who cannot act:
 - A **group step with no eligible holder** (the only holder is the requester or an excluded person, or nobody holds it) goes to the fallback owner, at creation and in the daily `approvals.escalation` job.
 - The **fallback owner** is holders of `approvals.escalations` (HR Administrator).
 - If the fallback owner cannot act either, the request is still created. Administrators and the requester are notified (`approval.no_approver`) and it is audited.
-- Holders of `users.manage` or `approvals.escalations` can **reassign** the active step to a named active person: `POST /approvals/:id/reassign {userId, reason}`. Not to themselves, the requester, or an excluded person.
+- Holders of `approvals.escalations` can **reassign** the active step to a named active person: `POST /approvals/:id/reassign {userId, reason}`. Holders of `users.manage` can do so only when nobody can act on the request. Not to themselves, the requester, or an excluded person.
 
 ## API
 

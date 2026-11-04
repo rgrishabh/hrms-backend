@@ -1,6 +1,6 @@
 import type { Db } from '../../db/tx.js';
 import { getSettingValue } from '../../core/settings/service.js';
-import { calculateDay, CALC_VERSION, type ShiftPolicy, type Punch, type DayResult } from './calc.js';
+import { calculateDay, shiftWindow, CALC_VERSION, type ShiftPolicy, type Punch, type DayResult } from './calc.js';
 import { addDays, dateRange, localDate, weekday, zonedToInstant } from './time.js';
 import { notFound } from '../../core/http/errors.js';
 import { approvedLeaveByDate } from '../leave/service.js';
@@ -130,11 +130,19 @@ export async function recalculateRange(db: Db, tenantId: string, employeeId: str
   return { results, skippedLocked: [...locked] };
 }
 
-/** After an event: recalc the dates whose windows may contain it, but never past today. */
+/**
+ * After an event: recalc the dates whose windows may contain it. That is its local date and the day before, plus the next
+ * day only if that day's shift starts soon enough that its window already holds this punch (a shift starting after
+ * midnight, punched into just before), so an ordinary evening punch does not create a row for tomorrow.
+ */
 export async function recalcForEvent(db: Db, tenantId: string, employeeId: string, eventTime: Date) {
   const { tz } = await employeeTimezone(db, tenantId, employeeId);
-  const [from, to] = candidateDates(eventTime, tz) as [string, string];
-  return recalculateRange(db, tenantId, employeeId, from, to);
+  const [from, today] = candidateDates(eventTime, tz) as [string, string];
+  const next = addDays(today, 1);
+  const plan = (await scheduleFor(db, tenantId, [employeeId], next, next)).get(employeeId)?.get(next);
+  const shift = plan?.shiftId ? (await db.query(`SELECT ${SHIFT_COLS} FROM shifts s WHERE s.tenant_id=$1 AND s.id=$2`, [tenantId, plan.shiftId])).rows[0] : undefined;
+  const reachesNext = shift ? shiftWindow(next, tz, toShift(shift)).start <= eventTime : false;
+  return recalculateRange(db, tenantId, employeeId, from, reachesNext ? next : today);
 }
 
 /** Employee ids visible to a manager: full recursive reporting subtree. */

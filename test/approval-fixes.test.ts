@@ -93,6 +93,15 @@ describe('F-14 approvals that would stick', () => {
     expect((await mgr.post(`/api/v1/approvals/${id}/act`, { action: 'reject', comment: 'Reassigned to me' })).statusCode).toBe(200);
   });
 
+  it('an administrator can only reassign a request nobody can act on; the fallback owner any', async () => {
+    const T = await createTenant();
+    const id = await create(T, 'employee', [{ kind: 'permission', permission: 'leave.approve' }]);
+    const admin = await login(T, 'admin');
+    const body = { userId: T.users.manager!.id, reason: 'Moving it along' };
+    expect((await admin.post(`/api/v1/approvals/${id}/reassign`, body)).statusCode).toBe(409);
+    expect((await (await login(T, 'hr')).post(`/api/v1/approvals/${id}/reassign`, body)).statusCode).toBe(200);
+  });
+
   it('the job moves a group step when its last holder has gone, even with escalation off', async () => {
     const T = await createTenant();
     const hr = await login(T, 'hr');

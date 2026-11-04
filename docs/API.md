@@ -42,6 +42,7 @@ Base path `/api/v1`. JSON in and out. Each installation serves one organization;
 | POST `/payroll/runs/:id/reopen` | `payroll.manage` | Approved run back to draft |
 | POST `/payroll/runs/:id/items/:employeeId/release` | `payroll.approve` | Release held pay after finalize |
 | GET `/payroll/runs/:id/bank-released.csv` | `payroll.read` | Held pay released after finalize |
+| POST `/approvals/:id/reassign` | `approvals.escalations`, or `users.manage` when nobody can act | Hand the active step to a named person |
 | GET `/employees/:id/profile` | profile.self (own) / employees.read | Personal details `{sections: {contacts, addresses, nominees, education, experience}, pending, missing, edit}`; see EMPLOYEE_RECORD.md |
 | PUT `/employees/:id/profile/:section` | employees.manage / profile.self (own) | Replace a section `{items, note?}`: applied (200), or for the employee's own nominees, education and employment history a change for HR approval (202 `{changeId, approvalId}`) |
 | GET `/employees/profile-changes/:id` · POST `/employees/profile-changes/:id/withdraw` | employee / profile.approve / employees.read · employee | Proposed change with the section as it is now · withdraw while pending |

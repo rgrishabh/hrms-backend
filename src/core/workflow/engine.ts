@@ -25,7 +25,7 @@ import { localDate } from '../../modules/attendance/time.js';
  *
  * Nothing waits forever on someone who cannot act. A step for a disabled person, or a group step with no eligible holder,
  * goes to the fallback owner: holders of `approvals.escalations`. If nobody there can act either, the request is still
- * created and administrators are warned; holders of `users.manage` or `approvals.escalations` can reassign it.
+ * created and administrators are warned, and can reassign it; holders of `approvals.escalations` can reassign any request.
  */
 
 export type StepSpec = { kind: 'user'; userId: string } | { kind: 'permission'; permission: string };
@@ -376,8 +376,11 @@ export async function reassignStranded(db: Db, tenantId: string) {
   return moved;
 }
 
-/** An administrator hands the active step to a named person, who can then decide it. It stays on the record. */
-export async function reassignRequest(db: Db, tenantId: string, requestId: string, actorId: string, targetUserId: string, reason: string, audBase: { requestId: string; ip: string }) {
+/**
+ * Hands the active step to a named person, who can then decide it. It stays on the record. Administrators (who are not
+ * in any approval chain by role) may do this only for a request nobody can act on; the fallback owner may at any time.
+ */
+export async function reassignRequest(db: Db, tenantId: string, requestId: string, actorId: string, targetUserId: string, reason: string, audBase: { requestId: string; ip: string }, opts: { onlyIfStuck: boolean }) {
   const req = (await db.query<{ entity_type: string; status: string }>('SELECT entity_type, status FROM approval_requests WHERE tenant_id=$1 AND id=$2 FOR UPDATE', [tenantId, requestId])).rows[0];
   if (!req) throw notFound('Approval request not found');
   if (req.status !== 'pending') throw conflict(`This request is already ${req.status}`);
@@ -387,8 +390,14 @@ export async function reassignRequest(db: Db, tenantId: string, requestId: strin
   if (blocked.has(targetUserId)) throw badRequest('That person cannot act on this request');
   const target = await db.query(`SELECT 1 FROM users WHERE tenant_id=$1 AND id=$2 AND status='active'`, [tenantId, targetUserId]);
   if (!target.rowCount) throw badRequest('Choose an active user');
-  const u = await db.query(`UPDATE approval_steps SET escalated_at=now(), escalated_to=$3, escalated_permission=NULL WHERE tenant_id=$1 AND request_id=$2 AND status='active'`, [tenantId, requestId, targetUserId]);
-  if (!u.rowCount) throw conflict('This request has no active step');
+  const step = (await db.query<ActiveStep>(`SELECT approver_kind, approver_user_id, approver_permission, escalated_to, escalated_permission FROM approval_steps WHERE tenant_id=$1 AND request_id=$2 AND status='active' FOR UPDATE`, [tenantId, requestId])).rows[0];
+  if (!step) throw conflict('This request has no active step');
+  if (opts.onlyIfStuck) {
+    const { direct, delegates } = await stepRecipients(db, tenantId, step, await orgToday(db, tenantId));
+    const able = await db.query(`SELECT 1 FROM users WHERE tenant_id=$1 AND status='active' AND id = ANY($2) AND NOT (id = ANY($3)) LIMIT 1`, [tenantId, [...direct, ...delegates.keys()], [...blocked]]);
+    if (able.rowCount) throw conflict('Someone can still act on this request; only HR can reassign it');
+  }
+  await db.query(`UPDATE approval_steps SET escalated_at=now(), escalated_to=$3, escalated_permission=NULL WHERE tenant_id=$1 AND request_id=$2 AND status='active'`, [tenantId, requestId, targetUserId]);
   await notifyActiveApprovers(db, tenantId, requestId, { onlyEscalation: true });
   await audit(db, { tenantId, actorId, action: 'approval.reassigned', targetType: req.entity_type, metadata: { approvalRequestId: requestId, to: targetUserId, reason }, ...audBase });
 }

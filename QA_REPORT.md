@@ -39,6 +39,23 @@ Each row was reproduced with a failing test before the fix, unless the fix colum
 | D-3 | Competency | S2 | `/competency/check` for an exited employee can say authorized | Employment not checked | Reason "no longer employed", so not authorized | `test/competency.test.ts` "exited staff" |
 | D-4 | Recruitment | S2 | Hiring manager who did not author a requisition submits it; offer or hire on a held or cancelled requisition | Submit lacked the edit check; offer and hire ignored requisition status | Same ownership check; offer create, offer submit and hire need an approved requisition | `test/delegated-fixes.test.ts` |
 | C-1 | HTTP | S3 | `?includeInactive=false`, `?unread=false`, `?exceptionsOnly=false`, `?inline=false`, `?includeRevoked=false` behave as true | `z.coerce.boolean` treats any non-empty string as true | `QueryBool` at all five sites: accepts true, false, 1, 0; anything else is 400 | `test/query-bool.test.ts` (three routes and the schema; `policies` and `competency` share the schema, not separately tested) |
+| 4.2-A1 | Attendance | S3 | Punch at 23:50 for a shift starting 00:30: that work date is not recalculated until the next punch | `candidateDates` covered only the local date and the day before | The next day is included when its shift window already holds the punch | `test/attendance-fixes.test.ts` |
+
+## Reviewed, not changed
+
+| ID | Audit claim | Finding |
+|---|---|---|
+| 4.2-A2 | `channel:'web'` skips `mobile_location_mode='required'` | Confirmed by reading the route, not by a test: `channel` is client-chosen. No change, as it is a policy decision and not a defect in isolation: `attendance.web` is on, and web punches never carry location. A site that requires location should disable `attendance.web`. Binding `required` to every channel would break desktop clock-in, so the choice is the product owner's |
+| 4.2-Lo1 | Recovery can take 100% of net pay | SUSPECTED in the audit. No cap added: it would mean inventing a statutory limit. Listed for a qualified reviewer in `INDIAN_PAYROLL_COMPLIANCE.md` |
+| 4.2-Lo2 | F&F shortfall leaves a loan open, no write-off | A missing feature, not a wrong result. Not added |
+| 4.2-Lo3, Lo4 | Salary below EMI; early closure | The audit marks both as working as designed. Agreed; F-13 removes the caveat on the second |
+| 4.2-P6 | `duePeriod` skips a missed close day | See above: no change here, F-7 removes the money effect |
+| Leave comp-off | No expiry, and year-end lapses comp-off under `carry_forward_max` | Policy, not a bug. Only the leave year was fixed (4.2-L8) |
+| F-14 | Steps frozen at creation when a manager changes | Not re-routed automatically; reassign covers it |
+
+## Audit findings outside this batch's brief, not done
+
+Delegated: no decline path after an accepted offer (`recruitment/routes.ts:627`), anonymization leaving text behind (`:680`), `avg_rating` and blind feedback (`:260`), performance review blockers and goal revival, field duty overlap at approval and its exclusion constraint, travel `new Decimal` 500. Year-end as a scheduled job. TDS YTD true-up, declarations and marginal relief.
 
 ## Property-based tests
 
