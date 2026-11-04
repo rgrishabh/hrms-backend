@@ -24,7 +24,13 @@ export type PfParams = z.infer<typeof RULE_PARAMS.pf>; export type EsiParams = z
 export type PtParams = z.infer<typeof RULE_PARAMS.pt>; export type LwfParams = z.infer<typeof RULE_PARAMS.lwf>; export type TdsParams = z.infer<typeof RULE_PARAMS.tds>;
 
 export interface Component { code: string; name: string; kind: 'earning' | 'deduction'; calc: 'fixed' | 'percent'; base_codes: string[]; prorate: boolean; taxable: boolean; pf_wage: boolean; esi_wage: boolean; position: number }
-export interface Adjustment { kind: 'earning' | 'deduction'; label: string; amount: number; taxable: boolean }
+export interface Adjustment {
+  kind: 'earning' | 'deduction'; label: string; amount: number; taxable: boolean;
+  /** Line code (default ADJn) and basis text, e.g. overtime 'OT'. */
+  code?: string; basis?: string;
+  /** Counts toward ESI contribution wages (not toward the coverage threshold), e.g. overtime where the organization says so. */
+  esiWage?: boolean;
+}
 export interface Line { code: string; name: string; kind: 'earning' | 'deduction' | 'employer'; amount: number; basis?: string }
 export interface CalcInput {
   month: number;                         // 1..12
@@ -74,7 +80,7 @@ export function calculate(i: CalcInput): CalcResult {
     amount.set(c.code, a);
     lines.push({ code: c.code, name: c.name, kind: c.kind, amount: n(a) });
   }
-  for (const [idx, a] of i.adjustments.entries()) lines.push({ code: `ADJ${idx + 1}`, name: a.label, kind: a.kind, amount: n(r0(new Decimal(a.amount))) });
+  for (const [idx, a] of i.adjustments.entries()) lines.push({ code: a.code ?? `ADJ${idx + 1}`, name: a.label, kind: a.kind, amount: n(r0(new Decimal(a.amount))), ...(a.basis ? { basis: a.basis } : {}) });
 
   const sum = (pred: (c: Component) => boolean) => comps.filter((c) => c.kind === 'earning' && pred(c)).reduce((s, c) => s.plus(amount.get(c.code) ?? 0), new Decimal(0));
   const adjEarnings = i.adjustments.filter((a) => a.kind === 'earning');
@@ -82,6 +88,8 @@ export function calculate(i: CalcInput): CalcResult {
   const taxableMonthly = sum((c) => c.taxable).plus(adjEarnings.filter((a) => a.taxable).reduce((s, a) => s.plus(r0(new Decimal(a.amount))), new Decimal(0)));
   const pfWage = sum((c) => c.pf_wage);
   const esiWage = sum((c) => c.esi_wage);
+  // Coverage is decided on the regular ESI wages; contributions also apply to earnings flagged esiWage (overtime).
+  const esiContribution = esiWage.plus(adjEarnings.filter((a) => a.esiWage).reduce((s, a) => s.plus(r0(new Decimal(a.amount))), new Decimal(0)));
   const missingRule = (k: RuleKind, what: string) => { if (i.expect.includes(k)) warnings.push(`${what}: no active, verified ${k.toUpperCase()} rule for this period — not deducted`); };
 
   // PF
@@ -102,8 +110,8 @@ export function calculate(i: CalcInput): CalcResult {
   if (!i.rules.esi) missingRule('esi', 'ESI');
   else if (esiWage.gt(0) && esiWage.lte(i.rules.esi.wageThreshold)) {
     const e = i.rules.esi; const rnd = e.rounding === 'up' ? up0 : r0;
-    lines.push({ code: 'ESI_EE', name: 'ESI (employee)', kind: 'deduction', amount: n(rnd(esiWage.times(e.employeeRate).div(100))), basis: `ESI wages ${n(esiWage)}` });
-    lines.push({ code: 'ESI_ER', name: 'ESI (employer)', kind: 'employer', amount: n(rnd(esiWage.times(e.employerRate).div(100))) });
+    lines.push({ code: 'ESI_EE', name: 'ESI (employee)', kind: 'deduction', amount: n(rnd(esiContribution.times(e.employeeRate).div(100))), basis: `ESI wages ${n(esiContribution)}` });
+    lines.push({ code: 'ESI_ER', name: 'ESI (employer)', kind: 'employer', amount: n(rnd(esiContribution.times(e.employerRate).div(100))) });
   }
   // Professional tax (state)
   if (!i.statutory.ptState) { if (i.expect.includes('pt')) warnings.push('PT: no state for this employee'); }

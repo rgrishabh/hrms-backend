@@ -71,6 +71,11 @@ export const PERMISSIONS = {
   'competency.assess': 'Record competency assessments and request technical authorizations',
   'competency.authorize': 'Grant, suspend and withdraw technical authorizations (quality)',
   // leave
+  'overtime.self': 'Claim own overtime',
+  'overtime.team.read': 'View overtime claims of reporting team',
+  'overtime.read': 'View overtime claims of all employees',
+  'overtime.approve': 'Approve overtime claims at HR level',
+  'overtime.manage': 'Configure overtime pay and cancel approved claims',
   'leave.self': 'Apply for leave and view own balances',
   'leave.team.read': 'View leave of reporting team',
   'leave.read': 'View leave of all employees',
@@ -82,7 +87,7 @@ export type Permission = keyof typeof PERMISSIONS;
 export const ALL_PERMISSIONS = Object.keys(PERMISSIONS) as Permission[];
 
 const P = (...p: Permission[]) => p;
-const SELF = P('attendance.self', 'employees.directory', 'leave.self', 'documents.self', 'expenses.self', 'competency.self', 'policies.self', 'lifecycle.self', 'payslips.self', 'cases.self', 'performance.self', 'assets.self');
+const SELF = P('attendance.self', 'employees.directory', 'leave.self', 'documents.self', 'expenses.self', 'competency.self', 'policies.self', 'lifecycle.self', 'payslips.self', 'cases.self', 'performance.self', 'assets.self', 'overtime.self');
 
 export interface RoleDefinition { key: string; name: string; scope: 'tenant'; permissions: readonly Permission[] }
 
@@ -95,26 +100,27 @@ export const SYSTEM_ROLES: readonly RoleDefinition[] = [
     'attendance.recalculate', 'attendance.approve', 'attendance.configure', 'audit.read', 'leave.read', 'leave.approve', 'leave.manage', 'documents.read', 'documents.restricted', 'documents.manage', 'training.manage', 'competency.read',
     'policies.read', 'policies.manage', 'policies.publish',
     'recruitment.requisition', 'recruitment.read', 'recruitment.manage', 'recruitment.approve', 'recruitment.compensation',
-    'lifecycle.read', 'lifecycle.manage', 'payroll.read', 'grievance.manage', 'posh.admin', 'performance.manage', 'assets.manage') },
+    'lifecycle.read', 'lifecycle.manage', 'payroll.read', 'grievance.manage', 'posh.admin', 'performance.manage', 'assets.manage',
+    'overtime.read', 'overtime.approve', 'overtime.manage') },
   { key: 'hr_executive', name: 'HR Executive', scope: 'tenant', permissions: P(...SELF, 'org.read', 'employees.read', 'employees.manage',
     'attendance.read', 'attendance.recalculate', 'attendance.approve', 'leave.read', 'leave.approve', 'documents.read', 'documents.manage', 'training.manage', 'policies.read', 'policies.manage',
-    'recruitment.requisition', 'recruitment.read', 'recruitment.manage', 'lifecycle.read', 'lifecycle.manage') },
+    'recruitment.requisition', 'recruitment.read', 'recruitment.manage', 'lifecycle.read', 'lifecycle.manage', 'overtime.read') },
   { key: 'payroll_manager', name: 'Payroll Manager', scope: 'tenant', permissions: P(...SELF, 'org.read', 'employees.read', 'employees.bank.read', 'payroll.read', 'payroll.manage', 'payroll.statutory',
-    'attendance.read', 'attendance.lock', 'leave.read', 'documents.read', 'expenses.read', 'expenses.pay') },
+    'attendance.read', 'attendance.lock', 'leave.read', 'documents.read', 'expenses.read', 'expenses.pay', 'overtime.read') },
   { key: 'finance_manager', name: 'Finance Manager', scope: 'tenant', permissions: P(...SELF, 'org.read', 'recruitment.compensation', 'payroll.read', 'payroll.approve', 'payroll.statutory', 'expenses.read', 'expenses.approve', 'expenses.pay', 'expenses.manage') },
-  { key: 'department_head', name: 'Department Head', scope: 'tenant', permissions: P(...SELF, 'org.read', 'attendance.team.read', 'leave.team.read', 'expenses.team.read', 'recruitment.requisition') },
-  { key: 'laboratory_manager', name: 'Laboratory Manager', scope: 'tenant', permissions: P(...SELF, 'org.read', 'attendance.team.read', 'leave.team.read', 'expenses.team.read',
+  { key: 'department_head', name: 'Department Head', scope: 'tenant', permissions: P(...SELF, 'org.read', 'attendance.team.read', 'leave.team.read', 'expenses.team.read', 'overtime.team.read', 'recruitment.requisition') },
+  { key: 'laboratory_manager', name: 'Laboratory Manager', scope: 'tenant', permissions: P(...SELF, 'org.read', 'attendance.team.read', 'leave.team.read', 'expenses.team.read', 'overtime.team.read',
     'training.manage', 'competency.read', 'competency.assess', 'recruitment.requisition') },
   { key: 'quality_manager', name: 'Quality Manager', scope: 'tenant', permissions: P(...SELF, 'org.read', 'training.manage',
     'competency.read', 'competency.manage', 'competency.assess', 'competency.authorize', 'policies.read', 'policies.manage', 'policies.publish') },
-  { key: 'reporting_manager', name: 'Reporting Manager', scope: 'tenant', permissions: P(...SELF, 'attendance.team.read', 'leave.team.read', 'expenses.team.read', 'recruitment.requisition') },
+  { key: 'reporting_manager', name: 'Reporting Manager', scope: 'tenant', permissions: P(...SELF, 'attendance.team.read', 'leave.team.read', 'expenses.team.read', 'overtime.team.read', 'recruitment.requisition') },
   // Management sign-off on hiring (e.g. the laboratory director): approves requisitions and offers, sees compensation, cannot change the pipeline.
   // A second approver besides HR, so an offer drafted by the only HR administrator can still be approved (never by its requester).
   { key: 'hiring_approver', name: 'Hiring Approver', scope: 'tenant', permissions: P(...SELF, 'org.read', 'recruitment.read', 'recruitment.approve', 'recruitment.compensation') },
   { key: 'it_admin', name: 'IT Administrator', scope: 'tenant', permissions: P(...SELF, 'settings.read', 'users.manage', 'attendance.devices.manage', 'org.read', 'assets.manage') },
   { key: 'employee', name: 'Employee', scope: 'tenant', permissions: SELF },
   { key: 'auditor', name: 'Auditor / Read-only Reviewer', scope: 'tenant', permissions: P(...SELF, 'settings.read', 'audit.read', 'org.read',
-    'employees.read', 'attendance.read', 'leave.read', 'documents.read', 'expenses.read', 'competency.read', 'policies.read', 'recruitment.read', 'lifecycle.read', 'payroll.read') },
+    'employees.read', 'attendance.read', 'leave.read', 'documents.read', 'expenses.read', 'competency.read', 'policies.read', 'recruitment.read', 'lifecycle.read', 'payroll.read', 'overtime.read') },
 ];
 
 export const SYSTEM_ROLE_MAP: ReadonlyMap<string, RoleDefinition> = new Map(SYSTEM_ROLES.map((r) => [r.key, r]));

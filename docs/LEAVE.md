@@ -67,6 +67,10 @@ The `leave.accrual` background job runs on the 1st of every month at 02:00 (catc
 | `leave.approve` | HR Admin, HR Executive | Approve when the employee has no manager login |
 | `leave.manage` | HR Admin | Types, accruals, year-end, adjustments, apply on behalf, cancel any |
 
+## Compensatory off
+
+Earned from approved overtime taken as time off (docs/OVERTIME.md): credited as an `adjustment` ledger entry to the leave type in `overtime.comp_off_leave_type`, reversed if the claim is cancelled.
+
 ## Not yet implemented
 
-Compensatory off earned from overtime, leave encashment (needs payroll), medical certificate attachments (needs document storage), email notifications and restricted/optional holiday quotas.
+Leave encashment (needs payroll), medical certificate attachments (needs document storage), email notifications and restricted/optional holiday quotas.

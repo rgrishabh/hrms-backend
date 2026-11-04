@@ -13,7 +13,7 @@ let app: FastifyInstance; let c: pg.Client;
 let tid: string; let host: string;
 
 beforeAll(async () => {
-  app = await makeApp({ ENABLED_MODULES: 'default,leave' });
+  app = await makeApp({ ENABLED_MODULES: 'default,leave,overtime' });
   c = new pg.Client({ connectionString: TEST_OWNER_URL });
   await c.connect();
   // A bare, freshly bootstrapped organization: domain + one administrator, no employees.
@@ -56,5 +56,12 @@ describe('demo data generator', () => {
     expect(bal.items.map((i: { code: string }) => i.code)).toEqual(expect.arrayContaining(['CL', 'SL', 'EL']));
     const att = (await analyst.get(`/api/v1/attendance/me?from=${addDays(today, -10)}&to=${addDays(today, -1)}`)).json();
     expect(att.days.length).toBeGreaterThan(0);
+    // overtime: an approved compensatory off already credited, and late evenings still to claim
+    const mine = (await analyst.get('/api/v1/overtime/claims')).json().items;
+    expect(mine).toEqual([expect.objectContaining({ status: 'approved', payout: 'comp_off' })]);
+    expect(bal.items.find((i: { code: string }) => i.code === 'COMP')?.available).toBeTruthy();
+    const e = (await analyst.get('/api/v1/overtime/eligible')).json();
+    expect(e.items.filter((d: { overtime_minutes: number }) => d.overtime_minutes >= 240).length).toBeGreaterThan(0);
+    expect(e.payout).toMatchObject({ pay: false, compOff: { code: 'COMP' } }); // pay rate is the organization's to set
   });
 });
