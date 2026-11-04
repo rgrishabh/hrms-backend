@@ -13,6 +13,7 @@ case "$cmd" in
                   exec wget -qO /dev/null "http://127.0.0.1:${PORT:-4000}/health" ;;
   migrate)        exec node dist/src/db/migrate.js "$@" ;;
   migrate-status) exec node dist/src/db/migrate.js --status "$@" ;;
+  rotate-keys)    exec node dist/src/db/rotate-keys.js "$@" ;;
   provision)      exec node dist/src/db/provision.js "$@" ;;
   bootstrap)      exec node dist/src/db/bootstrap.js "$@" ;;
   demo)           exec node dist/src/db/demo.js "$@" ;;   # dev/demo only: needs DEMO_DATA_ALLOWED=true

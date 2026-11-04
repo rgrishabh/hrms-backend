@@ -6,6 +6,9 @@ import { fileURLToPath } from 'node:url';
 import pg from 'pg';
 import { syncFeatureDefinitions } from '../core/features/sync.js';
 import { pgSsl } from './ssl.js';
+import { CODE_MIGRATIONS, type CodeMigrationContext } from './code-migrations.js';
+import type { FieldCipher } from '../core/crypto/index.js';
+import { loadFieldCipherFromProcess } from '../core/crypto/keys.js';
 
 /** apps/api/migrations, whether running from src/db (tsx) or dist/src/db (compiled). */
 function findMigrationsDir(): string {
@@ -22,7 +25,7 @@ const MIGRATIONS_DIR = findMigrationsDir();
 
 let shippedCache: string[] | null = null;
 async function shippedMigrations(): Promise<string[]> {
-  shippedCache ??= (await readdir(MIGRATIONS_DIR)).filter((f) => f.endsWith('.sql')).sort();
+  shippedCache ??= [...(await readdir(MIGRATIONS_DIR)).filter((f) => f.endsWith('.sql')), ...CODE_MIGRATIONS.map((m) => m.name)].sort();
   return shippedCache;
 }
 
@@ -39,11 +42,19 @@ export async function migrationStatus(db: { query: pg.Pool['query'] } | pg.Clien
   return { applied: applied.length, pending: shipped.filter((f) => !set.has(f)), unknown: applied.filter((a) => !shipped.includes(a)).sort() };
 }
 
+export interface MigrateOptions {
+  /** The key for code migrations. Default: from the process's variables, and only if a step needs it. */
+  cipher?: FieldCipher;
+  /** Stop after this migration (tests, and a staged rollout of the expand step). */
+  until?: string;
+}
+
 /**
- * Forward-only SQL migrations, each in its own transaction, recorded with a
- * checksum. An edited, already-applied migration aborts the run.
+ * Forward-only migrations in name order: SQL files, each in its own transaction and recorded with a checksum (an edited,
+ * already-applied file aborts the run), and typed code steps (code-migrations.ts) for what SQL cannot do. A code step commits
+ * its own batches and is only recorded when it finishes, so an interrupted one resumes on the next run.
  */
-export async function migrate(connectionString: string, log: (m: string) => void = console.log): Promise<void> {
+export async function migrate(connectionString: string, log: (m: string) => void = console.log, opts: MigrateOptions = {}): Promise<void> {
   const client = new pg.Client({ connectionString, ssl: pgSsl() });
   await client.connect();
   try {
@@ -53,8 +64,27 @@ export async function migrate(connectionString: string, log: (m: string) => void
     await client.query(`SELECT pg_advisory_lock(727274)`);
     const applied = new Map((await client.query<{ name: string; checksum: string }>(
       'SELECT name, checksum FROM schema_migrations')).rows.map((r) => [r.name, r.checksum]));
-    const files = (await readdir(MIGRATIONS_DIR)).filter((f) => f.endsWith('.sql')).sort();
+    const code = new Map(CODE_MIGRATIONS.map((m) => [m.name, m]));
+    const files = [...(await readdir(MIGRATIONS_DIR)).filter((f) => f.endsWith('.sql')), ...code.keys()].sort();
+    let cipher = opts.cipher;
+    const ctx: CodeMigrationContext = { client, log, cipher: async () => (cipher ??= await loadFieldCipherFromProcess()) };
     for (const file of files) {
+      if (opts.until && file > opts.until) break;
+      const step = code.get(file);
+      if (step) {
+        const prev = applied.get(file);
+        if (prev && prev !== step.checksum) throw new Error(`Migration ${file} was modified after being applied`);
+        if (prev) continue;
+        log(`applying ${file}`);
+        try {
+          await step.up(ctx);
+          await client.query('INSERT INTO schema_migrations (name, checksum) VALUES ($1, $2)', [file, step.checksum]);
+        } catch (err) {
+          await client.query('ROLLBACK').catch(() => undefined);
+          throw new Error(`Migration ${file} failed: ${(err as Error).message}`);
+        }
+        continue;
+      }
       const sql = await readFile(path.join(MIGRATIONS_DIR, file), 'utf8');
       const checksum = createHash('sha256').update(sql).digest('hex');
       const prev = applied.get(file);

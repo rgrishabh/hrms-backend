@@ -32,24 +32,63 @@ export function safeEqualHex(a: string, b: string): boolean {
   return x.length === y.length && timingSafeEqual(x, y);
 }
 
-/** Field-level encryption (AES-256-GCM) for restricted values such as bank account numbers. */
+export const keyIdOf = (key: Buffer) => createHash('sha256').update(key).digest('hex').slice(0, 12);
+
+/**
+ * Field-level encryption, AES-256-GCM. Each ciphertext names the key it was sealed with (`v2.<keyId>.<iv>.<tag>.<data>`),
+ * so a rotation can run while old values are still readable. `v1` tokens predate key ids: they are tried against every
+ * loaded key until `rotate-keys` has rewritten them. Synchronous on purpose: the key is unwrapped once at startup (keys.ts).
+ */
 export class FieldCipher {
-  private key: Buffer;
-  constructor(base64Key: string) {
-    this.key = Buffer.from(base64Key, 'base64');
-    if (this.key.length !== 32) throw new Error('Field encryption key must be 32 bytes');
+  private keys = new Map<string, Buffer>();
+  readonly activeKeyId: string;
+  constructor(base64Key: string, previousBase64Keys: readonly string[] = []) {
+    const load = (b64: string) => {
+      const key = Buffer.from(b64, 'base64');
+      if (key.length !== 32) throw new Error('Field encryption key must be 32 bytes');
+      this.keys.set(keyIdOf(key), key);
+      return keyIdOf(key);
+    };
+    this.activeKeyId = load(base64Key);
+    previousBase64Keys.forEach(load);
   }
   encrypt(plain: string): string {
     const iv = randomBytes(12);
-    const c = createCipheriv('aes-256-gcm', this.key, iv);
+    const c = createCipheriv('aes-256-gcm', this.keys.get(this.activeKeyId)!, iv);
     const enc = Buffer.concat([c.update(plain, 'utf8'), c.final()]);
-    return ['v1', iv.toString('base64'), c.getAuthTag().toString('base64'), enc.toString('base64')].join('.');
+    return ['v2', this.activeKeyId, iv.toString('base64'), c.getAuthTag().toString('base64'), enc.toString('base64')].join('.');
   }
   decrypt(token: string): string {
-    const [v, iv, tag, data] = token.split('.');
-    if (v !== 'v1' || !iv || !tag || !data) throw new Error('Unsupported ciphertext');
-    const d = createDecipheriv('aes-256-gcm', this.key, Buffer.from(iv, 'base64'));
-    d.setAuthTag(Buffer.from(tag, 'base64'));
-    return Buffer.concat([d.update(Buffer.from(data, 'base64')), d.final()]).toString('utf8');
+    const parts = token.split('.');
+    if (parts[0] === 'v2' && parts.length === 5) {
+      const key = this.keys.get(parts[1]!);
+      if (!key) throw new Error(`Ciphertext uses key ${parts[1]}, which is not loaded`);
+      return open(key, parts[2]!, parts[3]!, parts[4]!);
+    }
+    if (parts[0] === 'v1' && parts.length === 4) {
+      for (const key of this.keys.values()) {
+        try { return open(key, parts[1]!, parts[2]!, parts[3]!); } catch { /* the next loaded key may be the one */ }
+      }
+      throw new Error('No loaded key opens this ciphertext');
+    }
+    throw new Error('Unsupported ciphertext');
   }
+  /** Whether a stored value is not yet sealed with the active key. */
+  isStale(token: string) { return !token.startsWith(`v2.${this.activeKeyId}.`); }
 }
+
+function open(key: Buffer, iv: string, tag: string, data: string) {
+  const d = createDecipheriv('aes-256-gcm', key, Buffer.from(iv, 'base64'));
+  d.setAuthTag(Buffer.from(tag, 'base64'));
+  return Buffer.concat([d.update(Buffer.from(data, 'base64')), d.final()]).toString('utf8');
+}
+
+let current: FieldCipher | null = null;
+/** The process's cipher, for code that has no request: payroll services, reports, jobs. Set once at startup. */
+export function setDataCipher(c: FieldCipher) { current = c; }
+export function dataCipher(): FieldCipher {
+  if (!current) throw new Error('The data cipher is not loaded');
+  return current;
+}
+export const sealJson = (v: unknown) => dataCipher().encrypt(JSON.stringify(v));
+export const openJson = <T>(token: string) => JSON.parse(dataCipher().decrypt(token)) as T;

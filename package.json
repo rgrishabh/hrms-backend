@@ -16,10 +16,12 @@
     "demo": "tsx --env-file-if-exists=.env src/db/demo.ts",
     "bootstrap": "tsx --env-file-if-exists=.env src/db/bootstrap.ts",
     "lint": "tsc -p tsconfig.json --noEmit",
-    "migrate:status": "tsx --env-file-if-exists=.env src/db/migrate.ts --status"
+    "migrate:status": "tsx --env-file-if-exists=.env src/db/migrate.ts --status",
+    "rotate-keys": "tsx --env-file-if-exists=.env src/db/rotate-keys.ts"
   },
   "type": "module",
   "dependencies": {
+    "@aws-sdk/client-kms": "^3.1162.0",
     "@aws-sdk/client-s3": "^3.1161.0",
     "@fastify/cookie": "^11.1.5",
     "@fastify/cors": "^11.4.0",

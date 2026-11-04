@@ -59,9 +59,15 @@ const schema = z.object({
     ctx.addIssue({ code: 'custom', message: 'Use false, a number of proxy hops, or comma-separated proxy addresses or CIDRs' });
     return z.NEVER;
   }),
-  /** base64-encoded 32-byte key for field-level encryption (bank account numbers). */
+  /** Development: base64 of a 32-byte data key. Ignored when KMS_KEY_ID is set. */
   DATA_ENCRYPTION_KEY: z.string().refine((v) => Buffer.from(v, 'base64').length === 32,
-    'DATA_ENCRYPTION_KEY must be base64 of exactly 32 bytes (generate: openssl rand -base64 32)'),
+    'DATA_ENCRYPTION_KEY must be base64 of exactly 32 bytes (generate: openssl rand -base64 32)').optional(),
+  /** Keys still needed to read old values during a rotation, comma separated. */
+  DATA_ENCRYPTION_KEY_PREVIOUS: list,
+  /** Production: the data key wrapped by this KMS key, unwrapped once at startup. */
+  KMS_KEY_ID: z.string().optional(),
+  DATA_KEY_CIPHERTEXT: z.string().optional(),
+  DATA_KEY_CIPHERTEXT_PREVIOUS: list,
 
   // ---- processes. The API takes traffic and enqueues; the worker runs jobs and sends mail. Safe with several of each:
   // each run is claimed once in the database.
@@ -162,6 +168,8 @@ export function loadEnv(source: NodeJS.ProcessEnv = process.env): Env {
   const env: Env = { ...rest, MFA_AVAILABLE: MFA_AVAILABLE === undefined ? prod : MFA_AVAILABLE === 'true', enabledFeatures: flags.features,
     MFA_METHODS: rest.MFA_METHODS.length || !prod ? rest.MFA_METHODS : ['totp', 'email'] };
   const problems: string[] = [...early];
+  if (!!env.KMS_KEY_ID !== !!env.DATA_KEY_CIPHERTEXT) problems.push('Set both KMS_KEY_ID and DATA_KEY_CIPHERTEXT, or neither');
+  if (!env.KMS_KEY_ID && !env.DATA_ENCRYPTION_KEY) problems.push('DATA_ENCRYPTION_KEY: set it, or KMS_KEY_ID and DATA_KEY_CIPHERTEXT (generate a key: openssl rand -base64 32)');
   if (env.MFA_ENFORCED && !env.MFA_AVAILABLE) problems.push('MFA_ENFORCED=true is invalid with MFA_AVAILABLE=false');
   for (const m of env.MFA_METHODS) if (m !== 'totp' && m !== 'email') problems.push(`MFA_METHODS: '${m}' is not one of totp, email`);
   if (!!env.VAPID_PUBLIC_KEY !== !!env.VAPID_PRIVATE_KEY) problems.push('Set both VAPID_PUBLIC_KEY and VAPID_PRIVATE_KEY, or neither');
