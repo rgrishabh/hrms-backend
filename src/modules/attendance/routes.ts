@@ -189,6 +189,10 @@ export async function attendanceRoutes(app: FastifyInstance) {
       const pending = await db.query<{ n: string }>(`SELECT count(*) AS n FROM attendance_regularizations WHERE tenant_id=$1 AND status='pending' AND work_date BETWEEN $2 AND $3`,
         [a.tenantId, body.periodStart, body.periodEnd]);
       if (Number(pending.rows[0]!.n) > 0) throw conflict(`${pending.rows[0]!.n} regularization request(s) in this period are still pending. Resolve them before locking.`);
+      // Leave cannot be approved once its dates are locked, which would leave the person absent with loss of pay.
+      const pendingLeave = await db.query<{ n: string }>(`SELECT count(*) AS n FROM leave_requests WHERE tenant_id=$1 AND status='pending' AND start_date <= $3 AND end_date >= $2`,
+        [a.tenantId, body.periodStart, body.periodEnd]);
+      if (Number(pendingLeave.rows[0]!.n) > 0) throw conflict(`${pendingLeave.rows[0]!.n} leave request(s) in this period are still pending. Resolve them before locking.`);
       const emps = await db.query<{ id: string }>(`SELECT id FROM employees WHERE tenant_id=$1 AND date_of_joining <= $3 AND (exit_date IS NULL OR exit_date >= $2)`,
         [a.tenantId, body.periodStart, body.periodEnd]);
       for (const e of emps.rows) await recalculateRange(db, a.tenantId, e.id, body.periodStart, body.periodEnd);

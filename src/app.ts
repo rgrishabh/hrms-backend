@@ -160,6 +160,7 @@ export async function buildApp(deps: AppDeps): Promise<FastifyInstance> {
     if (e.code === '23505') {
       return reply.code(409).send({ error: { code: 'duplicate', message: 'A record with these details already exists', details: { constraint: e.constraint } } });
     }
+    if (e.code === '23P01') return reply.code(409).send({ error: { code: 'conflict', message: 'This overlaps an existing record', details: { constraint: e.constraint } } });
     if (e.code === '23503') return reply.code(400).send({ error: { code: 'invalid_reference', message: 'A referenced record does not exist' } });
     if (e.code === '23514') return reply.code(400).send({ error: { code: 'constraint_violation', message: 'The values violate a data rule', details: { constraint: e.constraint } } });
     if (e.statusCode && e.statusCode < 500) {

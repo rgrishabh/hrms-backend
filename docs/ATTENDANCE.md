@@ -79,7 +79,7 @@ An employee requests in and/or out times for a date within `attendance.regulariz
 
 ## Payroll lock
 
-`attendance.lock` (Payroll Manager) locks a period of at most 62 days. Locking fails if it overlaps another lock or if any regularization in the period is pending. All employees are recalculated for the period, then rows are marked `locked`. Locked dates reject regularizations, shift assignments starting inside them, holiday changes, and recalculation.
+`attendance.lock` (Payroll Manager) locks a period of at most 62 days. Locking fails if it overlaps another lock or if any regularization or leave request in the period is pending. All employees are recalculated for the period, then rows are marked `locked`. Locked dates reject regularizations, shift assignments starting inside them, holiday changes, and recalculation.
 
 ## Known limitations
 

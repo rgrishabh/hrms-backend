@@ -51,6 +51,8 @@ async function assertCanView(db: Db, a: TenantActor, employeeId: string) {
   throw forbidden();
 }
 
+const lockEmployeeLeave = (db: Db, tenantId: string, employeeId: string) => db.query('SELECT 1 FROM employees WHERE tenant_id=$1 AND id=$2 FOR NO KEY UPDATE', [tenantId, employeeId]);
+
 async function loadType(db: Db, tenantId: string, id: string) {
   const t = (await db.query<LeaveType>(`SELECT ${LEAVE_TYPE_COLS} FROM leave_types WHERE tenant_id=$1 AND id=$2`, [tenantId, id])).rows[0];
   if (!t) throw notFound('Leave type not found');
@@ -58,10 +60,12 @@ async function loadType(db: Db, tenantId: string, id: string) {
 }
 
 /** Shared validation for preview and submit. */
-async function evaluateRequest(db: Db, a: TenantActor, body: z.infer<typeof RequestBody>, opts: { excludeRequestId?: string } = {}) {
+async function evaluateRequest(db: Db, a: TenantActor, body: z.infer<typeof RequestBody>, opts: { excludeRequestId?: string; lock?: boolean } = {}) {
   const employeeId = body.employeeId ?? a.user.employeeId;
   if (!employeeId) throw badRequest('Your account is not linked to an employee record');
   if (body.employeeId && body.employeeId !== a.user.employeeId && !a.has('leave.manage')) throw forbidden('You can only apply for your own leave');
+  // Submissions and approvals for one employee take turns, so the balance each one checks is still true when it writes.
+  if (opts.lock) await lockEmployeeLeave(db, a.tenantId, employeeId);
   const e = await loadEmployee(db, a.tenantId, employeeId);
   if (!e) throw notFound('Employee not found');
   if (!['active', 'on_notice'].includes(e.status)) throw badRequest('Leave can only be requested for active employees');
@@ -90,10 +94,16 @@ async function evaluateRequest(db: Db, a: TenantActor, body: z.infer<typeof Requ
   if (days.isZero()) throw badRequest('The selected dates contain no working days');
   if (t.max_consecutive_days !== null && days.greaterThan(t.max_consecutive_days)) throw badRequest(`${t.name} allows at most ${t.max_consecutive_days} day(s) at a time`);
   if ((await lockedDates(db, a.tenantId, body.startDate, body.endDate)).size) throw conflict('These dates are in a period locked for payroll');
-  const overlap = await db.query<{ start_date: string; end_date: string; status: string }>(`SELECT start_date, end_date, status FROM leave_requests
-    WHERE tenant_id=$1 AND employee_id=$2 AND status IN ('pending','approved') AND start_date <= $4 AND end_date >= $3 AND ($5::uuid IS NULL OR id <> $5)`,
-    [a.tenantId, e.id, body.startDate, body.endDate, opts.excludeRequestId ?? null]);
-  if (overlap.rowCount) throw conflict(`Overlaps an existing ${overlap.rows[0]!.status} leave (${overlap.rows[0]!.start_date} to ${overlap.rows[0]!.end_date})`);
+  // Half days are half-day slots: a morning and an afternoon of one date fit together.
+  const sameDates = (await db.query<{ start_date: string; end_date: string; status: string; paid: boolean; clash: boolean }>(`SELECT r.start_date, r.end_date, r.status, lt.paid,
+      leave_half_slots(r.start_date, r.start_half, r.end_date, r.end_half) && leave_half_slots($3::date, $6, $4::date, $7) AS clash
+    FROM leave_requests r JOIN leave_types lt ON lt.tenant_id=r.tenant_id AND lt.id=r.leave_type_id
+    WHERE r.tenant_id=$1 AND r.employee_id=$2 AND r.status IN ('pending','approved') AND r.start_date <= $4 AND r.end_date >= $3 AND ($5::uuid IS NULL OR r.id <> $5)`,
+    [a.tenantId, e.id, body.startDate, body.endDate, opts.excludeRequestId ?? null, body.startHalf, body.endHalf])).rows;
+  const overlap = sameDates.find((x) => x.clash);
+  if (overlap) throw conflict(`Overlaps an existing ${overlap.status} leave (${overlap.start_date} to ${overlap.end_date})`);
+  // Attendance keeps one leave type per date, so loss of pay could not tell a paid half from an unpaid one.
+  if (sameDates.some((x) => x.paid !== t.paid)) throw conflict('A paid and an unpaid half day cannot share a date; apply for the whole day as one type');
   const bal = await balanceOf(db, a.tenantId, e.id, t.id, year, opts.excludeRequestId);
   const sufficient = !t.requires_balance || bal.available.greaterThanOrEqualTo(days);
   return { employee: e, type: t, year, days, perDate, balance: bal, sufficient };
@@ -110,8 +120,10 @@ export async function leaveRoutes(app: FastifyInstance) {
       if ((await lockedDates(db, tenantId, r.start_date, r.end_date)).size) throw conflict('These dates are now locked for payroll; the request cannot be approved');
       const t = await loadType(db, tenantId, r.leave_type_id);
       if (t.requires_balance) {
+        // Against the ledger, not less other pending requests: otherwise two that no longer both fit would block each other.
+        await lockEmployeeLeave(db, tenantId, r.employee_id);
         const bal = await balanceOf(db, tenantId, r.employee_id, r.leave_type_id, r.leave_year, requestId);
-        if (bal.available.lessThan(r.days)) throw conflict(`Insufficient ${t.name} balance (${bal.available.toFixed(1)} available, ${r.days} requested)`);
+        if (bal.balance.lessThan(r.days)) throw conflict(`Insufficient ${t.name} balance (${bal.balance.toFixed(1)} available, ${r.days} requested)`);
       }
       await insertLedgerEntry(db, tenantId, { empId: r.employee_id, typeId: r.leave_type_id, year: r.leave_year, entryType: 'consumption',
         days: new Decimal(r.days).neg(), reference: `request:${requestId}:consume`, requestId, note: `Leave ${r.start_date} to ${r.end_date}`, actorId });
@@ -225,7 +237,7 @@ export async function leaveRoutes(app: FastifyInstance) {
     if (!body.reason) throw badRequest('Please give a reason');
     return a.tx(async (db) => {
       await requireFeature(db, a.tenantId, 'leave');
-      const r = await evaluateRequest(db, a, body);
+      const r = await evaluateRequest(db, a, body, { lock: true });
       if (!r.sufficient) throw conflict(`Insufficient ${r.type.name} balance: ${r.balance.available.toFixed(1)} day(s) available, ${r.days.toFixed(1)} requested`);
       const ins = await db.query<{ id: string }>(`INSERT INTO leave_requests (tenant_id, employee_id, leave_type_id, leave_year, start_date, end_date, start_half, end_half,
           days, reason, requested_by) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) RETURNING id`,

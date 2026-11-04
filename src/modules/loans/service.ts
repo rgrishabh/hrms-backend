@@ -29,12 +29,13 @@ interface Planned { loanId: string; kind: string; amount: Decimal; label: string
 
 /**
  * What a payroll run should recover from one employee: the month's instalment of every disbursed loan whose
- * recovery has started (not in a deferred month), or the whole balance in a full-and-final run.
+ * recovery has started (not in a deferred month), or the whole balance in a full-and-final run. Locks the loans until the
+ * run's transaction ends, so a direct repayment (which locks them too) waits and then sees what this run took.
  */
 export async function plannedRecoveries(db: Db, tenantId: string, runId: string, employeeId: string, period: string, fnf: boolean): Promise<Planned[]> {
   const loans = (await db.query<{ id: string; kind: string; installments: number; installment_amount: string; first_period: string; skip_periods: string[] }>(
     `SELECT id, kind, installments, installment_amount::text, first_period, skip_periods FROM employee_loans
-      WHERE tenant_id=$1 AND employee_id=$2 AND status='disbursed' ORDER BY disbursed_at, id`, [tenantId, employeeId])).rows;
+      WHERE tenant_id=$1 AND employee_id=$2 AND status='disbursed' ORDER BY disbursed_at, id FOR UPDATE`, [tenantId, employeeId])).rows;
   const out: Planned[] = [];
   for (const l of loans) {
     if (!fnf && (period < l.first_period || l.skip_periods.includes(period))) continue;
