@@ -198,7 +198,7 @@ export const GetAttendanceMe200 = z.strictObject({
   timezone: z.string(),
 });
 
-export const GetAttendanceMeToday200 = z.strictObject({
+const AttendanceMeTodayLinked = z.strictObject({
   channels: z.strictObject({
     mobile: z.boolean(),
     web: z.boolean(),
@@ -249,6 +249,9 @@ export const GetAttendanceMeToday200 = z.strictObject({
   timezone: z.string(),
   today: z.string(),
 });
+
+/** Someone with no employee record gets only `linked: false`. */
+export const GetAttendanceMeToday200 = z.union([AttendanceMeTodayLinked, z.strictObject({ linked: z.literal(false) })]);
 
 export const GetAuthMe200 = z.strictObject({
   capabilities: z.record(z.string(), z.unknown()),
@@ -442,27 +445,31 @@ export const GetDocumentsCategories200 = z.strictObject({
 
 export const GetEmployeesById200 = z.record(z.string(), z.unknown());
 
-export const GetEmployeesByIdBankAccount200 = z.strictObject({
-  accountHolder: z.string().nullable(),
-  accountNumber: z.string().nullable(),
-  accountNumberMasked: z.string(),
-  bankName: z.unknown().optional(),
-  ifsc: z.string().nullable(),
-  masked: z.boolean().optional(),
-  maskedFields: z.array(z.string()).optional(),
-  updatedAt: z.string(),
-});
-
-export const GetEmployeesByIdBankAccountPending200 = z.strictObject({
-  pending: z.strictObject({
-    accountHolder: z.string(),
+export const GetEmployeesByIdBankAccount200 = z
+  .strictObject({
+    accountHolder: z.string().nullable(),
+    accountNumber: z.string().nullable(),
     accountNumberMasked: z.string(),
     bankName: z.unknown().optional(),
-    id: z.string(),
-    ifsc: z.string(),
-    requestedAt: z.string(),
-    requestedBy: z.string(),
-  }),
+    ifsc: z.string().nullable(),
+    masked: z.boolean().optional(),
+    maskedFields: z.array(z.string()).optional(),
+    updatedAt: z.string(),
+  })
+  .nullable();
+
+export const GetEmployeesByIdBankAccountPending200 = z.strictObject({
+  pending: z
+    .strictObject({
+      accountHolder: z.string(),
+      accountNumberMasked: z.string(),
+      bankName: z.unknown().optional(),
+      id: z.string(),
+      ifsc: z.string(),
+      requestedAt: z.string(),
+      requestedBy: z.string(),
+    })
+    .nullable(),
 });
 
 export const GetEmployeesByIdProfile200 = z.strictObject({
@@ -528,7 +535,7 @@ export const GetEmployeesByIdProfile200 = z.strictObject({
     nominees: z.array(
       z.strictObject({
         address: z.unknown().optional(),
-        dateOfBirth: z.string(),
+        dateOfBirth: z.string().nullable(),
         guardianName: z.string().nullable(),
         name: z.string(),
         purpose: z.string(),
@@ -736,27 +743,29 @@ export const GetLeaveTypes200 = z.strictObject({
 export const GetLoansRequests200 = z.strictObject({
   items: z.array(
     z.strictObject({
-      amount: z.string(),
+      amount: z.string().nullable(),
       approval_request_id: z.unknown().optional(),
       cancel_reason: z.unknown().optional(),
       closed_at: z.unknown().optional(),
       created_at: z.string(),
-      decided_at: z.string(),
-      department: z.string(),
-      disbursed_at: z.string(),
-      disbursement_reference: z.string(),
+      decided_at: z.string().nullable(),
+      department: z.string().nullable(),
+      disbursed_at: z.string().nullable(),
+      disbursement_reference: z.string().nullable(),
       employee_code: z.string(),
       employee_id: z.string(),
-      first_period: z.string(),
+      first_period: z.string().nullable(),
       id: z.string(),
-      installment_amount: z.string(),
-      installments: z.number(),
+      installment_amount: z.string().nullable(),
+      installments: z.number().nullable(),
       kind: z.string(),
+      masked: z.boolean().optional(),
+      maskedFields: z.array(z.string()).optional(),
       name: z.string(),
-      outstanding: z.string(),
-      purpose: z.string(),
-      recorded_by_other: z.boolean(),
-      skip_periods: z.array(z.unknown()),
+      outstanding: z.string().nullable(),
+      purpose: z.string().nullable(),
+      recorded_by_other: z.boolean().nullable(),
+      skip_periods: z.array(z.unknown()).nullable(),
       status: z.string(),
     }),
   ),
@@ -857,13 +866,7 @@ export const GetPayrollEmployeesByIdSalaries200 = z.strictObject({
   total: z.number(),
   items: z.array(
     z.strictObject({
-      amounts: z
-        .strictObject({
-          BASIC: z.number(),
-          HRA: z.number().optional(),
-          SPECIAL: z.number().optional(),
-        })
-        .nullable(),
+      amounts: z.record(z.string(), z.number()).nullable(),
       annual_ctc: z.string().nullable(),
       approved_at: z.string(),
       created_at: z.string(),
@@ -889,7 +892,7 @@ export const GetPayrollEmployeesByIdStatutory200 = z.strictObject({
   pt_state: z.string().nullable(),
   tax_regime: z.string(),
   uan: z.string().nullable(),
-  updated_at: z.string(),
+  updated_at: z.string().optional(),
 });
 
 export const GetPayrollFnfSuggestionsByEmployeeId200 = z.strictObject({
@@ -909,11 +912,7 @@ export const GetPayrollFnfSuggestionsByEmployeeId200 = z.strictObject({
   note: z.string(),
   noticeShortfallDays: z.number(),
   period: z.string(),
-  salary: z
-    .strictObject({
-      BASIC: z.number(),
-    })
-    .nullable(),
+  salary: z.record(z.string(), z.number()).nullable(),
   shortfallWaived: z.boolean(),
   today: z.string(),
 });
@@ -984,15 +983,15 @@ export const GetPayrollRuns200 = z.strictObject({
   total: z.number(),
   items: z.array(
     z.strictObject({
-      computed_at: z.string(),
-      created_by_name: z.string(),
+      computed_at: z.string().nullable(),
+      created_by_name: z.string().nullable(),
       employee_name: z.unknown().optional(),
       excluded: z.number().optional(),
-      finalized_at: z.string(),
+      finalized_at: z.string().nullable(),
       id: z.string(),
       kind: z.string(),
-      released_count: z.number(),
-      legal_entity_name: z.string(),
+      released_count: z.number().nullable(),
+      legal_entity_name: z.string().nullable(),
       masked: z.boolean().optional(),
       maskedFields: z.array(z.string()).optional(),
       paid_at: z.string().nullable(),
@@ -1001,16 +1000,16 @@ export const GetPayrollRuns200 = z.strictObject({
       status: z.string(),
       totals: z
         .strictObject({
-          deductions: z.number(),
-          employees: z.number(),
-          employerCost: z.number(),
-          gross: z.number(),
-          held: z.number(),
-          net: z.number(),
+          deductions: z.number().nullable(),
+          employees: z.number().nullable(),
+          employerCost: z.number().nullable(),
+          gross: z.number().nullable(),
+          held: z.number().nullable(),
+          net: z.number().nullable(),
         })
         .nullable(),
-      warnings: z.number(),
-      warnings_acknowledged: z.boolean(),
+      warnings: z.number().nullable(),
+      warnings_acknowledged: z.boolean().nullable(),
     }),
   ),
 });
@@ -1021,72 +1020,80 @@ export const GetPayrollRunsById200 = z.strictObject({
   total: z.number(),
   adjustments: z.array(
     z.strictObject({
-      amount: z.string(),
-      created_by_name: z.string(),
+      amount: z.string().nullable(),
+      created_by_name: z.string().nullable(),
       employee_id: z.string(),
       id: z.string(),
       kind: z.string(),
-      label: z.string(),
+      label: z.string().nullable(),
       note: z.unknown().optional(),
-      taxable: z.boolean(),
+      taxable: z.boolean().nullable(),
     }),
   ),
   approved_at: z.string().nullable(),
-  attendanceLocked: z.boolean(),
-  computed_at: z.string(),
+  attendanceLocked: z.boolean().nullable(),
+  computed_at: z.string().nullable(),
   computed_by: z.string().nullable(),
   created_at: z.string(),
-  created_by: z.string(),
+  created_by: z.string().nullable(),
   employee_id: z.string().nullable(),
   excluded: z.number(),
   finalized_at: z.string().nullable(),
   id: z.string(),
   items: z.array(
     z.strictObject({
-      deductions: z.string(),
-      employed_days: z.string(),
+      deductions: z.string().nullable(),
+      employed_days: z.string().nullable(),
       employee_code: z.string(),
       employee_id: z.string(),
-      employee_name: z.string(),
-      employer_cost: z.string(),
-      gross: z.string(),
-      hold: z.boolean(),
+      employee_name: z.string().nullable(),
+      employer_cost: z.string().nullable(),
+      gross: z.string().nullable(),
+      hold: z.boolean().nullable(),
+      masked: z.boolean().optional(),
+      maskedFields: z.array(z.string()).optional(),
       hold_released_at: z.string().nullable().optional(),
       id: z.string(),
-      lines: z.array(
-        z.strictObject({
-          amount: z.number(),
-          basis: z.string().optional(),
-          code: z.string(),
-          kind: z.string(),
-          name: z.string(),
-        }),
-      ),
-      lop_days: z.string(),
-      net: z.string(),
-      paid_days: z.string(),
-      warnings: z.array(z.string()),
+      lines: z
+        .array(
+          z.strictObject({
+            amount: z.number().nullable(),
+            basis: z.string().optional(),
+            code: z.string().nullable(),
+            kind: z.string(),
+            name: z.string(),
+          }),
+        )
+        .nullable(),
+      lop_days: z.string().nullable(),
+      net: z.string().nullable(),
+      paid_days: z.string().nullable(),
+      warnings: z.array(z.string()).nullable(),
     }),
   ),
   kind: z.string(),
   legal_entity_id: z.string(),
-  released_count: z.number(),
-  legal_entity_name: z.string(),
+  released_count: z.number().nullable(),
+  legal_entity_name: z.string().nullable(),
   paid_at: z.string().nullable(),
   payment_reference: z.unknown().optional(),
   period: z.string(),
   status: z.string(),
-  tenant_id: z.string(),
-  totals: z.strictObject({
-    deductions: z.number(),
-    employees: z.number(),
-    employerCost: z.number(),
-    gross: z.number(),
-    held: z.number(),
-    net: z.number(),
-  }),
-  warnings: z.number(),
-  warnings_acknowledged: z.boolean(),
+  tenant_id: z.string().nullable(),
+  totals: z
+    .strictObject({
+      deductions: z.number().nullable(),
+      employees: z.number().nullable(),
+      employerCost: z.number().nullable(),
+      gross: z.number().nullable(),
+      held: z.number().nullable(),
+      net: z.number().nullable(),
+    })
+    .nullable(),
+  masked: z.boolean().optional(),
+  maskedFields: z.array(z.string()).optional(),
+  warnings: z.number().nullable(),
+  warnings_acknowledged: z.boolean().nullable(),
 });
 
 export const GetPolicies200 = z.strictObject({
@@ -1112,7 +1119,7 @@ export const GetPolicies200 = z.strictObject({
 });
 
 export const GetPoliciesMine200 = z.strictObject({
-  date: z.string(),
+  date: z.string().optional(),
   items: z.array(
     z.strictObject({
       acknowledged_at: z.string().nullable(),
@@ -1128,7 +1135,7 @@ export const GetPoliciesMine200 = z.strictObject({
       version_no: z.number(),
     }),
   ),
-  overdue: z.number(),
+  overdue: z.number().optional(),
   pending: z.number(),
 });
 
