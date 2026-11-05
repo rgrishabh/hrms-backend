@@ -166,8 +166,8 @@ describe('export', () => {
     while (offset !== null) {
       const page: { sections: { rows: { id: string }[]; nextOffset: number | null }[] } = (await c.get(url(id, `?section=attendance_punches&limit=3&offset=${offset}`))).json();
       expect(page.sections).toHaveLength(1);
-      for (const row of page.sections[0].rows) seen.add(row.id);
-      offset = page.sections[0].nextOffset;
+      for (const row of page.sections[0]!.rows) seen.add(row.id);
+      offset = page.sections[0]!.nextOffset;
     }
     expect(seen.size).toBe(8);
     expect((await c.get(url(id, '?section=nothing'))).statusCode).toBe(400);
