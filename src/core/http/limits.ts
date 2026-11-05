@@ -15,4 +15,4 @@ export function perUserLimit(app: FastifyInstance, name: string, max: number) {
 }
 
 /** What counts as an export: a file of many people's data. */
-export const isExportRoute = (method: string, url: string) => method === 'GET' && (/\.(csv|xlsx)$/.test(url) || /\/export(\.\w+)?$/.test(url));
+export const isExportRoute = (method: string, url: string) => method === 'GET' && (/\.(csv|xlsx|pdf)$/.test(url) || /\/export(\.\w+)?$/.test(url));

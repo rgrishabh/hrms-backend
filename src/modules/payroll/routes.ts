@@ -23,9 +23,12 @@ import { getSettingValue } from '../../core/settings/service.js';
 import { isOwnerRole } from '../../core/auth/permissions.js';
 import { isCollapsedMode } from '../../core/policy/mode.js';
 import { assertMayChangeSubject, auditL4, l4RowFilter, maskFields, policyViewer, readContext, refuseHigherLevel, subjectVisible, wantsReveal } from '../../core/policy/salary.js';
+import { loadPdfContext, loadPdfIdentity, pdfHeaders } from '../../core/pdf/writer.js';
+import { payslipPdf, type PayslipData } from './payslip-pdf.js';
 import { ITEM_FIELDS, itemFields, openAdjustment, openAmounts, openItem, openTotals, sealAdjustment, sealSalary, visibleRunTotals } from './sealed.js';
 
 const F = 'payroll';
+const PAYSLIP_FIELDS = ['lines', 'gross', 'deductions', 'net', 'uan', 'pan', 'account', 'ifsc'];
 /** The owner of a single-person organization has nobody else to ask: the separation-of-duties refusals do not apply, the audit log does. */
 const soleOwner = (a: TenantActor) => isCollapsedMode() && a.user.roles.some(isOwnerRole);
 const Period = z.string().regex(/^[0-9]{4}-(0[1-9]|1[0-2])$/, 'Use YYYY-MM');
@@ -42,6 +45,36 @@ async function loadRun(db: Db, a: TenantActor, id: string, lock = false) {
     `SELECT id, period, legal_entity_id, kind, employee_id, status, created_by, warnings, warnings_acknowledged, computed_at, computed_by FROM payroll_runs WHERE tenant_id=$1 AND id=$2${lock ? ' FOR UPDATE' : ''}`, [a.tenantId, id])).rows[0];
   if (!r) throw notFound('Payroll run not found');
   return r;
+}
+
+/**
+ * The one rule for a payslip, as JSON or as a file: 404 unless it is yours and final, or you may read pay above this person.
+ * A held payslip and a run not yet final are not there for the employee; staff who may read this person's pay see them.
+ */
+async function payslipAccess(db: Db, a: TenantActor, id: string) {
+  const p = (await db.query<{ employee_id: string; status: string; hold: boolean }>(`SELECT i.employee_id, r.status, i.hold FROM payroll_items i JOIN payroll_runs r ON r.tenant_id=i.tenant_id AND r.id=i.run_id WHERE i.tenant_id=$1 AND i.id=$2`, [a.tenantId, id])).rows[0];
+  const own = !!p && p.employee_id === a.user.employeeId && a.has('payslips.self') && ['finalized', 'paid'].includes(p.status) && !p.hold;
+  if (!p) throw notFound('Payslip not found');
+  const v = await policyViewer(db, a.tenantId, a.user);
+  // Someone else's payslip: the permission, or the manager setting, and always a level above them.
+  const admin = (a.has('payroll.read') || a.has('payroll.manage') || !!v.managedTeam?.includes(p.employee_id)) && p.employee_id !== a.user.employeeId && await subjectVisible(db, a.tenantId, v, p.employee_id);
+  const ownStaffRead = p.employee_id === a.user.employeeId && (a.has('payroll.read') || a.has('payroll.manage'));
+  if (!(own || admin || ownStaffRead)) throw notFound('Payslip not found');
+  if (!admin) await requireFeature(db, a.tenantId, 'payroll.payslips');
+  return { ...p, own };
+}
+
+/** A payslip with its figures open. PAN and account number leave as their last four only. */
+async function payslipBody(db: Db, tenantId: string, id: string): Promise<PayslipData> {
+  const { data_enc, pan_last4, account_last4, ...rest } = (await db.query<Omit<PayslipData, 'lines' | 'gross' | 'deductions' | 'net' | 'pan' | 'account'> & { data_enc: string; pan_last4: string | null; account_last4: string | null }>(`SELECT r.period, r.kind, i.days_in_period, i.employed_days, i.lop_days, i.paid_days, i.data_enc,
+      e.employee_code, trim(e.first_name||' '||coalesce(e.last_name,'')) AS name, e.designation, e.date_of_joining::text, d.name AS department, b.name AS branch, le.name AS legal_entity,
+      s.uan, s.pan_last4, ba.account_last4, ba.ifsc
+    FROM payroll_items i JOIN payroll_runs r ON r.tenant_id=i.tenant_id AND r.id=i.run_id JOIN employees e ON e.tenant_id=i.tenant_id AND e.id=i.employee_id
+    JOIN legal_entities le ON le.tenant_id=r.tenant_id AND le.id=r.legal_entity_id JOIN branches b ON b.tenant_id=e.tenant_id AND b.id=e.branch_id
+    LEFT JOIN departments d ON d.tenant_id=e.tenant_id AND d.id=e.department_id LEFT JOIN employee_statutory s ON s.tenant_id=e.tenant_id AND s.employee_id=e.id
+    LEFT JOIN employee_bank_accounts ba ON ba.tenant_id=e.tenant_id AND ba.employee_id=e.id WHERE i.tenant_id=$1 AND i.id=$2`, [tenantId, id])).rows[0]!;
+  const opened = itemFields(openItem(data_enc));
+  return { ...rest, lines: opened.lines, gross: opened.gross, deductions: opened.deductions, net: opened.net, pan: pan_last4 ? `XXXXXX${pan_last4}X` : null, account: account_last4 ? `XXXXXX${account_last4}` : null };
 }
 
 /** A finalized or paid run has this employee in a month reaching `date`: that pay can no longer change. */
@@ -669,37 +702,34 @@ export async function payrollRoutes(app: FastifyInstance) {
     const a = tenantActor(req);
     const { id } = IdParams.parse(req.params);
     return a.tx(async (db) => {
-      const p = (await db.query<{ employee_id: string; status: string; hold: boolean }>(`SELECT i.employee_id, r.status, i.hold FROM payroll_items i JOIN payroll_runs r ON r.tenant_id=i.tenant_id AND r.id=i.run_id WHERE i.tenant_id=$1 AND i.id=$2`, [a.tenantId, id])).rows[0];
-      const own = !!p && p.employee_id === a.user.employeeId && a.has('payslips.self') && ['finalized', 'paid'].includes(p.status) && !p.hold;
-      if (!p) throw notFound('Payslip not found');
-      const v = await policyViewer(db, a.tenantId, a.user);
-      // Someone else's payslip: the permission, or the manager setting, and always a level above them.
-      const admin = (a.has('payroll.read') || a.has('payroll.manage') || !!v.managedTeam?.includes(p.employee_id)) && p.employee_id !== a.user.employeeId && await subjectVisible(db, a.tenantId, v, p.employee_id);
-      const ownStaffRead = p.employee_id === a.user.employeeId && (a.has('payroll.read') || a.has('payroll.manage'));
-      if (!(own || admin || ownStaffRead)) throw notFound('Payslip not found');
-      if (!admin) await requireFeature(db, a.tenantId, 'payroll.payslips');
-      const { data_enc, ...d } = (await db.query(`SELECT r.period, r.kind, i.days_in_period, i.employed_days, i.lop_days, i.paid_days, i.data_enc,
-          e.employee_code, trim(e.first_name||' '||coalesce(e.last_name,'')) AS name, e.designation, e.date_of_joining::text, d.name AS department, b.name AS branch, le.name AS legal_entity,
-          s.uan, s.pan_last4, ba.account_last4, ba.ifsc
-        FROM payroll_items i JOIN payroll_runs r ON r.tenant_id=i.tenant_id AND r.id=i.run_id JOIN employees e ON e.tenant_id=i.tenant_id AND e.id=i.employee_id
-        JOIN legal_entities le ON le.tenant_id=r.tenant_id AND le.id=r.legal_entity_id JOIN branches b ON b.tenant_id=e.tenant_id AND b.id=e.branch_id
-        LEFT JOIN departments d ON d.tenant_id=e.tenant_id AND d.id=e.department_id LEFT JOIN employee_statutory s ON s.tenant_id=e.tenant_id AND s.employee_id=e.id
-        LEFT JOIN employee_bank_accounts ba ON ba.tenant_id=e.tenant_id AND ba.employee_id=e.id WHERE i.tenant_id=$1 AND i.id=$2`, [a.tenantId, id])).rows[0]!;
+      const p = await payslipAccess(db, a, id);
+      const body = await payslipBody(db, a.tenantId, id);
       const reveal = wantsReveal(req);
-      const fields = ['lines', 'gross', 'deductions', 'net', 'uan', 'pan', 'account', 'ifsc'];
       if (reveal) {
-        if (own) await audit(db, { ...a.auditBase, action: 'payroll.payslip_viewed', category: 'access', targetType: 'payroll_item', targetId: id });
-        await auditL4(db, readContext(req, a), 'reveal', 'payroll.payslip', [{ employeeId: p.employee_id, fields }]);
+        if (p.own) await audit(db, { ...a.auditBase, action: 'payroll.payslip_viewed', category: 'access', targetType: 'payroll_item', targetId: id });
+        await auditL4(db, readContext(req, a), 'reveal', 'payroll.payslip', [{ employeeId: p.employee_id, fields: PAYSLIP_FIELDS }]);
       }
       const { env } = app.deps;
-      const opened = itemFields(openItem(data_enc));
-      const { pan_last4, account_last4, ...rest } = d;
-      const body = { ...rest, lines: opened.lines, gross: opened.gross, deductions: opened.deductions, net: opened.net, pan: pan_last4 ? `XXXXXX${pan_last4}X` : null, account: account_last4 ? `XXXXXX${account_last4}` : null };
-      return { ...(reveal ? body : maskFields(body, fields)),
+      return { ...(reveal ? body : maskFields(body, PAYSLIP_FIELDS)),
         // What a printed payslip is headed with: the deployment's brand, as the employer's name and its formats.
         brand: { name: env.BRAND_NAME, legalName: organizationName(env), productName: env.BRAND_PRODUCT_NAME, logoUrl: env.BRAND_LOGO_URL ?? null, primaryColor: env.BRAND_PRIMARY_COLOR,
           currency: env.BRAND_CURRENCY, locale: env.BRAND_LOCALE, dateFormat: env.BRAND_DATE_FORMAT } };
     });
+  });
+  /** The same payslip as a file, under the same rule. A file shows the figures, so it is always audited; it is written before the first byte leaves. */
+  only(app, 'payroll.payslips').get('/payslips/:id/payslip.pdf', { schema: { params: IdParams }, config: { feature: ['payroll.payslips'] } }, async (req, reply) => {
+    const a = tenantActor(req);
+    const { id } = IdParams.parse(req.params);
+    const { p, body, identity } = await a.tx(async (db) => {
+      const access = await payslipAccess(db, a, id);
+      const data = await payslipBody(db, a.tenantId, id);
+      const who = await loadPdfIdentity(db, a.tenantId);
+      if (access.own) await audit(db, { ...a.auditBase, action: 'payroll.payslip_viewed', category: 'access', targetType: 'payroll_item', targetId: id, metadata: { format: 'pdf' } });
+      await auditL4(db, readContext(req, a), 'export', 'payroll.payslip', [{ employeeId: access.employee_id, fields: PAYSLIP_FIELDS }]);
+      return { p: access, body: data, identity: who };
+    });
+    const doc = payslipPdf(await loadPdfContext(app, identity), body, { status: p.status, hold: p.hold });
+    return pdfHeaders(reply, `payslip-${body.period}.pdf`).send(doc);
   });
 
   // ------------------------------------------------------------ F&F helper
