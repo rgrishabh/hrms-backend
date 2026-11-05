@@ -13,6 +13,9 @@ export const PERMISSIONS = {
   'security.manage': 'Change security settings',
   'users.manage': 'Manage user accounts and role assignments',
   'audit.read': 'View audit history',
+  'company.manage': 'Change the company legal details, registration numbers, payroll bank details, signatory, signature and stamp',
+  'data_rights.manage': 'Raise and follow requests to erase a person\'s data',
+  'data_rights.execute': 'Carry out or refuse requests to erase a person\'s data (not ones you raised)',
   'approvals.delegations': "Hand over someone's approvals to a colleague (e.g. for an unplanned absence)",
   'approvals.escalations': 'Decide approvals escalated because the approver did not respond and has no manager to take them',
   'approvals.hr_step': 'Decide one-step HR approvals (single_hr mode)',
@@ -119,13 +122,13 @@ export interface RoleDefinition { key: string; name: string; scope: 'tenant'; pe
 
 export const SYSTEM_ROLES: readonly RoleDefinition[] = [
   { key: 'tenant_admin', name: 'Administrator', scope: 'tenant', permissions: P(...SELF,
-    'settings.read', 'settings.manage', 'security.manage',
+    'settings.read', 'settings.manage', 'security.manage', 'company.manage', 'data_rights.manage', 'data_rights.execute',
     'users.manage', 'audit.read', 'org.read', 'org.manage', 'attendance.configure', 'policies.read', 'policies.publish', 'posh.admin',
     // Super-admin: salaries are visible only above their subject, so the top of the hierarchy must be able to read and approve them.
     'employees.read', 'employees.bank.read', 'payroll.read', 'payroll.approve', 'loans.read') },
   // Resolves to the Administrator's permissions in `multi`; see resolveRolePermissions for the other modes.
   { key: 'owner', name: 'Owner', scope: 'tenant', permissions: [] },
-  { key: 'hr_admin', name: 'HR Administrator', scope: 'tenant', permissions: P(...SELF, 'settings.read', 'org.read', 'org.manage',
+  { key: 'hr_admin', name: 'HR Administrator', scope: 'tenant', permissions: P(...SELF, 'settings.read', 'data_rights.manage', 'org.read', 'org.manage',
     'employees.read', 'employees.manage', 'employees.bank.read', 'employees.bank.manage', 'employees.bank.approve', 'attendance.read',
     'attendance.recalculate', 'attendance.approve', 'attendance.configure', 'audit.read', 'leave.read', 'leave.approve', 'leave.manage', 'documents.read', 'documents.restricted', 'documents.manage', 'training.manage', 'competency.read',
     'policies.read', 'policies.manage', 'policies.publish',
@@ -137,7 +140,7 @@ export const SYSTEM_ROLES: readonly RoleDefinition[] = [
     'recruitment.requisition', 'recruitment.read', 'recruitment.manage', 'lifecycle.read', 'lifecycle.manage', 'overtime.read', 'field_duty.read', 'field_duty.approve', 'profile.approve', 'approvals.hr_step') },
   { key: 'payroll_manager', name: 'Payroll Manager', scope: 'tenant', permissions: P(...SELF, 'org.read', 'employees.read', 'employees.bank.read', 'payroll.read', 'payroll.manage', 'payroll.statutory',
     'attendance.read', 'attendance.lock', 'leave.read', 'documents.payroll', 'expenses.read', 'expenses.pay', 'overtime.read', 'field_duty.read', 'travel.read', 'loans.read', 'loans.manage', 'accounting.export') },
-  { key: 'finance_manager', name: 'Finance Manager', scope: 'tenant', permissions: P(...SELF, 'org.read', 'employees.bank.approve', 'recruitment.compensation', 'payroll.read', 'payroll.approve', 'payroll.statutory', 'expenses.read', 'expenses.approve', 'expenses.pay', 'expenses.manage', 'travel.read', 'travel.approve', 'travel.manage', 'loans.read', 'loans.approve', 'accounting.export', 'accounting.configure') },
+  { key: 'finance_manager', name: 'Finance Manager', scope: 'tenant', permissions: P(...SELF, 'company.manage', 'org.read', 'employees.bank.approve', 'recruitment.compensation', 'payroll.read', 'payroll.approve', 'payroll.statutory', 'expenses.read', 'expenses.approve', 'expenses.pay', 'expenses.manage', 'travel.read', 'travel.approve', 'travel.manage', 'loans.read', 'loans.approve', 'accounting.export', 'accounting.configure') },
   { key: 'department_head', name: 'Department Head', scope: 'tenant', permissions: P(...SELF, 'org.read', 'attendance.team.read', 'leave.team.read', 'expenses.team.read', 'overtime.team.read', 'field_duty.team.read', 'travel.team.read', 'loans.team.read', 'recruitment.requisition') },
   { key: 'laboratory_manager', name: 'Laboratory Manager', scope: 'tenant', permissions: P(...SELF, 'org.read', 'attendance.team.read', 'leave.team.read', 'expenses.team.read', 'overtime.team.read', 'field_duty.team.read', 'travel.team.read', 'loans.team.read',
     'training.manage', 'competency.read', 'competency.assess', 'recruitment.requisition') },
@@ -170,7 +173,7 @@ export const isOwnerRole = (key: string) => OWNER_ROLE_KEYS.includes(key);
 // single_hr: "HR handles employees, attendance, leave, comp-off, documents"; the Owner keeps settings, payroll approval and salaries.
 const SINGLE_HR_PERMISSIONS = P(...SELF, 'org.read', 'employees.read', 'employees.manage', 'attendance.read', 'attendance.recalculate', 'attendance.approve', 'attendance.lock',
   'leave.read', 'leave.approve', 'leave.manage', 'overtime.read', 'overtime.approve', 'field_duty.read', 'field_duty.approve', 'field_duty.manage', 'documents.read', 'documents.restricted', 'documents.manage',
-  'profile.approve', 'lifecycle.read', 'lifecycle.manage', 'approvals.hr_step');
+  'profile.approve', 'lifecycle.read', 'lifecycle.manage', 'approvals.hr_step', 'data_rights.manage');
 
 /** What a role means in this mode. Stored assignments never change with the mode, so moving up needs no data migration. */
 export function resolveRolePermissions(key: string, mode: ManagementMode): readonly Permission[] {
