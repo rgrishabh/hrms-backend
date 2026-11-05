@@ -15,6 +15,7 @@ import { daysBetween } from '../attendance/time.js';
 import type { Db } from '../../db/tx.js';
 import { openAssets } from '../assets/routes.js';
 import { balancesAt } from '../leave/service.js';
+import { letterRoutes } from './letters.js';
 import { endAccess, OWNERS, OWNER_PERMISSION, type Owner, canActOnTask, createChecklist, featureOn, loadEmp, maybeCompleteChecklist, taskAssignees } from './service.js';
 
 const ON = 'core.onboarding';
@@ -84,6 +85,7 @@ const SeparationsFnfBody = z.object({ status: z.enum(['not_started', 'in_progres
 const SeparationsCompleteBody = z.object({ rehireEligible: z.boolean() });
 export async function lifecycleRoutes(app: FastifyInstance) {
   gateFeatures(app, ON, OFF);
+  letterRoutes(app);
   // ------------------------------------------------------------ templates
   app.get('/templates', { schema: { querystring: TemplatesQuery }, config: { permAny: ['lifecycle.manage', 'lifecycle.read'] } }, async (req) => {
     const a = tenantActorAny(req, 'lifecycle.manage', 'lifecycle.read');
