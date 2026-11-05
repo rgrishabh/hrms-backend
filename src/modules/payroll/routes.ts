@@ -247,19 +247,23 @@ export async function payrollRoutes(app: FastifyInstance) {
   const cipher = app.deps.cipher;
 
   // ------------------------------------------------------------ components
-  app.get('/components', { schema: { querystring: ListQuery }, config: { permAny: ['payroll.read', 'payroll.manage'], feature: [F] } }, async (req) => {
-    const a = tenantActorAny(req, 'payroll.read', 'payroll.manage');
-    const q = ListQuery.parse(req.query);
-    return a.tx(async (db) => {
-      await requireFeature(db, a.tenantId, F);
-      return pageOf(
-        db,
-        `SELECT id, code, name, kind, calc, base_codes, prorate, taxable, pf_wage, esi_wage, position, status FROM pay_components WHERE tenant_id=$1 ORDER BY status, kind DESC, position, code`,
-        [a.tenantId],
-        q,
-      );
-    });
-  });
+  app.get(
+    '/components',
+    { schema: { response: { 200: R.GetPayrollComponents200 }, querystring: ListQuery }, config: { permAny: ['payroll.read', 'payroll.manage'], feature: [F] } },
+    async (req) => {
+      const a = tenantActorAny(req, 'payroll.read', 'payroll.manage');
+      const q = ListQuery.parse(req.query);
+      return a.tx(async (db) => {
+        await requireFeature(db, a.tenantId, F);
+        return pageOf(
+          db,
+          `SELECT id, code, name, kind, calc, base_codes, prorate, taxable, pf_wage, esi_wage, position, status FROM pay_components WHERE tenant_id=$1 ORDER BY status, kind DESC, position, code`,
+          [a.tenantId],
+          q,
+        );
+      });
+    },
+  );
   async function saveComponent(db: Db, a: TenantActor, b: z.infer<typeof ComponentBody>, id?: string) {
     await requireFeature(db, a.tenantId, F);
     if (b.baseCodes.includes(b.code)) throw badRequest('A component cannot be a percent of itself');
@@ -289,7 +293,7 @@ export async function payrollRoutes(app: FastifyInstance) {
     await audit(db, { ...a.auditBase, action: 'payroll.component_saved', category: 'configuration', targetType: 'pay_component', targetId: id, metadata: b });
     return id;
   }
-  app.post('/components', { schema: { body: ComponentBody }, config: { perm: ['payroll.manage'] } }, async (req, reply) => {
+  app.post('/components', { schema: { response: { 201: R.PostPayrollComponents201 }, body: ComponentBody }, config: { perm: ['payroll.manage'] } }, async (req, reply) => {
     const a = tenantActor(req, 'payroll.manage');
     const b = ComponentBody.parse(req.body);
     return a.tx(async (db) => {
@@ -298,15 +302,19 @@ export async function payrollRoutes(app: FastifyInstance) {
       return { id };
     });
   });
-  app.put('/components/:id', { schema: { params: IdParams, body: ComponentBody }, config: { perm: ['payroll.manage'] } }, async (req) => {
-    const a = tenantActor(req, 'payroll.manage');
-    const { id } = IdParams.parse(req.params);
-    const b = ComponentBody.parse(req.body);
-    return a.tx(async (db) => {
-      await saveComponent(db, a, b, id);
-      return { ok: true };
-    });
-  });
+  app.put(
+    '/components/:id',
+    { schema: { response: { 200: R.PutPayrollComponentsById200 }, params: IdParams, body: ComponentBody }, config: { perm: ['payroll.manage'] } },
+    async (req) => {
+      const a = tenantActor(req, 'payroll.manage');
+      const { id } = IdParams.parse(req.params);
+      const b = ComponentBody.parse(req.body);
+      return a.tx(async (db) => {
+        await saveComponent(db, a, b, id);
+        return { ok: true };
+      });
+    },
+  );
 
   // ------------------------------------------------------------ salaries (maker-checker)
   app.get(
@@ -497,7 +505,7 @@ export async function payrollRoutes(app: FastifyInstance) {
   // ------------------------------------------------------------ statutory rule register
   only(app, 'payroll.statutory').get(
     '/statutory-rules',
-    { schema: {}, config: { permAny: ['payroll.read', 'payroll.statutory'], feature: ['payroll.statutory'] } },
+    { schema: { response: { 200: R.GetPayrollStatutoryRules200 } }, config: { permAny: ['payroll.read', 'payroll.statutory'], feature: ['payroll.statutory'] } },
     async (req) => {
       const a = tenantActorAny(req, 'payroll.read', 'payroll.statutory');
       return a.tx(async (db) => {
@@ -532,7 +540,7 @@ export async function payrollRoutes(app: FastifyInstance) {
   }
   only(app, 'payroll.statutory').post(
     '/statutory-rules',
-    { schema: { body: RuleBody }, config: { perm: ['payroll.statutory'], feature: ['payroll.statutory'] } },
+    { schema: { response: { 201: R.PostPayrollStatutoryRules201 }, body: RuleBody }, config: { perm: ['payroll.statutory'], feature: ['payroll.statutory'] } },
     async (req, reply) => {
       const a = tenantActor(req, 'payroll.statutory');
       const b = RuleBody.parse(req.body);
@@ -554,7 +562,7 @@ export async function payrollRoutes(app: FastifyInstance) {
   );
   only(app, 'payroll.statutory').put(
     '/statutory-rules/:id',
-    { schema: { params: IdParams, body: RuleBody }, config: { perm: ['payroll.statutory'], feature: ['payroll.statutory'] } },
+    { schema: { response: { 200: R.PutPayrollStatutoryRulesById200 }, params: IdParams, body: RuleBody }, config: { perm: ['payroll.statutory'], feature: ['payroll.statutory'] } },
     async (req) => {
       const a = tenantActor(req, 'payroll.statutory');
       const { id } = IdParams.parse(req.params);
@@ -575,7 +583,7 @@ export async function payrollRoutes(app: FastifyInstance) {
   /** A second person checks the values against the cited source and activates the rule. */
   only(app, 'payroll.statutory').post(
     '/statutory-rules/:id/verify',
-    { schema: { params: IdParams }, config: { perm: ['payroll.statutory'], feature: ['payroll.statutory'] } },
+    { schema: { response: { 200: R.PostPayrollStatutoryRulesByIdVerify200 }, params: IdParams }, config: { perm: ['payroll.statutory'], feature: ['payroll.statutory'] } },
     async (req) => {
       const a = tenantActor(req, 'payroll.statutory');
       const { id } = IdParams.parse(req.params);
@@ -604,7 +612,7 @@ export async function payrollRoutes(app: FastifyInstance) {
   );
   only(app, 'payroll.statutory').post(
     '/statutory-rules/:id/retire',
-    { schema: { params: IdParams }, config: { perm: ['payroll.statutory'], feature: ['payroll.statutory'] } },
+    { schema: { response: { 200: R.PostPayrollStatutoryRulesByIdRetire200 }, params: IdParams }, config: { perm: ['payroll.statutory'], feature: ['payroll.statutory'] } },
     async (req) => {
       const a = tenantActor(req, 'payroll.statutory');
       const { id } = IdParams.parse(req.params);
@@ -665,7 +673,7 @@ export async function payrollRoutes(app: FastifyInstance) {
       });
     },
   );
-  app.post('/runs', { schema: { body: RunsBody }, config: { perm: ['payroll.manage'], feature: [F] } }, async (req, reply) => {
+  app.post('/runs', { schema: { response: { 201: R.PostPayrollRuns201 }, body: RunsBody }, config: { perm: ['payroll.manage'], feature: [F] } }, async (req, reply) => {
     const a = tenantActor(req, 'payroll.manage');
     const b = RunsBody.parse(req.body);
     return a.tx(async (db) => {
@@ -802,68 +810,80 @@ export async function payrollRoutes(app: FastifyInstance) {
     },
   );
 
-  app.post('/runs/:id/adjustments', { schema: { params: IdParams, body: RunsAdjustmentsBody }, config: { perm: ['payroll.manage'] } }, async (req, reply) => {
-    const a = tenantActor(req, 'payroll.manage');
-    const { id } = IdParams.parse(req.params);
-    const b = RunsAdjustmentsBody.parse(req.body);
-    return a.tx(async (db) => {
-      const r = await loadRun(db, a, id, true);
-      if (!['draft', 'computed'].includes(r.status)) throw conflict(`A ${r.status} run cannot be adjusted`);
-      if (r.kind === 'fnf' && b.employeeId !== r.employee_id) throw badRequest('This F&F run is for another employee');
-      await assertMayChangeSubject(db, a.tenantId, await policyViewer(db, a.tenantId, a.user), b.employeeId);
-      const aid = (
-        await db.query<{ id: string }>(
-          `INSERT INTO payroll_adjustments (tenant_id, run_id, employee_id, kind, label, data_enc, taxable, created_by) VALUES ($1,$2,$3,$4,$5,$6,$7,$8) RETURNING id`,
-          [a.tenantId, id, b.employeeId, b.kind, b.label, sealAdjustment(b.kind, { amount: b.amount, note: b.note }), b.taxable, a.user.userId],
-        )
-      ).rows[0]!.id;
-      await db.query(`UPDATE payroll_runs SET status='draft' WHERE tenant_id=$1 AND id=$2 AND status='computed'`, [a.tenantId, id]); // must recompute
-      await audit(db, {
-        ...a.auditBase,
-        action: 'payroll.adjustment_added',
-        targetType: 'payroll_run',
-        targetId: id,
-        metadata: { employeeId: b.employeeId, kind: b.kind, label: b.label, taxable: b.taxable, fields: ['amount', 'note'] },
+  app.post(
+    '/runs/:id/adjustments',
+    { schema: { response: { 201: R.PostPayrollRunsByIdAdjustments201 }, params: IdParams, body: RunsAdjustmentsBody }, config: { perm: ['payroll.manage'] } },
+    async (req, reply) => {
+      const a = tenantActor(req, 'payroll.manage');
+      const { id } = IdParams.parse(req.params);
+      const b = RunsAdjustmentsBody.parse(req.body);
+      return a.tx(async (db) => {
+        const r = await loadRun(db, a, id, true);
+        if (!['draft', 'computed'].includes(r.status)) throw conflict(`A ${r.status} run cannot be adjusted`);
+        if (r.kind === 'fnf' && b.employeeId !== r.employee_id) throw badRequest('This F&F run is for another employee');
+        await assertMayChangeSubject(db, a.tenantId, await policyViewer(db, a.tenantId, a.user), b.employeeId);
+        const aid = (
+          await db.query<{ id: string }>(
+            `INSERT INTO payroll_adjustments (tenant_id, run_id, employee_id, kind, label, data_enc, taxable, created_by) VALUES ($1,$2,$3,$4,$5,$6,$7,$8) RETURNING id`,
+            [a.tenantId, id, b.employeeId, b.kind, b.label, sealAdjustment(b.kind, { amount: b.amount, note: b.note }), b.taxable, a.user.userId],
+          )
+        ).rows[0]!.id;
+        await db.query(`UPDATE payroll_runs SET status='draft' WHERE tenant_id=$1 AND id=$2 AND status='computed'`, [a.tenantId, id]); // must recompute
+        await audit(db, {
+          ...a.auditBase,
+          action: 'payroll.adjustment_added',
+          targetType: 'payroll_run',
+          targetId: id,
+          metadata: { employeeId: b.employeeId, kind: b.kind, label: b.label, taxable: b.taxable, fields: ['amount', 'note'] },
+        });
+        reply.code(201);
+        return { id: aid };
       });
-      reply.code(201);
-      return { id: aid };
-    });
-  });
-  app.delete('/runs/:id/adjustments/:adjId', { schema: { params: RunsAdjustmentsParams }, config: { perm: ['payroll.manage'] } }, async (req) => {
-    const a = tenantActor(req, 'payroll.manage');
-    const p = RunsAdjustmentsParams.parse(req.params);
-    return a.tx(async (db) => {
-      const r = await loadRun(db, a, p.id, true);
-      if (!['draft', 'computed'].includes(r.status)) throw conflict(`A ${r.status} run cannot be adjusted`);
-      const target = (
-        await db.query<{ employee_id: string }>('SELECT employee_id FROM payroll_adjustments WHERE tenant_id=$1 AND run_id=$2 AND id=$3', [a.tenantId, p.id, p.adjId])
-      ).rows[0];
-      if (!target) throw notFound();
-      await assertMayChangeSubject(db, a.tenantId, await policyViewer(db, a.tenantId, a.user), target.employee_id);
-      await db.query('DELETE FROM payroll_adjustments WHERE tenant_id=$1 AND run_id=$2 AND id=$3', [a.tenantId, p.id, p.adjId]);
-      await db.query(`UPDATE payroll_runs SET status='draft' WHERE tenant_id=$1 AND id=$2 AND status='computed'`, [a.tenantId, p.id]);
-      await audit(db, { ...a.auditBase, action: 'payroll.adjustment_removed', targetType: 'payroll_run', targetId: p.id, metadata: { adjustmentId: p.adjId } });
-      return { ok: true };
-    });
-  });
+    },
+  );
+  app.delete(
+    '/runs/:id/adjustments/:adjId',
+    { schema: { response: { 200: R.DeletePayrollRunsByIdAdjustmentsByAdjId200 }, params: RunsAdjustmentsParams }, config: { perm: ['payroll.manage'] } },
+    async (req) => {
+      const a = tenantActor(req, 'payroll.manage');
+      const p = RunsAdjustmentsParams.parse(req.params);
+      return a.tx(async (db) => {
+        const r = await loadRun(db, a, p.id, true);
+        if (!['draft', 'computed'].includes(r.status)) throw conflict(`A ${r.status} run cannot be adjusted`);
+        const target = (
+          await db.query<{ employee_id: string }>('SELECT employee_id FROM payroll_adjustments WHERE tenant_id=$1 AND run_id=$2 AND id=$3', [a.tenantId, p.id, p.adjId])
+        ).rows[0];
+        if (!target) throw notFound();
+        await assertMayChangeSubject(db, a.tenantId, await policyViewer(db, a.tenantId, a.user), target.employee_id);
+        await db.query('DELETE FROM payroll_adjustments WHERE tenant_id=$1 AND run_id=$2 AND id=$3', [a.tenantId, p.id, p.adjId]);
+        await db.query(`UPDATE payroll_runs SET status='draft' WHERE tenant_id=$1 AND id=$2 AND status='computed'`, [a.tenantId, p.id]);
+        await audit(db, { ...a.auditBase, action: 'payroll.adjustment_removed', targetType: 'payroll_run', targetId: p.id, metadata: { adjustmentId: p.adjId } });
+        return { ok: true };
+      });
+    },
+  );
 
-  app.post('/runs/:id/hold', { schema: { params: IdParams, body: RunsHoldBody }, config: { perm: ['payroll.manage'] } }, async (req) => {
-    const a = tenantActor(req, 'payroll.manage');
-    const { id } = IdParams.parse(req.params);
-    const b = RunsHoldBody.parse(req.body);
-    return a.tx(async (db) => {
-      const r = await loadRun(db, a, id, true);
-      if (r.status !== 'computed') throw conflict('Compute the run first');
-      await assertMayChangeSubject(db, a.tenantId, await policyViewer(db, a.tenantId, a.user), b.employeeId);
-      const item = (
-        await db.query<{ data_enc: string }>('SELECT data_enc FROM payroll_items WHERE tenant_id=$1 AND run_id=$2 AND employee_id=$3 FOR UPDATE', [a.tenantId, id, b.employeeId])
-      ).rows[0];
-      if (!item || (!b.hold && openItem(item.data_enc).net < 0)) throw conflict('Item not found, or its net pay is negative (keep it on hold)');
-      await db.query('UPDATE payroll_items SET hold=$4 WHERE tenant_id=$1 AND run_id=$2 AND employee_id=$3', [a.tenantId, id, b.employeeId, b.hold]);
-      await audit(db, { ...a.auditBase, action: 'payroll.item_hold', targetType: 'payroll_run', targetId: id, metadata: b });
-      return { ok: true };
-    });
-  });
+  app.post(
+    '/runs/:id/hold',
+    { schema: { response: { 200: R.PostPayrollRunsByIdHold200 }, params: IdParams, body: RunsHoldBody }, config: { perm: ['payroll.manage'] } },
+    async (req) => {
+      const a = tenantActor(req, 'payroll.manage');
+      const { id } = IdParams.parse(req.params);
+      const b = RunsHoldBody.parse(req.body);
+      return a.tx(async (db) => {
+        const r = await loadRun(db, a, id, true);
+        if (r.status !== 'computed') throw conflict('Compute the run first');
+        await assertMayChangeSubject(db, a.tenantId, await policyViewer(db, a.tenantId, a.user), b.employeeId);
+        const item = (
+          await db.query<{ data_enc: string }>('SELECT data_enc FROM payroll_items WHERE tenant_id=$1 AND run_id=$2 AND employee_id=$3 FOR UPDATE', [a.tenantId, id, b.employeeId])
+        ).rows[0];
+        if (!item || (!b.hold && openItem(item.data_enc).net < 0)) throw conflict('Item not found, or its net pay is negative (keep it on hold)');
+        await db.query('UPDATE payroll_items SET hold=$4 WHERE tenant_id=$1 AND run_id=$2 AND employee_id=$3', [a.tenantId, id, b.employeeId, b.hold]);
+        await audit(db, { ...a.auditBase, action: 'payroll.item_hold', targetType: 'payroll_run', targetId: id, metadata: b });
+        return { ok: true };
+      });
+    },
+  );
 
   /**
    * Pays out an item held at finalize. A payroll approver decides, not the person who prepared the run; the item leaves
@@ -871,7 +891,10 @@ export async function payrollRoutes(app: FastifyInstance) {
    */
   app.post(
     '/runs/:id/items/:employeeId/release',
-    { schema: { params: RunsItemsReleaseParams, body: RunsItemsReleaseBody }, config: { perm: ['payroll.approve'] } },
+    {
+      schema: { response: { 200: R.PostPayrollRunsByIdItemsByEmployeeIdRelease200 }, params: RunsItemsReleaseParams, body: RunsItemsReleaseBody },
+      config: { perm: ['payroll.approve'] },
+    },
     async (req) => {
       const a = tenantActor(req, 'payroll.approve');
       const { id, employeeId } = RunsItemsReleaseParams.parse(req.params);
@@ -911,20 +934,24 @@ export async function payrollRoutes(app: FastifyInstance) {
     },
   );
 
-  app.post('/runs/:id/acknowledge-warnings', { schema: { params: IdParams, body: RunsAcknowledgeWarningsBody }, config: { perm: ['payroll.manage'] } }, async (req) => {
-    const a = tenantActor(req, 'payroll.manage');
-    const { id } = IdParams.parse(req.params);
-    const { note } = RunsAcknowledgeWarningsBody.parse(req.body);
-    return a.tx(async (db) => {
-      const r = await loadRun(db, a, id, true);
-      if (r.status !== 'computed') throw conflict('Compute the run first');
-      await db.query(`UPDATE payroll_runs SET warnings_acknowledged=true WHERE tenant_id=$1 AND id=$2`, [a.tenantId, id]);
-      await audit(db, { ...a.auditBase, action: 'payroll.warnings_acknowledged', targetType: 'payroll_run', targetId: id, metadata: { warnings: r.warnings, note } });
-      return { ok: true };
-    });
-  });
+  app.post(
+    '/runs/:id/acknowledge-warnings',
+    { schema: { response: { 200: R.PostPayrollRunsByIdAcknowledgeWarnings200 }, params: IdParams, body: RunsAcknowledgeWarningsBody }, config: { perm: ['payroll.manage'] } },
+    async (req) => {
+      const a = tenantActor(req, 'payroll.manage');
+      const { id } = IdParams.parse(req.params);
+      const { note } = RunsAcknowledgeWarningsBody.parse(req.body);
+      return a.tx(async (db) => {
+        const r = await loadRun(db, a, id, true);
+        if (r.status !== 'computed') throw conflict('Compute the run first');
+        await db.query(`UPDATE payroll_runs SET warnings_acknowledged=true WHERE tenant_id=$1 AND id=$2`, [a.tenantId, id]);
+        await audit(db, { ...a.auditBase, action: 'payroll.warnings_acknowledged', targetType: 'payroll_run', targetId: id, metadata: { warnings: r.warnings, note } });
+        return { ok: true };
+      });
+    },
+  );
 
-  app.post('/runs/:id/submit', { schema: { params: IdParams }, config: { perm: ['payroll.manage'] } }, async (req) => {
+  app.post('/runs/:id/submit', { schema: { response: { 200: R.PostPayrollRunsByIdSubmit200 }, params: IdParams }, config: { perm: ['payroll.manage'] } }, async (req) => {
     const a = tenantActor(req, 'payroll.manage');
     const { id } = IdParams.parse(req.params);
     return a.tx(async (db) => {
@@ -954,7 +981,7 @@ export async function payrollRoutes(app: FastifyInstance) {
   });
 
   /** Locks the run: items can no longer change (database trigger), payslips become visible. */
-  app.post('/runs/:id/finalize', { schema: { params: IdParams }, config: { perm: ['payroll.manage'] } }, async (req) => {
+  app.post('/runs/:id/finalize', { schema: { response: { 200: R.PostPayrollRunsByIdFinalize200 }, params: IdParams }, config: { perm: ['payroll.manage'] } }, async (req) => {
     const a = tenantActor(req, 'payroll.manage');
     const { id } = IdParams.parse(req.params);
     return a.tx(async (db) => {
@@ -992,7 +1019,7 @@ export async function payrollRoutes(app: FastifyInstance) {
   });
 
   /** Back to draft from approved, for a result that is out of date: it is recomputed and approved again. */
-  app.post('/runs/:id/reopen', { schema: { params: IdParams }, config: { perm: ['payroll.manage'] } }, async (req) => {
+  app.post('/runs/:id/reopen', { schema: { response: { 200: R.PostPayrollRunsByIdReopen200 }, params: IdParams }, config: { perm: ['payroll.manage'] } }, async (req) => {
     const a = tenantActor(req, 'payroll.manage');
     const { id } = IdParams.parse(req.params);
     return a.tx(async (db) => {
@@ -1004,25 +1031,29 @@ export async function payrollRoutes(app: FastifyInstance) {
     });
   });
 
-  app.post('/runs/:id/paid', { schema: { params: IdParams, body: RunsPaidBody }, config: { perm: ['payroll.manage'] } }, async (req) => {
-    const a = tenantActor(req, 'payroll.manage');
-    const { id } = IdParams.parse(req.params);
-    const { paymentReference } = RunsPaidBody.parse(req.body);
-    return a.tx(async (db) => {
-      const r = await loadRun(db, a, id, true);
-      if (r.status !== 'finalized') throw conflict('Finalize the run first');
-      await db.query(`UPDATE payroll_runs SET status='paid', paid_at=now(), payment_reference=$3 WHERE tenant_id=$1 AND id=$2`, [a.tenantId, id, paymentReference]);
-      if (r.kind === 'fnf')
-        await db.query(
-          `UPDATE separations SET fnf_status='settled', fnf_note=coalesce(fnf_note, 'F&F paid: '||$3) WHERE tenant_id=$1 AND employee_id=$2 AND status IN ('approved','completed')`,
-          [a.tenantId, r.employee_id, paymentReference],
-        );
-      await audit(db, { ...a.auditBase, action: 'payroll.run_paid', targetType: 'payroll_run', targetId: id, metadata: { paymentReference } });
-      return { ok: true };
-    });
-  });
+  app.post(
+    '/runs/:id/paid',
+    { schema: { response: { 200: R.PostPayrollRunsByIdPaid200 }, params: IdParams, body: RunsPaidBody }, config: { perm: ['payroll.manage'] } },
+    async (req) => {
+      const a = tenantActor(req, 'payroll.manage');
+      const { id } = IdParams.parse(req.params);
+      const { paymentReference } = RunsPaidBody.parse(req.body);
+      return a.tx(async (db) => {
+        const r = await loadRun(db, a, id, true);
+        if (r.status !== 'finalized') throw conflict('Finalize the run first');
+        await db.query(`UPDATE payroll_runs SET status='paid', paid_at=now(), payment_reference=$3 WHERE tenant_id=$1 AND id=$2`, [a.tenantId, id, paymentReference]);
+        if (r.kind === 'fnf')
+          await db.query(
+            `UPDATE separations SET fnf_status='settled', fnf_note=coalesce(fnf_note, 'F&F paid: '||$3) WHERE tenant_id=$1 AND employee_id=$2 AND status IN ('approved','completed')`,
+            [a.tenantId, r.employee_id, paymentReference],
+          );
+        await audit(db, { ...a.auditBase, action: 'payroll.run_paid', targetType: 'payroll_run', targetId: id, metadata: { paymentReference } });
+        return { ok: true };
+      });
+    },
+  );
 
-  app.post('/runs/:id/cancel', { schema: { params: IdParams }, config: { perm: ['payroll.manage'] } }, async (req) => {
+  app.post('/runs/:id/cancel', { schema: { response: { 200: R.PostPayrollRunsByIdCancel200 }, params: IdParams }, config: { perm: ['payroll.manage'] } }, async (req) => {
     const a = tenantActor(req, 'payroll.manage');
     const { id } = IdParams.parse(req.params);
     return a.tx(async (db) => {

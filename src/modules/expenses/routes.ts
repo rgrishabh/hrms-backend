@@ -146,72 +146,84 @@ export async function expenseRoutes(app: FastifyInstance) {
   await allowanceRoutes(app);
 
   // ------------------------------------------------------------ categories
-  app.get('/categories', { schema: {}, config: { permAny: ['expenses.self', 'expenses.manage', 'expenses.read'], feature: ['expenses'] } }, async (req) => {
-    const a = tenantActorAny(req, 'expenses.self', 'expenses.manage', 'expenses.read');
-    return a.tx(async (db) => {
-      await requireFeature(db, a.tenantId, 'expenses');
-      return {
-        items: (
-          await db.query(
-            `SELECT id, code, name, description, requires_receipt, max_amount, gst_applicable, status, calc FROM expense_categories
+  app.get(
+    '/categories',
+    { schema: { response: { 200: R.GetExpensesCategories200 } }, config: { permAny: ['expenses.self', 'expenses.manage', 'expenses.read'], feature: ['expenses'] } },
+    async (req) => {
+      const a = tenantActorAny(req, 'expenses.self', 'expenses.manage', 'expenses.read');
+      return a.tx(async (db) => {
+        await requireFeature(db, a.tenantId, 'expenses');
+        return {
+          items: (
+            await db.query(
+              `SELECT id, code, name, description, requires_receipt, max_amount, gst_applicable, status, calc FROM expense_categories
         WHERE tenant_id=$1 AND ($2 OR status='active') ORDER BY name`,
-            [a.tenantId, a.has('expenses.manage')],
-          )
-        ).rows,
-      };
-    });
-  });
+              [a.tenantId, a.has('expenses.manage')],
+            )
+          ).rows,
+        };
+      });
+    },
+  );
   const catCols = (b: z.infer<typeof CategoryBody>) => [b.code, b.name, b.description ?? null, b.requiresReceipt, b.maxAmount, b.gstApplicable, b.status, b.calc];
-  app.post('/categories', { schema: { body: CategoryBody }, config: { perm: ['expenses.manage'], feature: ['expenses'] } }, async (req, reply) => {
-    const a = tenantActor(req, 'expenses.manage');
-    const b = CategoryBody.parse(req.body);
-    return a.tx(async (db) => {
-      await requireFeature(db, a.tenantId, 'expenses');
-      const r = await db.query<{ id: string }>(
-        `INSERT INTO expense_categories (tenant_id, code, name, description, requires_receipt, max_amount, gst_applicable, status, calc)
+  app.post(
+    '/categories',
+    { schema: { response: { 201: R.PostExpensesCategories201 }, body: CategoryBody }, config: { perm: ['expenses.manage'], feature: ['expenses'] } },
+    async (req, reply) => {
+      const a = tenantActor(req, 'expenses.manage');
+      const b = CategoryBody.parse(req.body);
+      return a.tx(async (db) => {
+        await requireFeature(db, a.tenantId, 'expenses');
+        const r = await db.query<{ id: string }>(
+          `INSERT INTO expense_categories (tenant_id, code, name, description, requires_receipt, max_amount, gst_applicable, status, calc)
         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9) RETURNING id`,
-        [a.tenantId, ...catCols(b)],
-      );
-      await audit(db, { ...a.auditBase, action: 'expenses.category_created', category: 'configuration', targetType: 'expense_category', targetId: r.rows[0]!.id, metadata: b });
-      reply.code(201);
-      return { id: r.rows[0]!.id };
-    });
-  });
-  app.put('/categories/:id', { schema: { params: IdParams, body: CategoryBody }, config: { perm: ['expenses.manage'] } }, async (req) => {
-    const a = tenantActor(req, 'expenses.manage');
-    const { id } = IdParams.parse(req.params);
-    const b = CategoryBody.parse(req.body);
-    return a.tx(async (db) => {
-      const r = await db.query(
-        `UPDATE expense_categories SET code=$3, name=$4, description=$5, requires_receipt=$6, max_amount=$7, gst_applicable=$8, status=$9, calc=$10
+          [a.tenantId, ...catCols(b)],
+        );
+        await audit(db, { ...a.auditBase, action: 'expenses.category_created', category: 'configuration', targetType: 'expense_category', targetId: r.rows[0]!.id, metadata: b });
+        reply.code(201);
+        return { id: r.rows[0]!.id };
+      });
+    },
+  );
+  app.put(
+    '/categories/:id',
+    { schema: { response: { 200: R.PutExpensesCategoriesById200 }, params: IdParams, body: CategoryBody }, config: { perm: ['expenses.manage'] } },
+    async (req) => {
+      const a = tenantActor(req, 'expenses.manage');
+      const { id } = IdParams.parse(req.params);
+      const b = CategoryBody.parse(req.body);
+      return a.tx(async (db) => {
+        const r = await db.query(
+          `UPDATE expense_categories SET code=$3, name=$4, description=$5, requires_receipt=$6, max_amount=$7, gst_applicable=$8, status=$9, calc=$10
         WHERE tenant_id=$1 AND id=$2`,
-        [a.tenantId, id, ...catCols(b)],
-      );
-      if (!r.rowCount) throw notFound();
-      await audit(db, { ...a.auditBase, action: 'expenses.category_updated', category: 'configuration', targetType: 'expense_category', targetId: id, metadata: b });
-      return { ok: true };
-    });
-  });
+          [a.tenantId, id, ...catCols(b)],
+        );
+        if (!r.rowCount) throw notFound();
+        await audit(db, { ...a.auditBase, action: 'expenses.category_updated', category: 'configuration', targetType: 'expense_category', targetId: id, metadata: b });
+        return { ok: true };
+      });
+    },
+  );
 
   // ------------------------------------------------------------ claims
-  app.post('/claims', { schema: { body: ClaimBody }, config: { perm: ['expenses.self'], feature: ['expenses'] } }, async (req, reply) => {
-    const a = tenantActor(req, 'expenses.self');
-    const b = ClaimBody.parse(req.body);
-    if (!a.user.employeeId) throw badRequest('Your account is not linked to an employee record');
-    return a.tx(async (db) => {
-      await requireFeature(db, a.tenantId, 'expenses');
-      const r = await db.query<{ id: string }>(`INSERT INTO expense_claims (tenant_id, employee_id, title, purpose, project, created_by) VALUES ($1,$2,$3,$4,$5,$6) RETURNING id`, [
-        a.tenantId,
-        a.user.employeeId,
-        b.title,
-        b.purpose,
-        b.project ?? null,
-        a.user.userId,
-      ]);
-      reply.code(201);
-      return { id: r.rows[0]!.id };
-    });
-  });
+  app.post(
+    '/claims',
+    { schema: { response: { 201: R.PostExpensesClaims201 }, body: ClaimBody }, config: { perm: ['expenses.self'], feature: ['expenses'] } },
+    async (req, reply) => {
+      const a = tenantActor(req, 'expenses.self');
+      const b = ClaimBody.parse(req.body);
+      if (!a.user.employeeId) throw badRequest('Your account is not linked to an employee record');
+      return a.tx(async (db) => {
+        await requireFeature(db, a.tenantId, 'expenses');
+        const r = await db.query<{ id: string }>(
+          `INSERT INTO expense_claims (tenant_id, employee_id, title, purpose, project, created_by) VALUES ($1,$2,$3,$4,$5,$6) RETURNING id`,
+          [a.tenantId, a.user.employeeId, b.title, b.purpose, b.project ?? null, a.user.userId],
+        );
+        reply.code(201);
+        return { id: r.rows[0]!.id };
+      });
+    },
+  );
 
   app.get('/claims', { schema: { response: { 200: R.GetExpensesClaims200 }, querystring: ClaimsQuery }, config: { feature: ['expenses'] } }, async (req) => {
     const a = tenantActor(req);
@@ -266,7 +278,7 @@ export async function expenseRoutes(app: FastifyInstance) {
     });
   });
 
-  app.put('/claims/:id', { schema: { params: IdParams, body: ClaimBody }, config: { perm: ['expenses.self'] } }, async (req) => {
+  app.put('/claims/:id', { schema: { response: { 200: R.PutExpensesClaimsById200 }, params: IdParams, body: ClaimBody }, config: { perm: ['expenses.self'] } }, async (req) => {
     const a = tenantActor(req, 'expenses.self');
     const { id } = IdParams.parse(req.params);
     const b = ClaimBody.parse(req.body);
@@ -288,7 +300,7 @@ export async function expenseRoutes(app: FastifyInstance) {
   app.post(
     '/claims/:id/items',
     {
-      schema: { params: IdParams, body: ItemFields, consumes: ['multipart/form-data', 'application/json'] },
+      schema: { response: { 201: R.PostExpensesClaimsByIdItems201 }, params: IdParams, body: ItemFields, consumes: ['multipart/form-data', 'application/json'] },
       config: { perm: ['expenses.self'], feature: ['expenses'], rateLimit: { max: 60, timeWindow: '1 minute' } },
     },
     async (req, reply) => {
@@ -420,20 +432,24 @@ export async function expenseRoutes(app: FastifyInstance) {
     },
   );
 
-  app.delete('/claims/:id/items/:itemId', { schema: { params: ClaimsItemsParams }, config: { perm: ['expenses.self'] } }, async (req) => {
-    const a = tenantActor(req, 'expenses.self');
-    const { id, itemId } = ClaimsItemsParams.parse(req.params);
-    return a.tx(async (db) => {
-      const c = await loadClaim(db, a, id, true);
-      assertEditable(a, c);
-      const r = await db.query(`DELETE FROM expense_items WHERE tenant_id=$1 AND claim_id=$2 AND id=$3`, [a.tenantId, id, itemId]);
-      if (!r.rowCount) throw notFound();
-      await recomputeTotal(db, a.tenantId, id);
-      return { ok: true };
-    });
-  });
+  app.delete(
+    '/claims/:id/items/:itemId',
+    { schema: { response: { 200: R.DeleteExpensesClaimsByIdItemsByItemId200 }, params: ClaimsItemsParams }, config: { perm: ['expenses.self'] } },
+    async (req) => {
+      const a = tenantActor(req, 'expenses.self');
+      const { id, itemId } = ClaimsItemsParams.parse(req.params);
+      return a.tx(async (db) => {
+        const c = await loadClaim(db, a, id, true);
+        assertEditable(a, c);
+        const r = await db.query(`DELETE FROM expense_items WHERE tenant_id=$1 AND claim_id=$2 AND id=$3`, [a.tenantId, id, itemId]);
+        if (!r.rowCount) throw notFound();
+        await recomputeTotal(db, a.tenantId, id);
+        return { ok: true };
+      });
+    },
+  );
 
-  app.get('/items/:itemId/receipt', { schema: { params: ItemsReceiptParams } }, async (req, reply) => {
+  app.get('/items/:itemId/receipt', { schema: { response: { 200: R.file('*/*') }, params: ItemsReceiptParams } }, async (req, reply) => {
     const a = tenantActor(req);
     const { itemId } = ItemsReceiptParams.parse(req.params);
     const item = await a.tx(async (db) => {
@@ -458,44 +474,48 @@ export async function expenseRoutes(app: FastifyInstance) {
       .send(buf);
   });
 
-  app.post('/claims/:id/submit', { schema: { params: IdParams }, config: { perm: ['expenses.self'], feature: ['expenses'] } }, async (req) => {
-    const a = tenantActor(req, 'expenses.self');
-    const { id } = IdParams.parse(req.params);
-    return a.tx(async (db) => {
-      await requireFeature(db, a.tenantId, 'expenses');
-      const c = await loadClaim(db, a, id, true);
-      assertEditable(a, c);
-      const items = await db.query<{ n: number; missing: number }>(
-        `SELECT count(*)::int AS n, count(*) FILTER (WHERE cat.requires_receipt AND i.receipt_key IS NULL)::int AS missing
+  app.post(
+    '/claims/:id/submit',
+    { schema: { response: { 200: R.PostExpensesClaimsByIdSubmit200 }, params: IdParams }, config: { perm: ['expenses.self'], feature: ['expenses'] } },
+    async (req) => {
+      const a = tenantActor(req, 'expenses.self');
+      const { id } = IdParams.parse(req.params);
+      return a.tx(async (db) => {
+        await requireFeature(db, a.tenantId, 'expenses');
+        const c = await loadClaim(db, a, id, true);
+        assertEditable(a, c);
+        const items = await db.query<{ n: number; missing: number }>(
+          `SELECT count(*)::int AS n, count(*) FILTER (WHERE cat.requires_receipt AND i.receipt_key IS NULL)::int AS missing
         FROM expense_items i JOIN expense_categories cat ON cat.tenant_id=i.tenant_id AND cat.id=i.category_id WHERE i.tenant_id=$1 AND i.claim_id=$2`,
-        [a.tenantId, id],
-      );
-      if (!items.rows[0]!.n) throw badRequest('Add at least one expense before submitting');
-      if (items.rows[0]!.missing) throw badRequest('Some items need a receipt');
-      await db.query(`UPDATE expense_claims SET status='submitted', submitted_at=now(), version=version+1, updated_at=now() WHERE tenant_id=$1 AND id=$2`, [a.tenantId, id]);
-      // Manager (if they have a login) then finance — two separate approvals.
-      const mgr = await db.query<{ user_id: string | null }>(
-        `SELECT m.user_id FROM employees e JOIN employees m ON m.tenant_id=e.tenant_id AND m.id=e.reporting_manager_id
+          [a.tenantId, id],
+        );
+        if (!items.rows[0]!.n) throw badRequest('Add at least one expense before submitting');
+        if (items.rows[0]!.missing) throw badRequest('Some items need a receipt');
+        await db.query(`UPDATE expense_claims SET status='submitted', submitted_at=now(), version=version+1, updated_at=now() WHERE tenant_id=$1 AND id=$2`, [a.tenantId, id]);
+        // Manager (if they have a login) then finance — two separate approvals.
+        const mgr = await db.query<{ user_id: string | null }>(
+          `SELECT m.user_id FROM employees e JOIN employees m ON m.tenant_id=e.tenant_id AND m.id=e.reporting_manager_id
         WHERE e.tenant_id=$1 AND e.id=$2 AND m.status IN ('active','on_notice')`,
-        [a.tenantId, c.employee_id],
-      );
-      const steps = buildSteps({ requesterId: a.user.userId, managerUserId: mgr.rows[0]?.user_id, then: ['expenses.approve'] });
-      const total = (await db.query<{ total: string }>('SELECT total FROM expense_claims WHERE tenant_id=$1 AND id=$2', [a.tenantId, id])).rows[0]!.total;
-      const claimant = (await db.query<{ user_id: string | null }>('SELECT user_id FROM employees WHERE tenant_id=$1 AND id=$2', [a.tenantId, c.employee_id])).rows[0]?.user_id;
-      const reqId = await createApprovalRequest(db, a.tenantId, {
-        entityType: 'expense_claim',
-        entityId: id,
-        requesterId: a.user.userId,
-        summary: c.title,
-        steps,
-        excludeUserIds: [claimant],
+          [a.tenantId, c.employee_id],
+        );
+        const steps = buildSteps({ requesterId: a.user.userId, managerUserId: mgr.rows[0]?.user_id, then: ['expenses.approve'] });
+        const total = (await db.query<{ total: string }>('SELECT total FROM expense_claims WHERE tenant_id=$1 AND id=$2', [a.tenantId, id])).rows[0]!.total;
+        const claimant = (await db.query<{ user_id: string | null }>('SELECT user_id FROM employees WHERE tenant_id=$1 AND id=$2', [a.tenantId, c.employee_id])).rows[0]?.user_id;
+        const reqId = await createApprovalRequest(db, a.tenantId, {
+          entityType: 'expense_claim',
+          entityId: id,
+          requesterId: a.user.userId,
+          summary: c.title,
+          steps,
+          excludeUserIds: [claimant],
+        });
+        await audit(db, { ...a.auditBase, action: 'expenses.claim_submitted', targetType: 'expense_claim', targetId: id, metadata: { total, approvalRequestId: reqId } });
+        return { ok: true, approvalRequestId: reqId };
       });
-      await audit(db, { ...a.auditBase, action: 'expenses.claim_submitted', targetType: 'expense_claim', targetId: id, metadata: { total, approvalRequestId: reqId } });
-      return { ok: true, approvalRequestId: reqId };
-    });
-  });
+    },
+  );
 
-  app.post('/claims/:id/cancel', { schema: { params: IdParams }, config: { perm: ['expenses.self'] } }, async (req) => {
+  app.post('/claims/:id/cancel', { schema: { response: { 200: R.PostExpensesClaimsByIdCancel200 }, params: IdParams }, config: { perm: ['expenses.self'] } }, async (req) => {
     const a = tenantActor(req, 'expenses.self');
     const { id } = IdParams.parse(req.params);
     return a.tx(async (db) => {
@@ -517,7 +537,7 @@ export async function expenseRoutes(app: FastifyInstance) {
   });
 
   // ------------------------------------------------------------ payment (finance)
-  app.get('/payables', { schema: {}, config: { perm: ['expenses.pay'] } }, async (req) => {
+  app.get('/payables', { schema: { response: { 200: R.GetExpensesPayables200 } }, config: { perm: ['expenses.pay'] } }, async (req) => {
     const a = tenantActor(req, 'expenses.pay');
     return a.tx(async (db) => ({
       items: (
@@ -531,39 +551,43 @@ export async function expenseRoutes(app: FastifyInstance) {
     }));
   });
 
-  app.post('/batches', { schema: { body: BatchesBody }, config: { perm: ['expenses.pay'], feature: ['expenses'] } }, async (req, reply) => {
-    const a = tenantActor(req, 'expenses.pay');
-    const b = BatchesBody.parse(req.body);
-    return a.tx(async (db) => {
-      await requireFeature(db, a.tenantId, 'expenses');
-      const claims = await db.query<{ id: string; total: string }>(
-        `SELECT id, (total - advance_adjusted)::text AS total FROM expense_claims WHERE tenant_id=$1 AND id = ANY($2) AND status='approved' AND batch_id IS NULL FOR UPDATE`,
-        [a.tenantId, b.claimIds],
-      );
-      if (claims.rowCount !== new Set(b.claimIds).size) throw conflict('Some claims are not approved or are already in a batch');
-      const total = claims.rows.reduce((s, c) => s.plus(c.total), new Decimal(0));
-      const batch = (
-        await db.query<{ id: string }>(`INSERT INTO reimbursement_batches (tenant_id, total, claim_count, prepared_by) VALUES ($1,$2,$3,$4) RETURNING id`, [
-          a.tenantId,
-          total.toFixed(2),
-          claims.rowCount,
-          a.user.userId,
-        ])
-      ).rows[0]!.id;
-      await db.query(`UPDATE expense_claims SET batch_id=$3 WHERE tenant_id=$1 AND id = ANY($2)`, [a.tenantId, b.claimIds, batch]);
-      await audit(db, {
-        ...a.auditBase,
-        action: 'expenses.batch_prepared',
-        targetType: 'reimbursement_batch',
-        targetId: batch,
-        metadata: { claims: claims.rowCount, total: total.toFixed(2) },
+  app.post(
+    '/batches',
+    { schema: { response: { 201: R.PostExpensesBatches201 }, body: BatchesBody }, config: { perm: ['expenses.pay'], feature: ['expenses'] } },
+    async (req, reply) => {
+      const a = tenantActor(req, 'expenses.pay');
+      const b = BatchesBody.parse(req.body);
+      return a.tx(async (db) => {
+        await requireFeature(db, a.tenantId, 'expenses');
+        const claims = await db.query<{ id: string; total: string }>(
+          `SELECT id, (total - advance_adjusted)::text AS total FROM expense_claims WHERE tenant_id=$1 AND id = ANY($2) AND status='approved' AND batch_id IS NULL FOR UPDATE`,
+          [a.tenantId, b.claimIds],
+        );
+        if (claims.rowCount !== new Set(b.claimIds).size) throw conflict('Some claims are not approved or are already in a batch');
+        const total = claims.rows.reduce((s, c) => s.plus(c.total), new Decimal(0));
+        const batch = (
+          await db.query<{ id: string }>(`INSERT INTO reimbursement_batches (tenant_id, total, claim_count, prepared_by) VALUES ($1,$2,$3,$4) RETURNING id`, [
+            a.tenantId,
+            total.toFixed(2),
+            claims.rowCount,
+            a.user.userId,
+          ])
+        ).rows[0]!.id;
+        await db.query(`UPDATE expense_claims SET batch_id=$3 WHERE tenant_id=$1 AND id = ANY($2)`, [a.tenantId, b.claimIds, batch]);
+        await audit(db, {
+          ...a.auditBase,
+          action: 'expenses.batch_prepared',
+          targetType: 'reimbursement_batch',
+          targetId: batch,
+          metadata: { claims: claims.rowCount, total: total.toFixed(2) },
+        });
+        reply.code(201);
+        return { id: batch, total: total.toFixed(2) };
       });
-      reply.code(201);
-      return { id: batch, total: total.toFixed(2) };
-    });
-  });
+    },
+  );
 
-  app.get('/batches', { schema: {}, config: { permAny: ['expenses.pay', 'expenses.read'] } }, async (req) => {
+  app.get('/batches', { schema: { response: { 200: R.GetExpensesBatches200 } }, config: { permAny: ['expenses.pay', 'expenses.read'] } }, async (req) => {
     const a = tenantActorAny(req, 'expenses.pay', 'expenses.read');
     return a.tx(async (db) => ({
       items: (
@@ -588,7 +612,7 @@ export async function expenseRoutes(app: FastifyInstance) {
     return b;
   };
 
-  app.post('/batches/:id/approve', { schema: { params: IdParams }, config: { perm: ['expenses.pay'] } }, async (req) => {
+  app.post('/batches/:id/approve', { schema: { response: { 200: R.PostExpensesBatchesByIdApprove200 }, params: IdParams }, config: { perm: ['expenses.pay'] } }, async (req) => {
     const a = tenantActor(req, 'expenses.pay');
     const { id } = IdParams.parse(req.params);
     return a.tx(async (db) => {
@@ -601,7 +625,7 @@ export async function expenseRoutes(app: FastifyInstance) {
     });
   });
 
-  app.post('/batches/:id/cancel', { schema: { params: IdParams }, config: { perm: ['expenses.pay'] } }, async (req) => {
+  app.post('/batches/:id/cancel', { schema: { response: { 200: R.PostExpensesBatchesByIdCancel200 }, params: IdParams }, config: { perm: ['expenses.pay'] } }, async (req) => {
     const a = tenantActor(req, 'expenses.pay');
     const { id } = IdParams.parse(req.params);
     return a.tx(async (db) => {
@@ -614,43 +638,47 @@ export async function expenseRoutes(app: FastifyInstance) {
     });
   });
 
-  app.post('/batches/:id/paid', { schema: { params: IdParams, body: BatchesPaidBody }, config: { perm: ['expenses.pay'] } }, async (req) => {
-    const a = tenantActor(req, 'expenses.pay');
-    const { id } = IdParams.parse(req.params);
-    const body = BatchesPaidBody.parse(req.body);
-    return a.tx(async (db) => {
-      const b = await batchFor(db, a, id);
-      if (b.status === 'paid') throw conflict('This batch is already recorded as paid');
-      if (b.status !== 'approved') throw conflict('Only an approved batch can be marked paid');
-      await db.query(`UPDATE reimbursement_batches SET status='paid', paid_by=$3, paid_at=now(), payment_reference=$4 WHERE tenant_id=$1 AND id=$2`, [
-        a.tenantId,
-        id,
-        a.user.userId,
-        body.paymentReference,
-      ]);
-      const paid = await db.query<{ created_by: string; title: string; total: string }>(
-        `UPDATE expense_claims SET status='paid', paid_at=now(), payment_reference=$3, updated_at=now()
+  app.post(
+    '/batches/:id/paid',
+    { schema: { response: { 200: R.PostExpensesBatchesByIdPaid200 }, params: IdParams, body: BatchesPaidBody }, config: { perm: ['expenses.pay'] } },
+    async (req) => {
+      const a = tenantActor(req, 'expenses.pay');
+      const { id } = IdParams.parse(req.params);
+      const body = BatchesPaidBody.parse(req.body);
+      return a.tx(async (db) => {
+        const b = await batchFor(db, a, id);
+        if (b.status === 'paid') throw conflict('This batch is already recorded as paid');
+        if (b.status !== 'approved') throw conflict('Only an approved batch can be marked paid');
+        await db.query(`UPDATE reimbursement_batches SET status='paid', paid_by=$3, paid_at=now(), payment_reference=$4 WHERE tenant_id=$1 AND id=$2`, [
+          a.tenantId,
+          id,
+          a.user.userId,
+          body.paymentReference,
+        ]);
+        const paid = await db.query<{ created_by: string; title: string; total: string }>(
+          `UPDATE expense_claims SET status='paid', paid_at=now(), payment_reference=$3, updated_at=now()
         WHERE tenant_id=$1 AND batch_id=$2 AND status='approved' RETURNING created_by, title, (total - advance_adjusted)::text AS total`,
-        [a.tenantId, id, body.paymentReference],
-      );
-      for (const c of paid.rows) {
-        await notifyUsers(db, a.tenantId, [c.created_by], {
-          kind: 'expenses.paid',
-          title: `Expense claim reimbursed: ${money(c.total)}`,
-          body: `${c.title} · reference ${body.paymentReference}`,
-          link: '/expenses',
+          [a.tenantId, id, body.paymentReference],
+        );
+        for (const c of paid.rows) {
+          await notifyUsers(db, a.tenantId, [c.created_by], {
+            kind: 'expenses.paid',
+            title: `Expense claim reimbursed: ${money(c.total)}`,
+            body: `${c.title} · reference ${body.paymentReference}`,
+            link: '/expenses',
+          });
+        }
+        await audit(db, {
+          ...a.auditBase,
+          action: 'expenses.batch_paid',
+          targetType: 'reimbursement_batch',
+          targetId: id,
+          metadata: { reference: body.paymentReference, claims: paid.rowCount, total: b.total },
         });
-      }
-      await audit(db, {
-        ...a.auditBase,
-        action: 'expenses.batch_paid',
-        targetType: 'reimbursement_batch',
-        targetId: id,
-        metadata: { reference: body.paymentReference, claims: paid.rowCount, total: b.total },
+        return { ok: true, claimsPaid: paid.rowCount };
       });
-      return { ok: true, claimsPaid: paid.rowCount };
-    });
-  });
+    },
+  );
 
   /** CSV for the bank / accounting. Full account numbers only with employees.bank.read as well; always audited. */
   app.get('/batches/:id/export.csv', { schema: { params: IdParams }, config: { perm: ['expenses.pay'] } }, async (req, reply) => {
@@ -714,7 +742,7 @@ export async function expenseRoutes(app: FastifyInstance) {
   });
 
   // ------------------------------------------------------------ reports
-  app.get('/reports/ageing', { schema: {}, config: { permAny: ['expenses.read', 'expenses.pay'] } }, async (req) => {
+  app.get('/reports/ageing', { schema: { response: { 200: R.GetExpensesReportsAgeing200 } }, config: { permAny: ['expenses.read', 'expenses.pay'] } }, async (req) => {
     const a = tenantActorAny(req, 'expenses.read', 'expenses.pay');
     return a.tx(async (db) => {
       const buckets = (

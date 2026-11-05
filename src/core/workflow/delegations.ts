@@ -1,3 +1,4 @@
+import * as R from '../http/responses.js';
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import { tenantActor, tenantActorAny } from '../http/context.js';
@@ -38,23 +39,27 @@ const DelegationsBody = z.object({
 const IdParams = z.object({ id: Uuid });
 export async function delegationRoutes(app: FastifyInstance) {
   // People who can be chosen as a delegate (active accounts, never yourself).
-  app.get('/delegates', { schema: { querystring: DelegatesQuery }, config: { permAny: ['employees.directory', 'employees.read'] } }, async (req) => {
-    const a = tenantActorAny(req, 'employees.directory', 'employees.read', DELEGATE_PERMISSION);
-    const q = DelegatesQuery.parse(req.query);
-    return a.tx(async (db) => ({
-      items: (
-        await db.query(
-          `SELECT u.id, u.display_name AS name, e.employee_code AS code, e.designation
+  app.get(
+    '/delegates',
+    { schema: { response: { 200: R.GetApprovalsDelegates200 }, querystring: DelegatesQuery }, config: { permAny: ['employees.directory', 'employees.read'] } },
+    async (req) => {
+      const a = tenantActorAny(req, 'employees.directory', 'employees.read', DELEGATE_PERMISSION);
+      const q = DelegatesQuery.parse(req.query);
+      return a.tx(async (db) => ({
+        items: (
+          await db.query(
+            `SELECT u.id, u.display_name AS name, e.employee_code AS code, e.designation
         FROM users u LEFT JOIN employees e ON e.tenant_id=u.tenant_id AND e.user_id=u.id
        WHERE u.tenant_id=$1 AND u.status='active' AND u.id <> $2 AND ($3::text IS NULL OR u.display_name ILIKE '%'||$3||'%' OR e.employee_code ILIKE $3||'%')
        ORDER BY u.display_name LIMIT 20`,
-          [a.tenantId, a.user.userId, q.q || null],
-        )
-      ).rows,
-    }));
-  });
+            [a.tenantId, a.user.userId, q.q || null],
+          )
+        ).rows,
+      }));
+    },
+  );
 
-  app.get('/delegations', { schema: { querystring: DelegationsQuery } }, async (req) => {
+  app.get('/delegations', { schema: { response: { 200: R.GetApprovalsDelegations200 }, querystring: DelegationsQuery } }, async (req) => {
     const a = tenantActor(req);
     const { scope } = DelegationsQuery.parse(req.query);
     if (scope === 'all' && !a.has(DELEGATE_PERMISSION)) throw forbidden();
@@ -74,7 +79,7 @@ export async function delegationRoutes(app: FastifyInstance) {
     });
   });
 
-  app.post('/delegations', { schema: { body: DelegationsBody } }, async (req, reply) => {
+  app.post('/delegations', { schema: { response: { 201: R.PostApprovalsDelegations201 }, body: DelegationsBody } }, async (req, reply) => {
     const a = tenantActor(req);
     const b = DelegationsBody.parse(req.body);
     const delegatorId = b.delegatorId ?? a.user.userId;
@@ -145,7 +150,7 @@ export async function delegationRoutes(app: FastifyInstance) {
   });
 
   // End a delegation now (or cancel one not yet started): the delegator, whoever set it up, HR, or the delegate declining it.
-  app.post('/delegations/:id/revoke', { schema: { params: IdParams } }, async (req) => {
+  app.post('/delegations/:id/revoke', { schema: { response: { 200: R.PostApprovalsDelegationsByIdRevoke200 }, params: IdParams } }, async (req) => {
     const a = tenantActor(req);
     const { id } = IdParams.parse(req.params);
     return a.tx(async (db) => {

@@ -1,3 +1,4 @@
+import * as R from '../../core/http/responses.js';
 import { reassignStepsOf } from '../../core/workflow/engine.js';
 import type { FastifyInstance, FastifyRequest } from 'fastify';
 import { z } from 'zod';
@@ -50,7 +51,7 @@ export async function tenantAdminRoutes(app: FastifyInstance, opts: { publicConf
   await app.register(dataRightsRoutes, { prefix: '/data-rights' });
 
   // ------------------------------------------------------------ settings
-  app.get('/settings', { schema: { querystring: SettingsQuery }, config: { perm: ['settings.read'] } }, async (req) => {
+  app.get('/settings', { schema: { response: { 200: R.GetTenantSettings200 }, querystring: SettingsQuery }, config: { perm: ['settings.read'] } }, async (req) => {
     const a = tenantActor(req, 'settings.read');
     const q = SettingsQuery.parse(req.query);
     return a.tx(async (db) => {
@@ -89,7 +90,7 @@ export async function tenantAdminRoutes(app: FastifyInstance, opts: { publicConf
     expectedVersion: z.number().int().optional(),
   });
 
-  app.put('/settings/:key', { schema: { params: SettingsParams, body: SettingWriteBody } }, async (req) => {
+  app.put('/settings/:key', { schema: { response: { 200: R.PutTenantSettingsByKey200 }, params: SettingsParams, body: SettingWriteBody } }, async (req) => {
     const { key } = SettingsParams.parse(req.params);
     const def = SETTINGS.find((s) => s.key === key);
     if (!def || allOff(def.feature)) throw notFound('Unknown setting');
@@ -110,7 +111,7 @@ export async function tenantAdminRoutes(app: FastifyInstance, opts: { publicConf
     });
   });
 
-  app.delete('/settings/:key', { schema: { params: SettingsParams, querystring: DeleteSettingsQuery } }, async (req) => {
+  app.delete('/settings/:key', { schema: { response: { 200: R.DeleteTenantSettingsByKey200 }, params: SettingsParams, querystring: DeleteSettingsQuery } }, async (req) => {
     const { key } = SettingsParams.parse(req.params);
     const def = SETTINGS.find((s) => s.key === key);
     if (!def || allOff(def.feature)) throw notFound('Unknown setting');
@@ -139,7 +140,7 @@ export async function tenantAdminRoutes(app: FastifyInstance, opts: { publicConf
    * domains and modules. All deployment-controlled (Compose .env / Terraform);
    * administrators can see but not change them. Contains no secrets.
    */
-  app.get('/installation', { schema: {}, config: { perm: ['settings.read'] } }, async (req) => {
+  app.get('/installation', { schema: { response: { 200: R.GetTenantInstallation200 } }, config: { perm: ['settings.read'] } }, async (req) => {
     const a = tenantActor(req, 'settings.read');
     return a.tx(async (db) => {
       const states = await evaluateFeatures(db, a.tenantId);
@@ -157,7 +158,7 @@ export async function tenantAdminRoutes(app: FastifyInstance, opts: { publicConf
   });
 
   // ------------------------------------------------------------ scheduled jobs
-  app.get('/jobs', { schema: { querystring: ListQuery }, config: { perm: ['settings.read'] } }, async (req) => {
+  app.get('/jobs', { schema: { response: { 200: R.GetTenantJobs200 }, querystring: ListQuery }, config: { perm: ['settings.read'] } }, async (req) => {
     const a = tenantActor(req, 'settings.read');
     const q = ListQuery.parse(req.query);
     return a.tx(async (db) => {
@@ -191,24 +192,28 @@ export async function tenantAdminRoutes(app: FastifyInstance, opts: { publicConf
     });
   });
 
-  app.post('/jobs/:key/run', { schema: { params: SettingsParams }, config: { rateLimit: { max: 10, timeWindow: '1 minute' } } }, async (req, reply) => {
-    const { key } = SettingsParams.parse(req.params);
-    const job = JOB_MAP.get(key);
-    if (!job || (!job.retention && allOff(job.feature))) throw notFound('Unknown job');
-    const a = tenantActor(req, job.runPermission);
-    if (job.feature && !job.retention)
-      await a.tx(async (db) => {
-        const keys = typeof job.feature === 'string' ? [job.feature] : job.feature!;
-        const states = await evaluateFeatures(db, a.tenantId);
-        if (!jobActive(job, (k) => !!states.get(k)?.usable)) await requireFeature(db, a.tenantId, keys.find(isModuleEnabled)!); // throws feature_not_configured
-      });
-    await a.tx((db) => audit(db, { ...a.auditBase, action: 'job.run_requested', category: 'data', targetType: 'job', targetId: key }));
-    reply.code(202);
-    return enqueueRun(app.deps.pool, a.tenantId, key, a.user.userId);
-  });
+  app.post(
+    '/jobs/:key/run',
+    { schema: { response: { 202: R.PostTenantJobsByKeyRun202 }, params: SettingsParams }, config: { rateLimit: { max: 10, timeWindow: '1 minute' } } },
+    async (req, reply) => {
+      const { key } = SettingsParams.parse(req.params);
+      const job = JOB_MAP.get(key);
+      if (!job || (!job.retention && allOff(job.feature))) throw notFound('Unknown job');
+      const a = tenantActor(req, job.runPermission);
+      if (job.feature && !job.retention)
+        await a.tx(async (db) => {
+          const keys = typeof job.feature === 'string' ? [job.feature] : job.feature!;
+          const states = await evaluateFeatures(db, a.tenantId);
+          if (!jobActive(job, (k) => !!states.get(k)?.usable)) await requireFeature(db, a.tenantId, keys.find(isModuleEnabled)!); // throws feature_not_configured
+        });
+      await a.tx((db) => audit(db, { ...a.auditBase, action: 'job.run_requested', category: 'data', targetType: 'job', targetId: key }));
+      reply.code(202);
+      return enqueueRun(app.deps.pool, a.tenantId, key, a.user.userId);
+    },
+  );
 
   // ------------------------------------------------------------ users & roles
-  app.get('/roles', { schema: {}, config: { permAny: ['users.manage', 'settings.read'] } }, async (req) => {
+  app.get('/roles', { schema: { response: { 200: R.GetTenantRoles200 } }, config: { permAny: ['users.manage', 'settings.read'] } }, async (req) => {
     noRoleScreens();
     const a = tenantActorAny(req, 'users.manage', 'settings.read');
     // `grantable`: whether this user may grant or remove the role (the same rule assertMayGrant enforces).
@@ -284,7 +289,7 @@ export async function tenantAdminRoutes(app: FastifyInstance, opts: { publicConf
     if (dup.rowCount) throw conflict(`A role named "${name}" already exists`);
   };
 
-  app.post('/roles', { schema: { body: RoleBody }, config: { perm: ['users.manage'] } }, async (req, reply) => {
+  app.post('/roles', { schema: { response: { 201: R.PostTenantRoles201 }, body: RoleBody }, config: { perm: ['users.manage'] } }, async (req, reply) => {
     noRoleScreens();
     const a = tenantActor(req, 'users.manage');
     const b = RoleBody.parse(req.body);
@@ -317,7 +322,7 @@ export async function tenantAdminRoutes(app: FastifyInstance, opts: { publicConf
   });
 
   const RolesBody = RoleBody.partial();
-  app.patch('/roles/:key', { schema: { params: RolesParams, body: RolesBody }, config: { perm: ['users.manage'] } }, async (req) => {
+  app.patch('/roles/:key', { schema: { response: { 200: R.PatchTenantRolesByKey200 }, params: RolesParams, body: RolesBody }, config: { perm: ['users.manage'] } }, async (req) => {
     noRoleScreens();
     const a = tenantActor(req, 'users.manage');
     const { key } = RolesParams.parse(req.params);
@@ -358,7 +363,7 @@ export async function tenantAdminRoutes(app: FastifyInstance, opts: { publicConf
     });
   });
 
-  app.delete('/roles/:key', { schema: { params: DeleteRolesParams }, config: { perm: ['users.manage'] } }, async (req) => {
+  app.delete('/roles/:key', { schema: { response: { 200: R.DeleteTenantRolesByKey200 }, params: DeleteRolesParams }, config: { perm: ['users.manage'] } }, async (req) => {
     noRoleScreens();
     const a = tenantActor(req, 'users.manage');
     const { key } = DeleteRolesParams.parse(req.params);
@@ -383,7 +388,7 @@ export async function tenantAdminRoutes(app: FastifyInstance, opts: { publicConf
     });
   });
 
-  app.get('/users', { schema: { querystring: UsersQuery }, config: { perm: ['users.manage'] } }, async (req) => {
+  app.get('/users', { schema: { response: { 200: R.GetTenantUsers200 }, querystring: UsersQuery }, config: { perm: ['users.manage'] } }, async (req) => {
     const a = tenantActor(req, 'users.manage');
     const q = UsersQuery.parse(req.query);
     return a.tx(async (db) => {
@@ -490,7 +495,7 @@ export async function tenantAdminRoutes(app: FastifyInstance, opts: { publicConf
     employeeId: Uuid.optional(),
   });
   /** A person gets an invitation by email and chooses their own password. Nobody else ever knows it. Without mail: `bootstrap --issue-link` prints one for the operator. */
-  app.post('/users', { schema: { body: UsersBody }, config: { perm: ['users.manage'] } }, async (req, reply) => {
+  app.post('/users', { schema: { response: { 201: R.PostTenantUsers201 }, body: UsersBody }, config: { perm: ['users.manage'] } }, async (req, reply) => {
     const a = tenantActor(req, 'users.manage');
     if (req.body && typeof req.body === 'object' && 'initialPassword' in req.body)
       throw badRequest('Initial passwords are gone: people choose their own from an invitation sent by email. Leave this out.');
@@ -551,8 +556,16 @@ export async function tenantAdminRoutes(app: FastifyInstance, opts: { publicConf
       return { ok: true };
     });
   };
-  app.post('/users/:id/invite', { schema: { params: IdParams }, config: { perm: ['users.manage'], rateLimit: { max: 10, timeWindow: '1 minute' } } }, sendLink('invite'));
-  app.post('/users/:id/password-reset', { schema: { params: IdParams }, config: { perm: ['users.manage'], rateLimit: { max: 10, timeWindow: '1 minute' } } }, sendLink('reset'));
+  app.post(
+    '/users/:id/invite',
+    { schema: { response: { 200: R.PostTenantUsersByIdInvite200 }, params: IdParams }, config: { perm: ['users.manage'], rateLimit: { max: 10, timeWindow: '1 minute' } } },
+    sendLink('invite'),
+  );
+  app.post(
+    '/users/:id/password-reset',
+    { schema: { response: { 200: R.PostTenantUsersByIdPasswordReset200 }, params: IdParams }, config: { perm: ['users.manage'], rateLimit: { max: 10, timeWindow: '1 minute' } } },
+    sendLink('reset'),
+  );
 
   const PatchUsersBody = z.object({
     status: z.enum(['active', 'disabled']).optional(),
@@ -560,7 +573,7 @@ export async function tenantAdminRoutes(app: FastifyInstance, opts: { publicConf
     unlock: z.boolean().optional(),
     resetMfa: z.boolean().optional(),
   });
-  app.patch('/users/:id', { schema: { params: IdParams, body: PatchUsersBody }, config: { perm: ['users.manage'] } }, async (req) => {
+  app.patch('/users/:id', { schema: { response: { 200: R.PatchTenantUsersById200 }, params: IdParams, body: PatchUsersBody }, config: { perm: ['users.manage'] } }, async (req) => {
     const a = tenantActor(req, 'users.manage');
     const { id } = IdParams.parse(req.params);
     const body = PatchUsersBody.parse(req.body);
@@ -634,37 +647,41 @@ export async function tenantAdminRoutes(app: FastifyInstance, opts: { publicConf
    * A user's stored salary level. Nobody changes their own, sets someone's to their own level or above, or edits someone at or
    * above them. The effective level can still end higher: it never falls below the floor of the person's roles.
    */
-  app.put('/users/:id/salary-level', { schema: { params: IdParams, body: UsersSalaryLevelBody }, config: { perm: ['users.manage'] } }, async (req) => {
-    const a = tenantActor(req, 'users.manage');
-    const { id } = IdParams.parse(req.params);
-    const { level } = UsersSalaryLevelBody.parse(req.body);
-    if (id === a.user.userId) throw forbidden('You cannot change your own salary level');
-    return a.tx(async (db) => {
-      const u = (await db.query<{ salary_access_level: number }>('SELECT salary_access_level FROM users WHERE tenant_id=$1 AND id=$2 FOR UPDATE', [a.tenantId, id])).rows[0];
-      if (!u) throw notFound('User not found');
-      const roles = (await db.query<{ role_key: string }>('SELECT role_key FROM user_roles WHERE tenant_id=$1 AND user_id=$2', [a.tenantId, id])).rows.map((r) => r.role_key);
-      await assertMayManage(db, a, roles);
-      const before = effectiveLevel(u.salary_access_level, roles);
-      if (before >= a.user.salaryLevel) throw forbidden('You cannot change the salary level of someone at or above your own');
-      if (level >= a.user.salaryLevel) throw forbidden('You can only set a salary level below your own');
-      await db.query('UPDATE users SET salary_access_level=$3, updated_at=now() WHERE tenant_id=$1 AND id=$2', [a.tenantId, id, level]);
-      const after = effectiveLevel(level, roles);
-      // What this person can read has changed: they sign in again, like after a role change.
-      await revokeAllSessionsForUser(db, id);
-      await audit(db, {
-        ...a.auditBase,
-        action: 'user.salary_level_changed',
-        category: 'security',
-        targetType: 'user',
-        targetId: id,
-        metadata: { from: u.salary_access_level, to: level, effectiveFrom: before, effectiveTo: after },
+  app.put(
+    '/users/:id/salary-level',
+    { schema: { response: { 200: R.PutTenantUsersByIdSalaryLevel200 }, params: IdParams, body: UsersSalaryLevelBody }, config: { perm: ['users.manage'] } },
+    async (req) => {
+      const a = tenantActor(req, 'users.manage');
+      const { id } = IdParams.parse(req.params);
+      const { level } = UsersSalaryLevelBody.parse(req.body);
+      if (id === a.user.userId) throw forbidden('You cannot change your own salary level');
+      return a.tx(async (db) => {
+        const u = (await db.query<{ salary_access_level: number }>('SELECT salary_access_level FROM users WHERE tenant_id=$1 AND id=$2 FOR UPDATE', [a.tenantId, id])).rows[0];
+        if (!u) throw notFound('User not found');
+        const roles = (await db.query<{ role_key: string }>('SELECT role_key FROM user_roles WHERE tenant_id=$1 AND user_id=$2', [a.tenantId, id])).rows.map((r) => r.role_key);
+        await assertMayManage(db, a, roles);
+        const before = effectiveLevel(u.salary_access_level, roles);
+        if (before >= a.user.salaryLevel) throw forbidden('You cannot change the salary level of someone at or above your own');
+        if (level >= a.user.salaryLevel) throw forbidden('You can only set a salary level below your own');
+        await db.query('UPDATE users SET salary_access_level=$3, updated_at=now() WHERE tenant_id=$1 AND id=$2', [a.tenantId, id, level]);
+        const after = effectiveLevel(level, roles);
+        // What this person can read has changed: they sign in again, like after a role change.
+        await revokeAllSessionsForUser(db, id);
+        await audit(db, {
+          ...a.auditBase,
+          action: 'user.salary_level_changed',
+          category: 'security',
+          targetType: 'user',
+          targetId: id,
+          metadata: { from: u.salary_access_level, to: level, effectiveFrom: before, effectiveTo: after },
+        });
+        return { ok: true, level, effectiveLevel: after };
       });
-      return { ok: true, level, effectiveLevel: after };
-    });
-  });
+    },
+  );
 
   // ------------------------------------------------------------ audit history
-  app.get('/audit', { schema: { querystring: AuditQuery }, config: { perm: ['audit.read'] } }, async (req) => {
+  app.get('/audit', { schema: { response: { 200: R.GetTenantAudit200 }, querystring: AuditQuery }, config: { perm: ['audit.read'] } }, async (req) => {
     const a = tenantActor(req, 'audit.read');
     const q = AuditQuery.parse(req.query);
     return a.tx(async (db) => {
@@ -694,7 +711,7 @@ export async function tenantAdminRoutes(app: FastifyInstance, opts: { publicConf
     if (!isOwnerOrSuperAdmin(a)) throw forbidden();
     return a;
   };
-  app.get('/audit/chain', { schema: { querystring: PageQuery } }, async (req) => {
+  app.get('/audit/chain', { schema: { response: { 200: R.GetTenantAuditChain200 }, querystring: PageQuery } }, async (req) => {
     const a = chainActor(req);
     const q = PageQuery.parse(req.query);
     return a.tx(async (db) => {
@@ -711,7 +728,7 @@ export async function tenantAdminRoutes(app: FastifyInstance, opts: { publicConf
       );
     });
   });
-  app.get('/audit/chain/verify', { schema: {} }, async (req) => {
+  app.get('/audit/chain/verify', { schema: { response: { 200: R.GetTenantAuditChainVerify200 } } }, async (req) => {
     const a = chainActor(req);
     return a.tx(async (db) => {
       const r = (await db.query<{ ok: boolean; checked: string; broken_seq: string | null; reason: string | null }>('SELECT * FROM audit_chain_verify($1)', [a.tenantId])).rows[0]!;

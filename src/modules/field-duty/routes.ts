@@ -135,74 +135,78 @@ export async function fieldDutyRoutes(app: FastifyInstance) {
   gateFeatures(app, F);
 
   /** Request field duty for yourself, or (field_duty.manage) record it for an employee; either way the manager approves. */
-  app.post('/requests', { schema: { body: Body }, config: { permAny: ['field_duty.self', 'field_duty.manage'] } }, async (req, reply) => {
-    const a = tenantActorAny(req, 'field_duty.self', 'field_duty.manage');
-    const b = Body.parse(req.body);
-    const forOther = !!b.employeeId && b.employeeId !== a.user.employeeId;
-    if (forOther && !a.has('field_duty.manage')) throw forbidden('You can request field duty only for yourself');
-    if (!forOther && !a.has('field_duty.self')) throw forbidden();
-    const empId = b.employeeId ?? a.user.employeeId;
-    if (!empId) throw badRequest('Your account is not linked to an employee record');
-    if (b.endDate < b.startDate) throw badRequest('The end date is before the start date');
-    if (b.dayPart !== 'full' && b.startDate !== b.endDate) throw badRequest('Half-day field duty is for a single day');
-    return a.tx(async (db) => {
-      const e = (
-        await db.query<{ status: string; date_of_joining: string; exit_date: string | null; user_id: string | null; name: string; mgr_user: string | null }>(
-          `SELECT e.status, e.date_of_joining::text, e.exit_date::text, e.user_id, trim(e.first_name||' '||coalesce(e.last_name,'')) AS name,
+  app.post(
+    '/requests',
+    { schema: { response: { 201: R.PostFieldDutyRequests201 }, body: Body }, config: { permAny: ['field_duty.self', 'field_duty.manage'] } },
+    async (req, reply) => {
+      const a = tenantActorAny(req, 'field_duty.self', 'field_duty.manage');
+      const b = Body.parse(req.body);
+      const forOther = !!b.employeeId && b.employeeId !== a.user.employeeId;
+      if (forOther && !a.has('field_duty.manage')) throw forbidden('You can request field duty only for yourself');
+      if (!forOther && !a.has('field_duty.self')) throw forbidden();
+      const empId = b.employeeId ?? a.user.employeeId;
+      if (!empId) throw badRequest('Your account is not linked to an employee record');
+      if (b.endDate < b.startDate) throw badRequest('The end date is before the start date');
+      if (b.dayPart !== 'full' && b.startDate !== b.endDate) throw badRequest('Half-day field duty is for a single day');
+      return a.tx(async (db) => {
+        const e = (
+          await db.query<{ status: string; date_of_joining: string; exit_date: string | null; user_id: string | null; name: string; mgr_user: string | null }>(
+            `SELECT e.status, e.date_of_joining::text, e.exit_date::text, e.user_id, trim(e.first_name||' '||coalesce(e.last_name,'')) AS name,
            CASE WHEN m.status IN ('active','on_notice') THEN m.user_id END AS mgr_user
          FROM employees e LEFT JOIN employees m ON m.tenant_id=e.tenant_id AND m.id=e.reporting_manager_id WHERE e.tenant_id=$1 AND e.id=$2`,
-          [a.tenantId, empId],
-        )
-      ).rows[0];
-      if (!e) throw notFound('Employee not found');
-      if (!['active', 'on_notice'].includes(e.status)) throw conflict('Field duty can be recorded only for current employees');
-      if (b.startDate < e.date_of_joining || (e.exit_date && b.endDate > e.exit_date)) throw badRequest('The dates fall outside the employment');
-      const today = await orgToday(db, a.tenantId);
-      const back = await getSettingValue<number>(db, a.tenantId, 'field_duty.backdate_days');
-      const ahead = await getSettingValue<number>(db, a.tenantId, 'field_duty.advance_days');
-      const maxDays = await getSettingValue<number>(db, a.tenantId, 'field_duty.max_days');
-      if (b.startDate < addDays(today, -back)) throw badRequest(back ? `Field duty can be recorded up to ${back} days back` : 'Field duty cannot be recorded for past days');
-      if (b.startDate > addDays(today, ahead)) throw badRequest(`Field duty can be planned up to ${ahead} days ahead`);
-      const days = daysBetween(b.startDate, b.endDate) + 1;
-      if (days > maxDays) throw badRequest(`A field duty request can cover at most ${maxDays} days; split longer assignments`);
-      if ((await lockedDates(db, a.tenantId, b.startDate, b.endDate)).size) throw conflict('These dates are in a period locked for payroll');
-      await assertNoOverlap(db, a.tenantId, empId, b);
-      const id = (
-        await db.query<{ id: string }>(
-          `INSERT INTO field_duty_requests (tenant_id, employee_id, start_date, end_date, day_part, purpose, place, client_name, reference, reason, created_by)
+            [a.tenantId, empId],
+          )
+        ).rows[0];
+        if (!e) throw notFound('Employee not found');
+        if (!['active', 'on_notice'].includes(e.status)) throw conflict('Field duty can be recorded only for current employees');
+        if (b.startDate < e.date_of_joining || (e.exit_date && b.endDate > e.exit_date)) throw badRequest('The dates fall outside the employment');
+        const today = await orgToday(db, a.tenantId);
+        const back = await getSettingValue<number>(db, a.tenantId, 'field_duty.backdate_days');
+        const ahead = await getSettingValue<number>(db, a.tenantId, 'field_duty.advance_days');
+        const maxDays = await getSettingValue<number>(db, a.tenantId, 'field_duty.max_days');
+        if (b.startDate < addDays(today, -back)) throw badRequest(back ? `Field duty can be recorded up to ${back} days back` : 'Field duty cannot be recorded for past days');
+        if (b.startDate > addDays(today, ahead)) throw badRequest(`Field duty can be planned up to ${ahead} days ahead`);
+        const days = daysBetween(b.startDate, b.endDate) + 1;
+        if (days > maxDays) throw badRequest(`A field duty request can cover at most ${maxDays} days; split longer assignments`);
+        if ((await lockedDates(db, a.tenantId, b.startDate, b.endDate)).size) throw conflict('These dates are in a period locked for payroll');
+        await assertNoOverlap(db, a.tenantId, empId, b);
+        const id = (
+          await db.query<{ id: string }>(
+            `INSERT INTO field_duty_requests (tenant_id, employee_id, start_date, end_date, day_part, purpose, place, client_name, reference, reason, created_by)
         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) RETURNING id`,
-          [a.tenantId, empId, b.startDate, b.endDate, b.dayPart, b.purpose, b.place, b.clientName, b.reference, b.reason, a.user.userId],
-        )
-      ).rows[0]!.id;
-      // The manager confirms the assignment; HR as well when the organization asks for it, or when there is no manager to ask.
-      const hrToo = await getSettingValue<boolean>(db, a.tenantId, 'field_duty.hr_approval');
-      const steps = buildSteps({
-        requesterId: a.user.userId,
-        subjectUserId: e.user_id,
-        managerUserId: e.mgr_user,
-        then: hrToo ? ['field_duty.approve'] : [],
-        ifNoManager: hrToo ? [] : ['field_duty.approve'],
+            [a.tenantId, empId, b.startDate, b.endDate, b.dayPart, b.purpose, b.place, b.clientName, b.reference, b.reason, a.user.userId],
+          )
+        ).rows[0]!.id;
+        // The manager confirms the assignment; HR as well when the organization asks for it, or when there is no manager to ask.
+        const hrToo = await getSettingValue<boolean>(db, a.tenantId, 'field_duty.hr_approval');
+        const steps = buildSteps({
+          requesterId: a.user.userId,
+          subjectUserId: e.user_id,
+          managerUserId: e.mgr_user,
+          then: hrToo ? ['field_duty.approve'] : [],
+          ifNoManager: hrToo ? [] : ['field_duty.approve'],
+        });
+        const when = span({ start_date: b.startDate, end_date: b.endDate, day_part: b.dayPart });
+        const approvalId = await createApprovalRequest(db, a.tenantId, {
+          entityType: 'field_duty',
+          entityId: id,
+          requesterId: a.user.userId,
+          summary: `${e.name}: ${PURPOSE_LABEL[b.purpose]} at ${b.place}, ${when}${days > 1 ? ` (${days} days)` : ''}`,
+          steps,
+          excludeUserIds: [a.user.userId, e.user_id],
+        });
+        await audit(db, {
+          ...a.auditBase,
+          action: 'field_duty.requested',
+          targetType: 'field_duty',
+          targetId: id,
+          metadata: { employeeId: empId, startDate: b.startDate, endDate: b.endDate, dayPart: b.dayPart, purpose: b.purpose, onBehalf: forOther, approvalId },
+        });
+        reply.code(201);
+        return { id };
       });
-      const when = span({ start_date: b.startDate, end_date: b.endDate, day_part: b.dayPart });
-      const approvalId = await createApprovalRequest(db, a.tenantId, {
-        entityType: 'field_duty',
-        entityId: id,
-        requesterId: a.user.userId,
-        summary: `${e.name}: ${PURPOSE_LABEL[b.purpose]} at ${b.place}, ${when}${days > 1 ? ` (${days} days)` : ''}`,
-        steps,
-        excludeUserIds: [a.user.userId, e.user_id],
-      });
-      await audit(db, {
-        ...a.auditBase,
-        action: 'field_duty.requested',
-        targetType: 'field_duty',
-        targetId: id,
-        metadata: { employeeId: empId, startDate: b.startDate, endDate: b.endDate, dayPart: b.dayPart, purpose: b.purpose, onBehalf: forOther, approvalId },
-      });
-      reply.code(201);
-      return { id };
-    });
-  });
+    },
+  );
 
   app.get(
     '/requests',
@@ -264,7 +268,7 @@ export async function fieldDutyRoutes(app: FastifyInstance) {
   });
 
   /** The employee (or whoever recorded it) takes back a request still awaiting approval. */
-  app.post('/requests/:id/withdraw', { schema: { params: IdParams } }, async (req) => {
+  app.post('/requests/:id/withdraw', { schema: { response: { 200: R.PostFieldDutyRequestsByIdWithdraw200 }, params: IdParams } }, async (req) => {
     const a = tenantActor(req);
     const { id } = IdParams.parse(req.params);
     return a.tx(async (db) => {
@@ -293,7 +297,7 @@ export async function fieldDutyRoutes(app: FastifyInstance) {
    * Cancel approved field duty: the employee while it has not started; HR (field_duty.manage) at any time before the
    * dates are locked for payroll, never their own. Attendance for those dates is recalculated.
    */
-  app.post('/requests/:id/cancel', { schema: { params: IdParams, body: RequestsCancelBody } }, async (req) => {
+  app.post('/requests/:id/cancel', { schema: { response: { 200: R.PostFieldDutyRequestsByIdCancel200 }, params: IdParams, body: RequestsCancelBody } }, async (req) => {
     const a = tenantActor(req);
     const { id } = IdParams.parse(req.params);
     const { reason } = RequestsCancelBody.parse(req.body);
@@ -319,7 +323,7 @@ export async function fieldDutyRoutes(app: FastifyInstance) {
   });
 
   /** After the duty: what was done. The employee (or HR) records it once the duty has started. */
-  app.post('/requests/:id/report', { schema: { params: IdParams, body: RequestsReportBody } }, async (req) => {
+  app.post('/requests/:id/report', { schema: { response: { 200: R.PostFieldDutyRequestsByIdReport200 }, params: IdParams, body: RequestsReportBody } }, async (req) => {
     const a = tenantActor(req);
     const { id } = IdParams.parse(req.params);
     const b = RequestsReportBody.parse(req.body);

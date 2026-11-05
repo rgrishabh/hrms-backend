@@ -101,7 +101,7 @@ export async function employeeRoutes(app: FastifyInstance) {
   const { cipher } = app.deps;
   await profileRoutes(app);
 
-  app.get('/', { schema: { querystring: ListQuery }, config: { permAny: ['employees.read', 'employees.directory'] } }, async (req) => {
+  app.get('/', { schema: { response: { 200: R.GetEmployees200 }, querystring: ListQuery }, config: { permAny: ['employees.read', 'employees.directory'] } }, async (req) => {
     const a = tenantActorAny(req, 'employees.read', 'employees.directory');
     const full = a.has('employees.read');
     const q = ListQuery.parse(req.query);
@@ -155,7 +155,7 @@ export async function employeeRoutes(app: FastifyInstance) {
     });
   });
 
-  app.post('/', { schema: { body: PostRootBody }, config: { perm: ['employees.manage'] } }, async (req, reply) => {
+  app.post('/', { schema: { response: { 201: R.PostEmployees201 }, body: PostRootBody }, config: { perm: ['employees.manage'] } }, async (req, reply) => {
     const a = tenantActor(req, 'employees.manage');
     const body = PostRootBody.parse(req.body);
     return a.tx(async (db) => {
@@ -174,7 +174,7 @@ export async function employeeRoutes(app: FastifyInstance) {
     });
   });
 
-  app.patch('/:id', { schema: { params: IdParams, body: PatchRootBody }, config: { perm: ['employees.manage'] } }, async (req) => {
+  app.patch('/:id', { schema: { response: { 200: R.PatchEmployeesById200 }, params: IdParams, body: PatchRootBody }, config: { perm: ['employees.manage'] } }, async (req) => {
     const a = tenantActor(req, 'employees.manage');
     const { id } = IdParams.parse(req.params);
     const body = PatchRootBody.parse(req.body);
@@ -243,112 +243,115 @@ export async function employeeRoutes(app: FastifyInstance) {
    * Bulk import. All-or-nothing: rows are validated first (dryRun returns the
    * per-row report), then inserted in one transaction. Org references by code.
    */
-  app.post('/import', { schema: { body: ImportBody }, config: { perm: ['employees.manage'] }, bodyLimit: 5 * 1024 * 1024 }, async (req) => {
-    const a = tenantActor(req, 'employees.manage');
-    const body = ImportBody.parse(req.body);
-    return a.tx(async (db) => {
-      const branches = new Map(
-        (await db.query<{ code: string; id: string; legal_entity_id: string }>('SELECT code, id, legal_entity_id FROM branches WHERE tenant_id=$1', [a.tenantId])).rows.map((r) => [
-          r.code,
-          r,
-        ]),
-      );
-      const depts = new Map((await db.query<{ code: string; id: string }>('SELECT code, id FROM departments WHERE tenant_id=$1', [a.tenantId])).rows.map((r) => [r.code, r.id]));
-      const codesInFile = new Map<string, number>();
-      const report: { row: number; employeeCode?: string; errors: string[]; warnings: string[] }[] = [];
-      const valid: { input: z.infer<typeof EmployeeInput>; managerCode?: string }[] = [];
-      body.rows.forEach((raw, idx) => {
-        const errors: string[] = [];
-        const warnings: string[] = [];
-        const s = (k: string) => {
-          const v = raw[k];
-          return v === undefined || v === null || v === '' ? undefined : String(v).trim();
-        };
-        const branch = s('branchCode') ? branches.get(s('branchCode')!) : undefined;
-        if (!branch) errors.push(`Unknown branchCode '${s('branchCode') ?? ''}'`);
-        const deptId = s('departmentCode') ? depts.get(s('departmentCode')!) : undefined;
-        if (s('departmentCode') && !deptId) errors.push(`Unknown departmentCode '${s('departmentCode')}'`);
-        const code = s('employeeCode');
-        if (code) {
-          if (codesInFile.has(code)) errors.push(`Duplicate employeeCode in file (also row ${codesInFile.get(code)})`);
-          else codesInFile.set(code, idx + 1);
-        }
-        const parsed = EmployeeInput.safeParse({
-          employeeCode: code,
-          firstName: s('firstName'),
-          lastName: s('lastName') ?? null,
-          workEmail: s('workEmail') ?? null,
-          phone: s('phone') ?? null,
-          dateOfBirth: s('dateOfBirth') ?? null,
-          legalEntityId: branch?.legal_entity_id,
-          branchId: branch?.id,
-          departmentId: deptId ?? null,
-          designation: s('designation') ?? null,
-          grade: s('grade') ?? null,
-          employmentType: s('employmentType'),
-          status: s('status'),
-          dateOfJoining: s('dateOfJoining'),
-          probationEndDate: s('probationEndDate') ?? null,
-          contractEndDate: s('contractEndDate') ?? null,
-        });
-        if (!parsed.success)
-          parsed.error.issues.forEach((i) => {
-            if (!(branch === undefined && ['legalEntityId', 'branchId'].includes(String(i.path[0])))) errors.push(`${i.path.join('.')}: ${i.message}`);
-          });
-        report.push({ row: idx + 1, employeeCode: code, errors, warnings });
-        if (!errors.length && parsed.success) valid.push({ input: parsed.data, managerCode: s('reportingManagerCode') });
-      });
-      const toAdd = new Map<string, { kind: TitleKind; value: string }>();
-      // DB-level checks: existing codes, duplicates.
-      for (const [i, v] of valid.entries()) {
-        const rep = report.find((r) => r.employeeCode === v.input.employeeCode)!;
-        const ex = await db.query('SELECT 1 FROM employees WHERE tenant_id=$1 AND employee_code=$2', [a.tenantId, v.input.employeeCode]);
-        if (ex.rowCount) rep.errors.push('employeeCode already exists');
-        const d = await findDuplicates(db, a.tenantId, v.input, undefined, await policyViewer(db, a.tenantId, a.user));
-        d.forEach((x) => (x.reason === 'Same work email' ? rep.errors : rep.warnings).push(`${x.reason} as ${x.employee_code} (${x.name})`));
-        if (v.managerCode && !codesInFile.has(v.managerCode)) {
-          const m = await db.query('SELECT 1 FROM employees WHERE tenant_id=$1 AND employee_code=$2', [a.tenantId, v.managerCode]);
-          if (!m.rowCount) rep.errors.push(`Unknown reportingManagerCode '${v.managerCode}'`);
-        }
-        void i;
-        // The masters must not make an import fail: a new title is added to them, and the report says so.
-        for (const [kind, value, label] of [
-          ['designations', v.input.designation, 'designation'],
-          ['grades', v.input.grade, 'grade'],
-        ] as const) {
-          if (!value || !(await titleToAdd(db, a.tenantId, kind, value))) continue;
-          rep.warnings.push(`New ${label} '${value}' will be added to the list`);
-          toAdd.set(`${kind}|${value.trim().toLowerCase()}`, { kind, value });
-        }
-      }
-      const errorCount = report.filter((r) => r.errors.length).length;
-      const summary = { total: body.rows.length, valid: body.rows.length - errorCount, errors: errorCount, warnings: report.filter((r) => r.warnings.length).length };
-      if (body.dryRun || errorCount) return { committed: false, summary, report: report.filter((r) => r.errors.length || r.warnings.length) };
-      for (const t of toAdd.values()) await addTitle(db, a.tenantId, t.kind, t.value);
-      // Insert without managers first, then resolve manager codes (handles managers inside the same file).
-      for (const v of valid) await insertEmployee(db, a.tenantId, { ...v.input, reportingManagerId: null }, true);
-      for (const v of valid.filter((x) => x.managerCode)) {
-        await db.query(
-          `UPDATE employees e SET reporting_manager_id = m.id FROM employees m
-          WHERE e.tenant_id=$1 AND m.tenant_id=$1 AND e.employee_code=$2 AND m.employee_code=$3`,
-          [a.tenantId, v.input.employeeCode, v.managerCode],
+  app.post(
+    '/import',
+    { schema: { response: { 200: R.PostEmployeesImport200 }, body: ImportBody }, config: { perm: ['employees.manage'] }, bodyLimit: 5 * 1024 * 1024 },
+    async (req) => {
+      const a = tenantActor(req, 'employees.manage');
+      const body = ImportBody.parse(req.body);
+      return a.tx(async (db) => {
+        const branches = new Map(
+          (await db.query<{ code: string; id: string; legal_entity_id: string }>('SELECT code, id, legal_entity_id FROM branches WHERE tenant_id=$1', [a.tenantId])).rows.map(
+            (r) => [r.code, r],
+          ),
         );
-      }
-      await audit(db, {
-        ...a.auditBase,
-        action: 'employee.bulk_imported',
-        targetType: 'employee',
-        metadata: {
-          count: valid.length,
-          codes: valid.map((v) => v.input.employeeCode).slice(0, 200),
-          ...(toAdd.size ? { addedToLists: [...toAdd.values()].map((t) => ({ list: t.kind, name: t.value })) } : {}),
-        },
+        const depts = new Map((await db.query<{ code: string; id: string }>('SELECT code, id FROM departments WHERE tenant_id=$1', [a.tenantId])).rows.map((r) => [r.code, r.id]));
+        const codesInFile = new Map<string, number>();
+        const report: { row: number; employeeCode?: string; errors: string[]; warnings: string[] }[] = [];
+        const valid: { input: z.infer<typeof EmployeeInput>; managerCode?: string }[] = [];
+        body.rows.forEach((raw, idx) => {
+          const errors: string[] = [];
+          const warnings: string[] = [];
+          const s = (k: string) => {
+            const v = raw[k];
+            return v === undefined || v === null || v === '' ? undefined : String(v).trim();
+          };
+          const branch = s('branchCode') ? branches.get(s('branchCode')!) : undefined;
+          if (!branch) errors.push(`Unknown branchCode '${s('branchCode') ?? ''}'`);
+          const deptId = s('departmentCode') ? depts.get(s('departmentCode')!) : undefined;
+          if (s('departmentCode') && !deptId) errors.push(`Unknown departmentCode '${s('departmentCode')}'`);
+          const code = s('employeeCode');
+          if (code) {
+            if (codesInFile.has(code)) errors.push(`Duplicate employeeCode in file (also row ${codesInFile.get(code)})`);
+            else codesInFile.set(code, idx + 1);
+          }
+          const parsed = EmployeeInput.safeParse({
+            employeeCode: code,
+            firstName: s('firstName'),
+            lastName: s('lastName') ?? null,
+            workEmail: s('workEmail') ?? null,
+            phone: s('phone') ?? null,
+            dateOfBirth: s('dateOfBirth') ?? null,
+            legalEntityId: branch?.legal_entity_id,
+            branchId: branch?.id,
+            departmentId: deptId ?? null,
+            designation: s('designation') ?? null,
+            grade: s('grade') ?? null,
+            employmentType: s('employmentType'),
+            status: s('status'),
+            dateOfJoining: s('dateOfJoining'),
+            probationEndDate: s('probationEndDate') ?? null,
+            contractEndDate: s('contractEndDate') ?? null,
+          });
+          if (!parsed.success)
+            parsed.error.issues.forEach((i) => {
+              if (!(branch === undefined && ['legalEntityId', 'branchId'].includes(String(i.path[0])))) errors.push(`${i.path.join('.')}: ${i.message}`);
+            });
+          report.push({ row: idx + 1, employeeCode: code, errors, warnings });
+          if (!errors.length && parsed.success) valid.push({ input: parsed.data, managerCode: s('reportingManagerCode') });
+        });
+        const toAdd = new Map<string, { kind: TitleKind; value: string }>();
+        // DB-level checks: existing codes, duplicates.
+        for (const [i, v] of valid.entries()) {
+          const rep = report.find((r) => r.employeeCode === v.input.employeeCode)!;
+          const ex = await db.query('SELECT 1 FROM employees WHERE tenant_id=$1 AND employee_code=$2', [a.tenantId, v.input.employeeCode]);
+          if (ex.rowCount) rep.errors.push('employeeCode already exists');
+          const d = await findDuplicates(db, a.tenantId, v.input, undefined, await policyViewer(db, a.tenantId, a.user));
+          d.forEach((x) => (x.reason === 'Same work email' ? rep.errors : rep.warnings).push(`${x.reason} as ${x.employee_code} (${x.name})`));
+          if (v.managerCode && !codesInFile.has(v.managerCode)) {
+            const m = await db.query('SELECT 1 FROM employees WHERE tenant_id=$1 AND employee_code=$2', [a.tenantId, v.managerCode]);
+            if (!m.rowCount) rep.errors.push(`Unknown reportingManagerCode '${v.managerCode}'`);
+          }
+          void i;
+          // The masters must not make an import fail: a new title is added to them, and the report says so.
+          for (const [kind, value, label] of [
+            ['designations', v.input.designation, 'designation'],
+            ['grades', v.input.grade, 'grade'],
+          ] as const) {
+            if (!value || !(await titleToAdd(db, a.tenantId, kind, value))) continue;
+            rep.warnings.push(`New ${label} '${value}' will be added to the list`);
+            toAdd.set(`${kind}|${value.trim().toLowerCase()}`, { kind, value });
+          }
+        }
+        const errorCount = report.filter((r) => r.errors.length).length;
+        const summary = { total: body.rows.length, valid: body.rows.length - errorCount, errors: errorCount, warnings: report.filter((r) => r.warnings.length).length };
+        if (body.dryRun || errorCount) return { committed: false, summary, report: report.filter((r) => r.errors.length || r.warnings.length) };
+        for (const t of toAdd.values()) await addTitle(db, a.tenantId, t.kind, t.value);
+        // Insert without managers first, then resolve manager codes (handles managers inside the same file).
+        for (const v of valid) await insertEmployee(db, a.tenantId, { ...v.input, reportingManagerId: null }, true);
+        for (const v of valid.filter((x) => x.managerCode)) {
+          await db.query(
+            `UPDATE employees e SET reporting_manager_id = m.id FROM employees m
+          WHERE e.tenant_id=$1 AND m.tenant_id=$1 AND e.employee_code=$2 AND m.employee_code=$3`,
+            [a.tenantId, v.input.employeeCode, v.managerCode],
+          );
+        }
+        await audit(db, {
+          ...a.auditBase,
+          action: 'employee.bulk_imported',
+          targetType: 'employee',
+          metadata: {
+            count: valid.length,
+            codes: valid.map((v) => v.input.employeeCode).slice(0, 200),
+            ...(toAdd.size ? { addedToLists: [...toAdd.values()].map((t) => ({ list: t.kind, name: t.value })) } : {}),
+          },
+        });
+        return { committed: true, summary, report: report.filter((r) => r.warnings.length) };
       });
-      return { committed: true, summary, report: report.filter((r) => r.warnings.length) };
-    });
-  });
+    },
+  );
 
-  app.get('/:id/history', { schema: { params: IdParams }, config: { perm: ['employees.read'] } }, async (req) => {
+  app.get('/:id/history', { schema: { response: { 200: R.GetEmployeesByIdHistory200 }, params: IdParams }, config: { perm: ['employees.read'] } }, async (req) => {
     const a = tenantActor(req, 'employees.read');
     const { id } = IdParams.parse(req.params);
     return a.tx(async (db) => {
@@ -409,59 +412,63 @@ export async function employeeRoutes(app: FastifyInstance) {
    * Salary follows this account, so a change is only proposed here: someone else approves it, and the employee hears
    * about it at both ends. Nobody proposes a change to their own account through this route.
    */
-  app.put('/:id/bank-account', { schema: { params: IdParams, body: BankBody }, config: { perm: ['employees.bank.manage'] } }, async (req, reply) => {
-    const a = tenantActor(req, 'employees.bank.manage');
-    const { id } = IdParams.parse(req.params);
-    const body = BankBody.parse(req.body);
-    return a.tx(async (db) => {
-      const e = (
-        await db.query<{ user_id: string | null; name: string }>(
-          `SELECT user_id, trim(first_name||' '||coalesce(last_name,'')) AS name FROM employees WHERE tenant_id=$1 AND id=$2 FOR UPDATE`,
-          [a.tenantId, id],
-        )
-      ).rows[0];
-      if (!e) throw notFound('Employee not found');
-      if (id === a.user.employeeId || e.user_id === a.user.userId) throw forbidden('You cannot change your own bank details here; ask HR');
-      await assertMayChangeSubject(db, a.tenantId, await policyViewer(db, a.tenantId, a.user), id);
-      if ((await db.query(`SELECT 1 FROM employee_bank_changes WHERE tenant_id=$1 AND employee_id=$2 AND status='pending'`, [a.tenantId, id])).rowCount)
-        throw conflict('A change to these bank details is already waiting for approval');
-      const changeId = (
-        await db.query<{ id: string }>(
-          `INSERT INTO employee_bank_changes (tenant_id, employee_id, account_holder, account_number_enc, account_last4, ifsc, bank_name, requested_by)
+  app.put(
+    '/:id/bank-account',
+    { schema: { response: { 202: R.PutEmployeesByIdBankAccount202 }, params: IdParams, body: BankBody }, config: { perm: ['employees.bank.manage'] } },
+    async (req, reply) => {
+      const a = tenantActor(req, 'employees.bank.manage');
+      const { id } = IdParams.parse(req.params);
+      const body = BankBody.parse(req.body);
+      return a.tx(async (db) => {
+        const e = (
+          await db.query<{ user_id: string | null; name: string }>(
+            `SELECT user_id, trim(first_name||' '||coalesce(last_name,'')) AS name FROM employees WHERE tenant_id=$1 AND id=$2 FOR UPDATE`,
+            [a.tenantId, id],
+          )
+        ).rows[0];
+        if (!e) throw notFound('Employee not found');
+        if (id === a.user.employeeId || e.user_id === a.user.userId) throw forbidden('You cannot change your own bank details here; ask HR');
+        await assertMayChangeSubject(db, a.tenantId, await policyViewer(db, a.tenantId, a.user), id);
+        if ((await db.query(`SELECT 1 FROM employee_bank_changes WHERE tenant_id=$1 AND employee_id=$2 AND status='pending'`, [a.tenantId, id])).rowCount)
+          throw conflict('A change to these bank details is already waiting for approval');
+        const changeId = (
+          await db.query<{ id: string }>(
+            `INSERT INTO employee_bank_changes (tenant_id, employee_id, account_holder, account_number_enc, account_last4, ifsc, bank_name, requested_by)
         VALUES ($1,$2,$3,$4,$5,$6,$7,$8) RETURNING id`,
-          [a.tenantId, id, body.accountHolder, cipher.encrypt(body.accountNumber), body.accountNumber.slice(-4), body.ifsc, body.bankName ?? null, a.user.userId],
-        )
-      ).rows[0]!.id;
-      // No digits in the summary: it goes into notifications and email.
-      const approvalRequestId = await createApprovalRequest(db, a.tenantId, {
-        entityType: 'employee_bank_change',
-        entityId: changeId,
-        requesterId: a.user.userId,
-        summary: `${e.name}: change of salary bank account`,
-        steps: [{ kind: 'permission', permission: 'employees.bank.approve' }],
-        excludeUserIds: [e.user_id],
-      });
-      if (e.user_id)
-        await notifyUsers(db, a.tenantId, [e.user_id], {
-          kind: 'employee.bank_change_requested',
-          title: 'A change to your salary bank account was requested',
-          body: 'It takes effect once approved. If you did not ask for this, contact HR immediately.',
-          link: '/profile',
-          actionLabel: 'Review',
-          dedupeKey: `bank-change:${changeId}:requested`,
+            [a.tenantId, id, body.accountHolder, cipher.encrypt(body.accountNumber), body.accountNumber.slice(-4), body.ifsc, body.bankName ?? null, a.user.userId],
+          )
+        ).rows[0]!.id;
+        // No digits in the summary: it goes into notifications and email.
+        const approvalRequestId = await createApprovalRequest(db, a.tenantId, {
+          entityType: 'employee_bank_change',
+          entityId: changeId,
+          requesterId: a.user.userId,
+          summary: `${e.name}: change of salary bank account`,
+          steps: [{ kind: 'permission', permission: 'employees.bank.approve' }],
+          excludeUserIds: [e.user_id],
         });
-      await audit(db, {
-        ...a.auditBase,
-        action: 'employee.bank_change_requested',
-        category: 'security',
-        targetType: 'employee',
-        targetId: id,
-        metadata: { changeId, approvalRequestId },
+        if (e.user_id)
+          await notifyUsers(db, a.tenantId, [e.user_id], {
+            kind: 'employee.bank_change_requested',
+            title: 'A change to your salary bank account was requested',
+            body: 'It takes effect once approved. If you did not ask for this, contact HR immediately.',
+            link: '/profile',
+            actionLabel: 'Review',
+            dedupeKey: `bank-change:${changeId}:requested`,
+          });
+        await audit(db, {
+          ...a.auditBase,
+          action: 'employee.bank_change_requested',
+          category: 'security',
+          targetType: 'employee',
+          targetId: id,
+          metadata: { changeId, approvalRequestId },
+        });
+        reply.code(202);
+        return { ok: true, pending: true, id: changeId, approvalRequestId };
       });
-      reply.code(202);
-      return { ok: true, pending: true, id: changeId, approvalRequestId };
-    });
-  });
+    },
+  );
 
   app.get(
     '/:id/bank-account/pending',

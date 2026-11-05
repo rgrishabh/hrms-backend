@@ -249,7 +249,7 @@ export async function leaveRoutes(app: FastifyInstance) {
   const TYPE_FIELDS = `code, name, description, paid, allow_half_day, requires_balance, accrual_method, annual_entitlement, carry_forward_max, max_balance,
     count_non_working_days, min_notice_days, max_consecutive_days, eligible_after_days, applicable_employment_types, status`;
 
-  app.post('/types', { schema: { body: LeaveTypeBody }, config: { perm: ['leave.manage'], feature: ['leave'] } }, async (req, reply) => {
+  app.post('/types', { schema: { response: { 201: R.PostLeaveTypes201 }, body: LeaveTypeBody }, config: { perm: ['leave.manage'], feature: ['leave'] } }, async (req, reply) => {
     const a = tenantActor(req, 'leave.manage');
     const b = LeaveTypeBody.parse(req.body);
     return a.tx(async (db) => {
@@ -264,23 +264,27 @@ export async function leaveRoutes(app: FastifyInstance) {
     });
   });
 
-  app.put('/types/:id', { schema: { params: IdParams, body: LeaveTypeBody }, config: { perm: ['leave.manage'], feature: ['leave'] } }, async (req) => {
-    const a = tenantActor(req, 'leave.manage');
-    const { id } = IdParams.parse(req.params);
-    const b = LeaveTypeBody.parse(req.body);
-    return a.tx(async (db) => {
-      await requireFeature(db, a.tenantId, 'leave');
-      const prev = await loadType(db, a.tenantId, id);
-      await db.query(
-        `UPDATE leave_types SET (${TYPE_FIELDS}) = ($3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18), version=version+1, updated_at=now()
+  app.put(
+    '/types/:id',
+    { schema: { response: { 200: R.PutLeaveTypesById200 }, params: IdParams, body: LeaveTypeBody }, config: { perm: ['leave.manage'], feature: ['leave'] } },
+    async (req) => {
+      const a = tenantActor(req, 'leave.manage');
+      const { id } = IdParams.parse(req.params);
+      const b = LeaveTypeBody.parse(req.body);
+      return a.tx(async (db) => {
+        await requireFeature(db, a.tenantId, 'leave');
+        const prev = await loadType(db, a.tenantId, id);
+        await db.query(
+          `UPDATE leave_types SET (${TYPE_FIELDS}) = ($3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18), version=version+1, updated_at=now()
         WHERE tenant_id=$1 AND id=$2`,
-        [a.tenantId, id, ...typeCols(b)],
-      );
-      // Policy changes apply to future requests and accruals; existing ledger entries are never rewritten.
-      await audit(db, { ...a.auditBase, action: 'leave.type_updated', category: 'configuration', targetType: 'leave_type', targetId: id, metadata: { from: prev, to: b } });
-      return { ok: true };
-    });
-  });
+          [a.tenantId, id, ...typeCols(b)],
+        );
+        // Policy changes apply to future requests and accruals; existing ledger entries are never rewritten.
+        await audit(db, { ...a.auditBase, action: 'leave.type_updated', category: 'configuration', targetType: 'leave_type', targetId: id, metadata: { from: prev, to: b } });
+        return { ok: true };
+      });
+    },
+  );
 
   // ------------------------------------------------------------ balances
   app.get(
@@ -321,23 +325,27 @@ export async function leaveRoutes(app: FastifyInstance) {
     },
   );
 
-  app.get('/ledger', { schema: { querystring: LedgerQuery }, config: { permAny: ['leave.self', 'leave.read', 'leave.team.read', 'leave.manage'] } }, async (req) => {
-    const a = tenantActorAny(req, 'leave.self', 'leave.read', 'leave.team.read', 'leave.manage');
-    const q = LedgerQuery.parse(req.query);
-    return a.tx(async (db) => {
-      await assertCanView(db, a, q.employeeId);
-      return {
-        items: (
-          await db.query(
-            `SELECT l.id, l.entry_type, l.days, l.note, l.created_at, l.request_id, u.display_name AS created_by_name
+  app.get(
+    '/ledger',
+    { schema: { response: { 200: R.GetLeaveLedger200 }, querystring: LedgerQuery }, config: { permAny: ['leave.self', 'leave.read', 'leave.team.read', 'leave.manage'] } },
+    async (req) => {
+      const a = tenantActorAny(req, 'leave.self', 'leave.read', 'leave.team.read', 'leave.manage');
+      const q = LedgerQuery.parse(req.query);
+      return a.tx(async (db) => {
+        await assertCanView(db, a, q.employeeId);
+        return {
+          items: (
+            await db.query(
+              `SELECT l.id, l.entry_type, l.days, l.note, l.created_at, l.request_id, u.display_name AS created_by_name
         FROM leave_ledger l LEFT JOIN users u ON u.id=l.created_by WHERE l.tenant_id=$1 AND l.employee_id=$2 AND l.leave_type_id=$3 AND l.leave_year=$4
         ORDER BY l.created_at, l.id`,
-            [a.tenantId, q.employeeId, q.leaveTypeId, q.year],
-          )
-        ).rows,
-      };
-    });
-  });
+              [a.tenantId, q.employeeId, q.leaveTypeId, q.year],
+            )
+          ).rows,
+        };
+      });
+    },
+  );
 
   // ------------------------------------------------------------ requests
   app.post(
@@ -559,7 +567,7 @@ export async function leaveRoutes(app: FastifyInstance) {
   );
 
   // ------------------------------------------------------------ administration
-  app.post('/accruals', { schema: { body: AccrualsBody }, config: { perm: ['leave.manage'], feature: ['leave'] } }, async (req) => {
+  app.post('/accruals', { schema: { response: { 200: R.PostLeaveAccruals200 }, body: AccrualsBody }, config: { perm: ['leave.manage'], feature: ['leave'] } }, async (req) => {
     const a = tenantActor(req, 'leave.manage');
     const body = AccrualsBody.parse(req.body);
     return a.tx(async (db) => {
@@ -570,7 +578,7 @@ export async function leaveRoutes(app: FastifyInstance) {
     });
   });
 
-  app.post('/year-end', { schema: { body: YearEndBody }, config: { perm: ['leave.manage'], feature: ['leave'] } }, async (req) => {
+  app.post('/year-end', { schema: { response: { 200: R.PostLeaveYearEnd200 }, body: YearEndBody }, config: { perm: ['leave.manage'], feature: ['leave'] } }, async (req) => {
     const a = tenantActor(req, 'leave.manage');
     const body = YearEndBody.parse(req.body);
     return a.tx(async (db) => {
@@ -581,29 +589,33 @@ export async function leaveRoutes(app: FastifyInstance) {
     });
   });
 
-  app.post('/adjustments', { schema: { body: AdjustmentsBody }, config: { perm: ['leave.manage'], feature: ['leave'] } }, async (req, reply) => {
-    const a = tenantActor(req, 'leave.manage');
-    const body = AdjustmentsBody.parse(req.body);
-    return a.tx(async (db) => {
-      await requireFeature(db, a.tenantId, 'leave');
-      if (!(await loadEmployee(db, a.tenantId, body.employeeId))) throw notFound('Employee not found');
-      if (body.employeeId === a.user.employeeId) throw forbidden('You cannot adjust your own leave balance; ask another HR administrator');
-      await loadType(db, a.tenantId, body.leaveTypeId);
-      if (await yearClosed(db, a.tenantId, body.leaveYear)) throw conflict(`The ${body.leaveYear} leave year is closed; adjust the current year instead`);
-      const ref = `${body.entryType}:${crypto.randomUUID()}`;
-      await insertLedgerEntry(db, a.tenantId, {
-        empId: body.employeeId,
-        typeId: body.leaveTypeId,
-        year: body.leaveYear,
-        entryType: body.entryType,
-        days: new Decimal(body.days),
-        reference: ref,
-        note: body.note,
-        actorId: a.user.userId,
+  app.post(
+    '/adjustments',
+    { schema: { response: { 201: R.PostLeaveAdjustments201 }, body: AdjustmentsBody }, config: { perm: ['leave.manage'], feature: ['leave'] } },
+    async (req, reply) => {
+      const a = tenantActor(req, 'leave.manage');
+      const body = AdjustmentsBody.parse(req.body);
+      return a.tx(async (db) => {
+        await requireFeature(db, a.tenantId, 'leave');
+        if (!(await loadEmployee(db, a.tenantId, body.employeeId))) throw notFound('Employee not found');
+        if (body.employeeId === a.user.employeeId) throw forbidden('You cannot adjust your own leave balance; ask another HR administrator');
+        await loadType(db, a.tenantId, body.leaveTypeId);
+        if (await yearClosed(db, a.tenantId, body.leaveYear)) throw conflict(`The ${body.leaveYear} leave year is closed; adjust the current year instead`);
+        const ref = `${body.entryType}:${crypto.randomUUID()}`;
+        await insertLedgerEntry(db, a.tenantId, {
+          empId: body.employeeId,
+          typeId: body.leaveTypeId,
+          year: body.leaveYear,
+          entryType: body.entryType,
+          days: new Decimal(body.days),
+          reference: ref,
+          note: body.note,
+          actorId: a.user.userId,
+        });
+        await audit(db, { ...a.auditBase, action: 'leave.balance_adjusted', targetType: 'employee', targetId: body.employeeId, metadata: body });
+        reply.code(201);
+        return { ok: true };
       });
-      await audit(db, { ...a.auditBase, action: 'leave.balance_adjusted', targetType: 'employee', targetId: body.employeeId, metadata: body });
-      reply.code(201);
-      return { ok: true };
-    });
-  });
+    },
+  );
 }

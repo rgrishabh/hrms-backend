@@ -98,47 +98,55 @@ export async function documentRoutes(app: FastifyInstance) {
   });
 
   const catCols = (b: z.infer<typeof CategoryBody>) => [b.code, b.name, b.scope, b.employeeVisible, b.employeeUpload, b.restricted, b.requiresExpiry, b.status, b.payrollRelated];
-  app.post('/categories', { schema: { body: CategoryBody }, config: { perm: ['documents.manage'], feature: ['core.documents'] } }, async (req, reply) => {
-    const a = tenantActor(req, 'documents.manage');
-    const b = CategoryBody.parse(req.body);
-    return a.tx(async (db) => {
-      await requireFeature(db, a.tenantId, 'core.documents');
-      const r = await db.query<{ id: string }>(
-        `INSERT INTO document_categories (tenant_id, code, name, scope, employee_visible, employee_upload, restricted, requires_expiry, status, payroll_related)
+  app.post(
+    '/categories',
+    { schema: { response: { 201: R.PostDocumentsCategories201 }, body: CategoryBody }, config: { perm: ['documents.manage'], feature: ['core.documents'] } },
+    async (req, reply) => {
+      const a = tenantActor(req, 'documents.manage');
+      const b = CategoryBody.parse(req.body);
+      return a.tx(async (db) => {
+        await requireFeature(db, a.tenantId, 'core.documents');
+        const r = await db.query<{ id: string }>(
+          `INSERT INTO document_categories (tenant_id, code, name, scope, employee_visible, employee_upload, restricted, requires_expiry, status, payroll_related)
         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) RETURNING id`,
-        [a.tenantId, ...catCols(b)],
-      );
-      await audit(db, { ...a.auditBase, action: 'documents.category_created', category: 'configuration', targetType: 'document_category', targetId: r.rows[0]!.id, metadata: b });
-      reply.code(201);
-      return { id: r.rows[0]!.id };
-    });
-  });
-
-  app.put('/categories/:id', { schema: { params: IdParams, body: CategoryBody }, config: { perm: ['documents.manage'] } }, async (req) => {
-    const a = tenantActor(req, 'documents.manage');
-    const { id } = IdParams.parse(req.params);
-    const b = CategoryBody.parse(req.body);
-    return a.tx(async (db) => {
-      const prev = await loadCategory(db, a.tenantId, id);
-      if (prev.scope !== b.scope) throw badRequest('The scope of an existing category cannot change');
-      // The restricted flag is what keeps medical / identity files from document managers: only those cleared for them may change it.
-      if ((prev.restricted || b.restricted) && !a.has('documents.restricted')) throw forbidden('Only users with access to restricted documents can change a restricted category');
-      await db.query(
-        `UPDATE document_categories SET code=$3, name=$4, scope=$5, employee_visible=$6, employee_upload=$7, restricted=$8, requires_expiry=$9, status=$10, payroll_related=$11
-        WHERE tenant_id=$1 AND id=$2`,
-        [a.tenantId, id, ...catCols(b)],
-      );
-      await audit(db, {
-        ...a.auditBase,
-        action: 'documents.category_updated',
-        category: 'configuration',
-        targetType: 'document_category',
-        targetId: id,
-        metadata: { from: prev, to: b },
+          [a.tenantId, ...catCols(b)],
+        );
+        await audit(db, { ...a.auditBase, action: 'documents.category_created', category: 'configuration', targetType: 'document_category', targetId: r.rows[0]!.id, metadata: b });
+        reply.code(201);
+        return { id: r.rows[0]!.id };
       });
-      return { ok: true };
-    });
-  });
+    },
+  );
+
+  app.put(
+    '/categories/:id',
+    { schema: { response: { 200: R.PutDocumentsCategoriesById200 }, params: IdParams, body: CategoryBody }, config: { perm: ['documents.manage'] } },
+    async (req) => {
+      const a = tenantActor(req, 'documents.manage');
+      const { id } = IdParams.parse(req.params);
+      const b = CategoryBody.parse(req.body);
+      return a.tx(async (db) => {
+        const prev = await loadCategory(db, a.tenantId, id);
+        if (prev.scope !== b.scope) throw badRequest('The scope of an existing category cannot change');
+        // The restricted flag is what keeps medical / identity files from document managers: only those cleared for them may change it.
+        if ((prev.restricted || b.restricted) && !a.has('documents.restricted')) throw forbidden('Only users with access to restricted documents can change a restricted category');
+        await db.query(
+          `UPDATE document_categories SET code=$3, name=$4, scope=$5, employee_visible=$6, employee_upload=$7, restricted=$8, requires_expiry=$9, status=$10, payroll_related=$11
+        WHERE tenant_id=$1 AND id=$2`,
+          [a.tenantId, id, ...catCols(b)],
+        );
+        await audit(db, {
+          ...a.auditBase,
+          action: 'documents.category_updated',
+          category: 'configuration',
+          targetType: 'document_category',
+          targetId: id,
+          metadata: { from: prev, to: b },
+        });
+        return { ok: true };
+      });
+    },
+  );
 
   // ------------------------------------------------------------ documents
   app.get('/', { schema: { response: { 200: R.GetDocuments200 }, querystring: GetRootQuery }, config: { feature: ['core.documents'] } }, async (req) => {
@@ -177,7 +185,10 @@ export async function documentRoutes(app: FastifyInstance) {
   /** multipart/form-data: file + categoryId, title, employeeId?, expiresOn? */
   app.post(
     '/',
-    { schema: { body: PostRootBody, consumes: ['multipart/form-data'] }, config: { feature: ['core.documents'], rateLimit: { max: 30, timeWindow: '1 minute' } } },
+    {
+      schema: { response: { 201: R.PostDocuments201 }, body: PostRootBody, consumes: ['multipart/form-data'] },
+      config: { feature: ['core.documents'], rateLimit: { max: 30, timeWindow: '1 minute' } },
+    },
     async (req, reply) => {
       const a = tenantActor(req);
       if (!req.isMultipart()) throw badRequest('Upload as multipart/form-data');
@@ -247,7 +258,7 @@ export async function documentRoutes(app: FastifyInstance) {
     },
   );
 
-  app.get('/:id/download', { schema: { params: IdParams }, config: { feature: ['core.documents'] } }, async (req, reply) => {
+  app.get('/:id/download', { schema: { response: { 200: R.file('*/*') }, params: IdParams }, config: { feature: ['core.documents'] } }, async (req, reply) => {
     const a = tenantActor(req);
     const { id } = IdParams.parse(req.params);
     const doc = await a.tx(async (db) => {
@@ -279,7 +290,7 @@ export async function documentRoutes(app: FastifyInstance) {
       .send(buf);
   });
 
-  app.post('/:id/archive', { schema: { params: IdParams }, config: { perm: ['documents.manage'] } }, async (req) => {
+  app.post('/:id/archive', { schema: { response: { 200: R.PostDocumentsByIdArchive200 }, params: IdParams }, config: { perm: ['documents.manage'] } }, async (req) => {
     const a = tenantActor(req, 'documents.manage');
     const { id } = IdParams.parse(req.params);
     return a.tx(async (db) => {

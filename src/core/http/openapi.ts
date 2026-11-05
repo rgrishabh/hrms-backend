@@ -91,7 +91,7 @@ export function openApiTransform(featureRoutes: () => readonly FeatureRoute[]): 
     const declared = (s['response'] ?? {}) as Record<string, unknown>;
     const response: Record<string, unknown> = {};
     for (const [code, r] of Object.entries(declared))
-      response[code] = isZod(r) ? { description: 'Success', content: { 'application/json': { schema: toJsonSchema(r, 'output') } } } : r;
+      response[code] = isZod(r) ? { description: code.startsWith('2') ? 'Success' : 'Not ready', content: { 'application/json': { schema: toJsonSchema(r, 'output') } } } : r;
     const file = FILE_TYPES.find(([re]) => re.test(url));
     if (file && !response['200']) response['200'] = { description: 'A file', content: { [file[1]]: { schema: { type: 'string', format: 'binary' } } } };
     response['default'] = { description: 'An RFC 7807 problem', content: { [PROBLEM_CONTENT_TYPE]: { schema: toJsonSchema(ProblemSchema, 'output') } } };

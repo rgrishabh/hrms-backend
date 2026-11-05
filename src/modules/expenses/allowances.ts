@@ -1,3 +1,4 @@
+import * as R from '../../core/http/responses.js';
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import { Decimal } from 'decimal.js';
@@ -113,95 +114,117 @@ const AllowanceQuoteQuery = z.object({
   employeeId: Uuid.optional(),
 });
 export async function allowanceRoutes(app: FastifyInstance) {
-  app.get('/allowance-rates', { schema: {}, config: { permAny: ['expenses.self', 'expenses.manage', 'expenses.read', 'travel.self'], feature: ['expenses'] } }, async (req) => {
-    const a = tenantActorAny(req, 'expenses.self', 'expenses.manage', 'expenses.read', 'travel.self');
-    return a.tx(async (db) => {
-      await requireFeature(db, a.tenantId, 'expenses');
-      const today = await orgToday(db, a.tenantId);
-      const rows = (
-        await db.query<{ id: string; kind: string; tier: string | null; grade: string | null; vehicle: string | null; effective_from: string }>(
-          `SELECT r.id, r.kind, r.tier, r.grade, r.vehicle, r.rate, r.effective_from::text, r.note, r.created_at, u.display_name AS created_by_name
+  app.get(
+    '/allowance-rates',
+    {
+      schema: { response: { 200: R.GetExpensesAllowanceRates200 } },
+      config: { permAny: ['expenses.self', 'expenses.manage', 'expenses.read', 'travel.self'], feature: ['expenses'] },
+    },
+    async (req) => {
+      const a = tenantActorAny(req, 'expenses.self', 'expenses.manage', 'expenses.read', 'travel.self');
+      return a.tx(async (db) => {
+        await requireFeature(db, a.tenantId, 'expenses');
+        const today = await orgToday(db, a.tenantId);
+        const rows = (
+          await db.query<{ id: string; kind: string; tier: string | null; grade: string | null; vehicle: string | null; effective_from: string }>(
+            `SELECT r.id, r.kind, r.tier, r.grade, r.vehicle, r.rate, r.effective_from::text, r.note, r.created_at, u.display_name AS created_by_name
            FROM allowance_rates r JOIN users u ON u.id=r.created_by WHERE r.tenant_id=$1 ORDER BY r.kind, r.tier, r.grade NULLS FIRST, r.vehicle, r.effective_from DESC`,
-          [a.tenantId],
-        )
-      ).rows;
-      // A rate is current when it is the newest one in force today for its class; scheduled when it starts later.
-      const cls = (r: (typeof rows)[number]) => `${r.kind}|${r.tier}|${r.grade}|${r.vehicle}`;
-      const seen = new Set<string>();
-      const items = rows.map((r) => {
-        if (r.effective_from > today) return { ...r, state: 'scheduled' };
-        const state = seen.has(cls(r)) ? 'superseded' : 'current';
-        seen.add(cls(r));
-        return { ...r, state };
+            [a.tenantId],
+          )
+        ).rows;
+        // A rate is current when it is the newest one in force today for its class; scheduled when it starts later.
+        const cls = (r: (typeof rows)[number]) => `${r.kind}|${r.tier}|${r.grade}|${r.vehicle}`;
+        const seen = new Set<string>();
+        const items = rows.map((r) => {
+          if (r.effective_from > today) return { ...r, state: 'scheduled' };
+          const state = seen.has(cls(r)) ? 'superseded' : 'current';
+          seen.add(cls(r));
+          return { ...r, state };
+        });
+        return { today, items, tiers: [...new Set(rows.filter((r) => r.kind === 'per_diem').map((r) => r.tier!))].sort(), vehicles: VEHICLES, canManage: a.has('expenses.manage') };
       });
-      return { today, items, tiers: [...new Set(rows.filter((r) => r.kind === 'per_diem').map((r) => r.tier!))].sort(), vehicles: VEHICLES, canManage: a.has('expenses.manage') };
-    });
-  });
+    },
+  );
 
-  app.post('/allowance-rates', { schema: { body: AllowanceRatesBody }, config: { perm: ['expenses.manage'], feature: ['expenses'] } }, async (req, reply) => {
-    const a = tenantActor(req, 'expenses.manage');
-    const b = AllowanceRatesBody.parse(req.body);
-    return a.tx(async (db) => {
-      await requireFeature(db, a.tenantId, 'expenses');
-      const today = await orgToday(db, a.tenantId);
-      if (daysBetween(b.effectiveFrom, today) > 90) throw badRequest('A rate can start at most 90 days back');
-      const cls = b.kind === 'per_diem' ? { tier: b.tier, grade: b.grade || null, vehicle: null } : { tier: null, grade: null, vehicle: b.vehicle };
-      const dup = await db.query(
-        `SELECT 1 FROM allowance_rates WHERE tenant_id=$1 AND kind=$2 AND tier IS NOT DISTINCT FROM $3 AND grade IS NOT DISTINCT FROM $4
+  app.post(
+    '/allowance-rates',
+    { schema: { response: { 201: R.PostExpensesAllowanceRates201 }, body: AllowanceRatesBody }, config: { perm: ['expenses.manage'], feature: ['expenses'] } },
+    async (req, reply) => {
+      const a = tenantActor(req, 'expenses.manage');
+      const b = AllowanceRatesBody.parse(req.body);
+      return a.tx(async (db) => {
+        await requireFeature(db, a.tenantId, 'expenses');
+        const today = await orgToday(db, a.tenantId);
+        if (daysBetween(b.effectiveFrom, today) > 90) throw badRequest('A rate can start at most 90 days back');
+        const cls = b.kind === 'per_diem' ? { tier: b.tier, grade: b.grade || null, vehicle: null } : { tier: null, grade: null, vehicle: b.vehicle };
+        const dup = await db.query(
+          `SELECT 1 FROM allowance_rates WHERE tenant_id=$1 AND kind=$2 AND tier IS NOT DISTINCT FROM $3 AND grade IS NOT DISTINCT FROM $4
           AND vehicle IS NOT DISTINCT FROM $5 AND effective_from=$6`,
-        [a.tenantId, b.kind, cls.tier, cls.grade, cls.vehicle, b.effectiveFrom],
-      );
-      if (dup.rowCount) throw conflict('A rate for this class already starts on that day');
-      // Items keep the rate they were priced at; a new (even back-dated) rate applies to items added from now on.
-      const r = await db.query<{ id: string }>(
-        `INSERT INTO allowance_rates (tenant_id, kind, tier, grade, vehicle, rate, effective_from, note, created_by)
+          [a.tenantId, b.kind, cls.tier, cls.grade, cls.vehicle, b.effectiveFrom],
+        );
+        if (dup.rowCount) throw conflict('A rate for this class already starts on that day');
+        // Items keep the rate they were priced at; a new (even back-dated) rate applies to items added from now on.
+        const r = await db.query<{ id: string }>(
+          `INSERT INTO allowance_rates (tenant_id, kind, tier, grade, vehicle, rate, effective_from, note, created_by)
         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9) RETURNING id`,
-        [a.tenantId, b.kind, cls.tier, cls.grade, cls.vehicle, b.rate.toFixed(2), b.effectiveFrom, b.note ?? null, a.user.userId],
-      );
-      await audit(db, {
-        ...a.auditBase,
-        action: 'expenses.allowance_rate_added',
-        category: 'configuration',
-        targetType: 'allowance_rate',
-        targetId: r.rows[0]!.id,
-        metadata: { ...b, ...cls },
+          [a.tenantId, b.kind, cls.tier, cls.grade, cls.vehicle, b.rate.toFixed(2), b.effectiveFrom, b.note ?? null, a.user.userId],
+        );
+        await audit(db, {
+          ...a.auditBase,
+          action: 'expenses.allowance_rate_added',
+          category: 'configuration',
+          targetType: 'allowance_rate',
+          targetId: r.rows[0]!.id,
+          metadata: { ...b, ...cls },
+        });
+        reply.code(201);
+        return { id: r.rows[0]!.id };
       });
-      reply.code(201);
-      return { id: r.rows[0]!.id };
-    });
-  });
+    },
+  );
 
   // Only a rate that has not started yet can be withdrawn (a typo in next month's rate); others are superseded.
-  app.delete('/allowance-rates/:id', { schema: { params: IdParams }, config: { perm: ['expenses.manage'] } }, async (req) => {
-    const a = tenantActor(req, 'expenses.manage');
-    const { id } = IdParams.parse(req.params);
-    return a.tx(async (db) => {
-      // Rates are never updated (no UPDATE grant, so no row lock either): delete only while it has not started.
-      const del = await db.query('DELETE FROM allowance_rates WHERE tenant_id=$1 AND id=$2 AND effective_from > $3', [a.tenantId, id, await orgToday(db, a.tenantId)]);
-      if (!del.rowCount) {
-        if ((await db.query('SELECT 1 FROM allowance_rates WHERE tenant_id=$1 AND id=$2', [a.tenantId, id])).rowCount)
-          throw conflict('This rate is already in force; add a new rate to replace it');
-        throw notFound('Rate not found');
-      }
-      await audit(db, { ...a.auditBase, action: 'expenses.allowance_rate_withdrawn', category: 'configuration', targetType: 'allowance_rate', targetId: id });
-      return { ok: true };
-    });
-  });
+  app.delete(
+    '/allowance-rates/:id',
+    { schema: { response: { 200: R.DeleteExpensesAllowanceRatesById200 }, params: IdParams }, config: { perm: ['expenses.manage'] } },
+    async (req) => {
+      const a = tenantActor(req, 'expenses.manage');
+      const { id } = IdParams.parse(req.params);
+      return a.tx(async (db) => {
+        // Rates are never updated (no UPDATE grant, so no row lock either): delete only while it has not started.
+        const del = await db.query('DELETE FROM allowance_rates WHERE tenant_id=$1 AND id=$2 AND effective_from > $3', [a.tenantId, id, await orgToday(db, a.tenantId)]);
+        if (!del.rowCount) {
+          if ((await db.query('SELECT 1 FROM allowance_rates WHERE tenant_id=$1 AND id=$2', [a.tenantId, id])).rowCount)
+            throw conflict('This rate is already in force; add a new rate to replace it');
+          throw notFound('Rate not found');
+        }
+        await audit(db, { ...a.auditBase, action: 'expenses.allowance_rate_withdrawn', category: 'configuration', targetType: 'allowance_rate', targetId: id });
+        return { ok: true };
+      });
+    },
+  );
 
   // What an allowance comes to, for a trip estimate or before adding an item: per diem for the days from..to, or mileage for km.
-  app.get('/allowance-quote', { schema: { querystring: AllowanceQuoteQuery }, config: { permAny: ['expenses.self', 'travel.self'], feature: ['expenses'] } }, async (req) => {
-    const a = tenantActorAny(req, 'expenses.self', 'travel.self');
-    const q = AllowanceQuoteQuery.parse(req.query);
-    return a.tx(async (db) => {
-      await requireFeature(db, a.tenantId, 'expenses');
-      const employeeId = q.employeeId ?? a.user.employeeId;
-      if (!employeeId) throw badRequest('Your account is not linked to an employee record');
-      if (employeeId !== a.user.employeeId && !a.has('expenses.read') && !a.has('travel.read')) throw forbidden();
-      const grade = await employeeGrade(db, a.tenantId, employeeId);
-      const rate = await findRate(db, a.tenantId, { kind: q.kind, date: q.date, tier: q.tier, grade, vehicle: q.vehicle });
-      if (!rate) return { rate: null };
-      const quantity = q.kind === 'per_diem' ? (q.to && q.to >= q.date ? daysBetween(q.date, q.to) + 1 : 1) : (q.km ?? 1);
-      return { rate: rate.rate, gradeSpecific: rate.grade !== null, quantity, amount: new Decimal(rate.rate).mul(quantity).toFixed(2) };
-    });
-  });
+  app.get(
+    '/allowance-quote',
+    {
+      schema: { response: { 200: R.GetExpensesAllowanceQuote200 }, querystring: AllowanceQuoteQuery },
+      config: { permAny: ['expenses.self', 'travel.self'], feature: ['expenses'] },
+    },
+    async (req) => {
+      const a = tenantActorAny(req, 'expenses.self', 'travel.self');
+      const q = AllowanceQuoteQuery.parse(req.query);
+      return a.tx(async (db) => {
+        await requireFeature(db, a.tenantId, 'expenses');
+        const employeeId = q.employeeId ?? a.user.employeeId;
+        if (!employeeId) throw badRequest('Your account is not linked to an employee record');
+        if (employeeId !== a.user.employeeId && !a.has('expenses.read') && !a.has('travel.read')) throw forbidden();
+        const grade = await employeeGrade(db, a.tenantId, employeeId);
+        const rate = await findRate(db, a.tenantId, { kind: q.kind, date: q.date, tier: q.tier, grade, vehicle: q.vehicle });
+        if (!rate) return { rate: null };
+        const quantity = q.kind === 'per_diem' ? (q.to && q.to >= q.date ? daysBetween(q.date, q.to) + 1 : 1) : (q.km ?? 1);
+        return { rate: rate.rate, gradeSpecific: rate.grade !== null, quantity, amount: new Decimal(rate.rate).mul(quantity).toFixed(2) };
+      });
+    },
+  );
 }

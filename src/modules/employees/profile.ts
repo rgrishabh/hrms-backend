@@ -270,104 +270,129 @@ export async function profileRoutes(app: FastifyInstance) {
   );
 
   /** Replace a section: directly (HR, or the employee's own contacts and addresses), or as a change for HR to approve. */
-  app.put('/:id/profile/:section', { schema: { params: ProfileParams, body: ProfileBody }, config: { permAny: ['profile.self', 'employees.manage'] } }, async (req, reply) => {
-    const a = tenantActorAny(req, 'profile.self', 'employees.manage');
-    const { id, section } = ProfileParams.parse(req.params);
-    const b = ProfileBody.parse(req.body);
-    const self = a.user.employeeId === id;
-    if (self ? !a.has('profile.self') : !a.has('employees.manage')) throw self ? forbidden() : notFound('Employee not found');
-    return a.tx(async (db) => {
-      if (!self) await assertCanView(db, a, id);
-      const e = await loadEmployee(db, a.tenantId, id);
-      const items = validateSection(section, b.items, e, await orgToday(db, a.tenantId));
-      if (!self || !VERIFIED.includes(section)) {
-        await replaceSection(db, a.tenantId, id, section, items);
+  app.put(
+    '/:id/profile/:section',
+    {
+      schema: { response: { 200: R.PutEmployeesByIdProfileBySection200, 202: R.PutEmployeesByIdProfileBySection202 }, params: ProfileParams, body: ProfileBody },
+      config: { permAny: ['profile.self', 'employees.manage'] },
+    },
+    async (req, reply) => {
+      const a = tenantActorAny(req, 'profile.self', 'employees.manage');
+      const { id, section } = ProfileParams.parse(req.params);
+      const b = ProfileBody.parse(req.body);
+      const self = a.user.employeeId === id;
+      if (self ? !a.has('profile.self') : !a.has('employees.manage')) throw self ? forbidden() : notFound('Employee not found');
+      return a.tx(async (db) => {
+        if (!self) await assertCanView(db, a, id);
+        const e = await loadEmployee(db, a.tenantId, id);
+        const items = validateSection(section, b.items, e, await orgToday(db, a.tenantId));
+        if (!self || !VERIFIED.includes(section)) {
+          await replaceSection(db, a.tenantId, id, section, items);
+          await audit(db, {
+            ...a.auditBase,
+            action: 'employee.profile_updated',
+            targetType: 'employee',
+            targetId: id,
+            metadata: { section, entries: items.length, byEmployee: self },
+          });
+          return { applied: true };
+        }
+        const open = await db.query(`SELECT 1 FROM employee_profile_changes WHERE tenant_id=$1 AND employee_id=$2 AND section=$3 AND status='pending'`, [a.tenantId, id, section]);
+        if (open.rowCount) throw conflict(`Your earlier change to ${SECTION_LABEL[section].toLowerCase()} is still awaiting approval; withdraw it to send a new one`);
+        const changeId = (
+          await db.query<{ id: string }>(
+            `INSERT INTO employee_profile_changes (tenant_id, employee_id, section, items, note, requested_by)
+        VALUES ($1,$2,$3,$4,$5,$6) RETURNING id`,
+            [a.tenantId, id, section, JSON.stringify(items), b.note, a.user.userId],
+          )
+        ).rows[0]!.id;
+        const approvalId = await createApprovalRequest(db, a.tenantId, {
+          entityType: 'employee_profile_change',
+          entityId: changeId,
+          requesterId: a.user.userId,
+          summary: `${e.name}: ${SECTION_LABEL[section].toLowerCase()} (${n(items.length, 'entry', 'entries')})`,
+          steps: [{ kind: 'permission', permission: 'profile.approve' }],
+          excludeUserIds: [e.user_id],
+        });
         await audit(db, {
           ...a.auditBase,
-          action: 'employee.profile_updated',
+          action: 'employee.profile_change_requested',
           targetType: 'employee',
           targetId: id,
-          metadata: { section, entries: items.length, byEmployee: self },
+          metadata: { section, entries: items.length, changeId, approvalId },
         });
-        return { applied: true };
-      }
-      const open = await db.query(`SELECT 1 FROM employee_profile_changes WHERE tenant_id=$1 AND employee_id=$2 AND section=$3 AND status='pending'`, [a.tenantId, id, section]);
-      if (open.rowCount) throw conflict(`Your earlier change to ${SECTION_LABEL[section].toLowerCase()} is still awaiting approval; withdraw it to send a new one`);
-      const changeId = (
-        await db.query<{ id: string }>(
-          `INSERT INTO employee_profile_changes (tenant_id, employee_id, section, items, note, requested_by)
-        VALUES ($1,$2,$3,$4,$5,$6) RETURNING id`,
-          [a.tenantId, id, section, JSON.stringify(items), b.note, a.user.userId],
-        )
-      ).rows[0]!.id;
-      const approvalId = await createApprovalRequest(db, a.tenantId, {
-        entityType: 'employee_profile_change',
-        entityId: changeId,
-        requesterId: a.user.userId,
-        summary: `${e.name}: ${SECTION_LABEL[section].toLowerCase()} (${n(items.length, 'entry', 'entries')})`,
-        steps: [{ kind: 'permission', permission: 'profile.approve' }],
-        excludeUserIds: [e.user_id],
+        reply.code(202);
+        return { applied: false, changeId, approvalId };
       });
-      await audit(db, {
-        ...a.auditBase,
-        action: 'employee.profile_change_requested',
-        targetType: 'employee',
-        targetId: id,
-        metadata: { section, entries: items.length, changeId, approvalId },
-      });
-      reply.code(202);
-      return { applied: false, changeId, approvalId };
-    });
-  });
+    },
+  );
 
   /** A proposed change with the section as it is now, for the approver to compare. */
-  app.get('/profile-changes/:changeId', { schema: { params: ProfileChangesParams }, config: { permAny: ['profile.self', 'profile.approve', 'employees.read'] } }, async (req) => {
-    const a = tenantActorAny(req, 'profile.self', 'profile.approve', 'employees.read');
-    const { changeId } = ProfileChangesParams.parse(req.params);
-    return a.tx(async (db) => {
-      const c = (
-        await db.query<{ employee_id: string; section: Section }>(
-          `SELECT c.id, c.employee_id, c.section, c.items, c.note, c.status, c.created_at, c.decided_at,
+  app.get(
+    '/profile-changes/:changeId',
+    {
+      schema: { response: { 200: R.GetEmployeesProfileChangesByChangeId200 }, params: ProfileChangesParams },
+      config: { permAny: ['profile.self', 'profile.approve', 'employees.read'] },
+    },
+    async (req) => {
+      const a = tenantActorAny(req, 'profile.self', 'profile.approve', 'employees.read');
+      const { changeId } = ProfileChangesParams.parse(req.params);
+      return a.tx(async (db) => {
+        const c = (
+          await db.query<{ employee_id: string; section: Section }>(
+            `SELECT c.id, c.employee_id, c.section, c.items, c.note, c.status, c.created_at, c.decided_at,
           trim(e.first_name||' '||coalesce(e.last_name,'')) AS employee_name, e.employee_code
         FROM employee_profile_changes c JOIN employees e ON e.tenant_id=c.tenant_id AND e.id=c.employee_id WHERE c.tenant_id=$1 AND c.id=$2`,
-          [a.tenantId, changeId],
+            [a.tenantId, changeId],
+          )
+        ).rows[0];
+        if (
+          !c ||
+          !(
+            c.employee_id === a.user.employeeId ||
+            ((a.has('profile.approve') || a.has('employees.read')) &&
+              (await subjectVisible(db, a.tenantId, await policyViewer(db, a.tenantId, a.user), c.employee_id, l3RowFilter)))
+          )
         )
-      ).rows[0];
-      if (
-        !c ||
-        !(
-          c.employee_id === a.user.employeeId ||
-          ((a.has('profile.approve') || a.has('employees.read')) && (await subjectVisible(db, a.tenantId, await policyViewer(db, a.tenantId, a.user), c.employee_id, l3RowFilter)))
-        )
-      )
-        throw notFound('Change not found');
-      return { ...c, current: (await loadSections(db, a.tenantId, c.employee_id))[c.section] };
-    });
-  });
+          throw notFound('Change not found');
+        return { ...c, current: (await loadSections(db, a.tenantId, c.employee_id))[c.section] };
+      });
+    },
+  );
 
   /** The employee takes back a change still awaiting approval. */
-  app.post('/profile-changes/:changeId/withdraw', { schema: { params: ProfileChangesParams }, config: { perm: ['profile.self'] } }, async (req) => {
-    const a = tenantActor(req, 'profile.self');
-    const { changeId } = ProfileChangesParams.parse(req.params);
-    return a.tx(async (db) => {
-      const c = (
-        await db.query<{ employee_id: string; status: string; section: string }>(
-          `SELECT employee_id, status, section FROM employee_profile_changes WHERE tenant_id=$1 AND id=$2 FOR UPDATE`,
-          [a.tenantId, changeId],
-        )
-      ).rows[0];
-      if (!c || c.employee_id !== a.user.employeeId) throw notFound('Change not found');
-      if (c.status !== 'pending') throw conflict(`This change is ${c.status}`);
-      const r = (
-        await db.query<{ id: string }>(`SELECT id FROM approval_requests WHERE tenant_id=$1 AND entity_type='employee_profile_change' AND entity_id=$2 AND status='pending'`, [
-          a.tenantId,
-          changeId,
-        ])
-      ).rows[0];
-      if (r) await cancelRequest(db, a.tenantId, r.id, a.user.userId, { requestId: a.auditBase.requestId, ip: a.auditBase.ip }, { subjectMayWithdraw: true });
-      else await db.query(`UPDATE employee_profile_changes SET status='cancelled', decided_at=now() WHERE tenant_id=$1 AND id=$2`, [a.tenantId, changeId]);
-      await audit(db, { ...a.auditBase, action: 'employee.profile_change_withdrawn', targetType: 'employee', targetId: c.employee_id, metadata: { section: c.section, changeId } });
-      return { ok: true };
-    });
-  });
+  app.post(
+    '/profile-changes/:changeId/withdraw',
+    { schema: { response: { 200: R.PostEmployeesProfileChangesByChangeIdWithdraw200 }, params: ProfileChangesParams }, config: { perm: ['profile.self'] } },
+    async (req) => {
+      const a = tenantActor(req, 'profile.self');
+      const { changeId } = ProfileChangesParams.parse(req.params);
+      return a.tx(async (db) => {
+        const c = (
+          await db.query<{ employee_id: string; status: string; section: string }>(
+            `SELECT employee_id, status, section FROM employee_profile_changes WHERE tenant_id=$1 AND id=$2 FOR UPDATE`,
+            [a.tenantId, changeId],
+          )
+        ).rows[0];
+        if (!c || c.employee_id !== a.user.employeeId) throw notFound('Change not found');
+        if (c.status !== 'pending') throw conflict(`This change is ${c.status}`);
+        const r = (
+          await db.query<{ id: string }>(`SELECT id FROM approval_requests WHERE tenant_id=$1 AND entity_type='employee_profile_change' AND entity_id=$2 AND status='pending'`, [
+            a.tenantId,
+            changeId,
+          ])
+        ).rows[0];
+        if (r) await cancelRequest(db, a.tenantId, r.id, a.user.userId, { requestId: a.auditBase.requestId, ip: a.auditBase.ip }, { subjectMayWithdraw: true });
+        else await db.query(`UPDATE employee_profile_changes SET status='cancelled', decided_at=now() WHERE tenant_id=$1 AND id=$2`, [a.tenantId, changeId]);
+        await audit(db, {
+          ...a.auditBase,
+          action: 'employee.profile_change_withdrawn',
+          targetType: 'employee',
+          targetId: c.employee_id,
+          metadata: { section: c.section, changeId },
+        });
+        return { ok: true };
+      });
+    },
+  );
 }

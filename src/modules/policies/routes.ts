@@ -164,7 +164,7 @@ export async function policyRoutes(app: FastifyInstance) {
     });
   });
 
-  app.post('/', { schema: { body: PolicyBody }, config: { perm: ['policies.manage'], feature: [FEATURE] } }, async (req, reply) => {
+  app.post('/', { schema: { response: { 201: R.PostPolicies201 }, body: PolicyBody }, config: { perm: ['policies.manage'], feature: [FEATURE] } }, async (req, reply) => {
     const a = tenantActor(req, 'policies.manage');
     const b = PolicyBody.parse(req.body);
     return a.tx(async (db) => {
@@ -185,35 +185,43 @@ export async function policyRoutes(app: FastifyInstance) {
     });
   });
 
-  app.put('/:id', { schema: { params: IdParams, body: PutRootBody }, config: { perm: ['policies.manage'], feature: [FEATURE] } }, async (req) => {
-    const a = tenantActor(req, 'policies.manage');
-    const { id } = IdParams.parse(req.params);
-    const b = PutRootBody.parse(req.body);
-    return a.tx(async (db) => {
-      await requireFeature(db, a.tenantId, FEATURE);
-      const r = await db.query(`UPDATE policies SET title=$3, category=$4, owner=$5 WHERE tenant_id=$1 AND id=$2`, [a.tenantId, id, b.title, b.category, b.owner]);
-      if (!r.rowCount) throw notFound('Policy not found');
-      await audit(db, { ...a.auditBase, action: 'policies.updated', category: 'configuration', targetType: 'policy', targetId: id, metadata: b });
-      return { ok: true };
-    });
-  });
+  app.put(
+    '/:id',
+    { schema: { response: { 200: R.PutPoliciesById200 }, params: IdParams, body: PutRootBody }, config: { perm: ['policies.manage'], feature: [FEATURE] } },
+    async (req) => {
+      const a = tenantActor(req, 'policies.manage');
+      const { id } = IdParams.parse(req.params);
+      const b = PutRootBody.parse(req.body);
+      return a.tx(async (db) => {
+        await requireFeature(db, a.tenantId, FEATURE);
+        const r = await db.query(`UPDATE policies SET title=$3, category=$4, owner=$5 WHERE tenant_id=$1 AND id=$2`, [a.tenantId, id, b.title, b.category, b.owner]);
+        if (!r.rowCount) throw notFound('Policy not found');
+        await audit(db, { ...a.auditBase, action: 'policies.updated', category: 'configuration', targetType: 'policy', targetId: id, metadata: b });
+        return { ok: true };
+      });
+    },
+  );
 
   /** Retiring withdraws the published version; history and acknowledgements are kept. */
-  app.post('/:id/retire', { schema: { params: IdParams, body: RetireBody }, config: { perm: ['policies.publish'], feature: [FEATURE] } }, async (req) => {
-    const a = tenantActor(req, 'policies.publish');
-    const { id } = IdParams.parse(req.params);
-    const { reason } = RetireBody.parse(req.body);
-    return a.tx(async (db) => {
-      await requireFeature(db, a.tenantId, FEATURE);
-      const r = await db.query(`UPDATE policies SET status='retired' WHERE tenant_id=$1 AND id=$2 AND status='active'`, [a.tenantId, id]);
-      if (!r.rowCount) throw notFound('Active policy not found');
-      await db.query(`UPDATE policy_versions SET status='withdrawn' WHERE tenant_id=$1 AND policy_id=$2 AND status IN ('published','draft')`, [a.tenantId, id]);
-      await audit(db, { ...a.auditBase, action: 'policies.retired', category: 'configuration', targetType: 'policy', targetId: id, metadata: { reason } });
-      return { ok: true };
-    });
-  });
+  app.post(
+    '/:id/retire',
+    { schema: { response: { 200: R.PostPoliciesByIdRetire200 }, params: IdParams, body: RetireBody }, config: { perm: ['policies.publish'], feature: [FEATURE] } },
+    async (req) => {
+      const a = tenantActor(req, 'policies.publish');
+      const { id } = IdParams.parse(req.params);
+      const { reason } = RetireBody.parse(req.body);
+      return a.tx(async (db) => {
+        await requireFeature(db, a.tenantId, FEATURE);
+        const r = await db.query(`UPDATE policies SET status='retired' WHERE tenant_id=$1 AND id=$2 AND status='active'`, [a.tenantId, id]);
+        if (!r.rowCount) throw notFound('Active policy not found');
+        await db.query(`UPDATE policy_versions SET status='withdrawn' WHERE tenant_id=$1 AND policy_id=$2 AND status IN ('published','draft')`, [a.tenantId, id]);
+        await audit(db, { ...a.auditBase, action: 'policies.retired', category: 'configuration', targetType: 'policy', targetId: id, metadata: { reason } });
+        return { ok: true };
+      });
+    },
+  );
 
-  app.get('/:id', { schema: { params: IdParams }, config: { perm: ['policies.read'], feature: [FEATURE] } }, async (req) => {
+  app.get('/:id', { schema: { response: { 200: R.GetPoliciesById200 }, params: IdParams }, config: { perm: ['policies.read'], feature: [FEATURE] } }, async (req) => {
     const a = tenantActor(req, 'policies.read');
     const { id } = IdParams.parse(req.params);
     return a.tx(async (db) => {
@@ -239,7 +247,7 @@ export async function policyRoutes(app: FastifyInstance) {
   app.post(
     '/:id/versions',
     {
-      schema: { params: IdParams, body: VersionsBody, consumes: ['multipart/form-data'] },
+      schema: { response: { 201: R.PostPoliciesByIdVersions201 }, params: IdParams, body: VersionsBody, consumes: ['multipart/form-data'] },
       config: { perm: ['policies.manage'], feature: [FEATURE], rateLimit: { max: 20, timeWindow: '1 minute' } },
     },
     async (req, reply) => {
@@ -331,73 +339,85 @@ export async function policyRoutes(app: FastifyInstance) {
     },
   );
 
-  app.post('/versions/:id/discard', { schema: { params: IdParams }, config: { perm: ['policies.manage'], feature: [FEATURE] } }, async (req) => {
-    const a = tenantActor(req, 'policies.manage');
-    const { id } = IdParams.parse(req.params);
-    return a.tx(async (db) => {
-      await requireFeature(db, a.tenantId, FEATURE);
-      const r = await db.query(`UPDATE policy_versions SET status='withdrawn' WHERE tenant_id=$1 AND id=$2 AND status='draft'`, [a.tenantId, id]);
-      if (!r.rowCount) throw notFound('Draft not found');
-      await audit(db, { ...a.auditBase, action: 'policies.draft_discarded', category: 'configuration', targetType: 'policy_version', targetId: id });
-      return { ok: true };
-    });
-  });
-
-  app.post('/versions/:id/publish', { schema: { params: IdParams }, config: { perm: ['policies.publish'], feature: [FEATURE] } }, async (req) => {
-    const a = tenantActor(req, 'policies.publish');
-    const { id } = IdParams.parse(req.params);
-    return a.tx(async (db) => {
-      await requireFeature(db, a.tenantId, FEATURE);
-      const v = await loadVersion(db, a.tenantId, id, true);
-      if (!v) throw notFound('Version not found');
-      if (v.status !== 'draft') throw conflict(`A ${v.status} version cannot be published`);
-      if (v.policy_status !== 'active') throw conflict('This policy is retired');
-      if (v.created_by === a.user.userId) throw forbidden('A policy version must be published by someone other than its author');
-      const prev = await db.query<{ id: string }>(`UPDATE policy_versions SET status='superseded' WHERE tenant_id=$1 AND policy_id=$2 AND status='published' RETURNING id`, [
-        a.tenantId,
-        v.policy_id,
-      ]);
-      await db.query(`UPDATE policy_versions SET status='published', published_by=$3, published_at=now() WHERE tenant_id=$1 AND id=$2`, [a.tenantId, id, a.user.userId]);
-      const users = (
-        await db.query<{ user_id: string }>(
-          `SELECT e.user_id FROM employees e, policy_versions v WHERE e.tenant_id=$1 AND v.tenant_id=$1 AND v.id=$2 AND e.user_id IS NOT NULL AND ${AUDIENCE_SQL}`,
-          [a.tenantId, id],
-        )
-      ).rows.map((r) => r.user_id);
-      const r = await notifyUsers(db, a.tenantId, users, {
-        kind: 'policies.published',
-        title: `${v.requires_ack ? 'Please read and acknowledge' : 'Updated policy'}: ${v.title} (v${v.version_no})`,
-        body: v.requires_ack ? `Acknowledge within ${v.ack_due_days} days.` : 'A new version has been published.',
-        link: `/policies?version=${id}`,
-        actionLabel: 'Read policy',
-        dedupeKey: `policy-published:${id}`,
+  app.post(
+    '/versions/:id/discard',
+    { schema: { response: { 200: R.PostPoliciesVersionsByIdDiscard200 }, params: IdParams }, config: { perm: ['policies.manage'], feature: [FEATURE] } },
+    async (req) => {
+      const a = tenantActor(req, 'policies.manage');
+      const { id } = IdParams.parse(req.params);
+      return a.tx(async (db) => {
+        await requireFeature(db, a.tenantId, FEATURE);
+        const r = await db.query(`UPDATE policy_versions SET status='withdrawn' WHERE tenant_id=$1 AND id=$2 AND status='draft'`, [a.tenantId, id]);
+        if (!r.rowCount) throw notFound('Draft not found');
+        await audit(db, { ...a.auditBase, action: 'policies.draft_discarded', category: 'configuration', targetType: 'policy_version', targetId: id });
+        return { ok: true };
       });
-      await audit(db, {
-        ...a.auditBase,
-        action: 'policies.published',
-        category: 'configuration',
-        targetType: 'policy_version',
-        targetId: id,
-        metadata: { policyId: v.policy_id, versionNo: v.version_no, superseded: prev.rows.map((x) => x.id), audience: users.length, contentSha256: v.content_sha256 },
+    },
+  );
+
+  app.post(
+    '/versions/:id/publish',
+    { schema: { response: { 200: R.PostPoliciesVersionsByIdPublish200 }, params: IdParams }, config: { perm: ['policies.publish'], feature: [FEATURE] } },
+    async (req) => {
+      const a = tenantActor(req, 'policies.publish');
+      const { id } = IdParams.parse(req.params);
+      return a.tx(async (db) => {
+        await requireFeature(db, a.tenantId, FEATURE);
+        const v = await loadVersion(db, a.tenantId, id, true);
+        if (!v) throw notFound('Version not found');
+        if (v.status !== 'draft') throw conflict(`A ${v.status} version cannot be published`);
+        if (v.policy_status !== 'active') throw conflict('This policy is retired');
+        if (v.created_by === a.user.userId) throw forbidden('A policy version must be published by someone other than its author');
+        const prev = await db.query<{ id: string }>(`UPDATE policy_versions SET status='superseded' WHERE tenant_id=$1 AND policy_id=$2 AND status='published' RETURNING id`, [
+          a.tenantId,
+          v.policy_id,
+        ]);
+        await db.query(`UPDATE policy_versions SET status='published', published_by=$3, published_at=now() WHERE tenant_id=$1 AND id=$2`, [a.tenantId, id, a.user.userId]);
+        const users = (
+          await db.query<{ user_id: string }>(
+            `SELECT e.user_id FROM employees e, policy_versions v WHERE e.tenant_id=$1 AND v.tenant_id=$1 AND v.id=$2 AND e.user_id IS NOT NULL AND ${AUDIENCE_SQL}`,
+            [a.tenantId, id],
+          )
+        ).rows.map((r) => r.user_id);
+        const r = await notifyUsers(db, a.tenantId, users, {
+          kind: 'policies.published',
+          title: `${v.requires_ack ? 'Please read and acknowledge' : 'Updated policy'}: ${v.title} (v${v.version_no})`,
+          body: v.requires_ack ? `Acknowledge within ${v.ack_due_days} days.` : 'A new version has been published.',
+          link: `/policies?version=${id}`,
+          actionLabel: 'Read policy',
+          dedupeKey: `policy-published:${id}`,
+        });
+        await audit(db, {
+          ...a.auditBase,
+          action: 'policies.published',
+          category: 'configuration',
+          targetType: 'policy_version',
+          targetId: id,
+          metadata: { policyId: v.policy_id, versionNo: v.version_no, superseded: prev.rows.map((x) => x.id), audience: users.length, contentSha256: v.content_sha256 },
+        });
+        return { ok: true, notified: r.inApp };
       });
-      return { ok: true, notified: r.inApp };
-    });
-  });
+    },
+  );
 
-  app.post('/versions/:id/withdraw', { schema: { params: IdParams, body: RetireBody }, config: { perm: ['policies.publish'], feature: [FEATURE] } }, async (req) => {
-    const a = tenantActor(req, 'policies.publish');
-    const { id } = IdParams.parse(req.params);
-    const { reason } = RetireBody.parse(req.body);
-    return a.tx(async (db) => {
-      await requireFeature(db, a.tenantId, FEATURE);
-      const r = await db.query(`UPDATE policy_versions SET status='withdrawn' WHERE tenant_id=$1 AND id=$2 AND status='published'`, [a.tenantId, id]);
-      if (!r.rowCount) throw notFound('Published version not found');
-      await audit(db, { ...a.auditBase, action: 'policies.withdrawn', category: 'configuration', targetType: 'policy_version', targetId: id, metadata: { reason } });
-      return { ok: true };
-    });
-  });
+  app.post(
+    '/versions/:id/withdraw',
+    { schema: { response: { 200: R.PostPoliciesVersionsByIdWithdraw200 }, params: IdParams, body: RetireBody }, config: { perm: ['policies.publish'], feature: [FEATURE] } },
+    async (req) => {
+      const a = tenantActor(req, 'policies.publish');
+      const { id } = IdParams.parse(req.params);
+      const { reason } = RetireBody.parse(req.body);
+      return a.tx(async (db) => {
+        await requireFeature(db, a.tenantId, FEATURE);
+        const r = await db.query(`UPDATE policy_versions SET status='withdrawn' WHERE tenant_id=$1 AND id=$2 AND status='published'`, [a.tenantId, id]);
+        if (!r.rowCount) throw notFound('Published version not found');
+        await audit(db, { ...a.auditBase, action: 'policies.withdrawn', category: 'configuration', targetType: 'policy_version', targetId: id, metadata: { reason } });
+        return { ok: true };
+      });
+    },
+  );
 
-  app.get('/versions/:id', { schema: { params: IdParams }, config: { feature: [FEATURE] } }, async (req) => {
+  app.get('/versions/:id', { schema: { response: { 200: R.GetPoliciesVersionsById200 }, params: IdParams }, config: { feature: [FEATURE] } }, async (req) => {
     const a = tenantActor(req);
     const { id } = IdParams.parse(req.params);
     return a.tx(async (db) => {
@@ -439,71 +459,82 @@ export async function policyRoutes(app: FastifyInstance) {
     });
   });
 
-  app.get('/versions/:id/file', { schema: { params: IdParams, querystring: VersionsFileQuery }, config: { feature: [FEATURE] } }, async (req, reply) => {
-    const a = tenantActor(req);
-    const { id } = IdParams.parse(req.params);
-    const v = await a.tx(async (db) => {
-      await requireFeature(db, a.tenantId, FEATURE);
-      const v = await loadVersion(db, a.tenantId, id);
-      if (!v || !v.file_key || !(await canRead(db, a, v))) throw notFound('Policy file not found');
-      return v;
-    });
-    const store = getStore();
-    if (!store) throw new AppError(503, 'storage_unavailable', 'File storage is not configured');
-    const buf = await store.get(v.file_key!);
-    if (sha(buf) !== v.file_sha256) {
-      req.log.error({ policyVersionId: id }, 'policy file integrity check failed');
-      throw new AppError(500, 'integrity_failed', 'The stored file failed its integrity check. Contact your administrator.');
-    }
-    const q = VersionsFileQuery.parse(req.query);
-    return reply
-      .header('content-type', 'application/pdf')
-      .header('content-disposition', `${q.inline ? 'inline' : 'attachment'}; filename="${v.file_name!.replace(/"/g, '')}"; filename*=UTF-8''${encodeURIComponent(v.file_name!)}`)
-      .header('cache-control', 'private, no-store')
-      .header('x-content-type-options', 'nosniff')
-      .send(buf);
-  });
+  app.get(
+    '/versions/:id/file',
+    { schema: { response: { 200: R.file('application/pdf') }, params: IdParams, querystring: VersionsFileQuery }, config: { feature: [FEATURE] } },
+    async (req, reply) => {
+      const a = tenantActor(req);
+      const { id } = IdParams.parse(req.params);
+      const v = await a.tx(async (db) => {
+        await requireFeature(db, a.tenantId, FEATURE);
+        const v = await loadVersion(db, a.tenantId, id);
+        if (!v || !v.file_key || !(await canRead(db, a, v))) throw notFound('Policy file not found');
+        return v;
+      });
+      const store = getStore();
+      if (!store) throw new AppError(503, 'storage_unavailable', 'File storage is not configured');
+      const buf = await store.get(v.file_key!);
+      if (sha(buf) !== v.file_sha256) {
+        req.log.error({ policyVersionId: id }, 'policy file integrity check failed');
+        throw new AppError(500, 'integrity_failed', 'The stored file failed its integrity check. Contact your administrator.');
+      }
+      const q = VersionsFileQuery.parse(req.query);
+      return reply
+        .header('content-type', 'application/pdf')
+        .header('content-disposition', `${q.inline ? 'inline' : 'attachment'}; filename="${v.file_name!.replace(/"/g, '')}"; filename*=UTF-8''${encodeURIComponent(v.file_name!)}`)
+        .header('cache-control', 'private, no-store')
+        .header('x-content-type-options', 'nosniff')
+        .send(buf);
+    },
+  );
 
   /** The client sends back the content hash it displayed; a stale page (newer version published) is refused. */
-  app.post('/versions/:id/acknowledge', { schema: { params: IdParams, body: VersionsAcknowledgeBody }, config: { perm: ['policies.self'], feature: [FEATURE] } }, async (req) => {
-    const a = tenantActor(req, 'policies.self');
-    const { id } = IdParams.parse(req.params);
-    const { contentSha256 } = VersionsAcknowledgeBody.parse(req.body);
-    if (!a.user.employeeId) throw badRequest('Your account is not linked to an employee record');
-    return a.tx(async (db) => {
-      await requireFeature(db, a.tenantId, FEATURE);
-      const v = await loadVersion(db, a.tenantId, id);
-      if (!v || !(await canRead(db, a, v))) throw notFound('Policy not found');
-      if (v.status !== 'published') throw conflict('This version is no longer current; open the latest version');
-      if (!v.requires_ack) throw conflict('This policy does not need an acknowledgement');
-      if (contentSha256 !== v.content_sha256) throw conflict('The policy changed since you opened it; reload and read it again');
-      const ua = String(req.headers['user-agent'] ?? '').slice(0, 300);
-      const r = await db.query<{ acknowledged_at: string }>(
-        `INSERT INTO policy_acknowledgements (tenant_id, version_id, employee_id, user_id, content_sha256, ip, user_agent)
+  app.post(
+    '/versions/:id/acknowledge',
+    {
+      schema: { response: { 200: R.PostPoliciesVersionsByIdAcknowledge200 }, params: IdParams, body: VersionsAcknowledgeBody },
+      config: { perm: ['policies.self'], feature: [FEATURE] },
+    },
+    async (req) => {
+      const a = tenantActor(req, 'policies.self');
+      const { id } = IdParams.parse(req.params);
+      const { contentSha256 } = VersionsAcknowledgeBody.parse(req.body);
+      if (!a.user.employeeId) throw badRequest('Your account is not linked to an employee record');
+      return a.tx(async (db) => {
+        await requireFeature(db, a.tenantId, FEATURE);
+        const v = await loadVersion(db, a.tenantId, id);
+        if (!v || !(await canRead(db, a, v))) throw notFound('Policy not found');
+        if (v.status !== 'published') throw conflict('This version is no longer current; open the latest version');
+        if (!v.requires_ack) throw conflict('This policy does not need an acknowledgement');
+        if (contentSha256 !== v.content_sha256) throw conflict('The policy changed since you opened it; reload and read it again');
+        const ua = String(req.headers['user-agent'] ?? '').slice(0, 300);
+        const r = await db.query<{ acknowledged_at: string }>(
+          `INSERT INTO policy_acknowledgements (tenant_id, version_id, employee_id, user_id, content_sha256, ip, user_agent)
           VALUES ($1,$2,$3,$4,$5,$6,$7) ON CONFLICT (tenant_id, version_id, employee_id) DO NOTHING RETURNING acknowledged_at`,
-        [a.tenantId, id, a.user.employeeId, a.user.userId, v.content_sha256, req.ctx.ip, ua],
-      );
-      if (r.rowCount)
-        await audit(db, {
-          ...a.auditBase,
-          action: 'policies.acknowledged',
-          category: 'data',
-          targetType: 'policy_version',
-          targetId: id,
-          metadata: { contentSha256: v.content_sha256 },
-        });
-      const at =
-        r.rows[0]?.acknowledged_at ??
-        (
-          await db.query<{ acknowledged_at: string }>(`SELECT acknowledged_at FROM policy_acknowledgements WHERE tenant_id=$1 AND version_id=$2 AND employee_id=$3`, [
-            a.tenantId,
-            id,
-            a.user.employeeId,
-          ])
-        ).rows[0]!.acknowledged_at;
-      return { ok: true, acknowledgedAt: at, alreadyAcknowledged: !r.rowCount };
-    });
-  });
+          [a.tenantId, id, a.user.employeeId, a.user.userId, v.content_sha256, req.ctx.ip, ua],
+        );
+        if (r.rowCount)
+          await audit(db, {
+            ...a.auditBase,
+            action: 'policies.acknowledged',
+            category: 'data',
+            targetType: 'policy_version',
+            targetId: id,
+            metadata: { contentSha256: v.content_sha256 },
+          });
+        const at =
+          r.rows[0]?.acknowledged_at ??
+          (
+            await db.query<{ acknowledged_at: string }>(`SELECT acknowledged_at FROM policy_acknowledgements WHERE tenant_id=$1 AND version_id=$2 AND employee_id=$3`, [
+              a.tenantId,
+              id,
+              a.user.employeeId,
+            ])
+          ).rows[0]!.acknowledged_at;
+        return { ok: true, acknowledgedAt: at, alreadyAcknowledged: !r.rowCount };
+      });
+    },
+  );
 
   /** Current policies that apply to me, with acknowledgement status. */
   app.get('/mine', { schema: { response: { 200: R.GetPoliciesMine200 } }, config: { perm: ['policies.self'], feature: [FEATURE] } }, async (req) => {
@@ -549,7 +580,10 @@ export async function policyRoutes(app: FastifyInstance) {
 
   app.get(
     '/versions/:id/acknowledgements',
-    { schema: { params: IdParams, querystring: VersionsAcknowledgementsQuery }, config: { perm: ['policies.read'], feature: [FEATURE] } },
+    {
+      schema: { response: { 200: R.GetPoliciesVersionsByIdAcknowledgements200 }, params: IdParams, querystring: VersionsAcknowledgementsQuery },
+      config: { perm: ['policies.read'], feature: [FEATURE] },
+    },
     async (req) => {
       const a = tenantActor(req, 'policies.read');
       const { id } = IdParams.parse(req.params);

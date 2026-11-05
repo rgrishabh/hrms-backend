@@ -70,7 +70,7 @@ export async function accountingRoutes(app: FastifyInstance) {
     });
   });
 
-  app.put('/ledger-map', { schema: { body: LedgerMapBody }, config: { perm: ['accounting.configure'] } }, async (req) => {
+  app.put('/ledger-map', { schema: { response: { 200: R.PutAccountingLedgerMap200 }, body: LedgerMapBody }, config: { perm: ['accounting.configure'] } }, async (req) => {
     const a = tenantActor(req, 'accounting.configure');
     const b = LedgerMapBody.parse(req.body);
     return a.tx(async (db) => {
@@ -205,17 +205,21 @@ export async function accountingRoutes(app: FastifyInstance) {
     /** Preview: the voucher, its entries and any heads still to map. */
     app.get(
       `/${path}/:id/journal`,
-      { schema: { ...(kind === 'payroll_run' ? { response: { 200: R.GetAccountingPayrollRunsByIdJournal200 } } : {}), params: IdParams }, config: { perm: ['accounting.export'] } },
+      { schema: { response: { 200: R.GetAccountingPayrollRunsByIdJournal200 }, params: IdParams }, config: { perm: ['accounting.export'] } },
       async (req) => {
         const a = tenantActor(req, 'accounting.export');
         return (await load(req, a, kind, 'read')).j;
       },
     );
-    app.get(`/${path}/:id/export`, { schema: { params: IdParams, querystring: ExportQuery }, config: { perm: ['accounting.export'] } }, async (req, reply) => {
-      const a = tenantActor(req, 'accounting.export');
-      const { format } = ExportQuery.parse(req.query);
-      const { id, j } = await load(req, a, kind, 'export');
-      return exportFile(a, reply, kind, id, j, format);
-    });
+    app.get(
+      `/${path}/:id/export`,
+      { schema: { response: { 200: R.file('text/csv', 'application/xml') }, params: IdParams, querystring: ExportQuery }, config: { perm: ['accounting.export'] } },
+      async (req, reply) => {
+        const a = tenantActor(req, 'accounting.export');
+        const { format } = ExportQuery.parse(req.query);
+        const { id, j } = await load(req, a, kind, 'export');
+        return exportFile(a, reply, kind, id, j, format);
+      },
+    );
   }
 }

@@ -72,7 +72,7 @@ const ReportKeyParams = z.object({ key: z.string().max(60) });
 /** Each report declares its own parameters in the registry, and GET /reports lists them; runReport parses them with that report's schema. */
 const ReportParams = z.object({}).loose();
 export async function reportRoutes(app: FastifyInstance) {
-  app.get('/', { schema: {} }, async (req) => {
+  app.get('/', { schema: { response: { 200: R.GetReports200 } } }, async (req) => {
     const a = tenantActor(req);
     return a.tx(async (db) => {
       const features = await evaluateFeatures(db, a.tenantId);
@@ -90,7 +90,7 @@ export async function reportRoutes(app: FastifyInstance) {
   });
 
   // ------------------------------------------------------------ advanced: saved reports, schedules, snapshots
-  only(app, 'reports.advanced').get('/saved', { schema: {}, config: { feature: [ADV] } }, async (req) => {
+  only(app, 'reports.advanced').get('/saved', { schema: { response: { 200: R.GetReportsSaved200 } }, config: { feature: [ADV] } }, async (req) => {
     const a = tenantActor(req);
     return a.tx(async (db) => {
       await requireFeature(db, a.tenantId, ADV);
@@ -103,7 +103,7 @@ export async function reportRoutes(app: FastifyInstance) {
     });
   });
 
-  only(app, 'reports.advanced').post('/saved', { schema: { body: SavedBody }, config: { feature: [ADV] } }, async (req, reply) => {
+  only(app, 'reports.advanced').post('/saved', { schema: { response: { 201: R.PostReportsSaved201 },  body: SavedBody }, config: { feature: [ADV] } }, async (req, reply) => {
     const a = tenantActor(req);
     const b = SavedBody.parse(req.body);
     const def = REPORT_MAP.get(b.reportKey);
@@ -118,7 +118,7 @@ export async function reportRoutes(app: FastifyInstance) {
     });
   });
 
-  only(app, 'reports.advanced').delete('/saved/:id', { schema: { params: IdParams } }, async (req) => {
+  only(app, 'reports.advanced').delete('/saved/:id', { schema: { response: { 200: R.DeleteReportsSavedById200 },  params: IdParams } }, async (req) => {
     const a = tenantActor(req);
     const { id } = IdParams.parse(req.params);
     return a.tx(async (db) => {
@@ -129,7 +129,7 @@ export async function reportRoutes(app: FastifyInstance) {
   });
 
   /** Schedule a saved report (one schedule per saved report). Recipients need organization-wide access themselves. */
-  only(app, 'reports.advanced').put('/saved/:id/schedule', { schema: { params: IdParams, body: ScheduleBody }, config: { feature: [ADV] } }, async (req) => {
+  only(app, 'reports.advanced').put('/saved/:id/schedule', { schema: { response: { 200: R.PutReportsSavedByIdSchedule200 },  params: IdParams, body: ScheduleBody }, config: { feature: [ADV] } }, async (req) => {
     const a = tenantActor(req);
     const { id } = IdParams.parse(req.params);
     const b = ScheduleBody.parse(req.body);
@@ -159,7 +159,7 @@ export async function reportRoutes(app: FastifyInstance) {
   });
 
   /** People who may receive this saved report: active users who can see it for the whole organization. */
-  only(app, 'reports.advanced').get('/saved/:id/recipients', { schema: { params: IdParams }, config: { feature: [ADV] } }, async (req) => {
+  only(app, 'reports.advanced').get('/saved/:id/recipients', { schema: { response: { 200: R.GetReportsSavedByIdRecipients200 },  params: IdParams }, config: { feature: [ADV] } }, async (req) => {
     const a = tenantActor(req);
     const { id } = IdParams.parse(req.params);
     return a.tx(async (db) => {
@@ -175,7 +175,7 @@ export async function reportRoutes(app: FastifyInstance) {
     });
   });
 
-  only(app, 'reports.advanced').delete('/saved/:id/schedule', { schema: { params: IdParams } }, async (req) => {
+  only(app, 'reports.advanced').delete('/saved/:id/schedule', { schema: { response: { 200: R.DeleteReportsSavedByIdSchedule200 },  params: IdParams } }, async (req) => {
     const a = tenantActor(req);
     const { id } = IdParams.parse(req.params);
     return a.tx(async (db) => {
@@ -249,7 +249,7 @@ export async function reportRoutes(app: FastifyInstance) {
     return key;
   };
 
-  app.get('/:key', { schema: { params: ReportKeyParams, querystring: ReportParams } }, async (req) => {
+  app.get('/:key', { schema: { response: { 200: R.GetReportsByKey200 },  params: ReportKeyParams, querystring: ReportParams } }, async (req) => {
     const key = reportKey(req);
     const a = tenantActor(req);
     const reveal = wantsReveal(req);

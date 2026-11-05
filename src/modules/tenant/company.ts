@@ -131,7 +131,7 @@ export async function companyRoutes(app: FastifyInstance) {
     });
   });
 
-  app.put('/company', { schema: { body: CompanyBody }, config: { perm: ['company.manage'] } }, async (req) => {
+  app.put('/company', { schema: { response: { 200: R.PutTenantCompany200 }, body: CompanyBody }, config: { perm: ['company.manage'] } }, async (req) => {
     const a = tenantActor(req, 'company.manage');
     const { expectedVersion, ...body } = CompanyBody.parse(req.body);
     const given = (Object.keys(body) as BodyKey[]).filter((k) => body[k] !== undefined);
@@ -189,7 +189,10 @@ export async function companyRoutes(app: FastifyInstance) {
 
   app.post(
     '/company/images/:kind',
-    { schema: { params: ImageParams, consumes: ['multipart/form-data'] }, config: { perm: ['company.manage'], rateLimit: { max: 20, timeWindow: '1 minute' } } },
+    {
+      schema: { response: { 201: R.PostTenantCompanyImagesByKind201 }, params: ImageParams, consumes: ['multipart/form-data'] },
+      config: { perm: ['company.manage'], rateLimit: { max: 20, timeWindow: '1 minute' } },
+    },
     async (req, reply) => {
       const a = tenantActor(req, 'company.manage');
       const { kind } = ImageParams.parse(req.params);
@@ -245,7 +248,7 @@ export async function companyRoutes(app: FastifyInstance) {
     },
   );
 
-  app.get('/company/images/:kind', { schema: { params: ImageParams }, config: { permAny: [...IMAGE_READERS] } }, async (req, reply) => {
+  app.get('/company/images/:kind', { schema: { response: { 200: R.file('image/*') }, params: ImageParams }, config: { permAny: [...IMAGE_READERS] } }, async (req, reply) => {
     const a = tenantActorAny(req, ...IMAGE_READERS);
     const { kind } = ImageParams.parse(req.params);
     const col = COLS[kind];
@@ -262,25 +265,29 @@ export async function companyRoutes(app: FastifyInstance) {
     return reply.header('content-type', img.type).header('cache-control', 'private, no-store').header('x-content-type-options', 'nosniff').send(buf);
   });
 
-  app.delete('/company/images/:kind', { schema: { params: ImageParams }, config: { perm: ['company.manage'] } }, async (req) => {
-    const a = tenantActor(req, 'company.manage');
-    const { kind } = ImageParams.parse(req.params);
-    const col = COLS[kind];
-    const old = await a.tx(async (db) => {
-      const c = await companyRow(db, a.tenantId, true);
-      if (!c?.[col.key]) throw notFound(`No ${kind} on file`);
-      await db.query(`UPDATE company_profile SET ${col.key}=NULL, ${col.type}=NULL, ${col.sha}=NULL, updated_by=$2, version=version+1, updated_at=now() WHERE tenant_id=$1`, [
-        a.tenantId,
-        a.user.userId,
-      ]);
-      await audit(db, { ...a.auditBase, action: 'company.image_removed', category: 'configuration', targetType: 'company_profile', metadata: { kind, from: c[col.sha] } });
-      return c[col.key]!;
-    });
-    await getStore()
-      ?.delete(old)
-      .catch((e: Error) => {
-        req.log.error({ err: e.message }, 'removed company image could not be deleted');
+  app.delete(
+    '/company/images/:kind',
+    { schema: { response: { 200: R.DeleteTenantCompanyImagesByKind200 }, params: ImageParams }, config: { perm: ['company.manage'] } },
+    async (req) => {
+      const a = tenantActor(req, 'company.manage');
+      const { kind } = ImageParams.parse(req.params);
+      const col = COLS[kind];
+      const old = await a.tx(async (db) => {
+        const c = await companyRow(db, a.tenantId, true);
+        if (!c?.[col.key]) throw notFound(`No ${kind} on file`);
+        await db.query(`UPDATE company_profile SET ${col.key}=NULL, ${col.type}=NULL, ${col.sha}=NULL, updated_by=$2, version=version+1, updated_at=now() WHERE tenant_id=$1`, [
+          a.tenantId,
+          a.user.userId,
+        ]);
+        await audit(db, { ...a.auditBase, action: 'company.image_removed', category: 'configuration', targetType: 'company_profile', metadata: { kind, from: c[col.sha] } });
+        return c[col.key]!;
       });
-    return { ok: true };
-  });
+      await getStore()
+        ?.delete(old)
+        .catch((e: Error) => {
+          req.log.error({ err: e.message }, 'removed company image could not be deleted');
+        });
+      return { ok: true };
+    },
+  );
 }

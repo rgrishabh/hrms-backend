@@ -1,3 +1,4 @@
+import * as R from '../../core/http/responses.js';
 import type { FastifyInstance } from 'fastify';
 import { only } from '../../core/features/routes.js';
 import { z } from 'zod';
@@ -134,22 +135,26 @@ export async function lifecycleRoutes(app: FastifyInstance) {
   gateFeatures(app, ON, OFF);
   letterRoutes(app);
   // ------------------------------------------------------------ templates
-  app.get('/templates', { schema: { querystring: TemplatesQuery }, config: { permAny: ['lifecycle.manage', 'lifecycle.read'] } }, async (req) => {
-    const a = tenantActorAny(req, 'lifecycle.manage', 'lifecycle.read');
-    const q = TemplatesQuery.parse(req.query);
-    return a.tx(async (db) => {
-      const t = (
-        await db.query(
-          `SELECT t.id, t.kind, t.name, t.is_default, t.status,
+  app.get(
+    '/templates',
+    { schema: { response: { 200: R.GetLifecycleTemplates200 }, querystring: TemplatesQuery }, config: { permAny: ['lifecycle.manage', 'lifecycle.read'] } },
+    async (req) => {
+      const a = tenantActorAny(req, 'lifecycle.manage', 'lifecycle.read');
+      const q = TemplatesQuery.parse(req.query);
+      return a.tx(async (db) => {
+        const t = (
+          await db.query(
+            `SELECT t.id, t.kind, t.name, t.is_default, t.status,
           coalesce((SELECT json_agg(json_build_object('title', k.title, 'description', k.description, 'owner', k.owner, 'offsetDays', k.offset_days) ORDER BY k.position)
             FROM checklist_template_tasks k WHERE k.tenant_id=t.tenant_id AND k.template_id=t.id), '[]') AS tasks
         FROM checklist_templates t WHERE t.tenant_id=$1 AND ($2::text IS NULL OR t.kind=$2) ORDER BY t.kind, t.is_default DESC, t.name`,
-          [a.tenantId, q.kind ?? null],
-        )
-      ).rows;
-      return { items: t };
-    });
-  });
+            [a.tenantId, q.kind ?? null],
+          )
+        ).rows;
+        return { items: t };
+      });
+    },
+  );
   async function saveTemplate(db: Db, a: TenantActor, b: z.infer<typeof TemplateBody>, id?: string) {
     await requireFeature(db, a.tenantId, featureFor(b.kind));
     if (b.isDefault)
@@ -196,7 +201,7 @@ export async function lifecycleRoutes(app: FastifyInstance) {
     });
     return id;
   }
-  app.post('/templates', { schema: { body: TemplateBody }, config: { perm: ['lifecycle.manage'] } }, async (req, reply) => {
+  app.post('/templates', { schema: { response: { 201: R.PostLifecycleTemplates201 }, body: TemplateBody }, config: { perm: ['lifecycle.manage'] } }, async (req, reply) => {
     const a = tenantActor(req, 'lifecycle.manage');
     const b = TemplateBody.parse(req.body);
     return a.tx(async (db) => {
@@ -205,60 +210,78 @@ export async function lifecycleRoutes(app: FastifyInstance) {
       return { id };
     });
   });
-  app.put('/templates/:id', { schema: { params: IdParams, body: TemplateBody }, config: { perm: ['lifecycle.manage'] } }, async (req) => {
-    const a = tenantActor(req, 'lifecycle.manage');
-    const { id } = IdParams.parse(req.params);
-    const b = TemplateBody.parse(req.body);
-    return a.tx(async (db) => {
-      await saveTemplate(db, a, b, id);
-      return { ok: true };
-    });
-  });
+  app.put(
+    '/templates/:id',
+    { schema: { response: { 200: R.PutLifecycleTemplatesById200 }, params: IdParams, body: TemplateBody }, config: { perm: ['lifecycle.manage'] } },
+    async (req) => {
+      const a = tenantActor(req, 'lifecycle.manage');
+      const { id } = IdParams.parse(req.params);
+      const b = TemplateBody.parse(req.body);
+      return a.tx(async (db) => {
+        await saveTemplate(db, a, b, id);
+        return { ok: true };
+      });
+    },
+  );
 
   // ------------------------------------------------------------ checklists
-  app.get('/checklists', { schema: { querystring: ChecklistsQuery }, config: { permAny: ['lifecycle.manage', 'lifecycle.read'] } }, async (req) => {
-    const a = tenantActorAny(req, 'lifecycle.manage', 'lifecycle.read');
-    const q = ChecklistsQuery.parse(req.query);
-    return a.tx(async (db) => {
-      const where = `c.tenant_id=$1 AND ($2::text IS NULL OR c.kind=$2) AND ($3::text IS NULL OR c.status=$3)`;
-      const args = [a.tenantId, q.kind ?? null, q.status ?? null];
-      const total = Number((await db.query<{ n: string }>(`SELECT count(*) AS n FROM checklists c WHERE ${where}`, args)).rows[0]!.n);
-      const rows = (
-        await db.query(
-          `SELECT c.id, c.kind, c.status, c.anchor_date::text, c.created_at, c.employee_id, e.employee_code, trim(e.first_name||' '||coalesce(e.last_name,'')) AS employee_name,
+  app.get(
+    '/checklists',
+    { schema: { response: { 200: R.GetLifecycleChecklists200 }, querystring: ChecklistsQuery }, config: { permAny: ['lifecycle.manage', 'lifecycle.read'] } },
+    async (req) => {
+      const a = tenantActorAny(req, 'lifecycle.manage', 'lifecycle.read');
+      const q = ChecklistsQuery.parse(req.query);
+      return a.tx(async (db) => {
+        const where = `c.tenant_id=$1 AND ($2::text IS NULL OR c.kind=$2) AND ($3::text IS NULL OR c.status=$3)`;
+        const args = [a.tenantId, q.kind ?? null, q.status ?? null];
+        const total = Number((await db.query<{ n: string }>(`SELECT count(*) AS n FROM checklists c WHERE ${where}`, args)).rows[0]!.n);
+        const rows = (
+          await db.query(
+            `SELECT c.id, c.kind, c.status, c.anchor_date::text, c.created_at, c.employee_id, e.employee_code, trim(e.first_name||' '||coalesce(e.last_name,'')) AS employee_name,
           (SELECT count(*)::int FROM checklist_tasks t WHERE t.tenant_id=c.tenant_id AND t.checklist_id=c.id) AS tasks,
           (SELECT count(*)::int FROM checklist_tasks t WHERE t.tenant_id=c.tenant_id AND t.checklist_id=c.id AND t.status<>'pending') AS done,
           (SELECT count(*)::int FROM checklist_tasks t WHERE t.tenant_id=c.tenant_id AND t.checklist_id=c.id AND t.status='pending' AND t.due_date < $4::date) AS overdue
         FROM checklists c JOIN employees e ON e.tenant_id=c.tenant_id AND e.id=c.employee_id WHERE ${where}
         ORDER BY (c.status='open') DESC, c.anchor_date LIMIT ${q.pageSize} OFFSET ${offsetOf(q)}`,
-          [...args, await orgToday(db, a.tenantId)],
-        )
-      ).rows;
-      return paged(rows, total, q);
-    });
-  });
-
-  only(app, 'core.onboarding').post('/checklists', { schema: { body: ChecklistsBody }, config: { perm: ['lifecycle.manage'], feature: [ON] } }, async (req, reply) => {
-    const a = tenantActor(req, 'lifecycle.manage');
-    const b = ChecklistsBody.parse(req.body);
-    return a.tx(async (db) => {
-      await requireFeature(db, a.tenantId, ON);
-      const e = await loadEmp(db, a.tenantId, b.employeeId);
-      if (!e) throw notFound('Employee not found');
-      if (['exited', 'inactive'].includes(e.status)) throw conflict('This employee has left');
-      const id = await createChecklist(db, a.tenantId, {
-        kind: 'onboarding',
-        employeeId: b.employeeId,
-        anchorDate: e.date_of_joining,
-        templateId: b.templateId,
-        actorId: a.user.userId,
+            [...args, await orgToday(db, a.tenantId)],
+          )
+        ).rows;
+        return paged(rows, total, q);
       });
-      if (!id) throw badRequest('No active onboarding template (set a default template first)');
-      await audit(db, { ...a.auditBase, action: 'lifecycle.checklist_started', targetType: 'checklist', targetId: id, metadata: { kind: 'onboarding', employeeId: b.employeeId } });
-      reply.code(201);
-      return { id };
-    });
-  });
+    },
+  );
+
+  only(app, 'core.onboarding').post(
+    '/checklists',
+    { schema: { response: { 201: R.PostLifecycleChecklists201 }, body: ChecklistsBody }, config: { perm: ['lifecycle.manage'], feature: [ON] } },
+    async (req, reply) => {
+      const a = tenantActor(req, 'lifecycle.manage');
+      const b = ChecklistsBody.parse(req.body);
+      return a.tx(async (db) => {
+        await requireFeature(db, a.tenantId, ON);
+        const e = await loadEmp(db, a.tenantId, b.employeeId);
+        if (!e) throw notFound('Employee not found');
+        if (['exited', 'inactive'].includes(e.status)) throw conflict('This employee has left');
+        const id = await createChecklist(db, a.tenantId, {
+          kind: 'onboarding',
+          employeeId: b.employeeId,
+          anchorDate: e.date_of_joining,
+          templateId: b.templateId,
+          actorId: a.user.userId,
+        });
+        if (!id) throw badRequest('No active onboarding template (set a default template first)');
+        await audit(db, {
+          ...a.auditBase,
+          action: 'lifecycle.checklist_started',
+          targetType: 'checklist',
+          targetId: id,
+          metadata: { kind: 'onboarding', employeeId: b.employeeId },
+        });
+        reply.code(201);
+        return { id };
+      });
+    },
+  );
 
   async function checklistDetail(db: Db, a: TenantActor, id: string) {
     const c = (
@@ -283,14 +306,14 @@ export async function lifecycleRoutes(app: FastifyInstance) {
     ).rows.map((t) => ({ ...t, canAct: canActOnTask(t.owner, emp, { userId: a.user.userId, permissions: a.user.permissions }) }));
     return { ...c, employee: { id: emp.id, name: emp.name, status: emp.status }, tasks };
   }
-  app.get('/checklists/:id', { schema: { params: IdParams } }, async (req) => {
+  app.get('/checklists/:id', { schema: { response: { 200: R.GetLifecycleChecklistsById200 }, params: IdParams } }, async (req) => {
     const a = tenantActor(req);
     const { id } = IdParams.parse(req.params);
     return a.tx((db) => checklistDetail(db, a, id));
   });
   only(app, 'core.onboarding').post(
     '/checklists/:id/cancel',
-    { schema: { params: IdParams, body: ChecklistsCancelBody }, config: { perm: ['lifecycle.manage'], feature: [ON] } },
+    { schema: { response: { 200: R.PostLifecycleChecklistsByIdCancel200 }, params: IdParams, body: ChecklistsCancelBody }, config: { perm: ['lifecycle.manage'], feature: [ON] } },
     async (req) => {
       const a = tenantActor(req, 'lifecycle.manage');
       const { id } = IdParams.parse(req.params);
@@ -306,7 +329,7 @@ export async function lifecycleRoutes(app: FastifyInstance) {
   );
 
   // ------------------------------------------------------------ tasks
-  app.get('/tasks/mine', { schema: {} }, async (req) => {
+  app.get('/tasks/mine', { schema: { response: { 200: R.GetLifecycleTasksMine200 } } }, async (req) => {
     const a = tenantActor(req);
     return a.tx(async (db) => {
       const rows = (
@@ -330,124 +353,140 @@ export async function lifecycleRoutes(app: FastifyInstance) {
 
   const TasksBody = (action: 'done' | 'skip' | 'reopen') => z.object({ note: action === 'skip' ? z.string().trim().min(3).max(500) : Text(500) });
   const taskAction = (action: 'done' | 'skip' | 'reopen', Body = TasksBody(action)) =>
-    app.post(`/tasks/:id/${action}`, { schema: { params: IdParams, body: Body }, config: { perm: action === 'done' ? [] : ['lifecycle.manage'] } }, async (req) => {
-      const a = action === 'done' ? tenantActor(req) : tenantActor(req, 'lifecycle.manage');
-      const { id } = IdParams.parse(req.params);
-      const { note } = Body.parse(req.body ?? {});
-      return a.tx(async (db) => {
-        const t = (
-          await db.query<{ owner: Owner; status: string; checklist_id: string; employee_id: string; cstatus: string; kind: 'onboarding' | 'offboarding' }>(
-            `SELECT t.owner, t.status, t.checklist_id, c.employee_id, c.status AS cstatus, c.kind
+    app.post(
+      `/tasks/:id/${action}`,
+      { schema: { response: { 200: R.PostLifecycleTasksByIdDone200 }, params: IdParams, body: Body }, config: { perm: action === 'done' ? [] : ['lifecycle.manage'] } },
+      async (req) => {
+        const a = action === 'done' ? tenantActor(req) : tenantActor(req, 'lifecycle.manage');
+        const { id } = IdParams.parse(req.params);
+        const { note } = Body.parse(req.body ?? {});
+        return a.tx(async (db) => {
+          const t = (
+            await db.query<{ owner: Owner; status: string; checklist_id: string; employee_id: string; cstatus: string; kind: 'onboarding' | 'offboarding' }>(
+              `SELECT t.owner, t.status, t.checklist_id, c.employee_id, c.status AS cstatus, c.kind
         FROM checklist_tasks t JOIN checklists c ON c.tenant_id=t.tenant_id AND c.id=t.checklist_id WHERE t.tenant_id=$1 AND t.id=$2 FOR UPDATE OF t`,
-            [a.tenantId, id],
-          )
-        ).rows[0];
-        if (!t) throw notFound('Task not found');
-        await requireFeature(db, a.tenantId, featureFor(t.kind));
-        const emp = (await loadEmp(db, a.tenantId, t.employee_id))!;
-        if (!canActOnTask(t.owner, emp, { userId: a.user.userId, permissions: a.user.permissions })) throw notFound('Task not found');
-        if (t.cstatus !== 'open' && action !== 'reopen') throw conflict(`This checklist is ${t.cstatus}`);
-        if (action === 'reopen') {
-          if (t.status === 'pending') throw conflict('Task is already pending');
-          await db.query(`UPDATE checklist_tasks SET status='pending', done_by=NULL, done_at=NULL, note=$3 WHERE tenant_id=$1 AND id=$2`, [a.tenantId, id, note]);
-          await db.query(`UPDATE checklists SET status='open', completed_at=NULL WHERE tenant_id=$1 AND id=$2 AND status='completed'`, [a.tenantId, t.checklist_id]);
-        } else {
-          if (t.status !== 'pending') throw conflict(`Task is already ${t.status}`);
-          await db.query(`UPDATE checklist_tasks SET status=$3, note=$4, done_by=$5, done_at=now() WHERE tenant_id=$1 AND id=$2`, [
-            a.tenantId,
-            id,
-            action === 'done' ? 'done' : 'skipped',
-            note,
-            a.user.userId,
-          ]);
-          await maybeCompleteChecklist(db, a.tenantId, t.checklist_id);
-        }
-        await audit(db, { ...a.auditBase, action: `lifecycle.task_${action}`, targetType: 'checklist_task', targetId: id, metadata: { note } });
-        return { ok: true };
-      });
-    });
+              [a.tenantId, id],
+            )
+          ).rows[0];
+          if (!t) throw notFound('Task not found');
+          await requireFeature(db, a.tenantId, featureFor(t.kind));
+          const emp = (await loadEmp(db, a.tenantId, t.employee_id))!;
+          if (!canActOnTask(t.owner, emp, { userId: a.user.userId, permissions: a.user.permissions })) throw notFound('Task not found');
+          if (t.cstatus !== 'open' && action !== 'reopen') throw conflict(`This checklist is ${t.cstatus}`);
+          if (action === 'reopen') {
+            if (t.status === 'pending') throw conflict('Task is already pending');
+            await db.query(`UPDATE checklist_tasks SET status='pending', done_by=NULL, done_at=NULL, note=$3 WHERE tenant_id=$1 AND id=$2`, [a.tenantId, id, note]);
+            await db.query(`UPDATE checklists SET status='open', completed_at=NULL WHERE tenant_id=$1 AND id=$2 AND status='completed'`, [a.tenantId, t.checklist_id]);
+          } else {
+            if (t.status !== 'pending') throw conflict(`Task is already ${t.status}`);
+            await db.query(`UPDATE checklist_tasks SET status=$3, note=$4, done_by=$5, done_at=now() WHERE tenant_id=$1 AND id=$2`, [
+              a.tenantId,
+              id,
+              action === 'done' ? 'done' : 'skipped',
+              note,
+              a.user.userId,
+            ]);
+            await maybeCompleteChecklist(db, a.tenantId, t.checklist_id);
+          }
+          await audit(db, { ...a.auditBase, action: `lifecycle.task_${action}`, targetType: 'checklist_task', targetId: id, metadata: { note } });
+          return { ok: true };
+        });
+      },
+    );
   taskAction('done');
   taskAction('skip');
   taskAction('reopen');
 
   /** Pre-joining → active on (or after) the joining date. */
-  only(app, 'core.onboarding').post('/employees/:id/joined', { schema: { params: IdParams }, config: { perm: ['lifecycle.manage'], feature: [ON] } }, async (req) => {
-    const a = tenantActor(req, 'lifecycle.manage');
-    const { id } = IdParams.parse(req.params);
-    return a.tx(async (db) => {
-      await requireFeature(db, a.tenantId, ON);
-      const e = await loadEmp(db, a.tenantId, id);
-      if (!e) throw notFound('Employee not found');
-      if (e.status !== 'pre_joining') throw conflict(`Employee is ${e.status}`);
-      if (e.date_of_joining > (await orgToday(db, a.tenantId))) throw conflict(`Joining date is ${e.date_of_joining}; confirm on or after that day`);
-      await db.query(`UPDATE employees SET status='active', version=version+1, updated_at=now() WHERE tenant_id=$1 AND id=$2`, [a.tenantId, id]);
-      await audit(db, { ...a.auditBase, action: 'lifecycle.joined', targetType: 'employee', targetId: id, metadata: { dateOfJoining: e.date_of_joining } });
-      return { ok: true };
-    });
-  });
+  only(app, 'core.onboarding').post(
+    '/employees/:id/joined',
+    { schema: { response: { 200: R.PostLifecycleEmployeesByIdJoined200 }, params: IdParams }, config: { perm: ['lifecycle.manage'], feature: [ON] } },
+    async (req) => {
+      const a = tenantActor(req, 'lifecycle.manage');
+      const { id } = IdParams.parse(req.params);
+      return a.tx(async (db) => {
+        await requireFeature(db, a.tenantId, ON);
+        const e = await loadEmp(db, a.tenantId, id);
+        if (!e) throw notFound('Employee not found');
+        if (e.status !== 'pre_joining') throw conflict(`Employee is ${e.status}`);
+        if (e.date_of_joining > (await orgToday(db, a.tenantId))) throw conflict(`Joining date is ${e.date_of_joining}; confirm on or after that day`);
+        await db.query(`UPDATE employees SET status='active', version=version+1, updated_at=now() WHERE tenant_id=$1 AND id=$2`, [a.tenantId, id]);
+        await audit(db, { ...a.auditBase, action: 'lifecycle.joined', targetType: 'employee', targetId: id, metadata: { dateOfJoining: e.date_of_joining } });
+        return { ok: true };
+      });
+    },
+  );
 
   // ------------------------------------------------------------ probation
-  only(app, 'core.onboarding').get('/probation', { schema: { querystring: ProbationQuery }, config: { feature: [ON] } }, async (req) => {
-    const a = tenantActor(req);
-    const q = ProbationQuery.parse(req.query);
-    return a.tx(async (db) => {
-      await requireFeature(db, a.tenantId, ON);
-      const all = a.has('lifecycle.manage') || a.has('lifecycle.read');
-      return {
-        items: (
-          await db.query(
-            `SELECT r.id, r.employee_id, e.employee_code, trim(e.first_name||' '||coalesce(e.last_name,'')) AS employee_name, e.designation, e.date_of_joining::text,
+  only(app, 'core.onboarding').get(
+    '/probation',
+    { schema: { response: { 200: R.GetLifecycleProbation200 }, querystring: ProbationQuery }, config: { feature: [ON] } },
+    async (req) => {
+      const a = tenantActor(req);
+      const q = ProbationQuery.parse(req.query);
+      return a.tx(async (db) => {
+        await requireFeature(db, a.tenantId, ON);
+        const all = a.has('lifecycle.manage') || a.has('lifecycle.read');
+        return {
+          items: (
+            await db.query(
+              `SELECT r.id, r.employee_id, e.employee_code, trim(e.first_name||' '||coalesce(e.last_name,'')) AS employee_name, e.designation, e.date_of_joining::text,
           r.probation_end::text, r.status, r.recommendation, r.extend_months, r.comments, r.submitted_at, r.decided_at, u.display_name AS submitted_by_name
         FROM probation_reviews r JOIN employees e ON e.tenant_id=r.tenant_id AND e.id=r.employee_id LEFT JOIN employees m ON m.tenant_id=e.tenant_id AND m.id=e.reporting_manager_id
         LEFT JOIN users u ON u.id=r.submitted_by
         WHERE r.tenant_id=$1 AND ($2::text IS NULL OR r.status=$2) AND ($3 OR m.user_id=$4) ORDER BY r.probation_end`,
-            [a.tenantId, q.status ?? null, all, a.user.userId],
-          )
-        ).rows,
-      };
-    });
-  });
+              [a.tenantId, q.status ?? null, all, a.user.userId],
+            )
+          ).rows,
+        };
+      });
+    },
+  );
 
-  only(app, 'core.onboarding').post('/probation/:id/submit', { schema: { params: IdParams, body: ProbationSubmitBody }, config: { feature: [ON] } }, async (req) => {
-    const a = tenantActor(req);
-    const { id } = IdParams.parse(req.params);
-    const b = ProbationSubmitBody.parse(req.body);
-    return a.tx(async (db) => {
-      await requireFeature(db, a.tenantId, ON);
-      const r = (
-        await db.query<{ employee_id: string; status: string; probation_end: string }>(
-          `SELECT employee_id, status, probation_end::text FROM probation_reviews WHERE tenant_id=$1 AND id=$2 FOR UPDATE`,
-          [a.tenantId, id],
-        )
-      ).rows[0];
-      if (!r) throw notFound('Review not found');
-      const emp = (await loadEmp(db, a.tenantId, r.employee_id))!;
-      if (emp.manager_user_id !== a.user.userId && !a.has('lifecycle.manage')) throw notFound('Review not found');
-      if (emp.user_id === a.user.userId) throw forbidden('You cannot review your own probation');
-      if (r.status !== 'open') throw conflict(`This review is ${r.status}`);
-      await db.query(
-        `UPDATE probation_reviews SET status='pending', recommendation=$3, extend_months=$4, comments=$5, submitted_by=$6, submitted_at=now() WHERE tenant_id=$1 AND id=$2`,
-        [a.tenantId, id, b.recommendation, b.recommendation === 'extend' ? b.extendMonths : null, b.comments, a.user.userId],
-      );
-      const steps: StepSpec[] = [{ kind: 'permission', permission: 'lifecycle.manage' }];
-      const approvalId = await createApprovalRequest(db, a.tenantId, {
-        entityType: 'probation_review',
-        entityId: id,
-        requesterId: a.user.userId,
-        summary: `${emp.name}: ${b.recommendation}${b.recommendation === 'extend' ? ` by ${b.extendMonths} month(s)` : ''} (probation ends ${r.probation_end})`,
-        steps,
-        excludeUserIds: [emp.user_id],
+  only(app, 'core.onboarding').post(
+    '/probation/:id/submit',
+    { schema: { response: { 200: R.PostLifecycleProbationByIdSubmit200 }, params: IdParams, body: ProbationSubmitBody }, config: { feature: [ON] } },
+    async (req) => {
+      const a = tenantActor(req);
+      const { id } = IdParams.parse(req.params);
+      const b = ProbationSubmitBody.parse(req.body);
+      return a.tx(async (db) => {
+        await requireFeature(db, a.tenantId, ON);
+        const r = (
+          await db.query<{ employee_id: string; status: string; probation_end: string }>(
+            `SELECT employee_id, status, probation_end::text FROM probation_reviews WHERE tenant_id=$1 AND id=$2 FOR UPDATE`,
+            [a.tenantId, id],
+          )
+        ).rows[0];
+        if (!r) throw notFound('Review not found');
+        const emp = (await loadEmp(db, a.tenantId, r.employee_id))!;
+        if (emp.manager_user_id !== a.user.userId && !a.has('lifecycle.manage')) throw notFound('Review not found');
+        if (emp.user_id === a.user.userId) throw forbidden('You cannot review your own probation');
+        if (r.status !== 'open') throw conflict(`This review is ${r.status}`);
+        await db.query(
+          `UPDATE probation_reviews SET status='pending', recommendation=$3, extend_months=$4, comments=$5, submitted_by=$6, submitted_at=now() WHERE tenant_id=$1 AND id=$2`,
+          [a.tenantId, id, b.recommendation, b.recommendation === 'extend' ? b.extendMonths : null, b.comments, a.user.userId],
+        );
+        const steps: StepSpec[] = [{ kind: 'permission', permission: 'lifecycle.manage' }];
+        const approvalId = await createApprovalRequest(db, a.tenantId, {
+          entityType: 'probation_review',
+          entityId: id,
+          requesterId: a.user.userId,
+          summary: `${emp.name}: ${b.recommendation}${b.recommendation === 'extend' ? ` by ${b.extendMonths} month(s)` : ''} (probation ends ${r.probation_end})`,
+          steps,
+          excludeUserIds: [emp.user_id],
+        });
+        await audit(db, {
+          ...a.auditBase,
+          action: 'lifecycle.probation_submitted',
+          targetType: 'probation_review',
+          targetId: id,
+          metadata: { recommendation: b.recommendation, approvalId },
+        });
+        return { ok: true };
       });
-      await audit(db, {
-        ...a.auditBase,
-        action: 'lifecycle.probation_submitted',
-        targetType: 'probation_review',
-        targetId: id,
-        metadata: { recommendation: b.recommendation, approvalId },
-      });
-      return { ok: true };
-    });
-  });
+    },
+  );
 
   // ------------------------------------------------------------ separations
   async function noticeShortfall(db: Db, tenantId: string, noticeDate: string, lwd: string) {
@@ -494,33 +533,41 @@ export async function lifecycleRoutes(app: FastifyInstance) {
     return { id, shortfallDays: n.shortfall, noticeDaysRequired: n.required };
   }
 
-  only(app, 'core.offboarding').post('/separations/resign', { schema: { body: SeparationsResignBody }, config: { perm: ['lifecycle.self'] } }, async (req, reply) => {
-    const a = tenantActor(req, 'lifecycle.self');
-    const b = SeparationsResignBody.parse(req.body);
-    if (!a.user.employeeId) throw badRequest('Your account is not linked to an employee record');
-    return a.tx(async (db) => {
-      const r = await startSeparation(db, a, {
-        employeeId: a.user.employeeId!,
-        kind: 'resignation',
-        reason: b.reason,
-        noticeDate: await orgToday(db, a.tenantId),
-        requestedLwd: b.requestedLwd,
+  only(app, 'core.offboarding').post(
+    '/separations/resign',
+    { schema: { response: { 201: R.PostLifecycleSeparationsResign201 }, body: SeparationsResignBody }, config: { perm: ['lifecycle.self'] } },
+    async (req, reply) => {
+      const a = tenantActor(req, 'lifecycle.self');
+      const b = SeparationsResignBody.parse(req.body);
+      if (!a.user.employeeId) throw badRequest('Your account is not linked to an employee record');
+      return a.tx(async (db) => {
+        const r = await startSeparation(db, a, {
+          employeeId: a.user.employeeId!,
+          kind: 'resignation',
+          reason: b.reason,
+          noticeDate: await orgToday(db, a.tenantId),
+          requestedLwd: b.requestedLwd,
+        });
+        reply.code(201);
+        return r;
       });
-      reply.code(201);
-      return r;
-    });
-  });
-  only(app, 'core.offboarding').post('/separations', { schema: { body: SeparationsBody }, config: { perm: ['lifecycle.manage'] } }, async (req, reply) => {
-    const a = tenantActor(req, 'lifecycle.manage');
-    const b = SeparationsBody.parse(req.body);
-    if (b.employeeId === a.user.employeeId) throw forbidden('Use "Resign" for your own separation');
-    return a.tx(async (db) => {
-      await assertOutranks(db, a.tenantId, { level: a.user.salaryLevel }, b.employeeId);
-      const r = await startSeparation(db, a, b);
-      reply.code(201);
-      return r;
-    });
-  });
+    },
+  );
+  only(app, 'core.offboarding').post(
+    '/separations',
+    { schema: { response: { 201: R.PostLifecycleSeparations201 }, body: SeparationsBody }, config: { perm: ['lifecycle.manage'] } },
+    async (req, reply) => {
+      const a = tenantActor(req, 'lifecycle.manage');
+      const b = SeparationsBody.parse(req.body);
+      if (b.employeeId === a.user.employeeId) throw forbidden('Use "Resign" for your own separation');
+      return a.tx(async (db) => {
+        await assertOutranks(db, a.tenantId, { level: a.user.salaryLevel }, b.employeeId);
+        const r = await startSeparation(db, a, b);
+        reply.code(201);
+        return r;
+      });
+    },
+  );
 
   async function loadSeparation(db: Db, a: TenantActor, id: string, lock = false) {
     await requireFeature(db, a.tenantId, OFF);
@@ -546,82 +593,94 @@ export async function lifecycleRoutes(app: FastifyInstance) {
     return { s, emp, hr };
   }
 
-  only(app, 'core.offboarding').get('/separations', { schema: { querystring: SeparationsQuery }, config: { feature: [OFF] } }, async (req) => {
-    const a = tenantActor(req);
-    const q = SeparationsQuery.parse(req.query);
-    return a.tx(async (db) => {
-      await requireFeature(db, a.tenantId, OFF);
-      const all = (a.has('lifecycle.manage') || a.has('lifecycle.read')) && q.scope === 'all';
-      const where = `s.tenant_id=$1 AND ($2::text IS NULL OR s.status=$2) AND ($3 OR ($4='mine' AND e.user_id=$5) OR ($4='team' AND m.user_id=$5))`;
-      const args = [a.tenantId, q.status ?? null, all, q.scope, a.user.userId];
-      const from = `FROM separations s JOIN employees e ON e.tenant_id=s.tenant_id AND e.id=s.employee_id LEFT JOIN employees m ON m.tenant_id=e.tenant_id AND m.id=e.reporting_manager_id`;
-      const total = Number((await db.query<{ n: string }>(`SELECT count(*) AS n ${from} WHERE ${where}`, args)).rows[0]!.n);
-      const rows = (
-        await db.query(
-          `SELECT s.id, s.kind, s.status, s.notice_date::text, s.requested_lwd::text, s.approved_lwd::text, s.shortfall_days, s.waive_shortfall, s.fnf_status, s.created_at,
+  only(app, 'core.offboarding').get(
+    '/separations',
+    { schema: { response: { 200: R.GetLifecycleSeparations200 }, querystring: SeparationsQuery }, config: { feature: [OFF] } },
+    async (req) => {
+      const a = tenantActor(req);
+      const q = SeparationsQuery.parse(req.query);
+      return a.tx(async (db) => {
+        await requireFeature(db, a.tenantId, OFF);
+        const all = (a.has('lifecycle.manage') || a.has('lifecycle.read')) && q.scope === 'all';
+        const where = `s.tenant_id=$1 AND ($2::text IS NULL OR s.status=$2) AND ($3 OR ($4='mine' AND e.user_id=$5) OR ($4='team' AND m.user_id=$5))`;
+        const args = [a.tenantId, q.status ?? null, all, q.scope, a.user.userId];
+        const from = `FROM separations s JOIN employees e ON e.tenant_id=s.tenant_id AND e.id=s.employee_id LEFT JOIN employees m ON m.tenant_id=e.tenant_id AND m.id=e.reporting_manager_id`;
+        const total = Number((await db.query<{ n: string }>(`SELECT count(*) AS n ${from} WHERE ${where}`, args)).rows[0]!.n);
+        const rows = (
+          await db.query(
+            `SELECT s.id, s.kind, s.status, s.notice_date::text, s.requested_lwd::text, s.approved_lwd::text, s.shortfall_days, s.waive_shortfall, s.fnf_status, s.created_at,
           e.id AS employee_id, e.employee_code, trim(e.first_name||' '||coalesce(e.last_name,'')) AS employee_name, e.designation
         ${from} WHERE ${where} ORDER BY s.created_at DESC LIMIT ${q.pageSize} OFFSET ${offsetOf(q)}`,
-          args,
-        )
-      ).rows;
-      return paged(rows, total, q);
-    });
-  });
+            args,
+          )
+        ).rows;
+        return paged(rows, total, q);
+      });
+    },
+  );
 
-  only(app, 'core.offboarding').get('/separations/:id', { schema: { params: IdParams }, config: { feature: [OFF] } }, async (req) => {
-    const a = tenantActor(req);
-    const { id } = IdParams.parse(req.params);
-    return a.tx(async (db) => {
-      await requireFeature(db, a.tenantId, OFF);
-      const { emp, hr } = await loadSeparation(db, a, id);
-      const s = (
-        await db.query(
-          `SELECT s.*, s.notice_date::text, s.requested_lwd::text, s.approved_lwd::text, u.display_name AS initiated_by_name FROM separations s JOIN users u ON u.id=s.initiated_by
+  only(app, 'core.offboarding').get(
+    '/separations/:id',
+    { schema: { response: { 200: R.GetLifecycleSeparationsById200 }, params: IdParams }, config: { feature: [OFF] } },
+    async (req) => {
+      const a = tenantActor(req);
+      const { id } = IdParams.parse(req.params);
+      return a.tx(async (db) => {
+        await requireFeature(db, a.tenantId, OFF);
+        const { emp, hr } = await loadSeparation(db, a, id);
+        const s = (
+          await db.query(
+            `SELECT s.*, s.notice_date::text, s.requested_lwd::text, s.approved_lwd::text, u.display_name AS initiated_by_name FROM separations s JOIN users u ON u.id=s.initiated_by
         WHERE s.tenant_id=$1 AND s.id=$2`,
-          [a.tenantId, id],
-        )
-      ).rows[0]!;
-      const checklist = (await db.query<{ id: string }>(`SELECT id FROM checklists WHERE tenant_id=$1 AND separation_id=$2 ORDER BY created_at DESC LIMIT 1`, [a.tenantId, id]))
-        .rows[0];
-      // Leave balances at exit (input to F&F; encashment rules are decided in payroll).
-      // L3 (D39): the person, HR above them, and whoever decides while it is pending.
-      const l3 = await subjectVisible(db, a.tenantId, await policyViewer(db, a.tenantId, a.user), emp.id, l3RowFilter);
-      const decides = s.status === 'pending' && (a.has('lifecycle.manage') || emp.manager_user_id === a.user.userId);
-      const leave = hr && l3 ? (await balancesAt(db, a.tenantId, emp.id, s.approved_lwd ?? s.requested_lwd)).items : [];
-      return {
-        ...(l3 || decides ? s : maskFields(s, ['reason', 'fnf_note'])),
-        exit_interview: hr && l3 ? s.exit_interview : undefined,
-        employee: { id: emp.id, name: emp.name, status: emp.status },
-        checklist: checklist ? await checklistDetail(db, a, checklist.id) : null,
-        leaveBalances: leave,
-      };
-    });
-  });
+            [a.tenantId, id],
+          )
+        ).rows[0]!;
+        const checklist = (await db.query<{ id: string }>(`SELECT id FROM checklists WHERE tenant_id=$1 AND separation_id=$2 ORDER BY created_at DESC LIMIT 1`, [a.tenantId, id]))
+          .rows[0];
+        // Leave balances at exit (input to F&F; encashment rules are decided in payroll).
+        // L3 (D39): the person, HR above them, and whoever decides while it is pending.
+        const l3 = await subjectVisible(db, a.tenantId, await policyViewer(db, a.tenantId, a.user), emp.id, l3RowFilter);
+        const decides = s.status === 'pending' && (a.has('lifecycle.manage') || emp.manager_user_id === a.user.userId);
+        const leave = hr && l3 ? (await balancesAt(db, a.tenantId, emp.id, s.approved_lwd ?? s.requested_lwd)).items : [];
+        return {
+          ...(l3 || decides ? s : maskFields(s, ['reason', 'fnf_note'])),
+          exit_interview: hr && l3 ? s.exit_interview : undefined,
+          employee: { id: emp.id, name: emp.name, status: emp.status },
+          checklist: checklist ? await checklistDetail(db, a, checklist.id) : null,
+          leaveBalances: leave,
+        };
+      });
+    },
+  );
 
-  only(app, 'core.offboarding').put('/separations/:id/lwd', { schema: { params: IdParams, body: SeparationsLwdBody }, config: { perm: ['lifecycle.manage'] } }, async (req) => {
-    const a = tenantActor(req, 'lifecycle.manage');
-    const { id } = IdParams.parse(req.params);
-    const b = SeparationsLwdBody.parse(req.body);
-    return a.tx(async (db) => {
-      const { s } = await loadSeparation(db, a, id, true);
-      if (s.status !== 'pending') throw conflict('The last working day can be changed only before approval');
-      if (b.approvedLwd < s.notice_date) throw badRequest('Last working day cannot be before the notice date');
-      const doj = (await db.query<{ d: string }>('SELECT date_of_joining::text AS d FROM employees WHERE tenant_id=$1 AND id=$2', [a.tenantId, s.employee_id])).rows[0]!.d;
-      if (b.approvedLwd < doj) throw badRequest(`Last working day cannot be before the joining date (${doj})`);
-      const n = await noticeShortfall(db, a.tenantId, s.notice_date, b.approvedLwd);
-      await db.query(`UPDATE separations SET approved_lwd=$3, shortfall_days=$4, waive_shortfall=$5 WHERE tenant_id=$1 AND id=$2`, [
-        a.tenantId,
-        id,
-        b.approvedLwd,
-        n.shortfall,
-        b.waiveShortfall,
-      ]);
-      await audit(db, { ...a.auditBase, action: 'lifecycle.separation_lwd_set', targetType: 'separation', targetId: id, metadata: { ...b, shortfall: n.shortfall } });
-      return { ok: true, shortfallDays: n.shortfall };
-    });
-  });
+  only(app, 'core.offboarding').put(
+    '/separations/:id/lwd',
+    { schema: { response: { 200: R.PutLifecycleSeparationsByIdLwd200 }, params: IdParams, body: SeparationsLwdBody }, config: { perm: ['lifecycle.manage'] } },
+    async (req) => {
+      const a = tenantActor(req, 'lifecycle.manage');
+      const { id } = IdParams.parse(req.params);
+      const b = SeparationsLwdBody.parse(req.body);
+      return a.tx(async (db) => {
+        const { s } = await loadSeparation(db, a, id, true);
+        if (s.status !== 'pending') throw conflict('The last working day can be changed only before approval');
+        if (b.approvedLwd < s.notice_date) throw badRequest('Last working day cannot be before the notice date');
+        const doj = (await db.query<{ d: string }>('SELECT date_of_joining::text AS d FROM employees WHERE tenant_id=$1 AND id=$2', [a.tenantId, s.employee_id])).rows[0]!.d;
+        if (b.approvedLwd < doj) throw badRequest(`Last working day cannot be before the joining date (${doj})`);
+        const n = await noticeShortfall(db, a.tenantId, s.notice_date, b.approvedLwd);
+        await db.query(`UPDATE separations SET approved_lwd=$3, shortfall_days=$4, waive_shortfall=$5 WHERE tenant_id=$1 AND id=$2`, [
+          a.tenantId,
+          id,
+          b.approvedLwd,
+          n.shortfall,
+          b.waiveShortfall,
+        ]);
+        await audit(db, { ...a.auditBase, action: 'lifecycle.separation_lwd_set', targetType: 'separation', targetId: id, metadata: { ...b, shortfall: n.shortfall } });
+        return { ok: true, shortfallDays: n.shortfall };
+      });
+    },
+  );
 
-  only(app, 'core.offboarding').post('/separations/:id/withdraw', { schema: { params: IdParams } }, async (req) => {
+  only(app, 'core.offboarding').post('/separations/:id/withdraw', { schema: { response: { 200: R.PostLifecycleSeparationsByIdWithdraw200 }, params: IdParams } }, async (req) => {
     const a = tenantActor(req);
     const { id } = IdParams.parse(req.params);
     return a.tx(async (db) => {
@@ -639,7 +698,7 @@ export async function lifecycleRoutes(app: FastifyInstance) {
   /** HR cancels an approved separation before the last working day (resignation withdrawn by agreement). */
   only(app, 'core.offboarding').post(
     '/separations/:id/cancel',
-    { schema: { params: IdParams, body: ChecklistsCancelBody }, config: { perm: ['lifecycle.manage'] } },
+    { schema: { response: { 200: R.PostLifecycleSeparationsByIdCancel200 }, params: IdParams, body: ChecklistsCancelBody }, config: { perm: ['lifecycle.manage'] } },
     async (req) => {
       const a = tenantActor(req, 'lifecycle.manage');
       const { id } = IdParams.parse(req.params);
@@ -660,39 +719,47 @@ export async function lifecycleRoutes(app: FastifyInstance) {
     },
   );
 
-  only(app, 'core.offboarding').post('/separations/:id/exit-interview', { schema: { params: IdParams, body: SeparationsExitInterviewBody } }, async (req) => {
-    const a = tenantActor(req);
-    const { id } = IdParams.parse(req.params);
-    const b = SeparationsExitInterviewBody.parse(req.body);
-    return a.tx(async (db) => {
-      const { s, emp } = await loadSeparation(db, a, id, true);
-      if (!a.has('lifecycle.manage') && emp.user_id !== a.user.userId) throw forbidden('Only the employee or HR can record the exit interview');
-      if (!['approved', 'completed'].includes(s.status)) throw conflict('The exit interview is recorded after the separation is approved');
-      await db.query(`UPDATE separations SET exit_interview=$3 WHERE tenant_id=$1 AND id=$2`, [
-        a.tenantId,
-        id,
-        JSON.stringify({ ...b.answers, _recorded_by: a.user.userId, _at: new Date().toISOString() }),
-      ]);
-      await audit(db, { ...a.auditBase, action: 'lifecycle.exit_interview', targetType: 'separation', targetId: id, metadata: { questions: Object.keys(b.answers).length } });
-      return { ok: true };
-    });
-  });
+  only(app, 'core.offboarding').post(
+    '/separations/:id/exit-interview',
+    { schema: { response: { 200: R.PostLifecycleSeparationsByIdExitInterview200 }, params: IdParams, body: SeparationsExitInterviewBody } },
+    async (req) => {
+      const a = tenantActor(req);
+      const { id } = IdParams.parse(req.params);
+      const b = SeparationsExitInterviewBody.parse(req.body);
+      return a.tx(async (db) => {
+        const { s, emp } = await loadSeparation(db, a, id, true);
+        if (!a.has('lifecycle.manage') && emp.user_id !== a.user.userId) throw forbidden('Only the employee or HR can record the exit interview');
+        if (!['approved', 'completed'].includes(s.status)) throw conflict('The exit interview is recorded after the separation is approved');
+        await db.query(`UPDATE separations SET exit_interview=$3 WHERE tenant_id=$1 AND id=$2`, [
+          a.tenantId,
+          id,
+          JSON.stringify({ ...b.answers, _recorded_by: a.user.userId, _at: new Date().toISOString() }),
+        ]);
+        await audit(db, { ...a.auditBase, action: 'lifecycle.exit_interview', targetType: 'separation', targetId: id, metadata: { questions: Object.keys(b.answers).length } });
+        return { ok: true };
+      });
+    },
+  );
 
-  only(app, 'core.offboarding').post('/separations/:id/fnf', { schema: { params: IdParams, body: SeparationsFnfBody }, config: { perm: ['lifecycle.manage'] } }, async (req) => {
-    const a = tenantActor(req, 'lifecycle.manage');
-    const { id } = IdParams.parse(req.params);
-    const b = SeparationsFnfBody.parse(req.body);
-    return a.tx(async (db) => {
-      await loadSeparation(db, a, id, true);
-      await db.query(`UPDATE separations SET fnf_status=$3, fnf_note=$4 WHERE tenant_id=$1 AND id=$2`, [a.tenantId, id, b.status, b.note === null ? null : scrubAmounts(b.note)]);
-      await audit(db, { ...a.auditBase, action: 'lifecycle.fnf_updated', targetType: 'separation', targetId: id, metadata: { status: b.status, fields: ['note'] } });
-      return { ok: true };
-    });
-  });
+  only(app, 'core.offboarding').post(
+    '/separations/:id/fnf',
+    { schema: { response: { 200: R.PostLifecycleSeparationsByIdFnf200 }, params: IdParams, body: SeparationsFnfBody }, config: { perm: ['lifecycle.manage'] } },
+    async (req) => {
+      const a = tenantActor(req, 'lifecycle.manage');
+      const { id } = IdParams.parse(req.params);
+      const b = SeparationsFnfBody.parse(req.body);
+      return a.tx(async (db) => {
+        await loadSeparation(db, a, id, true);
+        await db.query(`UPDATE separations SET fnf_status=$3, fnf_note=$4 WHERE tenant_id=$1 AND id=$2`, [a.tenantId, id, b.status, b.note === null ? null : scrubAmounts(b.note)]);
+        await audit(db, { ...a.auditBase, action: 'lifecycle.fnf_updated', targetType: 'separation', targetId: id, metadata: { status: b.status, fields: ['note'] } });
+        return { ok: true };
+      });
+    },
+  );
 
   only(app, 'core.offboarding').post(
     '/separations/:id/complete',
-    { schema: { params: IdParams, body: SeparationsCompleteBody }, config: { perm: ['lifecycle.manage'] } },
+    { schema: { response: { 200: R.PostLifecycleSeparationsByIdComplete200 }, params: IdParams, body: SeparationsCompleteBody }, config: { perm: ['lifecycle.manage'] } },
     async (req) => {
       const a = tenantActor(req, 'lifecycle.manage');
       const { id } = IdParams.parse(req.params);

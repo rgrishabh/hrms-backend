@@ -1,3 +1,4 @@
+import * as R from '../../core/http/responses.js';
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import { withPlatformBypass, withTenant } from '../../db/tx.js';
@@ -43,7 +44,7 @@ const Batch = z.object({
 export async function deviceIngestRoutes(app: FastifyInstance) {
   const { pool } = app.deps;
 
-  app.post('/events', { schema: { body: Batch }, config: { rateLimit: { max: 120, timeWindow: '1 minute' } } }, async (req) => {
+  app.post('/events', { schema: { response: { 200: R.PostDevicesEvents200 }, body: Batch }, config: { rateLimit: { max: 120, timeWindow: '1 minute' } } }, async (req) => {
     const key = req.headers['x-device-key'];
     if (typeof key !== 'string' || !key.includes('.')) throw unauthorized('Device key required');
     const [prefix, secret] = key.split('.', 2) as [string, string];

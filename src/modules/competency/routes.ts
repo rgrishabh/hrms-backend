@@ -1,3 +1,4 @@
+import * as R from '../../core/http/responses.js';
 import type { FastifyInstance, FastifyRequest } from 'fastify';
 import { z } from 'zod';
 import { only } from '../../core/features/routes.js';
@@ -154,141 +155,171 @@ export async function competencyRoutes(app: FastifyInstance) {
   gateFeatures(app, 'training');
 
   // ------------------------------------------------------------ courses (feature: training)
-  app.get('/courses', { schema: {}, config: { permAny: ['training.manage', 'competency.read', 'competency.manage', 'competency.self'], feature: ['training'] } }, async (req) => {
-    const a = tenantActorAny(req, 'training.manage', 'competency.read', 'competency.manage', 'competency.self');
-    return a.tx(async (db) => {
-      await requireFeature(db, a.tenantId, 'training');
-      return {
-        items: (
-          await db.query(
-            `SELECT c.id, c.code, c.name, c.kind, c.description, c.validity_months, c.status,
+  app.get(
+    '/courses',
+    {
+      schema: { response: { 200: R.GetCompetencyCourses200 } },
+      config: { permAny: ['training.manage', 'competency.read', 'competency.manage', 'competency.self'], feature: ['training'] },
+    },
+    async (req) => {
+      const a = tenantActorAny(req, 'training.manage', 'competency.read', 'competency.manage', 'competency.self');
+      return a.tx(async (db) => {
+        await requireFeature(db, a.tenantId, 'training');
+        return {
+          items: (
+            await db.query(
+              `SELECT c.id, c.code, c.name, c.kind, c.description, c.validity_months, c.status,
           (SELECT count(*)::int FROM training_records t WHERE t.tenant_id=c.tenant_id AND t.course_id=c.id AND t.status='active') AS records
         FROM training_courses c WHERE c.tenant_id=$1 ORDER BY c.status, c.code`,
-            [a.tenantId],
-          )
-        ).rows,
-      };
-    });
-  });
+              [a.tenantId],
+            )
+          ).rows,
+        };
+      });
+    },
+  );
   const courseCols = (b: z.infer<typeof CourseBody>) => [b.code, b.name, b.kind, b.description, b.validityMonths, b.status];
-  app.post('/courses', { schema: { body: CourseBody }, config: { perm: ['training.manage'], feature: ['training'] } }, async (req, reply) => {
-    const a = tenantActor(req, 'training.manage');
-    const b = CourseBody.parse(req.body);
-    return a.tx(async (db) => {
-      await requireFeature(db, a.tenantId, 'training');
-      const id = (
-        await db.query<{ id: string }>(
-          `INSERT INTO training_courses (tenant_id, code, name, kind, description, validity_months, status)
+  app.post(
+    '/courses',
+    { schema: { response: { 201: R.PostCompetencyCourses201 }, body: CourseBody }, config: { perm: ['training.manage'], feature: ['training'] } },
+    async (req, reply) => {
+      const a = tenantActor(req, 'training.manage');
+      const b = CourseBody.parse(req.body);
+      return a.tx(async (db) => {
+        await requireFeature(db, a.tenantId, 'training');
+        const id = (
+          await db.query<{ id: string }>(
+            `INSERT INTO training_courses (tenant_id, code, name, kind, description, validity_months, status)
         VALUES ($1,$2,$3,$4,$5,$6,$7) RETURNING id`,
-          [a.tenantId, ...courseCols(b)],
-        )
-      ).rows[0]!.id;
-      await audit(db, { ...a.auditBase, action: 'training.course_created', category: 'configuration', targetType: 'training_course', targetId: id, metadata: b });
-      reply.code(201);
-      return { id };
-    });
-  });
-  app.put('/courses/:id', { schema: { params: IdParams, body: CourseBody }, config: { perm: ['training.manage'], feature: ['training'] } }, async (req) => {
-    const a = tenantActor(req, 'training.manage');
-    const { id } = IdParams.parse(req.params);
-    const b = CourseBody.parse(req.body);
-    return a.tx(async (db) => {
-      await requireFeature(db, a.tenantId, 'training');
-      const r = await db.query(`UPDATE training_courses SET code=$3, name=$4, kind=$5, description=$6, validity_months=$7, status=$8 WHERE tenant_id=$1 AND id=$2`, [
-        a.tenantId,
-        id,
-        ...courseCols(b),
-      ]);
-      if (!r.rowCount) throw notFound();
-      // Validity changes apply to records made from now on; existing expiry dates are evidence and stay as recorded.
-      await audit(db, { ...a.auditBase, action: 'training.course_updated', category: 'configuration', targetType: 'training_course', targetId: id, metadata: b });
-      return { ok: true };
-    });
-  });
+            [a.tenantId, ...courseCols(b)],
+          )
+        ).rows[0]!.id;
+        await audit(db, { ...a.auditBase, action: 'training.course_created', category: 'configuration', targetType: 'training_course', targetId: id, metadata: b });
+        reply.code(201);
+        return { id };
+      });
+    },
+  );
+  app.put(
+    '/courses/:id',
+    { schema: { response: { 200: R.PutCompetencyCoursesById200 }, params: IdParams, body: CourseBody }, config: { perm: ['training.manage'], feature: ['training'] } },
+    async (req) => {
+      const a = tenantActor(req, 'training.manage');
+      const { id } = IdParams.parse(req.params);
+      const b = CourseBody.parse(req.body);
+      return a.tx(async (db) => {
+        await requireFeature(db, a.tenantId, 'training');
+        const r = await db.query(`UPDATE training_courses SET code=$3, name=$4, kind=$5, description=$6, validity_months=$7, status=$8 WHERE tenant_id=$1 AND id=$2`, [
+          a.tenantId,
+          id,
+          ...courseCols(b),
+        ]);
+        if (!r.rowCount) throw notFound();
+        // Validity changes apply to records made from now on; existing expiry dates are evidence and stay as recorded.
+        await audit(db, { ...a.auditBase, action: 'training.course_updated', category: 'configuration', targetType: 'training_course', targetId: id, metadata: b });
+        return { ok: true };
+      });
+    },
+  );
 
   // ------------------------------------------------------------ training records
-  app.get('/training-records', { schema: { querystring: TrainingRecordsQuery }, config: { feature: ['training'] } }, async (req) => {
-    const a = tenantActor(req);
-    const q = TrainingRecordsQuery.parse(req.query);
-    const employeeId = scopeEmployee(a, q.employeeId, 'training.manage', 'competency.read');
-    return a.tx(async (db) => {
-      await requireFeature(db, a.tenantId, 'training');
-      const today = await orgToday(db, a.tenantId);
-      const where = `t.tenant_id=$1 AND ($2::uuid IS NULL OR t.employee_id=$2) AND ($3::uuid IS NULL OR t.course_id=$3) AND ($4 OR t.status='active')
+  app.get(
+    '/training-records',
+    { schema: { response: { 200: R.GetCompetencyTrainingRecords200 }, querystring: TrainingRecordsQuery }, config: { feature: ['training'] } },
+    async (req) => {
+      const a = tenantActor(req);
+      const q = TrainingRecordsQuery.parse(req.query);
+      const employeeId = scopeEmployee(a, q.employeeId, 'training.manage', 'competency.read');
+      return a.tx(async (db) => {
+        await requireFeature(db, a.tenantId, 'training');
+        const today = await orgToday(db, a.tenantId);
+        const where = `t.tenant_id=$1 AND ($2::uuid IS NULL OR t.employee_id=$2) AND ($3::uuid IS NULL OR t.course_id=$3) AND ($4 OR t.status='active')
         AND ($5::int IS NULL OR (t.expires_on IS NOT NULL AND t.expires_on <= $6::date + $5::int AND t.status='active'))`;
-      const args = [a.tenantId, employeeId ?? null, q.courseId ?? null, q.includeRevoked, q.expiringWithinDays ?? null, today];
-      const total = Number((await db.query<{ n: string }>(`SELECT count(*) AS n FROM training_records t WHERE ${where}`, args)).rows[0]!.n);
-      const rows = (
-        await db.query(
-          `SELECT t.id, t.employee_id, e.employee_code, trim(e.first_name||' '||coalesce(e.last_name,'')) AS employee_name, t.course_id, c.code AS course_code,
+        const args = [a.tenantId, employeeId ?? null, q.courseId ?? null, q.includeRevoked, q.expiringWithinDays ?? null, today];
+        const total = Number((await db.query<{ n: string }>(`SELECT count(*) AS n FROM training_records t WHERE ${where}`, args)).rows[0]!.n);
+        const rows = (
+          await db.query(
+            `SELECT t.id, t.employee_id, e.employee_code, trim(e.first_name||' '||coalesce(e.last_name,'')) AS employee_name, t.course_id, c.code AS course_code,
           c.name AS course_name, t.completed_on::text, t.expires_on::text, t.result, t.trainer, t.provider, t.hours, t.notes, t.status, t.revoked_reason, t.created_at,
           CASE WHEN t.status<>'active' THEN 'revoked' WHEN t.result='failed' THEN 'failed' WHEN t.expires_on IS NULL THEN 'valid'
                WHEN t.expires_on < $6::date THEN 'expired' WHEN t.expires_on <= $6::date + 30 THEN 'expiring' ELSE 'valid' END AS validity
         FROM training_records t JOIN employees e ON e.tenant_id=t.tenant_id AND e.id=t.employee_id JOIN training_courses c ON c.tenant_id=t.tenant_id AND c.id=t.course_id
         WHERE ${where} ORDER BY t.expires_on NULLS LAST, t.completed_on DESC LIMIT ${q.pageSize} OFFSET ${offsetOf(q)}`,
-          args,
-        )
-      ).rows;
-      return paged(rows, total, q);
-    });
-  });
+            args,
+          )
+        ).rows;
+        return paged(rows, total, q);
+      });
+    },
+  );
 
-  app.post('/training-records', { schema: { body: TrainingRecordsBody }, config: { perm: ['training.manage'], feature: ['training'] } }, async (req, reply) => {
-    const a = tenantActor(req, 'training.manage');
-    const b = TrainingRecordsBody.parse(req.body);
-    return a.tx(async (db) => {
-      await requireFeature(db, a.tenantId, 'training');
-      notSelf(a, b.employeeId, 'record training'); // training is a prerequisite for authorizations: no self-certification
-      await assertEmployee(db, a.tenantId, b.employeeId);
-      if (b.completedOn > (await orgToday(db, a.tenantId))) throw badRequest('Completion date cannot be in the future');
-      const c = (
-        await db.query<{ validity_months: number | null; status: string }>('SELECT validity_months, status FROM training_courses WHERE tenant_id=$1 AND id=$2', [
-          a.tenantId,
-          b.courseId,
-        ])
-      ).rows[0];
-      if (!c) throw notFound('Course not found');
-      if (c.status !== 'active') throw conflict('This course is inactive');
-      const r = (
-        await db.query<{ id: string; expires_on: string | null }>(
-          `INSERT INTO training_records (tenant_id, employee_id, course_id, completed_on, expires_on, result, trainer, provider, hours, notes, recorded_by)
+  app.post(
+    '/training-records',
+    { schema: { response: { 201: R.PostCompetencyTrainingRecords201 }, body: TrainingRecordsBody }, config: { perm: ['training.manage'], feature: ['training'] } },
+    async (req, reply) => {
+      const a = tenantActor(req, 'training.manage');
+      const b = TrainingRecordsBody.parse(req.body);
+      return a.tx(async (db) => {
+        await requireFeature(db, a.tenantId, 'training');
+        notSelf(a, b.employeeId, 'record training'); // training is a prerequisite for authorizations: no self-certification
+        await assertEmployee(db, a.tenantId, b.employeeId);
+        if (b.completedOn > (await orgToday(db, a.tenantId))) throw badRequest('Completion date cannot be in the future');
+        const c = (
+          await db.query<{ validity_months: number | null; status: string }>('SELECT validity_months, status FROM training_courses WHERE tenant_id=$1 AND id=$2', [
+            a.tenantId,
+            b.courseId,
+          ])
+        ).rows[0];
+        if (!c) throw notFound('Course not found');
+        if (c.status !== 'active') throw conflict('This course is inactive');
+        const r = (
+          await db.query<{ id: string; expires_on: string | null }>(
+            `INSERT INTO training_records (tenant_id, employee_id, course_id, completed_on, expires_on, result, trainer, provider, hours, notes, recorded_by)
           VALUES ($1,$2,$3,$4::date, CASE WHEN $5::int IS NULL OR $6='failed' THEN NULL ELSE ($4::date + make_interval(months => $5::int))::date END, $6,$7,$8,$9,$10,$11)
           RETURNING id, expires_on::text`,
-          [a.tenantId, b.employeeId, b.courseId, b.completedOn, c.validity_months, b.result, b.trainer, b.provider, b.hours, b.notes, a.user.userId],
-        )
-      ).rows[0]!;
-      await audit(db, {
-        ...a.auditBase,
-        action: 'training.recorded',
-        category: 'data',
-        targetType: 'training_record',
-        targetId: r.id,
-        metadata: { ...b, expiresOn: r.expires_on },
+            [a.tenantId, b.employeeId, b.courseId, b.completedOn, c.validity_months, b.result, b.trainer, b.provider, b.hours, b.notes, a.user.userId],
+          )
+        ).rows[0]!;
+        await audit(db, {
+          ...a.auditBase,
+          action: 'training.recorded',
+          category: 'data',
+          targetType: 'training_record',
+          targetId: r.id,
+          metadata: { ...b, expiresOn: r.expires_on },
+        });
+        reply.code(201);
+        return { id: r.id, expiresOn: r.expires_on };
       });
-      reply.code(201);
-      return { id: r.id, expiresOn: r.expires_on };
-    });
-  });
+    },
+  );
 
-  app.post('/training-records/:id/revoke', { schema: { params: IdParams, body: Reason }, config: { perm: ['training.manage'], feature: ['training'] } }, async (req) => {
-    const a = tenantActor(req, 'training.manage');
-    const { id } = IdParams.parse(req.params);
-    const { reason } = Reason.parse(req.body);
-    return a.tx(async (db) => {
-      await requireFeature(db, a.tenantId, 'training');
-      const own = (await db.query<{ employee_id: string }>('SELECT employee_id FROM training_records WHERE tenant_id=$1 AND id=$2', [a.tenantId, id])).rows[0];
-      if (own) notSelf(a, own.employee_id, 'revoke training records');
-      const r = await db.query(`UPDATE training_records SET status='revoked', revoked_reason=$3 WHERE tenant_id=$1 AND id=$2 AND status='active'`, [a.tenantId, id, reason]);
-      if (!r.rowCount) throw notFound('Active training record not found');
-      await audit(db, { ...a.auditBase, action: 'training.revoked', category: 'data', targetType: 'training_record', targetId: id, metadata: { reason } });
-      return { ok: true };
-    });
-  });
+  app.post(
+    '/training-records/:id/revoke',
+    { schema: { response: { 200: R.PostCompetencyTrainingRecordsByIdRevoke200 }, params: IdParams, body: Reason }, config: { perm: ['training.manage'], feature: ['training'] } },
+    async (req) => {
+      const a = tenantActor(req, 'training.manage');
+      const { id } = IdParams.parse(req.params);
+      const { reason } = Reason.parse(req.body);
+      return a.tx(async (db) => {
+        await requireFeature(db, a.tenantId, 'training');
+        const own = (await db.query<{ employee_id: string }>('SELECT employee_id FROM training_records WHERE tenant_id=$1 AND id=$2', [a.tenantId, id])).rows[0];
+        if (own) notSelf(a, own.employee_id, 'revoke training records');
+        const r = await db.query(`UPDATE training_records SET status='revoked', revoked_reason=$3 WHERE tenant_id=$1 AND id=$2 AND status='active'`, [a.tenantId, id, reason]);
+        if (!r.rowCount) throw notFound('Active training record not found');
+        await audit(db, { ...a.auditBase, action: 'training.revoked', category: 'data', targetType: 'training_record', targetId: id, metadata: { reason } });
+        return { ok: true };
+      });
+    },
+  );
 
   // ------------------------------------------------------------ methods (feature: lab.competency)
   only(app, 'lab.competency').get(
     '/methods',
-    { schema: {}, config: { permAny: ['competency.read', 'competency.manage', 'competency.assess', 'competency.self'], feature: ['lab.competency'] } },
+    {
+      schema: { response: { 200: R.GetCompetencyMethods200 } },
+      config: { permAny: ['competency.read', 'competency.manage', 'competency.assess', 'competency.self'], feature: ['lab.competency'] },
+    },
     async (req) => {
       const a = tenantActorAny(req, 'competency.read', 'competency.manage', 'competency.assess', 'competency.self');
       return a.tx(async (db) => {
@@ -336,20 +367,24 @@ export async function competencyRoutes(app: FastifyInstance) {
     for (const c of new Set(b.requiredCourseIds)) await db.query('INSERT INTO lab_method_requirements (tenant_id, method_id, course_id) VALUES ($1,$2,$3)', [a.tenantId, id, c]);
     return id;
   }
-  only(app, 'lab.competency').post('/methods', { schema: { body: MethodBody }, config: { perm: ['competency.manage'], feature: ['lab.competency'] } }, async (req, reply) => {
-    const a = tenantActor(req, 'competency.manage');
-    const b = MethodBody.parse(req.body);
-    return a.tx(async (db) => {
-      await requireFeature(db, a.tenantId, 'lab.competency');
-      const id = await saveMethod(db, a, b);
-      await audit(db, { ...a.auditBase, action: 'competency.method_created', category: 'configuration', targetType: 'lab_method', targetId: id, metadata: b });
-      reply.code(201);
-      return { id };
-    });
-  });
+  only(app, 'lab.competency').post(
+    '/methods',
+    { schema: { response: { 201: R.PostCompetencyMethods201 }, body: MethodBody }, config: { perm: ['competency.manage'], feature: ['lab.competency'] } },
+    async (req, reply) => {
+      const a = tenantActor(req, 'competency.manage');
+      const b = MethodBody.parse(req.body);
+      return a.tx(async (db) => {
+        await requireFeature(db, a.tenantId, 'lab.competency');
+        const id = await saveMethod(db, a, b);
+        await audit(db, { ...a.auditBase, action: 'competency.method_created', category: 'configuration', targetType: 'lab_method', targetId: id, metadata: b });
+        reply.code(201);
+        return { id };
+      });
+    },
+  );
   only(app, 'lab.competency').put(
     '/methods/:id',
-    { schema: { params: IdParams, body: MethodBody }, config: { perm: ['competency.manage'], feature: ['lab.competency'] } },
+    { schema: { response: { 200: R.PutCompetencyMethodsById200 }, params: IdParams, body: MethodBody }, config: { perm: ['competency.manage'], feature: ['lab.competency'] } },
     async (req) => {
       const a = tenantActor(req, 'competency.manage');
       const { id } = IdParams.parse(req.params);
@@ -365,32 +400,36 @@ export async function competencyRoutes(app: FastifyInstance) {
   );
 
   // ------------------------------------------------------------ assessments
-  only(app, 'lab.competency').get('/assessments', { schema: { querystring: AssessmentsQuery }, config: { feature: ['lab.competency'] } }, async (req) => {
-    const a = tenantActor(req);
-    const q = AssessmentsQuery.parse(req.query);
-    const employeeId = scopeEmployee(a, q.employeeId, 'competency.read', 'competency.assess');
-    return a.tx(async (db) => {
-      await requireFeature(db, a.tenantId, 'lab.competency');
-      const where = 's.tenant_id=$1 AND ($2::uuid IS NULL OR s.employee_id=$2) AND ($3::uuid IS NULL OR s.method_id=$3)';
-      const args = [a.tenantId, employeeId ?? null, q.methodId ?? null];
-      const total = Number((await db.query<{ n: string }>(`SELECT count(*) AS n FROM competency_assessments s WHERE ${where}`, args)).rows[0]!.n);
-      const rows = (
-        await db.query(
-          `SELECT s.id, s.employee_id, trim(e.first_name||' '||coalesce(e.last_name,'')) AS employee_name, e.employee_code, s.method_id, m.code AS method_code,
+  only(app, 'lab.competency').get(
+    '/assessments',
+    { schema: { response: { 200: R.GetCompetencyAssessments200 }, querystring: AssessmentsQuery }, config: { feature: ['lab.competency'] } },
+    async (req) => {
+      const a = tenantActor(req);
+      const q = AssessmentsQuery.parse(req.query);
+      const employeeId = scopeEmployee(a, q.employeeId, 'competency.read', 'competency.assess');
+      return a.tx(async (db) => {
+        await requireFeature(db, a.tenantId, 'lab.competency');
+        const where = 's.tenant_id=$1 AND ($2::uuid IS NULL OR s.employee_id=$2) AND ($3::uuid IS NULL OR s.method_id=$3)';
+        const args = [a.tenantId, employeeId ?? null, q.methodId ?? null];
+        const total = Number((await db.query<{ n: string }>(`SELECT count(*) AS n FROM competency_assessments s WHERE ${where}`, args)).rows[0]!.n);
+        const rows = (
+          await db.query(
+            `SELECT s.id, s.employee_id, trim(e.first_name||' '||coalesce(e.last_name,'')) AS employee_name, e.employee_code, s.method_id, m.code AS method_code,
           m.name AS method_name, s.activity, s.approach, s.assessed_on::text, s.result, s.evidence, u.display_name AS assessor_name, s.created_at,
           EXISTS (SELECT 1 FROM lab_authorizations z WHERE z.tenant_id=s.tenant_id AND z.assessment_id=s.id) AS used
         FROM competency_assessments s JOIN employees e ON e.tenant_id=s.tenant_id AND e.id=s.employee_id JOIN lab_methods m ON m.tenant_id=s.tenant_id AND m.id=s.method_id
         JOIN users u ON u.id=s.assessor_id WHERE ${where} ORDER BY s.assessed_on DESC, s.created_at DESC LIMIT ${q.pageSize} OFFSET ${offsetOf(q)}`,
-          args,
-        )
-      ).rows;
-      return paged(rows, total, q);
-    });
-  });
+            args,
+          )
+        ).rows;
+        return paged(rows, total, q);
+      });
+    },
+  );
 
   only(app, 'lab.competency').post(
     '/assessments',
-    { schema: { body: AssessmentsBody }, config: { perm: ['competency.assess'], feature: ['lab.competency'] } },
+    { schema: { response: { 201: R.PostCompetencyAssessments201 }, body: AssessmentsBody }, config: { perm: ['competency.assess'], feature: ['lab.competency'] } },
     async (req, reply) => {
       const a = tenantActor(req, 'competency.assess');
       const b = AssessmentsBody.parse(req.body);
@@ -419,7 +458,7 @@ export async function competencyRoutes(app: FastifyInstance) {
   // ------------------------------------------------------------ authorizations
   only(app, 'lab.competency').post(
     '/authorizations',
-    { schema: { body: AuthorizationsBody }, config: { perm: ['competency.assess'], feature: ['lab.competency'] } },
+    { schema: { response: { 201: R.PostCompetencyAuthorizations201 }, body: AuthorizationsBody }, config: { perm: ['competency.assess'], feature: ['lab.competency'] } },
     async (req, reply) => {
       const a = tenantActor(req, 'competency.assess');
       const { assessmentId } = AuthorizationsBody.parse(req.body);
@@ -485,27 +524,30 @@ export async function competencyRoutes(app: FastifyInstance) {
     },
   );
 
-  only(app, 'lab.competency').get('/authorizations', { schema: { querystring: AuthorizationsQuery }, config: { feature: ['lab.competency'] } }, async (req) => {
-    const a = tenantActor(req);
-    const q = AuthorizationsQuery.parse(req.query);
-    const employeeId = scopeEmployee(a, q.employeeId, 'competency.read', 'competency.authorize');
-    return a.tx(async (db) => {
-      await requireFeature(db, a.tenantId, 'lab.competency');
-      const today = await orgToday(db, a.tenantId);
-      const statusSql: Record<string, string> = {
-        pending: "z.status='pending'",
-        authorized: "z.status='authorized'",
-        suspended: "z.status='suspended'",
-        in_force: "z.status IN ('authorized','suspended')",
-        ended: "z.status IN ('rejected','withdrawn','expired','superseded','cancelled')",
-        review_due: "z.status='authorized' AND z.review_due <= $4::date + 30",
-      };
-      const where = `z.tenant_id=$1 AND ($2::uuid IS NULL OR z.employee_id=$2) AND ($3::uuid IS NULL OR z.method_id=$3) AND ${q.status ? statusSql[q.status] : 'true'} AND $4::date IS NOT NULL`;
-      const args = [a.tenantId, employeeId ?? null, q.methodId ?? null, today];
-      const total = Number((await db.query<{ n: string }>(`SELECT count(*) AS n FROM lab_authorizations z WHERE ${where}`, args)).rows[0]!.n);
-      const rows = (
-        await db.query(
-          `SELECT z.id, z.employee_id, e.employee_code, trim(e.first_name||' '||coalesce(e.last_name,'')) AS employee_name, z.method_id, m.code AS method_code,
+  only(app, 'lab.competency').get(
+    '/authorizations',
+    { schema: { response: { 200: R.GetCompetencyAuthorizations200 }, querystring: AuthorizationsQuery }, config: { feature: ['lab.competency'] } },
+    async (req) => {
+      const a = tenantActor(req);
+      const q = AuthorizationsQuery.parse(req.query);
+      const employeeId = scopeEmployee(a, q.employeeId, 'competency.read', 'competency.authorize');
+      return a.tx(async (db) => {
+        await requireFeature(db, a.tenantId, 'lab.competency');
+        const today = await orgToday(db, a.tenantId);
+        const statusSql: Record<string, string> = {
+          pending: "z.status='pending'",
+          authorized: "z.status='authorized'",
+          suspended: "z.status='suspended'",
+          in_force: "z.status IN ('authorized','suspended')",
+          ended: "z.status IN ('rejected','withdrawn','expired','superseded','cancelled')",
+          review_due: "z.status='authorized' AND z.review_due <= $4::date + 30",
+        };
+        const where = `z.tenant_id=$1 AND ($2::uuid IS NULL OR z.employee_id=$2) AND ($3::uuid IS NULL OR z.method_id=$3) AND ${q.status ? statusSql[q.status] : 'true'} AND $4::date IS NOT NULL`;
+        const args = [a.tenantId, employeeId ?? null, q.methodId ?? null, today];
+        const total = Number((await db.query<{ n: string }>(`SELECT count(*) AS n FROM lab_authorizations z WHERE ${where}`, args)).rows[0]!.n);
+        const rows = (
+          await db.query(
+            `SELECT z.id, z.employee_id, e.employee_code, trim(e.first_name||' '||coalesce(e.last_name,'')) AS employee_name, z.method_id, m.code AS method_code,
           m.name AS method_name, m.standard_ref, z.activity, z.status, z.valid_from::text, z.review_due::text, z.authorized_at, z.ended_at, z.end_reason, z.created_at,
           ru.display_name AS requested_by_name, au.display_name AS authorized_by_name,
           (SELECT count(*)::int FROM lab_method_requirements r WHERE r.tenant_id=z.tenant_id AND r.method_id=z.method_id AND NOT EXISTS (
@@ -514,39 +556,44 @@ export async function competencyRoutes(app: FastifyInstance) {
         FROM lab_authorizations z JOIN employees e ON e.tenant_id=z.tenant_id AND e.id=z.employee_id JOIN lab_methods m ON m.tenant_id=z.tenant_id AND m.id=z.method_id
         JOIN users ru ON ru.id=z.requested_by LEFT JOIN users au ON au.id=z.authorized_by
         WHERE ${where} ORDER BY e.first_name, m.code, z.activity, z.created_at DESC LIMIT ${q.pageSize} OFFSET ${offsetOf(q)}`,
-          args,
-        )
-      ).rows;
-      return paged(rows, total, q);
-    });
-  });
+            args,
+          )
+        ).rows;
+        return paged(rows, total, q);
+      });
+    },
+  );
 
-  only(app, 'lab.competency').get('/authorizations/:id', { schema: { params: IdParams }, config: { feature: ['lab.competency'] } }, async (req) => {
-    const a = tenantActor(req);
-    const { id } = IdParams.parse(req.params);
-    return a.tx(async (db) => {
-      await requireFeature(db, a.tenantId, 'lab.competency');
-      const z0 = await loadAuthorization(db, a.tenantId, id);
-      if (!z0 || !(a.has('competency.read') || a.has('competency.authorize') || (a.has('competency.self') && z0.employee_id === a.user.employeeId)))
-        throw notFound('Authorization not found');
-      const events = (
-        await db.query(
-          `SELECT v.action, v.reason, v.at, u.display_name AS actor_name FROM lab_authorization_events v LEFT JOIN users u ON u.id=v.actor_id
+  only(app, 'lab.competency').get(
+    '/authorizations/:id',
+    { schema: { response: { 200: R.GetCompetencyAuthorizationsById200 }, params: IdParams }, config: { feature: ['lab.competency'] } },
+    async (req) => {
+      const a = tenantActor(req);
+      const { id } = IdParams.parse(req.params);
+      return a.tx(async (db) => {
+        await requireFeature(db, a.tenantId, 'lab.competency');
+        const z0 = await loadAuthorization(db, a.tenantId, id);
+        if (!z0 || !(a.has('competency.read') || a.has('competency.authorize') || (a.has('competency.self') && z0.employee_id === a.user.employeeId)))
+          throw notFound('Authorization not found');
+        const events = (
+          await db.query(
+            `SELECT v.action, v.reason, v.at, u.display_name AS actor_name FROM lab_authorization_events v LEFT JOIN users u ON u.id=v.actor_id
         WHERE v.tenant_id=$1 AND v.authorization_id=$2 ORDER BY v.at, v.id`,
-          [a.tenantId, id],
-        )
-      ).rows;
-      const assessment = (
-        await db.query(
-          `SELECT s.approach, s.assessed_on::text, s.result, s.evidence, u.display_name AS assessor_name FROM lab_authorizations z
+            [a.tenantId, id],
+          )
+        ).rows;
+        const assessment = (
+          await db.query(
+            `SELECT s.approach, s.assessed_on::text, s.result, s.evidence, u.display_name AS assessor_name FROM lab_authorizations z
         JOIN competency_assessments s ON s.tenant_id=z.tenant_id AND s.id=z.assessment_id JOIN users u ON u.id=s.assessor_id WHERE z.tenant_id=$1 AND z.id=$2`,
-          [a.tenantId, id],
-        )
-      ).rows[0];
-      const check = ['authorized', 'suspended'].includes(z0.status) ? await checkAuthorization(db, a.tenantId, z0.employee_id, z0.method_id, z0.activity) : null;
-      return { ...z0, employee_user_id: undefined, events, assessment, check };
-    });
-  });
+            [a.tenantId, id],
+          )
+        ).rows[0];
+        const check = ['authorized', 'suspended'].includes(z0.status) ? await checkAuthorization(db, a.tenantId, z0.employee_id, z0.method_id, z0.activity) : null;
+        return { ...z0, employee_user_id: undefined, events, assessment, check };
+      });
+    },
+  );
 
   const transition = (action: 'suspend' | 'reinstate' | 'withdraw') => async (req: FastifyRequest) => {
     const a = tenantActor(req, 'competency.authorize');
@@ -580,23 +627,32 @@ export async function competencyRoutes(app: FastifyInstance) {
   };
   only(app, 'lab.competency').post(
     '/authorizations/:id/suspend',
-    { schema: { params: IdParams, body: Reason }, config: { perm: ['competency.authorize'], feature: ['lab.competency'] } },
+    {
+      schema: { response: { 200: R.PostCompetencyAuthorizationsByIdSuspend200 }, params: IdParams, body: Reason },
+      config: { perm: ['competency.authorize'], feature: ['lab.competency'] },
+    },
     transition('suspend'),
   );
   only(app, 'lab.competency').post(
     '/authorizations/:id/reinstate',
-    { schema: { params: IdParams, body: Reason }, config: { perm: ['competency.authorize'], feature: ['lab.competency'] } },
+    {
+      schema: { response: { 200: R.PostCompetencyAuthorizationsByIdReinstate200 }, params: IdParams, body: Reason },
+      config: { perm: ['competency.authorize'], feature: ['lab.competency'] },
+    },
     transition('reinstate'),
   );
   only(app, 'lab.competency').post(
     '/authorizations/:id/withdraw',
-    { schema: { params: IdParams, body: Reason }, config: { perm: ['competency.authorize'], feature: ['lab.competency'] } },
+    {
+      schema: { response: { 200: R.PostCompetencyAuthorizationsByIdWithdraw200 }, params: IdParams, body: Reason },
+      config: { perm: ['competency.authorize'], feature: ['lab.competency'] },
+    },
     transition('withdraw'),
   );
 
   only(app, 'lab.competency').post(
     '/authorizations/:id/cancel',
-    { schema: { params: IdParams }, config: { perm: ['competency.assess'], feature: ['lab.competency'] } },
+    { schema: { response: { 200: R.PostCompetencyAuthorizationsByIdCancel200 }, params: IdParams }, config: { perm: ['competency.assess'], feature: ['lab.competency'] } },
     async (req) => {
       const a = tenantActor(req, 'competency.assess');
       const { id } = IdParams.parse(req.params);
@@ -617,49 +673,56 @@ export async function competencyRoutes(app: FastifyInstance) {
 
   // ------------------------------------------------------------ check & matrix
   /** For LIMS / report sign-off integration: is this person authorized for this method and activity today? */
-  only(app, 'lab.competency').get('/check', { schema: { querystring: CheckQuery }, config: { feature: ['lab.competency'] } }, async (req) => {
-    const a = tenantActor(req);
-    const q = CheckQuery.parse(req.query);
-    return a.tx(async (db) => {
-      await requireFeature(db, a.tenantId, 'lab.competency');
-      const emp = (
-        await db.query<{ id: string }>('SELECT id FROM employees WHERE tenant_id=$1 AND ($2::uuid IS NULL OR id=$2) AND ($3::text IS NULL OR employee_code=$3)', [
-          a.tenantId,
-          q.employeeId ?? null,
-          q.employeeCode ?? null,
-        ])
-      ).rows[0];
-      if (!emp) throw notFound('Employee not found');
-      scopeEmployee(a, emp.id, 'competency.read', 'competency.authorize');
-      const m = (
-        await db.query<{ id: string; code: string }>('SELECT id, code FROM lab_methods WHERE tenant_id=$1 AND ($2::uuid IS NULL OR id=$2) AND ($3::text IS NULL OR code=$3)', [
-          a.tenantId,
-          q.methodId ?? null,
-          q.methodCode ?? null,
-        ])
-      ).rows[0];
-      if (!m) throw notFound('Method not found');
-      return { employeeId: emp.id, methodId: m.id, methodCode: m.code, activity: q.activity, ...(await checkAuthorization(db, a.tenantId, emp.id, m.id, q.activity)) };
-    });
-  });
+  only(app, 'lab.competency').get(
+    '/check',
+    { schema: { response: { 200: R.GetCompetencyCheck200 }, querystring: CheckQuery }, config: { feature: ['lab.competency'] } },
+    async (req) => {
+      const a = tenantActor(req);
+      const q = CheckQuery.parse(req.query);
+      return a.tx(async (db) => {
+        await requireFeature(db, a.tenantId, 'lab.competency');
+        const emp = (
+          await db.query<{ id: string }>('SELECT id FROM employees WHERE tenant_id=$1 AND ($2::uuid IS NULL OR id=$2) AND ($3::text IS NULL OR employee_code=$3)', [
+            a.tenantId,
+            q.employeeId ?? null,
+            q.employeeCode ?? null,
+          ])
+        ).rows[0];
+        if (!emp) throw notFound('Employee not found');
+        scopeEmployee(a, emp.id, 'competency.read', 'competency.authorize');
+        const m = (
+          await db.query<{ id: string; code: string }>('SELECT id, code FROM lab_methods WHERE tenant_id=$1 AND ($2::uuid IS NULL OR id=$2) AND ($3::text IS NULL OR code=$3)', [
+            a.tenantId,
+            q.methodId ?? null,
+            q.methodCode ?? null,
+          ])
+        ).rows[0];
+        if (!m) throw notFound('Method not found');
+        return { employeeId: emp.id, methodId: m.id, methodCode: m.code, activity: q.activity, ...(await checkAuthorization(db, a.tenantId, emp.id, m.id, q.activity)) };
+      });
+    },
+  );
 
-  only(app, 'lab.competency').get('/matrix', { schema: { querystring: MatrixQuery }, config: { perm: ['competency.read'], feature: ['lab.competency'] } }, async (req) => {
-    const a = tenantActor(req, 'competency.read');
-    const q = MatrixQuery.parse(req.query);
-    return a.tx(async (db) => {
-      await requireFeature(db, a.tenantId, 'lab.competency');
-      const today = await orgToday(db, a.tenantId);
-      const methods = (
-        await db.query(
-          `SELECT id, code, name, discipline, matrix FROM lab_methods WHERE tenant_id=$1 AND status='active'
+  only(app, 'lab.competency').get(
+    '/matrix',
+    { schema: { response: { 200: R.GetCompetencyMatrix200 }, querystring: MatrixQuery }, config: { perm: ['competency.read'], feature: ['lab.competency'] } },
+    async (req) => {
+      const a = tenantActor(req, 'competency.read');
+      const q = MatrixQuery.parse(req.query);
+      return a.tx(async (db) => {
+        await requireFeature(db, a.tenantId, 'lab.competency');
+        const today = await orgToday(db, a.tenantId);
+        const methods = (
+          await db.query(
+            `SELECT id, code, name, discipline, matrix FROM lab_methods WHERE tenant_id=$1 AND status='active'
           AND ($2::text IS NULL OR discipline=$2) AND ($3::uuid IS NULL OR branch_id IS NULL OR branch_id=$3) ORDER BY discipline NULLS LAST, code`,
-          [a.tenantId, q.discipline ?? null, q.branchId ?? null],
-        )
-      ).rows as { id: string }[];
-      const ids = methods.map((m) => m.id);
-      const cells = (
-        await db.query(
-          `SELECT z.employee_id, e.employee_code, trim(e.first_name||' '||coalesce(e.last_name,'')) AS employee_name, z.method_id, z.activity, z.status, z.review_due::text,
+            [a.tenantId, q.discipline ?? null, q.branchId ?? null],
+          )
+        ).rows as { id: string }[];
+        const ids = methods.map((m) => m.id);
+        const cells = (
+          await db.query(
+            `SELECT z.employee_id, e.employee_code, trim(e.first_name||' '||coalesce(e.last_name,'')) AS employee_name, z.method_id, z.activity, z.status, z.review_due::text,
           (SELECT count(*)::int FROM lab_method_requirements r WHERE r.tenant_id=z.tenant_id AND r.method_id=z.method_id AND NOT EXISTS (
              SELECT 1 FROM training_records t WHERE t.tenant_id=r.tenant_id AND t.employee_id=z.employee_id AND t.course_id=r.course_id AND t.status='active'
                AND t.result IN ('completed','passed') AND t.completed_on <= $3::date AND (t.expires_on IS NULL OR t.expires_on >= $3::date))) AS missing_training
@@ -667,34 +730,35 @@ export async function competencyRoutes(app: FastifyInstance) {
         WHERE z.tenant_id=$1 AND z.method_id = ANY($2::uuid[]) AND z.status IN ('pending','authorized','suspended') AND e.status <> 'exited'
           AND ($4::uuid IS NULL OR e.branch_id=$4)
         ORDER BY e.first_name, e.employee_code`,
-          [a.tenantId, ids, today, q.branchId ?? null],
-        )
-      ).rows as {
-        employee_id: string;
-        employee_code: string;
-        employee_name: string;
-        method_id: string;
-        activity: string;
-        status: string;
-        review_due: string;
-        missing_training: number;
-      }[];
-      type Cell = { status: string; reviewDue: string | null; inForce: boolean };
-      type Row = { employeeId: string; employeeCode: string; name: string; cells: Record<string, Record<string, Cell>> };
-      const rows = new Map<string, Row>();
-      for (const c of cells) {
-        const row: Row = rows.get(c.employee_id) ?? { employeeId: c.employee_id, employeeCode: c.employee_code, name: c.employee_name, cells: {} };
-        const inForce = c.status === 'authorized' && c.review_due >= today && c.missing_training === 0;
-        // A pending renewal never hides the authorization in force.
-        const existing = row.cells[c.method_id]?.[c.activity];
-        if (!existing || existing.status === 'pending') (row.cells[c.method_id] ??= {})[c.activity] = { status: c.status, reviewDue: c.review_due, inForce };
-        rows.set(c.employee_id, row);
-      }
-      return { date: today, activities: ACTIVITIES, methods, rows: [...rows.values()] };
-    });
-  });
+            [a.tenantId, ids, today, q.branchId ?? null],
+          )
+        ).rows as {
+          employee_id: string;
+          employee_code: string;
+          employee_name: string;
+          method_id: string;
+          activity: string;
+          status: string;
+          review_due: string;
+          missing_training: number;
+        }[];
+        type Cell = { status: string; reviewDue: string | null; inForce: boolean };
+        type Row = { employeeId: string; employeeCode: string; name: string; cells: Record<string, Record<string, Cell>> };
+        const rows = new Map<string, Row>();
+        for (const c of cells) {
+          const row: Row = rows.get(c.employee_id) ?? { employeeId: c.employee_id, employeeCode: c.employee_code, name: c.employee_name, cells: {} };
+          const inForce = c.status === 'authorized' && c.review_due >= today && c.missing_training === 0;
+          // A pending renewal never hides the authorization in force.
+          const existing = row.cells[c.method_id]?.[c.activity];
+          if (!existing || existing.status === 'pending') (row.cells[c.method_id] ??= {})[c.activity] = { status: c.status, reviewDue: c.review_due, inForce };
+          rows.set(c.employee_id, row);
+        }
+        return { date: today, activities: ACTIVITIES, methods, rows: [...rows.values()] };
+      });
+    },
+  );
 
-  app.get('/me', { schema: {}, config: { perm: ['competency.self'], feature: ['training', 'lab.competency'] } }, async (req) => {
+  app.get('/me', { schema: { response: { 200: R.GetCompetencyMe200 } }, config: { perm: ['competency.self'], feature: ['training', 'lab.competency'] } }, async (req) => {
     const a = tenantActor(req, 'competency.self');
     if (!a.user.employeeId) throw badRequest('Your account is not linked to an employee record');
     return a.tx(async (db) => {

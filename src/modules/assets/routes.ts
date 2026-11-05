@@ -1,3 +1,4 @@
+import * as R from '../../core/http/responses.js';
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import { tenantActor, requireFeature, gateFeatures } from '../../core/http/context.js';
@@ -55,7 +56,7 @@ const IssueBody = z.object({ employeeId: Uuid, issuedAt: IsoDate, conditionOut: 
 const ReceiveBody = z.object({ returnedAt: IsoDate, outcome: z.enum(['returned', 'lost', 'damaged']), conditionIn: Text(500) });
 export async function assetRoutes(app: FastifyInstance) {
   gateFeatures(app, 'assets');
-  app.get('/', { schema: { querystring: GetRootQuery }, config: { perm: ['assets.manage'], feature: [F] } }, async (req) => {
+  app.get('/', { schema: { response: { 200: R.GetAssets200 }, querystring: GetRootQuery }, config: { perm: ['assets.manage'], feature: [F] } }, async (req) => {
     const a = tenantActor(req, 'assets.manage');
     const q = GetRootQuery.parse(req.query);
     return a.tx(async (db) => {
@@ -79,7 +80,7 @@ export async function assetRoutes(app: FastifyInstance) {
     });
   });
 
-  app.post('/', { schema: { body: AssetBody }, config: { perm: ['assets.manage'], feature: [F] } }, async (req, reply) => {
+  app.post('/', { schema: { response: { 201: R.PostAssets201 }, body: AssetBody }, config: { perm: ['assets.manage'], feature: [F] } }, async (req, reply) => {
     const a = tenantActor(req, 'assets.manage');
     const b = AssetBody.parse(req.body);
     return a.tx(async (db) => {
@@ -95,7 +96,7 @@ export async function assetRoutes(app: FastifyInstance) {
       return { id };
     });
   });
-  app.put('/:id', { schema: { params: IdParams, body: AssetBody }, config: { perm: ['assets.manage'], feature: [F] } }, async (req) => {
+  app.put('/:id', { schema: { response: { 200: R.PutAssetsById200 }, params: IdParams, body: AssetBody }, config: { perm: ['assets.manage'], feature: [F] } }, async (req) => {
     const a = tenantActor(req, 'assets.manage');
     const { id } = IdParams.parse(req.params);
     const b = AssetBody.parse(req.body);
@@ -113,7 +114,7 @@ export async function assetRoutes(app: FastifyInstance) {
     });
   });
 
-  app.get('/:id/history', { schema: { params: IdParams }, config: { perm: ['assets.manage'] } }, async (req) => {
+  app.get('/:id/history', { schema: { response: { 200: R.GetAssetsByIdHistory200 }, params: IdParams }, config: { perm: ['assets.manage'] } }, async (req) => {
     const a = tenantActor(req, 'assets.manage');
     const { id } = IdParams.parse(req.params);
     return a.tx(async (db) => ({
@@ -129,52 +130,56 @@ export async function assetRoutes(app: FastifyInstance) {
     }));
   });
 
-  app.post('/:id/issue', { schema: { params: IdParams, body: IssueBody }, config: { perm: ['assets.manage'], feature: [F] } }, async (req) => {
-    const a = tenantActor(req, 'assets.manage');
-    const { id } = IdParams.parse(req.params);
-    const b = IssueBody.parse(req.body);
-    return a.tx(async (db) => {
-      await requireFeature(db, a.tenantId, F);
-      const as = (
-        await db.query<{ status: string; tag: string; name: string; category: string; calibration_due: string | null }>(
-          'SELECT status, tag, name, category, calibration_due::text FROM assets WHERE tenant_id=$1 AND id=$2 FOR UPDATE',
-          [a.tenantId, id],
-        )
-      ).rows[0];
-      if (!as) throw notFound('Asset not found');
-      if (as.status !== 'available') throw conflict(`The asset is ${as.status}`);
-      const today = await orgToday(db, a.tenantId);
-      if (as.category === 'lab_instrument' && as.calibration_due && as.calibration_due < today)
-        throw conflict(`Calibration expired on ${as.calibration_due}; calibrate before issuing`);
-      const e = (await db.query<{ user_id: string | null; status: string }>('SELECT user_id, status FROM employees WHERE tenant_id=$1 AND id=$2', [a.tenantId, b.employeeId]))
-        .rows[0];
-      if (!e) throw notFound('Employee not found');
-      if (!['active', 'pre_joining', 'on_notice'].includes(e.status)) throw conflict(`Employee is ${e.status}`);
-      if (b.dueBack && b.dueBack < b.issuedAt) throw badRequest('Due back must be after issue');
-      await db.query(`INSERT INTO asset_assignments (tenant_id, asset_id, employee_id, issued_at, issued_by, condition_out, due_back) VALUES ($1,$2,$3,$4,$5,$6,$7)`, [
-        a.tenantId,
-        id,
-        b.employeeId,
-        b.issuedAt,
-        a.user.userId,
-        b.conditionOut,
-        b.dueBack,
-      ]);
-      await db.query(`UPDATE assets SET status='assigned' WHERE tenant_id=$1 AND id=$2`, [a.tenantId, id]);
-      if (e.user_id)
-        await notifyUsers(db, a.tenantId, [e.user_id], {
-          kind: 'assets.issued',
-          title: `${as.name} (${as.tag}) issued to you`,
-          body: 'Confirm that you received it.',
-          link: '/assets',
-          actionLabel: 'Confirm',
-        });
-      await audit(db, { ...a.auditBase, action: 'assets.issued', targetType: 'asset', targetId: id, metadata: b });
-      return { ok: true };
-    });
-  });
+  app.post(
+    '/:id/issue',
+    { schema: { response: { 200: R.PostAssetsByIdIssue200 }, params: IdParams, body: IssueBody }, config: { perm: ['assets.manage'], feature: [F] } },
+    async (req) => {
+      const a = tenantActor(req, 'assets.manage');
+      const { id } = IdParams.parse(req.params);
+      const b = IssueBody.parse(req.body);
+      return a.tx(async (db) => {
+        await requireFeature(db, a.tenantId, F);
+        const as = (
+          await db.query<{ status: string; tag: string; name: string; category: string; calibration_due: string | null }>(
+            'SELECT status, tag, name, category, calibration_due::text FROM assets WHERE tenant_id=$1 AND id=$2 FOR UPDATE',
+            [a.tenantId, id],
+          )
+        ).rows[0];
+        if (!as) throw notFound('Asset not found');
+        if (as.status !== 'available') throw conflict(`The asset is ${as.status}`);
+        const today = await orgToday(db, a.tenantId);
+        if (as.category === 'lab_instrument' && as.calibration_due && as.calibration_due < today)
+          throw conflict(`Calibration expired on ${as.calibration_due}; calibrate before issuing`);
+        const e = (await db.query<{ user_id: string | null; status: string }>('SELECT user_id, status FROM employees WHERE tenant_id=$1 AND id=$2', [a.tenantId, b.employeeId]))
+          .rows[0];
+        if (!e) throw notFound('Employee not found');
+        if (!['active', 'pre_joining', 'on_notice'].includes(e.status)) throw conflict(`Employee is ${e.status}`);
+        if (b.dueBack && b.dueBack < b.issuedAt) throw badRequest('Due back must be after issue');
+        await db.query(`INSERT INTO asset_assignments (tenant_id, asset_id, employee_id, issued_at, issued_by, condition_out, due_back) VALUES ($1,$2,$3,$4,$5,$6,$7)`, [
+          a.tenantId,
+          id,
+          b.employeeId,
+          b.issuedAt,
+          a.user.userId,
+          b.conditionOut,
+          b.dueBack,
+        ]);
+        await db.query(`UPDATE assets SET status='assigned' WHERE tenant_id=$1 AND id=$2`, [a.tenantId, id]);
+        if (e.user_id)
+          await notifyUsers(db, a.tenantId, [e.user_id], {
+            kind: 'assets.issued',
+            title: `${as.name} (${as.tag}) issued to you`,
+            body: 'Confirm that you received it.',
+            link: '/assets',
+            actionLabel: 'Confirm',
+          });
+        await audit(db, { ...a.auditBase, action: 'assets.issued', targetType: 'asset', targetId: id, metadata: b });
+        return { ok: true };
+      });
+    },
+  );
 
-  app.post('/:id/receive', { schema: { params: IdParams, body: ReceiveBody }, config: { perm: ['assets.manage'] } }, async (req) => {
+  app.post('/:id/receive', { schema: { response: { 200: R.PostAssetsByIdReceive200 }, params: IdParams, body: ReceiveBody }, config: { perm: ['assets.manage'] } }, async (req) => {
     const a = tenantActor(req, 'assets.manage');
     const { id } = IdParams.parse(req.params);
     const b = ReceiveBody.parse(req.body);
@@ -206,7 +211,7 @@ export async function assetRoutes(app: FastifyInstance) {
     });
   });
 
-  app.get('/mine', { schema: {}, config: { perm: ['assets.self'], feature: [F] } }, async (req) => {
+  app.get('/mine', { schema: { response: { 200: R.GetAssetsMine200 } }, config: { perm: ['assets.self'], feature: [F] } }, async (req) => {
     const a = tenantActor(req, 'assets.self');
     if (!a.user.employeeId) return { items: [] };
     return a.tx(async (db) => {
@@ -222,19 +227,23 @@ export async function assetRoutes(app: FastifyInstance) {
       };
     });
   });
-  app.post('/assignments/:id/acknowledge', { schema: { params: IdParams }, config: { perm: ['assets.self'] } }, async (req) => {
-    const a = tenantActor(req, 'assets.self');
-    const { id } = IdParams.parse(req.params);
-    return a.tx(async (db) => {
-      const r = await db.query(
-        `UPDATE asset_assignments SET acknowledged_at=now() WHERE tenant_id=$1 AND id=$2 AND employee_id=$3 AND returned_at IS NULL AND acknowledged_at IS NULL`,
-        [a.tenantId, id, a.user.employeeId ?? null],
-      );
-      if (!r.rowCount) throw notFound('Assignment not found');
-      await audit(db, { ...a.auditBase, action: 'assets.acknowledged', targetType: 'asset_assignment', targetId: id });
-      return { ok: true };
-    });
-  });
+  app.post(
+    '/assignments/:id/acknowledge',
+    { schema: { response: { 200: R.PostAssetsAssignmentsByIdAcknowledge200 }, params: IdParams }, config: { perm: ['assets.self'] } },
+    async (req) => {
+      const a = tenantActor(req, 'assets.self');
+      const { id } = IdParams.parse(req.params);
+      return a.tx(async (db) => {
+        const r = await db.query(
+          `UPDATE asset_assignments SET acknowledged_at=now() WHERE tenant_id=$1 AND id=$2 AND employee_id=$3 AND returned_at IS NULL AND acknowledged_at IS NULL`,
+          [a.tenantId, id, a.user.employeeId ?? null],
+        );
+        if (!r.rowCount) throw notFound('Assignment not found');
+        await audit(db, { ...a.auditBase, action: 'assets.acknowledged', targetType: 'asset_assignment', targetId: id });
+        return { ok: true };
+      });
+    },
+  );
 }
 
 /** Daily: calibration due in 30/7/0 days, and assets overdue for return (weekly). */

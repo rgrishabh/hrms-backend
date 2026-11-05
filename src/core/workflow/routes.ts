@@ -37,7 +37,7 @@ export async function approvalRoutes(app: FastifyInstance) {
   });
 
   /** For whoever can sort it out: reassigning a request nobody can decide is theirs already (POST /:id/reassign). */
-  app.get('/stuck', { schema: { querystring: PageQuery }, config: { perm: ['users.manage'] } }, async (req) => {
+  app.get('/stuck', { schema: { response: { 200: R.GetApprovalsStuck200 }, querystring: PageQuery }, config: { perm: ['users.manage'] } }, async (req) => {
     const a = tenantActor(req, 'users.manage');
     const q = PageQuery.parse(req.query);
     return a.tx((db) => stuckRequests(db, a.tenantId, q));
@@ -71,15 +71,19 @@ export async function approvalRoutes(app: FastifyInstance) {
     });
   });
 
-  app.post('/:id/reassign', { schema: { params: IdParams, body: ReassignBody }, config: { permAny: ['users.manage'] } }, async (req) => {
-    const a = tenantActorAny(req, ESCALATION_PERMISSION, 'users.manage');
-    const { id } = IdParams.parse(req.params);
-    const b = ReassignBody.parse(req.body);
-    return a.tx(async (db) => {
-      await reassignRequest(db, a.tenantId, id, a.user.userId, b.userId, b.reason, { requestId: req.id, ip: req.clientAddress }, { onlyIfStuck: !a.has(ESCALATION_PERMISSION) });
-      return { ok: true };
-    });
-  });
+  app.post(
+    '/:id/reassign',
+    { schema: { response: { 200: R.PostApprovalsByIdReassign200 }, params: IdParams, body: ReassignBody }, config: { permAny: ['users.manage'] } },
+    async (req) => {
+      const a = tenantActorAny(req, ESCALATION_PERMISSION, 'users.manage');
+      const { id } = IdParams.parse(req.params);
+      const b = ReassignBody.parse(req.body);
+      return a.tx(async (db) => {
+        await reassignRequest(db, a.tenantId, id, a.user.userId, b.userId, b.reason, { requestId: req.id, ip: req.clientAddress }, { onlyIfStuck: !a.has(ESCALATION_PERMISSION) });
+        return { ok: true };
+      });
+    },
+  );
 
   app.post('/:id/act', { schema: { response: { 200: R.PostApprovalsByIdAct200 }, params: IdParams, body: ActBody } }, async (req) => {
     const a = tenantActor(req);
@@ -90,7 +94,7 @@ export async function approvalRoutes(app: FastifyInstance) {
     );
   });
 
-  app.post('/:id/cancel', { schema: { params: IdParams } }, async (req) => {
+  app.post('/:id/cancel', { schema: { response: { 200: R.PostApprovalsByIdCancel200 }, params: IdParams } }, async (req) => {
     const a = tenantActor(req);
     const { id } = IdParams.parse(req.params);
     await a.tx((db) => cancelRequest(db, a.tenantId, id, a.user.userId, { requestId: req.id, ip: req.ctx.ip }));

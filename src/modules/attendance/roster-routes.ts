@@ -1,3 +1,4 @@
+import * as R from '../../core/http/responses.js';
 import type { FastifyInstance } from 'fastify';
 import { only } from '../../core/features/routes.js';
 import { z } from 'zod';
@@ -88,7 +89,10 @@ export async function rosterRoutes(app: FastifyInstance) {
   // ------------------------------------------------------------ patterns
   only(app, 'shifts').get(
     '/roster-patterns',
-    { schema: {}, config: { permAny: ['attendance.configure', 'attendance.read', 'attendance.team.read'], feature: ['shifts'] } },
+    {
+      schema: { response: { 200: R.GetAttendanceRosterPatterns200 } },
+      config: { permAny: ['attendance.configure', 'attendance.read', 'attendance.team.read'], feature: ['shifts'] },
+    },
     async (req) => {
       const a = tenantActorAny(req, 'attendance.configure', 'attendance.read', 'attendance.team.read');
       return a.tx(async (db) => {
@@ -109,38 +113,45 @@ export async function rosterRoutes(app: FastifyInstance) {
     },
   );
 
-  only(app, 'shifts').post('/roster-patterns', { schema: { body: PatternBody }, config: { perm: ['attendance.configure'], feature: ['shifts'] } }, async (req, reply) => {
-    const a = tenantActor(req, 'attendance.configure');
-    const b = PatternBody.parse(req.body);
-    return a.tx(async (db) => {
-      await requireFeature(db, a.tenantId, 'shifts');
-      await checkShifts(db, a.tenantId, b.days);
-      if ((await db.query('SELECT 1 FROM roster_patterns WHERE tenant_id=$1 AND code=$2', [a.tenantId, b.code])).rowCount)
-        throw conflict(`A pattern with code ${b.code} already exists`);
-      const r = await db.query<{ id: string }>(`INSERT INTO roster_patterns (tenant_id, code, name, days, created_by) VALUES ($1,$2,$3,$4,$5) RETURNING id`, [
-        a.tenantId,
-        b.code,
-        b.name,
-        b.days,
-        a.user.userId,
-      ]);
-      await audit(db, {
-        ...a.auditBase,
-        action: 'attendance.roster_pattern_created',
-        category: 'configuration',
-        targetType: 'roster_pattern',
-        targetId: r.rows[0]!.id,
-        metadata: b,
+  only(app, 'shifts').post(
+    '/roster-patterns',
+    { schema: { response: { 201: R.PostAttendanceRosterPatterns201 }, body: PatternBody }, config: { perm: ['attendance.configure'], feature: ['shifts'] } },
+    async (req, reply) => {
+      const a = tenantActor(req, 'attendance.configure');
+      const b = PatternBody.parse(req.body);
+      return a.tx(async (db) => {
+        await requireFeature(db, a.tenantId, 'shifts');
+        await checkShifts(db, a.tenantId, b.days);
+        if ((await db.query('SELECT 1 FROM roster_patterns WHERE tenant_id=$1 AND code=$2', [a.tenantId, b.code])).rowCount)
+          throw conflict(`A pattern with code ${b.code} already exists`);
+        const r = await db.query<{ id: string }>(`INSERT INTO roster_patterns (tenant_id, code, name, days, created_by) VALUES ($1,$2,$3,$4,$5) RETURNING id`, [
+          a.tenantId,
+          b.code,
+          b.name,
+          b.days,
+          a.user.userId,
+        ]);
+        await audit(db, {
+          ...a.auditBase,
+          action: 'attendance.roster_pattern_created',
+          category: 'configuration',
+          targetType: 'roster_pattern',
+          targetId: r.rows[0]!.id,
+          metadata: b,
+        });
+        reply.code(201);
+        return { id: r.rows[0]!.id };
       });
-      reply.code(201);
-      return { id: r.rows[0]!.id };
-    });
-  });
+    },
+  );
 
   // Name and status can always change; the days only while nobody has followed the pattern (history must stay explainable).
   only(app, 'shifts').patch(
     '/roster-patterns/:id',
-    { schema: { params: IdParams, body: RosterPatternsBody }, config: { perm: ['attendance.configure'], feature: ['shifts'] } },
+    {
+      schema: { response: { 200: R.PatchAttendanceRosterPatternsById200 }, params: IdParams, body: RosterPatternsBody },
+      config: { perm: ['attendance.configure'], feature: ['shifts'] },
+    },
     async (req) => {
       const a = tenantActor(req, 'attendance.configure');
       const { id } = IdParams.parse(req.params);
@@ -176,49 +187,56 @@ export async function rosterRoutes(app: FastifyInstance) {
   );
 
   // ------------------------------------------------------------ who follows which pattern
-  only(app, 'shifts').post('/roster-assignments', { schema: { body: RosterAssignmentsBody }, config: { perm: ['attendance.configure'], feature: ['shifts'] } }, async (req) => {
-    const a = tenantActor(req, 'attendance.configure');
-    const b = RosterAssignmentsBody.parse(req.body);
-    if (b.effectiveTo && b.effectiveTo < b.effectiveFrom) throw badRequest('The last day must be on or after the first day');
-    return a.tx(async (db) => {
-      await requireFeature(db, a.tenantId, 'shifts');
-      const p = (
-        await db.query<{ code: string; days: unknown[]; status: string }>('SELECT code, days, status FROM roster_patterns WHERE tenant_id=$1 AND id=$2', [a.tenantId, b.patternId])
-      ).rows[0];
-      if (!p || p.status !== 'active') throw badRequest('Pattern not found or inactive');
-      if (b.startDay >= p.days.length) throw badRequest(`Start day must be between 1 and ${p.days.length}`);
-      await checkStart(db, a, b.effectiveFrom);
-      await checkEmployees(db, a.tenantId, b.employeeIds);
-      // The newest roster wins from its first day: earlier ones end the day before, later ones are withdrawn.
-      await endRosters(db, a.tenantId, b.employeeIds, addDays(b.effectiveFrom, -1));
-      for (const e of b.employeeIds) {
-        await db.query(`INSERT INTO roster_assignments (tenant_id, employee_id, pattern_id, effective_from, effective_to, start_day, created_by) VALUES ($1,$2,$3,$4,$5,$6,$7)`, [
-          a.tenantId,
-          e,
-          b.patternId,
-          b.effectiveFrom,
-          b.effectiveTo ?? null,
-          b.startDay,
-          a.user.userId,
-        ]);
-      }
-      const recalculated = await recalc(db, a.tenantId, b.employeeIds, b.effectiveFrom, b.effectiveTo ?? null);
-      await audit(db, {
-        ...a.auditBase,
-        action: 'attendance.roster_assigned',
-        category: 'configuration',
-        targetType: 'roster_pattern',
-        targetId: b.patternId,
-        metadata: { pattern: p.code, employees: b.employeeIds.length, effectiveFrom: b.effectiveFrom, effectiveTo: b.effectiveTo ?? null, startDay: b.startDay + 1 },
+  only(app, 'shifts').post(
+    '/roster-assignments',
+    { schema: { response: { 200: R.PostAttendanceRosterAssignments200 }, body: RosterAssignmentsBody }, config: { perm: ['attendance.configure'], feature: ['shifts'] } },
+    async (req) => {
+      const a = tenantActor(req, 'attendance.configure');
+      const b = RosterAssignmentsBody.parse(req.body);
+      if (b.effectiveTo && b.effectiveTo < b.effectiveFrom) throw badRequest('The last day must be on or after the first day');
+      return a.tx(async (db) => {
+        await requireFeature(db, a.tenantId, 'shifts');
+        const p = (
+          await db.query<{ code: string; days: unknown[]; status: string }>('SELECT code, days, status FROM roster_patterns WHERE tenant_id=$1 AND id=$2', [
+            a.tenantId,
+            b.patternId,
+          ])
+        ).rows[0];
+        if (!p || p.status !== 'active') throw badRequest('Pattern not found or inactive');
+        if (b.startDay >= p.days.length) throw badRequest(`Start day must be between 1 and ${p.days.length}`);
+        await checkStart(db, a, b.effectiveFrom);
+        await checkEmployees(db, a.tenantId, b.employeeIds);
+        // The newest roster wins from its first day: earlier ones end the day before, later ones are withdrawn.
+        await endRosters(db, a.tenantId, b.employeeIds, addDays(b.effectiveFrom, -1));
+        for (const e of b.employeeIds) {
+          await db.query(`INSERT INTO roster_assignments (tenant_id, employee_id, pattern_id, effective_from, effective_to, start_day, created_by) VALUES ($1,$2,$3,$4,$5,$6,$7)`, [
+            a.tenantId,
+            e,
+            b.patternId,
+            b.effectiveFrom,
+            b.effectiveTo ?? null,
+            b.startDay,
+            a.user.userId,
+          ]);
+        }
+        const recalculated = await recalc(db, a.tenantId, b.employeeIds, b.effectiveFrom, b.effectiveTo ?? null);
+        await audit(db, {
+          ...a.auditBase,
+          action: 'attendance.roster_assigned',
+          category: 'configuration',
+          targetType: 'roster_pattern',
+          targetId: b.patternId,
+          metadata: { pattern: p.code, employees: b.employeeIds.length, effectiveFrom: b.effectiveFrom, effectiveTo: b.effectiveTo ?? null, startDay: b.startDay + 1 },
+        });
+        return { assigned: b.employeeIds.length, recalculated };
       });
-      return { assigned: b.employeeIds.length, recalculated };
-    });
-  });
+    },
+  );
 
   // Stop following a roster after `lastDay`; the fixed shift assignment applies again.
   only(app, 'shifts').post(
     '/roster-assignments/end',
-    { schema: { body: RosterAssignmentsEndBody }, config: { perm: ['attendance.configure'], feature: ['shifts'] } },
+    { schema: { response: { 200: R.PostAttendanceRosterAssignmentsEnd200 }, body: RosterAssignmentsEndBody }, config: { perm: ['attendance.configure'], feature: ['shifts'] } },
     async (req) => {
       const a = tenantActor(req, 'attendance.configure');
       const b = RosterAssignmentsEndBody.parse(req.body);
@@ -241,29 +259,36 @@ export async function rosterRoutes(app: FastifyInstance) {
   );
 
   // ------------------------------------------------------------ one-day changes (swap, cover, extra day off)
-  only(app, 'shifts').put('/roster-overrides', { schema: { body: RosterOverridesBody }, config: { perm: ['attendance.configure'], feature: ['shifts'] } }, async (req) => {
-    const a = tenantActor(req, 'attendance.configure');
-    const b = RosterOverridesBody.parse(req.body);
-    return a.tx(async (db) => {
-      await requireFeature(db, a.tenantId, 'shifts');
-      await checkStart(db, a, b.date);
-      await checkEmployees(db, a.tenantId, [b.employeeId]);
-      if (b.shiftId && !(await db.query(`SELECT 1 FROM shifts WHERE tenant_id=$1 AND id=$2 AND status='active'`, [a.tenantId, b.shiftId])).rowCount)
-        throw badRequest('Shift not found or inactive');
-      await db.query(
-        `INSERT INTO roster_overrides (tenant_id, employee_id, work_date, shift_id, reason, created_by) VALUES ($1,$2,$3,$4,$5,$6)
+  only(app, 'shifts').put(
+    '/roster-overrides',
+    { schema: { response: { 200: R.PutAttendanceRosterOverrides200 }, body: RosterOverridesBody }, config: { perm: ['attendance.configure'], feature: ['shifts'] } },
+    async (req) => {
+      const a = tenantActor(req, 'attendance.configure');
+      const b = RosterOverridesBody.parse(req.body);
+      return a.tx(async (db) => {
+        await requireFeature(db, a.tenantId, 'shifts');
+        await checkStart(db, a, b.date);
+        await checkEmployees(db, a.tenantId, [b.employeeId]);
+        if (b.shiftId && !(await db.query(`SELECT 1 FROM shifts WHERE tenant_id=$1 AND id=$2 AND status='active'`, [a.tenantId, b.shiftId])).rowCount)
+          throw badRequest('Shift not found or inactive');
+        await db.query(
+          `INSERT INTO roster_overrides (tenant_id, employee_id, work_date, shift_id, reason, created_by) VALUES ($1,$2,$3,$4,$5,$6)
         ON CONFLICT (tenant_id, employee_id, work_date) DO UPDATE SET shift_id=EXCLUDED.shift_id, reason=EXCLUDED.reason, created_by=EXCLUDED.created_by, created_at=now()`,
-        [a.tenantId, b.employeeId, b.date, b.shiftId, b.reason, a.user.userId],
-      );
-      await recalc(db, a.tenantId, [b.employeeId], b.date, b.date);
-      await audit(db, { ...a.auditBase, action: 'attendance.roster_override_set', category: 'configuration', targetType: 'employee', targetId: b.employeeId, metadata: b });
-      return { ok: true };
-    });
-  });
+          [a.tenantId, b.employeeId, b.date, b.shiftId, b.reason, a.user.userId],
+        );
+        await recalc(db, a.tenantId, [b.employeeId], b.date, b.date);
+        await audit(db, { ...a.auditBase, action: 'attendance.roster_override_set', category: 'configuration', targetType: 'employee', targetId: b.employeeId, metadata: b });
+        return { ok: true };
+      });
+    },
+  );
 
   only(app, 'shifts').delete(
     '/roster-overrides/:employeeId/:date',
-    { schema: { params: RosterOverridesParams }, config: { perm: ['attendance.configure'], feature: ['shifts'] } },
+    {
+      schema: { response: { 200: R.DeleteAttendanceRosterOverridesByEmployeeIdByDate200 }, params: RosterOverridesParams },
+      config: { perm: ['attendance.configure'], feature: ['shifts'] },
+    },
     async (req) => {
       const a = tenantActor(req, 'attendance.configure');
       const p = RosterOverridesParams.parse(req.params);
@@ -283,7 +308,10 @@ export async function rosterRoutes(app: FastifyInstance) {
   // Everyone (attendance.read / configure), the reporting team (attendance.team.read), or only yourself.
   only(app, 'shifts').get(
     '/roster',
-    { schema: { querystring: RosterQuery }, config: { permAny: ['attendance.configure', 'attendance.read', 'attendance.team.read', 'attendance.self'], feature: ['shifts'] } },
+    {
+      schema: { response: { 200: R.GetAttendanceRoster200 }, querystring: RosterQuery },
+      config: { permAny: ['attendance.configure', 'attendance.read', 'attendance.team.read', 'attendance.self'], feature: ['shifts'] },
+    },
     async (req) => {
       const a = tenantActorAny(req, 'attendance.configure', 'attendance.read', 'attendance.team.read', 'attendance.self');
       const q = RosterQuery.parse(req.query);

@@ -1,3 +1,4 @@
+import * as R from '../../core/http/responses.js';
 import { isCollapsedMode } from '../../core/policy/mode.js';
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
@@ -77,7 +78,7 @@ const ReviewsBody = z.object({
 });
 export async function performanceRoutes(app: FastifyInstance) {
   gateFeatures(app, 'performance');
-  app.get('/cycles', { schema: {}, config: { feature: [F] } }, async (req) => {
+  app.get('/cycles', { schema: { response: { 200: R.GetPerformanceCycles200 } }, config: { feature: [F] } }, async (req) => {
     const a = tenantActor(req);
     return a.tx(async (db) => {
       await requireFeature(db, a.tenantId, F);
@@ -94,73 +95,81 @@ export async function performanceRoutes(app: FastifyInstance) {
       };
     });
   });
-  app.post('/cycles', { schema: { body: CyclesBody }, config: { perm: ['performance.manage'], feature: [F] } }, async (req, reply) => {
-    const a = tenantActor(req, 'performance.manage');
-    const b = CyclesBody.parse(req.body);
-    return a.tx(async (db) => {
-      await requireFeature(db, a.tenantId, F);
-      const id = (
-        await db.query<{ id: string }>(`INSERT INTO review_cycles (tenant_id, name, period_start, period_end, self_review, created_by) VALUES ($1,$2,$3,$4,$5,$6) RETURNING id`, [
-          a.tenantId,
-          b.name,
-          b.periodStart,
-          b.periodEnd,
-          b.selfReview,
-          a.user.userId,
-        ])
-      ).rows[0]!.id;
-      await audit(db, { ...a.auditBase, action: 'performance.cycle_created', category: 'configuration', targetType: 'review_cycle', targetId: id, metadata: b });
-      reply.code(201);
-      return { id };
-    });
-  });
+  app.post(
+    '/cycles',
+    { schema: { response: { 201: R.PostPerformanceCycles201 }, body: CyclesBody }, config: { perm: ['performance.manage'], feature: [F] } },
+    async (req, reply) => {
+      const a = tenantActor(req, 'performance.manage');
+      const b = CyclesBody.parse(req.body);
+      return a.tx(async (db) => {
+        await requireFeature(db, a.tenantId, F);
+        const id = (
+          await db.query<{ id: string }>(`INSERT INTO review_cycles (tenant_id, name, period_start, period_end, self_review, created_by) VALUES ($1,$2,$3,$4,$5,$6) RETURNING id`, [
+            a.tenantId,
+            b.name,
+            b.periodStart,
+            b.periodEnd,
+            b.selfReview,
+            a.user.userId,
+          ])
+        ).rows[0]!.id;
+        await audit(db, { ...a.auditBase, action: 'performance.cycle_created', category: 'configuration', targetType: 'review_cycle', targetId: id, metadata: b });
+        reply.code(201);
+        return { id };
+      });
+    },
+  );
   /** Activating creates a review for every active employee who joined before the period ended; their manager reviews. */
-  app.post('/cycles/:id/activate', { schema: { params: IdParams }, config: { perm: ['performance.manage'], feature: [F] } }, async (req) => {
-    const a = tenantActor(req, 'performance.manage');
-    const { id } = IdParams.parse(req.params);
-    return a.tx(async (db) => {
-      await requireFeature(db, a.tenantId, F);
-      const c = (
-        await db.query<{ status: string; period_end: string; name: string }>(`SELECT status, period_end::text, name FROM review_cycles WHERE tenant_id=$1 AND id=$2 FOR UPDATE`, [
-          a.tenantId,
-          id,
-        ])
-      ).rows[0];
-      if (!c) throw notFound();
-      if (c.status !== 'draft') throw conflict(`Cycle is ${c.status}`);
-      const r = await db.query(
-        `INSERT INTO performance_reviews (tenant_id, cycle_id, employee_id, reviewer_id)
+  app.post(
+    '/cycles/:id/activate',
+    { schema: { response: { 200: R.PostPerformanceCyclesByIdActivate200 }, params: IdParams }, config: { perm: ['performance.manage'], feature: [F] } },
+    async (req) => {
+      const a = tenantActor(req, 'performance.manage');
+      const { id } = IdParams.parse(req.params);
+      return a.tx(async (db) => {
+        await requireFeature(db, a.tenantId, F);
+        const c = (
+          await db.query<{ status: string; period_end: string; name: string }>(`SELECT status, period_end::text, name FROM review_cycles WHERE tenant_id=$1 AND id=$2 FOR UPDATE`, [
+            a.tenantId,
+            id,
+          ])
+        ).rows[0];
+        if (!c) throw notFound();
+        if (c.status !== 'draft') throw conflict(`Cycle is ${c.status}`);
+        const r = await db.query(
+          `INSERT INTO performance_reviews (tenant_id, cycle_id, employee_id, reviewer_id)
         SELECT $1, $2, e.id, e.reporting_manager_id FROM employees e WHERE e.tenant_id=$1 AND e.status IN ('active','on_notice') AND e.date_of_joining < $3::date
         ON CONFLICT DO NOTHING`,
-        [a.tenantId, id, c.period_end],
-      );
-      await db.query(`UPDATE review_cycles SET status='active' WHERE tenant_id=$1 AND id=$2`, [a.tenantId, id]);
-      const users = (
-        await db.query<{ user_id: string }>(
-          `SELECT e.user_id FROM performance_reviews r JOIN employees e ON e.tenant_id=r.tenant_id AND e.id=r.employee_id WHERE r.tenant_id=$1 AND r.cycle_id=$2 AND e.user_id IS NOT NULL`,
-          [a.tenantId, id],
-        )
-      ).rows.map((x) => x.user_id);
-      await notifyUsers(db, a.tenantId, users, {
-        kind: 'performance.cycle',
-        title: `Performance review: ${c.name}`,
-        body: 'Set your goals with your manager and complete your self-review.',
-        link: '/performance',
-        actionLabel: 'Open',
-        dedupeKey: `cycle:${id}`,
+          [a.tenantId, id, c.period_end],
+        );
+        await db.query(`UPDATE review_cycles SET status='active' WHERE tenant_id=$1 AND id=$2`, [a.tenantId, id]);
+        const users = (
+          await db.query<{ user_id: string }>(
+            `SELECT e.user_id FROM performance_reviews r JOIN employees e ON e.tenant_id=r.tenant_id AND e.id=r.employee_id WHERE r.tenant_id=$1 AND r.cycle_id=$2 AND e.user_id IS NOT NULL`,
+            [a.tenantId, id],
+          )
+        ).rows.map((x) => x.user_id);
+        await notifyUsers(db, a.tenantId, users, {
+          kind: 'performance.cycle',
+          title: `Performance review: ${c.name}`,
+          body: 'Set your goals with your manager and complete your self-review.',
+          link: '/performance',
+          actionLabel: 'Open',
+          dedupeKey: `cycle:${id}`,
+        });
+        await audit(db, {
+          ...a.auditBase,
+          action: 'performance.cycle_activated',
+          category: 'configuration',
+          targetType: 'review_cycle',
+          targetId: id,
+          metadata: { reviews: r.rowCount },
+        });
+        return { ok: true, reviews: r.rowCount };
       });
-      await audit(db, {
-        ...a.auditBase,
-        action: 'performance.cycle_activated',
-        category: 'configuration',
-        targetType: 'review_cycle',
-        targetId: id,
-        metadata: { reviews: r.rowCount },
-      });
-      return { ok: true, reviews: r.rowCount };
-    });
-  });
-  app.post('/cycles/:id/close', { schema: { params: IdParams }, config: { perm: ['performance.manage'] } }, async (req) => {
+    },
+  );
+  app.post('/cycles/:id/close', { schema: { response: { 200: R.PostPerformanceCyclesByIdClose200 }, params: IdParams }, config: { perm: ['performance.manage'] } }, async (req) => {
     const a = tenantActor(req, 'performance.manage');
     const { id } = IdParams.parse(req.params);
     return a.tx(async (db) => {
@@ -181,59 +190,67 @@ export async function performanceRoutes(app: FastifyInstance) {
   });
 
   // ------------------------------------------------------------ goals
-  app.get('/cycles/:id/goals/:employeeId', { schema: { params: CyclesGoalsParams }, config: { feature: [F] } }, async (req) => {
-    const a = tenantActor(req);
-    const p = CyclesGoalsParams.parse(req.params);
-    return a.tx(async (db) => {
-      await requireFeature(db, a.tenantId, F);
-      await goalAccess(db, a, p.id, p.employeeId);
-      const goals = (
-        await db.query(
-          `SELECT id, title, description, measure, weight, status, progress FROM goals WHERE tenant_id=$1 AND cycle_id=$2 AND employee_id=$3 AND status<>'dropped' ORDER BY created_at`,
-          [a.tenantId, p.id, p.employeeId],
-        )
-      ).rows;
-      return { items: goals, totalWeight: goals.reduce((s, g) => s + (g.weight as number), 0) };
-    });
-  });
-  app.post('/cycles/:id/goals/:employeeId', { schema: { params: CyclesGoalsParams, body: CyclesGoalsBody }, config: { feature: [F] } }, async (req, reply) => {
-    const a = tenantActor(req);
-    const p = CyclesGoalsParams.parse(req.params);
-    const b = CyclesGoalsBody.parse(req.body);
-    return a.tx(async (db) => {
-      await requireFeature(db, a.tenantId, F);
-      const g = await goalAccess(db, a, p.id, p.employeeId);
-      if (g.cycleStatus !== 'active') throw conflict('Goals are set while the cycle is active');
-      const total = Number(
-        (
-          await db.query<{ n: string }>(`SELECT coalesce(sum(weight),0) AS n FROM goals WHERE tenant_id=$1 AND cycle_id=$2 AND employee_id=$3 AND status<>'dropped'`, [
-            a.tenantId,
-            p.id,
-            p.employeeId,
-          ])
-        ).rows[0]!.n,
-      );
-      if (total + b.weight > 100) throw badRequest(`Weights would total ${total + b.weight}%; the maximum is 100%`);
-      // A goal set by the manager is agreed at once; one the employee proposes needs the manager's agreement.
-      const id = (
-        await db.query<{ id: string }>(
-          `INSERT INTO goals (tenant_id, cycle_id, employee_id, title, description, measure, weight, status, created_by) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9) RETURNING id`,
-          [a.tenantId, p.id, p.employeeId, b.title, b.description, b.measure, b.weight, g.role === 'employee' ? 'proposed' : 'agreed', a.user.userId],
-        )
-      ).rows[0]!.id;
-      if (g.role === 'employee' && g.mgrUser)
-        await notifyUsers(db, a.tenantId, [g.mgrUser], {
-          kind: 'performance.goal',
-          title: 'A goal is waiting for your agreement',
-          body: b.title,
-          link: '/performance?tab=team',
-          actionLabel: 'Review',
-        });
-      reply.code(201);
-      return { id };
-    });
-  });
-  app.post('/goals/:id/:action', { schema: { params: GoalsParams, body: GoalsBody } }, async (req) => {
+  app.get(
+    '/cycles/:id/goals/:employeeId',
+    { schema: { response: { 200: R.GetPerformanceCyclesByIdGoalsByEmployeeId200 }, params: CyclesGoalsParams }, config: { feature: [F] } },
+    async (req) => {
+      const a = tenantActor(req);
+      const p = CyclesGoalsParams.parse(req.params);
+      return a.tx(async (db) => {
+        await requireFeature(db, a.tenantId, F);
+        await goalAccess(db, a, p.id, p.employeeId);
+        const goals = (
+          await db.query(
+            `SELECT id, title, description, measure, weight, status, progress FROM goals WHERE tenant_id=$1 AND cycle_id=$2 AND employee_id=$3 AND status<>'dropped' ORDER BY created_at`,
+            [a.tenantId, p.id, p.employeeId],
+          )
+        ).rows;
+        return { items: goals, totalWeight: goals.reduce((s, g) => s + (g.weight as number), 0) };
+      });
+    },
+  );
+  app.post(
+    '/cycles/:id/goals/:employeeId',
+    { schema: { response: { 201: R.PostPerformanceCyclesByIdGoalsByEmployeeId201 }, params: CyclesGoalsParams, body: CyclesGoalsBody }, config: { feature: [F] } },
+    async (req, reply) => {
+      const a = tenantActor(req);
+      const p = CyclesGoalsParams.parse(req.params);
+      const b = CyclesGoalsBody.parse(req.body);
+      return a.tx(async (db) => {
+        await requireFeature(db, a.tenantId, F);
+        const g = await goalAccess(db, a, p.id, p.employeeId);
+        if (g.cycleStatus !== 'active') throw conflict('Goals are set while the cycle is active');
+        const total = Number(
+          (
+            await db.query<{ n: string }>(`SELECT coalesce(sum(weight),0) AS n FROM goals WHERE tenant_id=$1 AND cycle_id=$2 AND employee_id=$3 AND status<>'dropped'`, [
+              a.tenantId,
+              p.id,
+              p.employeeId,
+            ])
+          ).rows[0]!.n,
+        );
+        if (total + b.weight > 100) throw badRequest(`Weights would total ${total + b.weight}%; the maximum is 100%`);
+        // A goal set by the manager is agreed at once; one the employee proposes needs the manager's agreement.
+        const id = (
+          await db.query<{ id: string }>(
+            `INSERT INTO goals (tenant_id, cycle_id, employee_id, title, description, measure, weight, status, created_by) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9) RETURNING id`,
+            [a.tenantId, p.id, p.employeeId, b.title, b.description, b.measure, b.weight, g.role === 'employee' ? 'proposed' : 'agreed', a.user.userId],
+          )
+        ).rows[0]!.id;
+        if (g.role === 'employee' && g.mgrUser)
+          await notifyUsers(db, a.tenantId, [g.mgrUser], {
+            kind: 'performance.goal',
+            title: 'A goal is waiting for your agreement',
+            body: b.title,
+            link: '/performance?tab=team',
+            actionLabel: 'Review',
+          });
+        reply.code(201);
+        return { id };
+      });
+    },
+  );
+  app.post('/goals/:id/:action', { schema: { response: { 200: R.PostPerformanceGoalsByIdByAction200 }, params: GoalsParams, body: GoalsBody } }, async (req) => {
     const a = tenantActor(req);
     const p = GoalsParams.parse(req.params);
     const b = GoalsBody.parse(req.body ?? {});
@@ -262,7 +279,7 @@ export async function performanceRoutes(app: FastifyInstance) {
   });
 
   // ------------------------------------------------------------ reviews
-  app.get('/reviews', { schema: { querystring: ReviewsQuery }, config: { feature: [F] } }, async (req) => {
+  app.get('/reviews', { schema: { response: { 200: R.GetPerformanceReviews200 }, querystring: ReviewsQuery }, config: { feature: [F] } }, async (req) => {
     const a = tenantActor(req);
     const q = ReviewsQuery.parse(req.query);
     return a.tx(async (db) => {
@@ -281,7 +298,7 @@ export async function performanceRoutes(app: FastifyInstance) {
       return { items: rows.map(({ own, ...r }) => (own && !['finalized', 'acknowledged'].includes(r.status as string) ? { ...r, manager_rating: null, final_rating: null } : r)) };
     });
   });
-  app.get('/reviews/:id', { schema: { params: IdParams } }, async (req) => {
+  app.get('/reviews/:id', { schema: { response: { 200: R.GetPerformanceReviewsById200 }, params: IdParams } }, async (req) => {
     const a = tenantActor(req);
     const { id } = IdParams.parse(req.params);
     return a.tx(async (db) => {
@@ -313,7 +330,7 @@ export async function performanceRoutes(app: FastifyInstance) {
       };
     });
   });
-  app.post('/reviews/:id/:step', { schema: { params: ReviewsParams, body: ReviewsBody } }, async (req) => {
+  app.post('/reviews/:id/:step', { schema: { response: { 200: R.PostPerformanceReviewsByIdByStep200 }, params: ReviewsParams, body: ReviewsBody } }, async (req) => {
     const a = tenantActor(req);
     const p = ReviewsParams.parse(req.params);
     const body = ReviewsBody.parse(req.body);

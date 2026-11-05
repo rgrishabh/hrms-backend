@@ -56,10 +56,12 @@ export async function buildSpec(): Promise<{ document: OpenAPIV3_1.Document; rou
 
 const hasZod = (s: unknown) => typeof s === 'object' && s !== null && '_zod' in s;
 
-/** What the document honestly covers. `binary` routes answer a file and have no JSON shape to declare. */
+const isFile = (s: unknown) => typeof s === 'object' && s !== null && 'content' in s;
+
+/** What the document honestly covers. `binary` routes answer a file and have no JSON shape to declare, by the end of their path or by saying so. */
 export function specCoverage(routes: readonly RouteRecord[]) {
   const withResponse = routes.filter((r) => Object.values((r.schema?.response ?? {}) as Record<string, unknown>).some(hasZod));
-  const binary = routes.filter((r) => /\.(csv|xlsx|pdf)$/.test(r.url));
+  const binary = routes.filter((r) => /\.(csv|xlsx|pdf)$/.test(r.url) || Object.values((r.schema?.response ?? {}) as Record<string, unknown>).some(isFile));
   return {
     total: routes.length,
     withRequest: routes.filter((r) => r.schema !== undefined).length,

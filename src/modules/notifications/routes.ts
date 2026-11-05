@@ -114,7 +114,7 @@ export async function notificationRoutes(app: FastifyInstance) {
     },
   );
 
-  only(app, 'notifications.push').post('/push/unsubscribe', { schema: { body: PushUnsubscribeBody } }, async (req) => {
+  only(app, 'notifications.push').post('/push/unsubscribe', { schema: { response: { 200: R.PostNotificationsPushUnsubscribe200 }, body: PushUnsubscribeBody } }, async (req) => {
     const a = tenantActor(req);
     const b = PushUnsubscribeBody.parse(req.body);
     return a.tx(async (db) => {

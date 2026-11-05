@@ -145,7 +145,7 @@ export async function loanRoutes(app: FastifyInstance) {
   gateFeatures(app, 'loans', 'salary_advance');
 
   /** Apply for a salary advance or loan, or (loans.manage) record one for an employee; the manager and finance approve. */
-  app.post('/requests', { schema: { body: RequestsBody }, config: { permAny: ['loans.self', 'loans.manage'] } }, async (req, reply) => {
+  app.post('/requests', { schema: { response: { 201: R.PostLoansRequests201 }, body: RequestsBody }, config: { permAny: ['loans.self', 'loans.manage'] } }, async (req, reply) => {
     const a = tenantActorAny(req, 'loans.self', 'loans.manage');
     const b = RequestsBody.parse(req.body);
     const forOther = !!b.employeeId && b.employeeId !== a.user.employeeId;
@@ -286,7 +286,7 @@ export async function loanRoutes(app: FastifyInstance) {
     });
   });
 
-  app.post('/requests/:id/withdraw', { schema: { params: IdParams } }, async (req) => {
+  app.post('/requests/:id/withdraw', { schema: { response: { 200: R.PostLoansRequestsByIdWithdraw200 }, params: IdParams } }, async (req) => {
     const a = tenantActor(req);
     const { id } = IdParams.parse(req.params);
     return a.tx(async (db) => {
@@ -315,101 +315,119 @@ export async function loanRoutes(app: FastifyInstance) {
   });
 
   /** Payroll records the money paid out; recovery then starts in the first month. Never your own. */
-  app.post('/requests/:id/disburse', { schema: { params: IdParams, body: RequestsDisburseBody }, config: { perm: ['loans.manage'] } }, async (req) => {
-    const a = tenantActor(req, 'loans.manage');
-    const { id } = IdParams.parse(req.params);
-    const b = RequestsDisburseBody.parse(req.body);
-    return a.tx(async (db) => {
-      const l = await loadLoan(db, a, id, true);
-      if (l.employee_id === a.user.employeeId && !(isCollapsedMode() && a.user.roles.some(isOwnerRole))) throw forbidden('You cannot disburse your own advance or loan');
-      await assertMayChangeSubject(db, a.tenantId, await policyViewer(db, a.tenantId, a.user), l.employee_id);
-      if (l.status !== 'approved') throw conflict(`Only an approved request can be disbursed (this one is ${l.status})`);
-      await db.query(`UPDATE employee_loans SET status='disbursed', disbursed_at=now(), disbursed_by=$3, disbursement_reference=$4 WHERE tenant_id=$1 AND id=$2`, [
-        a.tenantId,
-        id,
-        a.user.userId,
-        b.reference,
-      ]);
-      if (l.user_id)
-        await notifyUsers(db, a.tenantId, [l.user_id], {
-          kind: 'loans.disbursed',
-          feature: KIND_FEATURE[l.kind],
-          title: `${KIND_LABEL[l.kind]} paid`,
-          body: `Recovered through payroll from ${l.first_period}. Reference ${b.reference}`,
-          link: '/loans',
-        });
-      await audit(db, { ...a.auditBase, action: 'loans.disbursed', targetType: 'employee_loan', targetId: id, metadata: { reference: b.reference } });
-      return { ok: true };
-    });
-  });
+  app.post(
+    '/requests/:id/disburse',
+    { schema: { response: { 200: R.PostLoansRequestsByIdDisburse200 }, params: IdParams, body: RequestsDisburseBody }, config: { perm: ['loans.manage'] } },
+    async (req) => {
+      const a = tenantActor(req, 'loans.manage');
+      const { id } = IdParams.parse(req.params);
+      const b = RequestsDisburseBody.parse(req.body);
+      return a.tx(async (db) => {
+        const l = await loadLoan(db, a, id, true);
+        if (l.employee_id === a.user.employeeId && !(isCollapsedMode() && a.user.roles.some(isOwnerRole))) throw forbidden('You cannot disburse your own advance or loan');
+        await assertMayChangeSubject(db, a.tenantId, await policyViewer(db, a.tenantId, a.user), l.employee_id);
+        if (l.status !== 'approved') throw conflict(`Only an approved request can be disbursed (this one is ${l.status})`);
+        await db.query(`UPDATE employee_loans SET status='disbursed', disbursed_at=now(), disbursed_by=$3, disbursement_reference=$4 WHERE tenant_id=$1 AND id=$2`, [
+          a.tenantId,
+          id,
+          a.user.userId,
+          b.reference,
+        ]);
+        if (l.user_id)
+          await notifyUsers(db, a.tenantId, [l.user_id], {
+            kind: 'loans.disbursed',
+            feature: KIND_FEATURE[l.kind],
+            title: `${KIND_LABEL[l.kind]} paid`,
+            body: `Recovered through payroll from ${l.first_period}. Reference ${b.reference}`,
+            link: '/loans',
+          });
+        await audit(db, { ...a.auditBase, action: 'loans.disbursed', targetType: 'employee_loan', targetId: id, metadata: { reference: b.reference } });
+        return { ok: true };
+      });
+    },
+  );
 
   /** Approved but not paid out: payroll or finance cancels it. */
-  app.post('/requests/:id/cancel', { schema: { params: IdParams, body: RequestsCancelBody }, config: { permAny: ['loans.manage', 'loans.approve'] } }, async (req) => {
-    const a = tenantActorAny(req, 'loans.manage', 'loans.approve');
-    const { id } = IdParams.parse(req.params);
-    const { reason } = RequestsCancelBody.parse(req.body);
-    return a.tx(async (db) => {
-      const l = await loadLoan(db, a, id, true);
-      await assertMayChangeSubject(db, a.tenantId, await policyViewer(db, a.tenantId, a.user), l.employee_id);
-      if (l.status !== 'approved') throw conflict(`Only an approved, not yet paid request can be cancelled (this one is ${l.status})`);
-      await db.query(`UPDATE employee_loans SET status='cancelled', cancelled_by=$3, cancel_reason=$4 WHERE tenant_id=$1 AND id=$2`, [a.tenantId, id, a.user.userId, reason]);
-      await audit(db, { ...a.auditBase, action: 'loans.cancelled', targetType: 'employee_loan', targetId: id, metadata: { reason } });
-      return { ok: true };
-    });
-  });
+  app.post(
+    '/requests/:id/cancel',
+    { schema: { response: { 200: R.PostLoansRequestsByIdCancel200 }, params: IdParams, body: RequestsCancelBody }, config: { permAny: ['loans.manage', 'loans.approve'] } },
+    async (req) => {
+      const a = tenantActorAny(req, 'loans.manage', 'loans.approve');
+      const { id } = IdParams.parse(req.params);
+      const { reason } = RequestsCancelBody.parse(req.body);
+      return a.tx(async (db) => {
+        const l = await loadLoan(db, a, id, true);
+        await assertMayChangeSubject(db, a.tenantId, await policyViewer(db, a.tenantId, a.user), l.employee_id);
+        if (l.status !== 'approved') throw conflict(`Only an approved, not yet paid request can be cancelled (this one is ${l.status})`);
+        await db.query(`UPDATE employee_loans SET status='cancelled', cancelled_by=$3, cancel_reason=$4 WHERE tenant_id=$1 AND id=$2`, [a.tenantId, id, a.user.userId, reason]);
+        await audit(db, { ...a.auditBase, action: 'loans.cancelled', targetType: 'employee_loan', targetId: id, metadata: { reason } });
+        return { ok: true };
+      });
+    },
+  );
 
   /** The employee pays back directly (all or part); later instalments shrink accordingly. */
-  app.post('/requests/:id/repayment', { schema: { params: IdParams, body: RequestsRepaymentBody }, config: { perm: ['loans.manage'] } }, async (req) => {
-    const a = tenantActor(req, 'loans.manage');
-    const { id } = IdParams.parse(req.params);
-    const b = RequestsRepaymentBody.parse(req.body);
-    return a.tx(async (db) => {
-      const l = await loadLoan(db, a, id, true);
-      if (l.employee_id === a.user.employeeId && !(isCollapsedMode() && a.user.roles.some(isOwnerRole))) throw forbidden('You cannot record a repayment of your own loan');
-      await assertMayChangeSubject(db, a.tenantId, await policyViewer(db, a.tenantId, a.user), l.employee_id);
-      if (l.status !== 'disbursed') throw conflict(`Repayments are recorded against a disbursed loan (this one is ${l.status})`);
-      const bal = await balanceOf(db, a.tenantId, id);
-      if (new Decimal(b.amount).gt(bal.outstanding))
-        throw badRequest(
-          `That is more than is outstanding on this ${KIND_LABEL[l.kind]!.toLowerCase()}${new Decimal(bal.inProgress).gt(0) ? ' (part of it is in a payroll run being processed)' : ''}`,
-        );
-      await db.query(`INSERT INTO loan_recoveries (tenant_id, loan_id, source, amount, reference, recorded_by) VALUES ($1,$2,'repayment',$3,$4,$5)`, [
-        a.tenantId,
-        id,
-        b.amount,
-        b.reference,
-        a.user.userId,
-      ]);
-      const closed = await closeRepaid(db, a.tenantId, [l.employee_id]);
-      await audit(db, { ...a.auditBase, action: 'loans.repaid', targetType: 'employee_loan', targetId: id, metadata: { reference: b.reference, fields: ['amount'] } });
-      return { ok: true, closed: closed > 0 };
-    });
-  });
+  app.post(
+    '/requests/:id/repayment',
+    { schema: { response: { 200: R.PostLoansRequestsByIdRepayment200 }, params: IdParams, body: RequestsRepaymentBody }, config: { perm: ['loans.manage'] } },
+    async (req) => {
+      const a = tenantActor(req, 'loans.manage');
+      const { id } = IdParams.parse(req.params);
+      const b = RequestsRepaymentBody.parse(req.body);
+      return a.tx(async (db) => {
+        const l = await loadLoan(db, a, id, true);
+        if (l.employee_id === a.user.employeeId && !(isCollapsedMode() && a.user.roles.some(isOwnerRole))) throw forbidden('You cannot record a repayment of your own loan');
+        await assertMayChangeSubject(db, a.tenantId, await policyViewer(db, a.tenantId, a.user), l.employee_id);
+        if (l.status !== 'disbursed') throw conflict(`Repayments are recorded against a disbursed loan (this one is ${l.status})`);
+        const bal = await balanceOf(db, a.tenantId, id);
+        if (new Decimal(b.amount).gt(bal.outstanding))
+          throw badRequest(
+            `That is more than is outstanding on this ${KIND_LABEL[l.kind]!.toLowerCase()}${new Decimal(bal.inProgress).gt(0) ? ' (part of it is in a payroll run being processed)' : ''}`,
+          );
+        await db.query(`INSERT INTO loan_recoveries (tenant_id, loan_id, source, amount, reference, recorded_by) VALUES ($1,$2,'repayment',$3,$4,$5)`, [
+          a.tenantId,
+          id,
+          b.amount,
+          b.reference,
+          a.user.userId,
+        ]);
+        const closed = await closeRepaid(db, a.tenantId, [l.employee_id]);
+        await audit(db, { ...a.auditBase, action: 'loans.repaid', targetType: 'employee_loan', targetId: id, metadata: { reference: b.reference, fields: ['amount'] } });
+        return { ok: true, closed: closed > 0 };
+      });
+    },
+  );
 
   /** Skip a month's instalment (e.g. hardship, or a month with little pay); the schedule moves out by a month. */
-  app.post('/requests/:id/defer', { schema: { params: IdParams, body: RequestsDeferBody }, config: { perm: ['loans.manage'] } }, async (req) => {
-    const a = tenantActor(req, 'loans.manage');
-    const { id } = IdParams.parse(req.params);
-    const b = RequestsDeferBody.parse(req.body);
-    return a.tx(async (db) => {
-      const l = await loadLoan(db, a, id, true);
-      if (l.employee_id === a.user.employeeId && !(isCollapsedMode() && a.user.roles.some(isOwnerRole))) throw forbidden('You cannot defer your own recovery');
-      await assertMayChangeSubject(db, a.tenantId, await policyViewer(db, a.tenantId, a.user), l.employee_id);
-      if (!['approved', 'disbursed'].includes(l.status)) throw conflict(`The ${KIND_LABEL[l.kind]!.toLowerCase()} is ${l.status}`);
-      if (l.skip_periods.includes(b.period)) throw conflict(`${b.period} is already deferred`);
-      if (b.period < (await orgToday(db, a.tenantId)).slice(0, 7)) throw badRequest('A past month cannot be deferred');
-      const inRun = await db.query(
-        `SELECT 1 FROM loan_recoveries x JOIN payroll_runs r ON r.tenant_id=x.tenant_id AND r.id=x.payroll_run_id
+  app.post(
+    '/requests/:id/defer',
+    { schema: { response: { 200: R.PostLoansRequestsByIdDefer200 }, params: IdParams, body: RequestsDeferBody }, config: { perm: ['loans.manage'] } },
+    async (req) => {
+      const a = tenantActor(req, 'loans.manage');
+      const { id } = IdParams.parse(req.params);
+      const b = RequestsDeferBody.parse(req.body);
+      return a.tx(async (db) => {
+        const l = await loadLoan(db, a, id, true);
+        if (l.employee_id === a.user.employeeId && !(isCollapsedMode() && a.user.roles.some(isOwnerRole))) throw forbidden('You cannot defer your own recovery');
+        await assertMayChangeSubject(db, a.tenantId, await policyViewer(db, a.tenantId, a.user), l.employee_id);
+        if (!['approved', 'disbursed'].includes(l.status)) throw conflict(`The ${KIND_LABEL[l.kind]!.toLowerCase()} is ${l.status}`);
+        if (l.skip_periods.includes(b.period)) throw conflict(`${b.period} is already deferred`);
+        if (b.period < (await orgToday(db, a.tenantId)).slice(0, 7)) throw badRequest('A past month cannot be deferred');
+        const inRun = await db.query(
+          `SELECT 1 FROM loan_recoveries x JOIN payroll_runs r ON r.tenant_id=x.tenant_id AND r.id=x.payroll_run_id
         WHERE x.tenant_id=$1 AND x.loan_id=$2 AND x.period=$3 AND r.status NOT IN ('draft','computed','cancelled')`,
-        [a.tenantId, id, b.period],
-      );
-      if (inRun.rowCount) throw conflict(`The ${b.period} instalment is already in a payroll run that is approved or final`);
-      await db.query(`UPDATE employee_loans SET skip_periods=array_append(skip_periods, $3) WHERE tenant_id=$1 AND id=$2`, [a.tenantId, id, b.period]);
-      await audit(db, { ...a.auditBase, action: 'loans.deferred', targetType: 'employee_loan', targetId: id, metadata: b });
-      return {
-        ok: true,
-        recomputePayroll: (await db.query(`SELECT 1 FROM loan_recoveries WHERE tenant_id=$1 AND loan_id=$2 AND period=$3`, [a.tenantId, id, b.period])).rowCount ? b.period : null,
-      };
-    });
-  });
+          [a.tenantId, id, b.period],
+        );
+        if (inRun.rowCount) throw conflict(`The ${b.period} instalment is already in a payroll run that is approved or final`);
+        await db.query(`UPDATE employee_loans SET skip_periods=array_append(skip_periods, $3) WHERE tenant_id=$1 AND id=$2`, [a.tenantId, id, b.period]);
+        await audit(db, { ...a.auditBase, action: 'loans.deferred', targetType: 'employee_loan', targetId: id, metadata: b });
+        return {
+          ok: true,
+          recomputePayroll: (await db.query(`SELECT 1 FROM loan_recoveries WHERE tenant_id=$1 AND loan_id=$2 AND period=$3`, [a.tenantId, id, b.period])).rowCount
+            ? b.period
+            : null,
+        };
+      });
+    },
+  );
 }

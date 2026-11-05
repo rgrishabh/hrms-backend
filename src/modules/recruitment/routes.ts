@@ -1,3 +1,4 @@
+import * as R from '../../core/http/responses.js';
 import type { FastifyInstance, FastifyRequest } from 'fastify';
 import { z } from 'zod';
 import { maskFields } from '../../core/policy/salary.js';
@@ -312,7 +313,7 @@ export async function recruitmentRoutes(app: FastifyInstance) {
   app.get(
     '/requisitions',
     {
-      schema: { querystring: RequisitionsQuery },
+      schema: { response: { 200: R.GetRecruitmentRequisitions200 }, querystring: RequisitionsQuery },
       config: { permAny: ['recruitment.requisition', 'recruitment.read', 'recruitment.manage', 'recruitment.approve'], feature: [FEATURE] },
     },
     async (req) => {
@@ -369,7 +370,10 @@ export async function recruitmentRoutes(app: FastifyInstance) {
 
   app.post(
     '/requisitions',
-    { schema: { body: RequisitionBody }, config: { permAny: ['recruitment.requisition', 'recruitment.manage'], feature: [FEATURE] } },
+    {
+      schema: { response: { 201: R.PostRecruitmentRequisitions201 }, body: RequisitionBody },
+      config: { permAny: ['recruitment.requisition', 'recruitment.manage'], feature: [FEATURE] },
+    },
     async (req, reply) => {
       const a = tenantActorAny(req, 'recruitment.requisition', 'recruitment.manage');
       const b = RequisitionBody.parse(req.body);
@@ -401,7 +405,10 @@ export async function recruitmentRoutes(app: FastifyInstance) {
 
   app.put(
     '/requisitions/:id',
-    { schema: { params: IdParams, body: RequisitionsBody }, config: { permAny: ['recruitment.requisition', 'recruitment.manage'], feature: [FEATURE] } },
+    {
+      schema: { response: { 200: R.PutRecruitmentRequisitionsById200 }, params: IdParams, body: RequisitionsBody },
+      config: { permAny: ['recruitment.requisition', 'recruitment.manage'], feature: [FEATURE] },
+    },
     async (req) => {
       const a = tenantActorAny(req, 'recruitment.requisition', 'recruitment.manage');
       const { id } = IdParams.parse(req.params);
@@ -433,7 +440,10 @@ export async function recruitmentRoutes(app: FastifyInstance) {
 
   app.post(
     '/requisitions/:id/submit',
-    { schema: { params: IdParams }, config: { permAny: ['recruitment.requisition', 'recruitment.manage'], feature: [FEATURE] } },
+    {
+      schema: { response: { 200: R.PostRecruitmentRequisitionsByIdSubmit200 }, params: IdParams },
+      config: { permAny: ['recruitment.requisition', 'recruitment.manage'], feature: [FEATURE] },
+    },
     async (req) => {
       const a = tenantActorAny(req, 'recruitment.requisition', 'recruitment.manage');
       const { id } = IdParams.parse(req.params);
@@ -459,7 +469,10 @@ export async function recruitmentRoutes(app: FastifyInstance) {
 
   app.post(
     '/requisitions/:id/:action',
-    { schema: { params: RequisitionsParams, body: PostRequisitionsBody }, config: { perm: ['recruitment.manage'], feature: [FEATURE] } },
+    {
+      schema: { response: { 200: R.PostRecruitmentRequisitionsByIdByAction200 }, params: RequisitionsParams, body: PostRequisitionsBody },
+      config: { perm: ['recruitment.manage'], feature: [FEATURE] },
+    },
     async (req) => {
       const a = tenantActor(req, 'recruitment.manage');
       const p = RequisitionsParams.parse(req.params);
@@ -500,7 +513,10 @@ export async function recruitmentRoutes(app: FastifyInstance) {
 
   app.get(
     '/requisitions/:id',
-    { schema: { params: IdParams }, config: { permAny: ['recruitment.requisition', 'recruitment.read', 'recruitment.manage', 'recruitment.approve'], feature: [FEATURE] } },
+    {
+      schema: { response: { 200: R.GetRecruitmentRequisitionsById200 }, params: IdParams },
+      config: { permAny: ['recruitment.requisition', 'recruitment.read', 'recruitment.manage', 'recruitment.approve'], feature: [FEATURE] },
+    },
     async (req) => {
       const a = tenantActorAny(req, 'recruitment.requisition', 'recruitment.read', 'recruitment.manage', 'recruitment.approve');
       const { id } = IdParams.parse(req.params);
@@ -535,34 +551,41 @@ export async function recruitmentRoutes(app: FastifyInstance) {
   );
 
   // ------------------------------------------------------------ candidates
-  app.get('/candidates', { schema: { querystring: CandidatesQuery }, config: { permAny: ['recruitment.read', 'recruitment.manage'], feature: [FEATURE] } }, async (req) => {
-    const a = tenantActorAny(req, 'recruitment.read', 'recruitment.manage');
-    const q = CandidatesQuery.parse(req.query);
-    return a.tx(async (db) => {
-      await requireFeature(db, a.tenantId, FEATURE);
-      const where = `c.tenant_id=$1 AND c.status='active' AND ($2::text IS NULL OR lower(c.first_name||' '||coalesce(c.last_name,'')) LIKE '%'||lower($2)||'%'
+  app.get(
+    '/candidates',
+    {
+      schema: { response: { 200: R.GetRecruitmentCandidates200 }, querystring: CandidatesQuery },
+      config: { permAny: ['recruitment.read', 'recruitment.manage'], feature: [FEATURE] },
+    },
+    async (req) => {
+      const a = tenantActorAny(req, 'recruitment.read', 'recruitment.manage');
+      const q = CandidatesQuery.parse(req.query);
+      return a.tx(async (db) => {
+        await requireFeature(db, a.tenantId, FEATURE);
+        const where = `c.tenant_id=$1 AND c.status='active' AND ($2::text IS NULL OR lower(c.first_name||' '||coalesce(c.last_name,'')) LIKE '%'||lower($2)||'%'
         OR lower(c.email) LIKE '%'||lower($2)||'%' OR c.phone LIKE '%'||$2||'%' OR lower(coalesce(c.current_company,'')) LIKE '%'||lower($2)||'%')`;
-      const args = [a.tenantId, q.search || null];
-      const total = Number((await db.query<{ n: string }>(`SELECT count(*) AS n FROM candidates c WHERE ${where}`, args)).rows[0]!.n);
-      const rows = (
-        await db.query(
-          `SELECT c.id, c.first_name, c.last_name, c.email, c.phone, c.source, c.current_company, c.current_designation, c.experience_months,
+        const args = [a.tenantId, q.search || null];
+        const total = Number((await db.query<{ n: string }>(`SELECT count(*) AS n FROM candidates c WHERE ${where}`, args)).rows[0]!.n);
+        const rows = (
+          await db.query(
+            `SELECT c.id, c.first_name, c.last_name, c.email, c.phone, c.source, c.current_company, c.current_designation, c.experience_months,
           c.qualification, c.location, c.resume_key IS NOT NULL AS has_resume, c.retain_until::text, c.employee_id, c.created_at,
           (SELECT count(*)::int FROM job_applications ap WHERE ap.tenant_id=c.tenant_id AND ap.candidate_id=c.id) AS applications
         FROM candidates c WHERE ${where} ORDER BY c.created_at DESC LIMIT ${q.pageSize} OFFSET ${offsetOf(q)}`,
-          args,
-        )
-      ).rows;
-      return paged(rows, total, q);
-    });
-  });
+            args,
+          )
+        ).rows;
+        return paged(rows, total, q);
+      });
+    },
+  );
 
   /** multipart: firstName, lastName?, email?, phone?, source, referredBy?, currentCompany?, currentDesignation?, experienceMonths?,
    *  noticeDays?, expectedCtc?, location?, qualification?, consent=true, consentNote, confirmDuplicate?, resume (PDF/DOCX) */
   app.post(
     '/candidates',
     {
-      schema: { body: CandidateFields, consumes: ['multipart/form-data'] },
+      schema: { response: { 201: R.PostRecruitmentCandidates201 }, body: CandidateFields, consumes: ['multipart/form-data'] },
       config: { perm: ['recruitment.manage'], feature: [FEATURE], rateLimit: { max: 30, timeWindow: '1 minute' } },
     },
     async (req, reply) => {
@@ -651,7 +674,7 @@ export async function recruitmentRoutes(app: FastifyInstance) {
     },
   );
 
-  app.get('/candidates/:id', { schema: { params: IdParams }, config: { feature: [FEATURE] } }, async (req) => {
+  app.get('/candidates/:id', { schema: { response: { 200: R.GetRecruitmentCandidatesById200 }, params: IdParams }, config: { feature: [FEATURE] } }, async (req) => {
     const a = tenantActor(req);
     const { id } = IdParams.parse(req.params);
     return a.tx(async (db) => {
@@ -679,7 +702,7 @@ export async function recruitmentRoutes(app: FastifyInstance) {
     });
   });
 
-  app.get('/candidates/:id/resume', { schema: { params: IdParams }, config: { feature: [FEATURE] } }, async (req, reply) => {
+  app.get('/candidates/:id/resume', { schema: { response: { 200: R.file('*/*') }, params: IdParams }, config: { feature: [FEATURE] } }, async (req, reply) => {
     const a = tenantActor(req);
     const { id } = IdParams.parse(req.params);
     const c = await a.tx(async (db) => {
@@ -708,55 +731,66 @@ export async function recruitmentRoutes(app: FastifyInstance) {
   });
 
   /** Erasure on the candidate's request (or before retention ends). Hired candidates keep their employee record. */
-  app.post('/candidates/:id/anonymize', { schema: { params: IdParams, body: PostRequisitionsBody }, config: { perm: ['recruitment.manage'], feature: [FEATURE] } }, async (req) => {
-    const a = tenantActor(req, 'recruitment.manage');
-    const { id } = IdParams.parse(req.params);
-    const { reason } = PostRequisitionsBody.parse(req.body);
-    return a.tx(async (db) => {
-      await requireFeature(db, a.tenantId, FEATURE);
-      const live = await db.query(
-        `SELECT 1 FROM job_offers o JOIN job_applications ap ON ap.tenant_id=o.tenant_id AND ap.id=o.application_id
+  app.post(
+    '/candidates/:id/anonymize',
+    {
+      schema: { response: { 200: R.PostRecruitmentCandidatesByIdAnonymize200 }, params: IdParams, body: PostRequisitionsBody },
+      config: { perm: ['recruitment.manage'], feature: [FEATURE] },
+    },
+    async (req) => {
+      const a = tenantActor(req, 'recruitment.manage');
+      const { id } = IdParams.parse(req.params);
+      const { reason } = PostRequisitionsBody.parse(req.body);
+      return a.tx(async (db) => {
+        await requireFeature(db, a.tenantId, FEATURE);
+        const live = await db.query(
+          `SELECT 1 FROM job_offers o JOIN job_applications ap ON ap.tenant_id=o.tenant_id AND ap.id=o.application_id
         WHERE o.tenant_id=$1 AND ap.candidate_id=$2 AND o.status IN ('pending','approved','sent','accepted') AND o.employee_id IS NULL`,
-        [a.tenantId, id],
-      );
-      if (live.rowCount) throw conflict('This candidate has a live offer; withdraw it first');
-      if (!(await anonymizeCandidate(db, a.tenantId, id))) throw notFound('Active candidate not found');
-      await audit(db, { ...a.auditBase, action: 'recruitment.candidate_anonymized', category: 'data', targetType: 'candidate', targetId: id, metadata: { reason } });
-      return { ok: true };
-    });
-  });
+          [a.tenantId, id],
+        );
+        if (live.rowCount) throw conflict('This candidate has a live offer; withdraw it first');
+        if (!(await anonymizeCandidate(db, a.tenantId, id))) throw notFound('Active candidate not found');
+        await audit(db, { ...a.auditBase, action: 'recruitment.candidate_anonymized', category: 'data', targetType: 'candidate', targetId: id, metadata: { reason } });
+        return { ok: true };
+      });
+    },
+  );
 
   // ------------------------------------------------------------ applications
-  app.post('/applications', { schema: { body: ApplicationsBody }, config: { perm: ['recruitment.manage'], feature: [FEATURE] } }, async (req, reply) => {
-    const a = tenantActor(req, 'recruitment.manage');
-    const b = ApplicationsBody.parse(req.body);
-    return a.tx(async (db) => {
-      await requireFeature(db, a.tenantId, FEATURE);
-      const r = await loadRequisition(db, a, b.requisitionId, true);
-      if (r.status !== 'approved') throw conflict('Candidates can only be added to an approved, open requisition');
-      const c = (await db.query<{ status: string }>('SELECT status FROM candidates WHERE tenant_id=$1 AND id=$2', [a.tenantId, b.candidateId])).rows[0];
-      if (!c || c.status !== 'active') throw notFound('Candidate not found');
-      const id = (
-        await db.query<{ id: string }>(
-          `INSERT INTO job_applications (tenant_id, requisition_id, candidate_id, created_by) VALUES ($1,$2,$3,$4)
+  app.post(
+    '/applications',
+    { schema: { response: { 201: R.PostRecruitmentApplications201 }, body: ApplicationsBody }, config: { perm: ['recruitment.manage'], feature: [FEATURE] } },
+    async (req, reply) => {
+      const a = tenantActor(req, 'recruitment.manage');
+      const b = ApplicationsBody.parse(req.body);
+      return a.tx(async (db) => {
+        await requireFeature(db, a.tenantId, FEATURE);
+        const r = await loadRequisition(db, a, b.requisitionId, true);
+        if (r.status !== 'approved') throw conflict('Candidates can only be added to an approved, open requisition');
+        const c = (await db.query<{ status: string }>('SELECT status FROM candidates WHERE tenant_id=$1 AND id=$2', [a.tenantId, b.candidateId])).rows[0];
+        if (!c || c.status !== 'active') throw notFound('Candidate not found');
+        const id = (
+          await db.query<{ id: string }>(
+            `INSERT INTO job_applications (tenant_id, requisition_id, candidate_id, created_by) VALUES ($1,$2,$3,$4)
         ON CONFLICT (tenant_id, requisition_id, candidate_id) DO NOTHING RETURNING id`,
-          [a.tenantId, b.requisitionId, b.candidateId, a.user.userId],
-        )
-      ).rows[0]?.id;
-      if (!id) throw conflict('This candidate is already in this requisition');
-      await db.query(`INSERT INTO job_application_events (tenant_id, application_id, from_stage, to_stage, note, actor_id) VALUES ($1,$2,NULL,'applied',$3,$4)`, [
-        a.tenantId,
-        id,
-        b.note,
-        a.user.userId,
-      ]);
-      await audit(db, { ...a.auditBase, action: 'recruitment.application_created', targetType: 'job_application', targetId: id, metadata: b });
-      reply.code(201);
-      return { id };
-    });
-  });
+            [a.tenantId, b.requisitionId, b.candidateId, a.user.userId],
+          )
+        ).rows[0]?.id;
+        if (!id) throw conflict('This candidate is already in this requisition');
+        await db.query(`INSERT INTO job_application_events (tenant_id, application_id, from_stage, to_stage, note, actor_id) VALUES ($1,$2,NULL,'applied',$3,$4)`, [
+          a.tenantId,
+          id,
+          b.note,
+          a.user.userId,
+        ]);
+        await audit(db, { ...a.auditBase, action: 'recruitment.application_created', targetType: 'job_application', targetId: id, metadata: b });
+        reply.code(201);
+        return { id };
+      });
+    },
+  );
 
-  app.get('/applications/:id', { schema: { params: IdParams }, config: { feature: [FEATURE] } }, async (req) => {
+  app.get('/applications/:id', { schema: { response: { 200: R.GetRecruitmentApplicationsById200 }, params: IdParams }, config: { feature: [FEATURE] } }, async (req) => {
     const a = tenantActor(req);
     const { id } = IdParams.parse(req.params);
     return a.tx(async (db) => {
@@ -831,40 +865,50 @@ export async function recruitmentRoutes(app: FastifyInstance) {
     });
   });
 
-  app.post('/applications/:id/move', { schema: { params: IdParams, body: ApplicationsMoveBody }, config: { perm: ['recruitment.manage'], feature: [FEATURE] } }, async (req) => {
-    const a = tenantActor(req, 'recruitment.manage');
-    const { id } = IdParams.parse(req.params);
-    const b = ApplicationsMoveBody.parse(req.body);
-    return a.tx(async (db) => {
-      await requireFeature(db, a.tenantId, FEATURE);
-      const ap = await loadApplication(db, a, id, true);
-      if (ap.version !== b.expectedVersion) throw conflict('This application was changed by someone else. Reload and try again.');
-      if (!MOVES[ap.stage].includes(b.stage)) throw conflict(`Cannot move from ${ap.stage} to ${b.stage}${b.stage === 'hired' ? ' (hire through an accepted offer)' : ''}`);
-      if (b.stage === 'rejected' && !b.reason) throw badRequest('Give a reason for rejecting');
-      if (OPEN_STAGES.includes(b.stage) && ap.req_status !== 'approved') throw conflict('The requisition is not open');
-      if (['rejected', 'withdrawn'].includes(b.stage) || (ap.stage === 'offer' && b.stage === 'interview')) {
-        const live = await db.query(`SELECT 1 FROM job_offers WHERE tenant_id=$1 AND application_id=$2 AND status IN ('draft','pending','approved','sent','accepted')`, [
-          a.tenantId,
-          id,
-        ]);
-        if (live.rowCount) throw conflict('Withdraw the open offer first');
-      }
-      await moveStage(db, a, ap, b.stage, b.note, b.reason);
-      await audit(db, {
-        ...a.auditBase,
-        action: 'recruitment.application_moved',
-        targetType: 'job_application',
-        targetId: id,
-        metadata: { from: ap.stage, to: b.stage, reason: b.reason },
+  app.post(
+    '/applications/:id/move',
+    {
+      schema: { response: { 200: R.PostRecruitmentApplicationsByIdMove200 }, params: IdParams, body: ApplicationsMoveBody },
+      config: { perm: ['recruitment.manage'], feature: [FEATURE] },
+    },
+    async (req) => {
+      const a = tenantActor(req, 'recruitment.manage');
+      const { id } = IdParams.parse(req.params);
+      const b = ApplicationsMoveBody.parse(req.body);
+      return a.tx(async (db) => {
+        await requireFeature(db, a.tenantId, FEATURE);
+        const ap = await loadApplication(db, a, id, true);
+        if (ap.version !== b.expectedVersion) throw conflict('This application was changed by someone else. Reload and try again.');
+        if (!MOVES[ap.stage].includes(b.stage)) throw conflict(`Cannot move from ${ap.stage} to ${b.stage}${b.stage === 'hired' ? ' (hire through an accepted offer)' : ''}`);
+        if (b.stage === 'rejected' && !b.reason) throw badRequest('Give a reason for rejecting');
+        if (OPEN_STAGES.includes(b.stage) && ap.req_status !== 'approved') throw conflict('The requisition is not open');
+        if (['rejected', 'withdrawn'].includes(b.stage) || (ap.stage === 'offer' && b.stage === 'interview')) {
+          const live = await db.query(`SELECT 1 FROM job_offers WHERE tenant_id=$1 AND application_id=$2 AND status IN ('draft','pending','approved','sent','accepted')`, [
+            a.tenantId,
+            id,
+          ]);
+          if (live.rowCount) throw conflict('Withdraw the open offer first');
+        }
+        await moveStage(db, a, ap, b.stage, b.note, b.reason);
+        await audit(db, {
+          ...a.auditBase,
+          action: 'recruitment.application_moved',
+          targetType: 'job_application',
+          targetId: id,
+          metadata: { from: ap.stage, to: b.stage, reason: b.reason },
+        });
+        return { ok: true, stage: b.stage };
       });
-      return { ok: true, stage: b.stage };
-    });
-  });
+    },
+  );
 
   // ------------------------------------------------------------ interviews
   app.post(
     '/applications/:id/interviews',
-    { schema: { params: IdParams, body: ApplicationsInterviewsBody }, config: { perm: ['recruitment.manage'], feature: [FEATURE] } },
+    {
+      schema: { response: { 201: R.PostRecruitmentApplicationsByIdInterviews201 }, params: IdParams, body: ApplicationsInterviewsBody },
+      config: { perm: ['recruitment.manage'], feature: [FEATURE] },
+    },
     async (req, reply) => {
       const a = tenantActor(req, 'recruitment.manage');
       const { id } = IdParams.parse(req.params);
@@ -917,25 +961,29 @@ export async function recruitmentRoutes(app: FastifyInstance) {
   );
 
   /** Active users to pick an interview panel from (name only; no roles or contact details). */
-  app.get('/panel-users', { schema: { querystring: PanelUsersQuery }, config: { perm: ['recruitment.manage'], feature: [FEATURE] } }, async (req) => {
-    const a = tenantActor(req, 'recruitment.manage');
-    const q = PanelUsersQuery.parse(req.query);
-    return a.tx(async (db) => {
-      await requireFeature(db, a.tenantId, FEATURE);
-      return {
-        items: (
-          await db.query(
-            `SELECT u.id, u.display_name, e.designation FROM users u LEFT JOIN employees e ON e.tenant_id=u.tenant_id AND e.user_id=u.id
+  app.get(
+    '/panel-users',
+    { schema: { response: { 200: R.GetRecruitmentPanelUsers200 }, querystring: PanelUsersQuery }, config: { perm: ['recruitment.manage'], feature: [FEATURE] } },
+    async (req) => {
+      const a = tenantActor(req, 'recruitment.manage');
+      const q = PanelUsersQuery.parse(req.query);
+      return a.tx(async (db) => {
+        await requireFeature(db, a.tenantId, FEATURE);
+        return {
+          items: (
+            await db.query(
+              `SELECT u.id, u.display_name, e.designation FROM users u LEFT JOIN employees e ON e.tenant_id=u.tenant_id AND e.user_id=u.id
         WHERE u.tenant_id=$1 AND u.status='active' AND ($2::text IS NULL OR lower(u.display_name) LIKE '%'||lower($2)||'%')
         ORDER BY u.display_name LIMIT 25`,
-            [a.tenantId, q.search || null],
-          )
-        ).rows,
-      };
-    });
-  });
+              [a.tenantId, q.search || null],
+            )
+          ).rows,
+        };
+      });
+    },
+  );
 
-  app.get('/interviews/mine', { schema: {}, config: { feature: [FEATURE] } }, async (req) => {
+  app.get('/interviews/mine', { schema: { response: { 200: R.GetRecruitmentInterviewsMine200 } }, config: { feature: [FEATURE] } }, async (req) => {
     const a = tenantActor(req);
     return a.tx(async (db) => {
       await requireFeature(db, a.tenantId, FEATURE);
@@ -955,48 +1003,56 @@ export async function recruitmentRoutes(app: FastifyInstance) {
     });
   });
 
-  app.post('/interviews/:id/feedback', { schema: { params: IdParams, body: InterviewsFeedbackBody }, config: { feature: [FEATURE] } }, async (req) => {
-    const a = tenantActor(req);
-    const { id } = IdParams.parse(req.params);
-    const b = InterviewsFeedbackBody.parse(req.body);
-    return a.tx(async (db) => {
-      await requireFeature(db, a.tenantId, FEATURE);
-      const iv = (
-        await db.query<{ status: string; scheduled_at: Date }>(
-          `SELECT i.status, i.scheduled_at FROM interviews i JOIN interview_panel p ON p.tenant_id=i.tenant_id AND p.interview_id=i.id
+  app.post(
+    '/interviews/:id/feedback',
+    { schema: { response: { 200: R.PostRecruitmentInterviewsByIdFeedback200 }, params: IdParams, body: InterviewsFeedbackBody }, config: { feature: [FEATURE] } },
+    async (req) => {
+      const a = tenantActor(req);
+      const { id } = IdParams.parse(req.params);
+      const b = InterviewsFeedbackBody.parse(req.body);
+      return a.tx(async (db) => {
+        await requireFeature(db, a.tenantId, FEATURE);
+        const iv = (
+          await db.query<{ status: string; scheduled_at: Date }>(
+            `SELECT i.status, i.scheduled_at FROM interviews i JOIN interview_panel p ON p.tenant_id=i.tenant_id AND p.interview_id=i.id
         WHERE i.tenant_id=$1 AND i.id=$2 AND p.user_id=$3`,
-          [a.tenantId, id, a.user.userId],
-        )
-      ).rows[0];
-      if (!iv) throw notFound('Interview not found');
-      if (iv.status === 'cancelled') throw conflict('This interview was cancelled');
-      if (iv.scheduled_at.getTime() > Date.now()) throw conflict('Feedback opens when the interview starts');
-      const r = await db.query(
-        `UPDATE interview_panel SET rating=$4, recommendation=$5, notes=$6, submitted_at=now()
+            [a.tenantId, id, a.user.userId],
+          )
+        ).rows[0];
+        if (!iv) throw notFound('Interview not found');
+        if (iv.status === 'cancelled') throw conflict('This interview was cancelled');
+        if (iv.scheduled_at.getTime() > Date.now()) throw conflict('Feedback opens when the interview starts');
+        const r = await db.query(
+          `UPDATE interview_panel SET rating=$4, recommendation=$5, notes=$6, submitted_at=now()
         WHERE tenant_id=$1 AND interview_id=$2 AND user_id=$3 AND submitted_at IS NULL`,
-        [a.tenantId, id, a.user.userId, b.rating, b.recommendation, b.notes],
-      );
-      if (!r.rowCount) throw conflict('You already submitted feedback for this interview');
-      const left = Number(
-        (await db.query<{ n: string }>('SELECT count(*) AS n FROM interview_panel WHERE tenant_id=$1 AND interview_id=$2 AND submitted_at IS NULL', [a.tenantId, id])).rows[0]!.n,
-      );
-      if (left === 0) await db.query(`UPDATE interviews SET status='completed' WHERE tenant_id=$1 AND id=$2 AND status='scheduled'`, [a.tenantId, id]);
-      await audit(db, { ...a.auditBase, action: 'recruitment.feedback_submitted', targetType: 'interview', targetId: id }); // no rating in the audit log: feedback stays blind to panel members who read audit history
-      return { ok: true, interviewCompleted: left === 0 };
-    });
-  });
+          [a.tenantId, id, a.user.userId, b.rating, b.recommendation, b.notes],
+        );
+        if (!r.rowCount) throw conflict('You already submitted feedback for this interview');
+        const left = Number(
+          (await db.query<{ n: string }>('SELECT count(*) AS n FROM interview_panel WHERE tenant_id=$1 AND interview_id=$2 AND submitted_at IS NULL', [a.tenantId, id])).rows[0]!.n,
+        );
+        if (left === 0) await db.query(`UPDATE interviews SET status='completed' WHERE tenant_id=$1 AND id=$2 AND status='scheduled'`, [a.tenantId, id]);
+        await audit(db, { ...a.auditBase, action: 'recruitment.feedback_submitted', targetType: 'interview', targetId: id }); // no rating in the audit log: feedback stays blind to panel members who read audit history
+        return { ok: true, interviewCompleted: left === 0 };
+      });
+    },
+  );
 
-  app.post('/interviews/:id/cancel', { schema: { params: IdParams }, config: { perm: ['recruitment.manage'], feature: [FEATURE] } }, async (req) => {
-    const a = tenantActor(req, 'recruitment.manage');
-    const { id } = IdParams.parse(req.params);
-    return a.tx(async (db) => {
-      await requireFeature(db, a.tenantId, FEATURE);
-      const r = await db.query(`UPDATE interviews SET status='cancelled' WHERE tenant_id=$1 AND id=$2 AND status='scheduled'`, [a.tenantId, id]);
-      if (!r.rowCount) throw notFound('Scheduled interview not found');
-      await audit(db, { ...a.auditBase, action: 'recruitment.interview_cancelled', targetType: 'interview', targetId: id });
-      return { ok: true };
-    });
-  });
+  app.post(
+    '/interviews/:id/cancel',
+    { schema: { response: { 200: R.PostRecruitmentInterviewsByIdCancel200 }, params: IdParams }, config: { perm: ['recruitment.manage'], feature: [FEATURE] } },
+    async (req) => {
+      const a = tenantActor(req, 'recruitment.manage');
+      const { id } = IdParams.parse(req.params);
+      return a.tx(async (db) => {
+        await requireFeature(db, a.tenantId, FEATURE);
+        const r = await db.query(`UPDATE interviews SET status='cancelled' WHERE tenant_id=$1 AND id=$2 AND status='scheduled'`, [a.tenantId, id]);
+        if (!r.rowCount) throw notFound('Scheduled interview not found');
+        await audit(db, { ...a.auditBase, action: 'recruitment.interview_cancelled', targetType: 'interview', targetId: id });
+        return { ok: true };
+      });
+    },
+  );
 
   // ------------------------------------------------------------ offers
   async function offerBudgetFlag(db: Db, tenantId: string, requisitionId: string, ctc: number) {
@@ -1006,7 +1062,10 @@ export async function recruitmentRoutes(app: FastifyInstance) {
   }
   app.post(
     '/applications/:id/offers',
-    { schema: { params: IdParams, body: OfferBody }, config: { perm: ['recruitment.manage', 'recruitment.compensation'], feature: [FEATURE] } },
+    {
+      schema: { response: { 201: R.PostRecruitmentApplicationsByIdOffers201 }, params: IdParams, body: OfferBody },
+      config: { perm: ['recruitment.manage', 'recruitment.compensation'], feature: [FEATURE] },
+    },
     async (req, reply) => {
       const a = tenantActor(req, 'recruitment.manage', 'recruitment.compensation');
       const { id } = IdParams.parse(req.params);
@@ -1063,7 +1122,10 @@ export async function recruitmentRoutes(app: FastifyInstance) {
 
   app.put(
     '/offers/:id',
-    { schema: { params: IdParams, body: OfferBody }, config: { perm: ['recruitment.manage', 'recruitment.compensation'], feature: [FEATURE] } },
+    {
+      schema: { response: { 200: R.PutRecruitmentOffersById200 }, params: IdParams, body: OfferBody },
+      config: { perm: ['recruitment.manage', 'recruitment.compensation'], feature: [FEATURE] },
+    },
     async (req) => {
       const a = tenantActor(req, 'recruitment.manage', 'recruitment.compensation');
       const { id } = IdParams.parse(req.params);
@@ -1099,56 +1161,70 @@ export async function recruitmentRoutes(app: FastifyInstance) {
     },
   );
 
-  app.post('/offers/:id/submit', { schema: { params: IdParams }, config: { perm: ['recruitment.manage'], feature: [FEATURE] } }, async (req) => {
-    const a = tenantActor(req, 'recruitment.manage');
-    const { id } = IdParams.parse(req.params);
-    return a.tx(async (db) => {
-      await requireFeature(db, a.tenantId, FEATURE);
-      const { o, ap } = await loadOffer(db, a, id);
-      if (!['draft', 'rejected'].includes(o.status)) throw conflict(`A ${o.status} offer cannot be submitted`);
-      if (ap.req_status !== 'approved') throw conflict('The requisition is not open');
-      const cand = (
-        await db.query<{ first_name: string; last_name: string | null }>('SELECT first_name, last_name FROM candidates WHERE tenant_id=$1 AND id=$2', [a.tenantId, ap.candidate_id])
-      ).rows[0]!;
-      await db.query(`UPDATE job_offers SET status='pending' WHERE tenant_id=$1 AND id=$2`, [a.tenantId, id]);
-      // The summary goes into notifications and email: no compensation figures in it.
-      const approvalId = await createApprovalRequest(db, a.tenantId, {
-        entityType: 'job_offer',
-        entityId: id,
-        requesterId: a.user.userId,
-        summary: `${fullName(cand)} — ${o.designation} (${reqNo(ap.req_number)})${o.above_budget ? ' · above budget' : ''}`,
-        steps: [{ kind: 'permission', permission: 'recruitment.approve' }],
-        excludeUserIds: [o.created_by],
-      }); // whoever drafted the offer never approves it, even if someone else submits
-      await audit(db, { ...a.auditBase, action: 'recruitment.offer_submitted', targetType: 'job_offer', targetId: id, metadata: { approvalId } });
-      return { ok: true, approvalRequestId: approvalId };
-    });
-  });
+  app.post(
+    '/offers/:id/submit',
+    { schema: { response: { 200: R.PostRecruitmentOffersByIdSubmit200 }, params: IdParams }, config: { perm: ['recruitment.manage'], feature: [FEATURE] } },
+    async (req) => {
+      const a = tenantActor(req, 'recruitment.manage');
+      const { id } = IdParams.parse(req.params);
+      return a.tx(async (db) => {
+        await requireFeature(db, a.tenantId, FEATURE);
+        const { o, ap } = await loadOffer(db, a, id);
+        if (!['draft', 'rejected'].includes(o.status)) throw conflict(`A ${o.status} offer cannot be submitted`);
+        if (ap.req_status !== 'approved') throw conflict('The requisition is not open');
+        const cand = (
+          await db.query<{ first_name: string; last_name: string | null }>('SELECT first_name, last_name FROM candidates WHERE tenant_id=$1 AND id=$2', [
+            a.tenantId,
+            ap.candidate_id,
+          ])
+        ).rows[0]!;
+        await db.query(`UPDATE job_offers SET status='pending' WHERE tenant_id=$1 AND id=$2`, [a.tenantId, id]);
+        // The summary goes into notifications and email: no compensation figures in it.
+        const approvalId = await createApprovalRequest(db, a.tenantId, {
+          entityType: 'job_offer',
+          entityId: id,
+          requesterId: a.user.userId,
+          summary: `${fullName(cand)} — ${o.designation} (${reqNo(ap.req_number)})${o.above_budget ? ' · above budget' : ''}`,
+          steps: [{ kind: 'permission', permission: 'recruitment.approve' }],
+          excludeUserIds: [o.created_by],
+        }); // whoever drafted the offer never approves it, even if someone else submits
+        await audit(db, { ...a.auditBase, action: 'recruitment.offer_submitted', targetType: 'job_offer', targetId: id, metadata: { approvalId } });
+        return { ok: true, approvalRequestId: approvalId };
+      });
+    },
+  );
 
-  app.post('/offers/:id/:action', { schema: { params: OffersParams, body: OffersBody }, config: { perm: ['recruitment.manage'], feature: [FEATURE] } }, async (req) => {
-    const a = tenantActor(req, 'recruitment.manage');
-    const p = OffersParams.parse(req.params);
-    const b = OffersBody.parse(req.body ?? {});
-    return a.tx(async (db) => {
-      await requireFeature(db, a.tenantId, FEATURE);
-      const { o } = await loadOffer(db, a, p.id);
-      const from: Record<string, string[]> = { sent: ['approved'], accepted: ['sent'], declined: ['sent'], withdraw: ['draft', 'approved', 'sent', 'rejected'] };
-      if (!from[p.action]!.includes(o.status)) throw conflict(`Cannot mark a ${o.status} offer as ${p.action}`);
-      const to = { sent: 'sent', accepted: 'accepted', declined: 'declined', withdraw: 'withdrawn' }[p.action];
-      await db.query(
-        `UPDATE job_offers SET status=$3, sent_at=CASE WHEN $3='sent' THEN now() ELSE sent_at END,
+  app.post(
+    '/offers/:id/:action',
+    { schema: { response: { 200: R.PostRecruitmentOffersByIdByAction200 }, params: OffersParams, body: OffersBody }, config: { perm: ['recruitment.manage'], feature: [FEATURE] } },
+    async (req) => {
+      const a = tenantActor(req, 'recruitment.manage');
+      const p = OffersParams.parse(req.params);
+      const b = OffersBody.parse(req.body ?? {});
+      return a.tx(async (db) => {
+        await requireFeature(db, a.tenantId, FEATURE);
+        const { o } = await loadOffer(db, a, p.id);
+        const from: Record<string, string[]> = { sent: ['approved'], accepted: ['sent'], declined: ['sent'], withdraw: ['draft', 'approved', 'sent', 'rejected'] };
+        if (!from[p.action]!.includes(o.status)) throw conflict(`Cannot mark a ${o.status} offer as ${p.action}`);
+        const to = { sent: 'sent', accepted: 'accepted', declined: 'declined', withdraw: 'withdrawn' }[p.action];
+        await db.query(
+          `UPDATE job_offers SET status=$3, sent_at=CASE WHEN $3='sent' THEN now() ELSE sent_at END,
           responded_at=CASE WHEN $3 IN ('accepted','declined') THEN now() ELSE responded_at END WHERE tenant_id=$1 AND id=$2`,
-        [a.tenantId, p.id, to],
-      );
-      await audit(db, { ...a.auditBase, action: `recruitment.offer_${to}`, targetType: 'job_offer', targetId: p.id, metadata: { note: b.note } });
-      return { ok: true, status: to };
-    });
-  });
+          [a.tenantId, p.id, to],
+        );
+        await audit(db, { ...a.auditBase, action: `recruitment.offer_${to}`, targetType: 'job_offer', targetId: p.id, metadata: { note: b.note } });
+        return { ok: true, status: to };
+      });
+    },
+  );
 
   /** Accepted offer → employee record (pre_joining), application hired, requisition filled (closed when full). */
   app.post(
     '/offers/:id/hire',
-    { schema: { params: IdParams, body: OffersHireBody }, config: { perm: ['recruitment.manage', 'employees.manage'], feature: [FEATURE] } },
+    {
+      schema: { response: { 201: R.PostRecruitmentOffersByIdHire201 }, params: IdParams, body: OffersHireBody },
+      config: { perm: ['recruitment.manage', 'employees.manage'], feature: [FEATURE] },
+    },
     async (req, reply) => {
       const a = tenantActor(req, 'recruitment.manage', 'employees.manage');
       const { id } = IdParams.parse(req.params);

@@ -10,6 +10,7 @@ import { loadSession, SESSION_COOKIE } from './core/auth/session.js';
 import { sha256, safeEqualHex } from './core/crypto/index.js';
 import { AppError } from './core/http/errors.js';
 import { problemErrorHandler } from './core/http/problem.js';
+import * as R from './core/http/responses.js';
 import { OPENAPI_INFO, openApiTransform, registerResponseCheck } from './core/http/openapi.js';
 import { registerMetrics } from './core/http/metrics.js';
 import { registerTelemetry } from './core/telemetry.js';
@@ -170,14 +171,16 @@ export async function buildApp(deps: AppDeps): Promise<FastifyInstance> {
 
   // Liveness/readiness are host-agnostic and unauthenticated; they reveal no internals.
   // `/health` and `/ready` are aliases for orchestrators and the deployment smoke tests.
-  const noLimit = { schema: {}, config: { rateLimit: false as const } };
+  const noLimit = { config: { rateLimit: false as const } };
+  const healthy = { ...noLimit, schema: { response: { 200: R.GetHealth200 } } };
+  const readiness = { ...noLimit, schema: { response: { 200: R.GetReady200, 503: R.GetReady503 } } };
   registerMetrics(app, env.METRICS_TOKEN, deps.pool);
   registerTelemetry(app, env.OTEL_EXPORTER_OTLP_ENDPOINT, env.BRAND_PRODUCT_NAME, app.log);
   if (deps.verifyResponses) registerResponseCheck(app);
-  const live = async () => ({ status: 'ok', version: env.APP_VERSION });
+  const live = async () => ({ status: 'ok' as const, version: env.APP_VERSION });
   let warnedNewerSchema = false;
-  app.get('/health/live', noLimit, live);
-  app.get('/health', noLimit, live);
+  app.get('/health/live', healthy, live);
+  app.get('/health', healthy, live);
   const ready = async (_req: unknown, reply: import('fastify').FastifyReply) => {
     // A probe must answer before the orchestrator's own timeout, also when every connection is busy.
     let timer: NodeJS.Timeout | undefined;
@@ -208,8 +211,8 @@ export async function buildApp(deps: AppDeps): Promise<FastifyInstance> {
       clearTimeout(timer);
     }
   };
-  app.get('/health/ready', noLimit, ready);
-  app.get('/ready', noLimit, ready);
+  app.get('/health/ready', readiness, ready);
+  app.get('/ready', readiness, ready);
 
   app.addHook('onRequest', async (req) => {
     if (req.url.startsWith('/health') || req.url === '/ready' || req.url === '/metrics') {

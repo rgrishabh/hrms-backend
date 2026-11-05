@@ -103,7 +103,9 @@ describe('the document', () => {
   it('coverage is what it says', () => {
     const c = specCoverage(routes);
     expect(c.withRequest).toBe(c.total);
-    expect(c.withResponse + c.binary + c.withoutResponse.length).toBeGreaterThanOrEqual(c.total);
+    expect(c.withResponse + c.binary + c.withoutResponse.length).toBe(c.total);
+    // Every route says what it answers. A new one without a response schema fails here.
+    expect(c.withoutResponse).toEqual([]);
   });
 });
 

@@ -1,3 +1,4 @@
+import * as R from '../../core/http/responses.js';
 import type { FastifyInstance } from 'fastify';
 import { only } from '../../core/features/routes.js';
 import { z } from 'zod';
@@ -111,7 +112,7 @@ export async function caseRoutes(app: FastifyInstance) {
   const dec = (s: string | null | undefined) => (s ? cipher.decrypt(s) : null);
 
   // ------------------------------------------------------------ Internal Committee
-  only(app, 'posh').get('/committee', { schema: {}, config: { feature: ['posh'] } }, async (req) => {
+  only(app, 'posh').get('/committee', { schema: { response: { 200: R.GetCasesCommittee200 } }, config: { feature: ['posh'] } }, async (req) => {
     const a = tenantActor(req);
     return a.tx(async (db) => {
       await requireFeature(db, a.tenantId, 'posh');
@@ -135,49 +136,53 @@ export async function caseRoutes(app: FastifyInstance) {
       };
     });
   });
-  only(app, 'posh').put('/committee', { schema: { body: CommitteeBody }, config: { perm: ['posh.admin'], feature: ['posh'] } }, async (req) => {
-    const a = tenantActor(req, 'posh.admin');
-    const b = CommitteeBody.parse(req.body);
-    return a.tx(async (db) => {
-      await requireFeature(db, a.tenantId, 'posh');
-      const users = (await db.query(`SELECT id FROM users WHERE tenant_id=$1 AND status='active' AND id = ANY($2::uuid[])`, [a.tenantId, b.members.map((m) => m.userId)])).rows;
-      if (users.length !== new Set(b.members.map((m) => m.userId)).size) throw badRequest('Every member must be an active user');
-      const prev = (await db.query<{ user_id: string }>('SELECT user_id FROM posh_committee_members WHERE tenant_id=$1', [a.tenantId])).rows.map((r) => r.user_id);
-      const next = b.members.map((m) => m.userId);
-      const added = next.filter((u) => !prev.includes(u));
-      const removed = prev.filter((u) => !next.includes(u));
-      // Committee members read every complaint: nobody can put themselves on it (two-person rule).
-      if (added.includes(a.user.userId)) throw forbidden('Another administrator must add you to the Internal Committee');
-      await db.query('DELETE FROM posh_committee_members WHERE tenant_id=$1', [a.tenantId]);
-      for (const m of b.members)
-        await db.query('INSERT INTO posh_committee_members (tenant_id, user_id, role, added_by) VALUES ($1,$2,$3,$4)', [a.tenantId, m.userId, m.role, a.user.userId]);
-      await db.query(`UPDATE posh_external_members SET until=current_date - 1 WHERE tenant_id=$1 AND until IS NULL`, [a.tenantId]);
-      for (const x of b.external)
-        await db.query('INSERT INTO posh_external_members (tenant_id, name, organization, since) VALUES ($1,$2,$3,$4)', [a.tenantId, x.name, x.organization, x.since]);
-      await audit(db, {
-        ...a.auditBase,
-        action: 'posh.committee_updated',
-        category: 'security',
-        metadata: { members: b.members.length, external: b.external.length, added, removed },
+  only(app, 'posh').put(
+    '/committee',
+    { schema: { response: { 200: R.PutCasesCommittee200 }, body: CommitteeBody }, config: { perm: ['posh.admin'], feature: ['posh'] } },
+    async (req) => {
+      const a = tenantActor(req, 'posh.admin');
+      const b = CommitteeBody.parse(req.body);
+      return a.tx(async (db) => {
+        await requireFeature(db, a.tenantId, 'posh');
+        const users = (await db.query(`SELECT id FROM users WHERE tenant_id=$1 AND status='active' AND id = ANY($2::uuid[])`, [a.tenantId, b.members.map((m) => m.userId)])).rows;
+        if (users.length !== new Set(b.members.map((m) => m.userId)).size) throw badRequest('Every member must be an active user');
+        const prev = (await db.query<{ user_id: string }>('SELECT user_id FROM posh_committee_members WHERE tenant_id=$1', [a.tenantId])).rows.map((r) => r.user_id);
+        const next = b.members.map((m) => m.userId);
+        const added = next.filter((u) => !prev.includes(u));
+        const removed = prev.filter((u) => !next.includes(u));
+        // Committee members read every complaint: nobody can put themselves on it (two-person rule).
+        if (added.includes(a.user.userId)) throw forbidden('Another administrator must add you to the Internal Committee');
+        await db.query('DELETE FROM posh_committee_members WHERE tenant_id=$1', [a.tenantId]);
+        for (const m of b.members)
+          await db.query('INSERT INTO posh_committee_members (tenant_id, user_id, role, added_by) VALUES ($1,$2,$3,$4)', [a.tenantId, m.userId, m.role, a.user.userId]);
+        await db.query(`UPDATE posh_external_members SET until=current_date - 1 WHERE tenant_id=$1 AND until IS NULL`, [a.tenantId]);
+        for (const x of b.external)
+          await db.query('INSERT INTO posh_external_members (tenant_id, name, organization, since) VALUES ($1,$2,$3,$4)', [a.tenantId, x.name, x.organization, x.since]);
+        await audit(db, {
+          ...a.auditBase,
+          action: 'posh.committee_updated',
+          category: 'security',
+          metadata: { members: b.members.length, external: b.external.length, added, removed },
+        });
+        // Members old and new learn of every change, so a temporary addition cannot go unnoticed.
+        if (added.length || removed.length) {
+          const names = async (ids: string[]) =>
+            (await db.query<{ n: string }>('SELECT display_name AS n FROM users WHERE id = ANY($1::uuid[]) ORDER BY display_name', [ids])).rows.map((r) => r.n).join(', ');
+          const body = [added.length ? `Added: ${await names(added)}.` : '', removed.length ? `Removed: ${await names(removed)}.` : ''].filter(Boolean).join(' ');
+          await notifyUsers(
+            db,
+            a.tenantId,
+            [...new Set([...prev, ...next])].filter((u) => u !== a.user.userId),
+            { kind: 'cases.committee', title: `Internal Committee changed by ${a.user.displayName}`, body, link: '/cases', actionLabel: 'View committee' },
+          );
+        }
+        return { ok: true };
       });
-      // Members old and new learn of every change, so a temporary addition cannot go unnoticed.
-      if (added.length || removed.length) {
-        const names = async (ids: string[]) =>
-          (await db.query<{ n: string }>('SELECT display_name AS n FROM users WHERE id = ANY($1::uuid[]) ORDER BY display_name', [ids])).rows.map((r) => r.n).join(', ');
-        const body = [added.length ? `Added: ${await names(added)}.` : '', removed.length ? `Removed: ${await names(removed)}.` : ''].filter(Boolean).join(' ');
-        await notifyUsers(
-          db,
-          a.tenantId,
-          [...new Set([...prev, ...next])].filter((u) => u !== a.user.userId),
-          { kind: 'cases.committee', title: `Internal Committee changed by ${a.user.displayName}`, body, link: '/cases', actionLabel: 'View committee' },
-        );
-      }
-      return { ok: true };
-    });
-  });
+    },
+  );
 
   /** Active users (name only) for picking IC members or grievance handlers. */
-  app.get('/people', { schema: { querystring: PeopleQuery } }, async (req) => {
+  app.get('/people', { schema: { response: { 200: R.GetCasesPeople200 }, querystring: PeopleQuery } }, async (req) => {
     const a = tenantActor(req);
     if (!a.has('posh.admin') && !a.has('grievance.manage')) throw forbidden();
     const q = PeopleQuery.parse(req.query);
@@ -193,7 +198,7 @@ export async function caseRoutes(app: FastifyInstance) {
   });
 
   // ------------------------------------------------------------ file a case
-  app.post('/', { schema: { body: PostRootBody }, config: { perm: ['cases.self'] } }, async (req, reply) => {
+  app.post('/', { schema: { response: { 201: R.PostCases201 }, body: PostRootBody }, config: { perm: ['cases.self'] } }, async (req, reply) => {
     const a = tenantActor(req, 'cases.self');
     const b = PostRootBody.parse(req.body);
     if (!a.user.employeeId && !b.anonymous) throw badRequest('Your account is not linked to an employee record');
@@ -270,7 +275,7 @@ export async function caseRoutes(app: FastifyInstance) {
   });
 
   // ------------------------------------------------------------ lists
-  app.get('/', { schema: { querystring: GetRootQuery } }, async (req) => {
+  app.get('/', { schema: { response: { 200: R.GetCases200 }, querystring: GetRootQuery } }, async (req) => {
     const a = tenantActor(req);
     const q = GetRootQuery.parse(req.query);
     return a.tx(async (db) => {
@@ -298,7 +303,7 @@ export async function caseRoutes(app: FastifyInstance) {
   });
 
   // Only ids, so that /committee is simply not found while POSH is off.
-  app.get('/:id([0-9a-fA-F-]{36})', { schema: { params: IdParams } }, async (req) => {
+  app.get('/:id([0-9a-fA-F-]{36})', { schema: { response: { 200: R.GetCasesById200 }, params: IdParams } }, async (req) => {
     const a = tenantActor(req);
     const { id } = IdParams.parse(req.params);
     return a.tx(async (db) => {
@@ -359,7 +364,7 @@ export async function caseRoutes(app: FastifyInstance) {
   });
 
   // ------------------------------------------------------------ actions
-  app.post('/:id/events', { schema: { params: IdParams, body: EventsBody } }, async (req, reply) => {
+  app.post('/:id/events', { schema: { response: { 201: R.PostCasesByIdEvents201 }, params: IdParams, body: EventsBody } }, async (req, reply) => {
     const a = tenantActor(req);
     const { id } = IdParams.parse(req.params);
     const b = EventsBody.parse(req.body);
@@ -426,7 +431,7 @@ export async function caseRoutes(app: FastifyInstance) {
     });
   });
 
-  app.post('/:id/assign', { schema: { params: IdParams, body: AssignBody }, config: { perm: ['grievance.manage'] } }, async (req) => {
+  app.post('/:id/assign', { schema: { response: { 200: R.PostCasesByIdAssign200 }, params: IdParams, body: AssignBody }, config: { perm: ['grievance.manage'] } }, async (req) => {
     const a = tenantActor(req, 'grievance.manage');
     const { id } = IdParams.parse(req.params);
     const { userId } = AssignBody.parse(req.body);
@@ -462,7 +467,7 @@ export async function caseRoutes(app: FastifyInstance) {
     });
   });
 
-  app.post('/:id/withdraw', { schema: { params: IdParams, body: WithdrawBody }, config: { perm: ['cases.self'] } }, async (req) => {
+  app.post('/:id/withdraw', { schema: { response: { 200: R.PostCasesByIdWithdraw200 }, params: IdParams, body: WithdrawBody }, config: { perm: ['cases.self'] } }, async (req) => {
     const a = tenantActor(req, 'cases.self');
     const { id } = IdParams.parse(req.params);
     const { reason } = WithdrawBody.parse(req.body);
@@ -481,28 +486,32 @@ export async function caseRoutes(app: FastifyInstance) {
   });
 
   /** Counts for the annual report the IC prepares (no names). */
-  only(app, 'posh').get('/posh/annual-report', { schema: { querystring: PoshAnnualReportQuery }, config: { feature: ['posh'] } }, async (req) => {
-    const a = tenantActor(req);
-    const q = PoshAnnualReportQuery.parse(req.query);
-    return a.tx(async (db) => {
-      await requireFeature(db, a.tenantId, 'posh');
-      if (!(await isCommittee(db, a.tenantId, a.user.userId)) && !a.has('posh.admin')) throw forbidden();
-      const from = `${q.year}-01-01`;
-      const to = `${q.year}-12-31`;
-      const r = (
-        await db.query<{ received: number; disposed: number; pending: number; pending_over_90: number }>(
-          `SELECT
+  only(app, 'posh').get(
+    '/posh/annual-report',
+    { schema: { response: { 200: R.GetCasesPoshAnnualReport200 }, querystring: PoshAnnualReportQuery }, config: { feature: ['posh'] } },
+    async (req) => {
+      const a = tenantActor(req);
+      const q = PoshAnnualReportQuery.parse(req.query);
+      return a.tx(async (db) => {
+        await requireFeature(db, a.tenantId, 'posh');
+        if (!(await isCommittee(db, a.tenantId, a.user.userId)) && !a.has('posh.admin')) throw forbidden();
+        const from = `${q.year}-01-01`;
+        const to = `${q.year}-12-31`;
+        const r = (
+          await db.query<{ received: number; disposed: number; pending: number; pending_over_90: number }>(
+            `SELECT
           count(*) FILTER (WHERE received_at::date BETWEEN $2 AND $3)::int AS received,
           count(*) FILTER (WHERE status IN ('closed','withdrawn') AND closed_at::date BETWEEN $2 AND $3)::int AS disposed,
           count(*) FILTER (WHERE received_at::date <= $3 AND (closed_at IS NULL OR closed_at::date > $3))::int AS pending,
           count(*) FILTER (WHERE received_at::date <= $3 AND (closed_at IS NULL OR closed_at::date > $3) AND inquiry_due < $3::date)::int AS pending_over_90
         FROM cases WHERE tenant_id=$1 AND kind='posh'`,
-          [a.tenantId, from, to],
-        )
-      ).rows[0]!;
-      return { year: q.year, ...r, note: 'Counts for the annual report under the POSH Act; workshops and awareness programmes are recorded separately.' };
-    });
-  });
+            [a.tenantId, from, to],
+          )
+        ).rows[0]!;
+        return { year: q.year, ...r, note: 'Counts for the annual report under the POSH Act; workshops and awareness programmes are recorded separately.' };
+      });
+    },
+  );
 }
 
 /** Daily: POSH inquiry/report due in 7 days or overdue → IC; grievances past their response target → handlers. */

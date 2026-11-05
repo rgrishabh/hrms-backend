@@ -162,7 +162,7 @@ export async function overtimeRoutes(app: FastifyInstance) {
   gateFeatures(app, F);
 
   /** Days with recorded overtime the signed-in employee can still claim, and how they may take it. */
-  app.get('/eligible', { schema: {}, config: { perm: ['overtime.self'] } }, async (req) => {
+  app.get('/eligible', { schema: { response: { 200: R.GetOvertimeEligible200 } }, config: { perm: ['overtime.self'] } }, async (req) => {
     const a = tenantActor(req, 'overtime.self');
     if (!a.user.employeeId) throw badRequest('Your account is not linked to an employee record');
     return a.tx(async (db) => {
@@ -183,73 +183,77 @@ export async function overtimeRoutes(app: FastifyInstance) {
     });
   });
 
-  app.post('/claims', { schema: { body: ClaimsBody }, config: { perm: ['overtime.self'], feature: ['comp_off'] } }, async (req, reply) => {
-    const a = tenantActor(req, 'overtime.self');
-    const b = ClaimsBody.parse(req.body);
-    const empId = a.user.employeeId;
-    if (!empId) throw badRequest('Your account is not linked to an employee record');
-    return a.tx(async (db) => {
-      const today = await orgToday(db, a.tenantId);
-      const windowDays = await getSettingValue<number>(db, a.tenantId, 'overtime.claim_window_days');
-      if (b.workDate > today) throw badRequest('Overtime can be claimed only for days already worked');
-      if (b.workDate < addDays(today, -windowDays)) throw badRequest(`Overtime can be claimed up to ${windowDays} days back`);
-      const minMinutes = await getSettingValue<number>(db, a.tenantId, 'overtime.min_minutes');
-      if (b.minutes < minMinutes) throw badRequest(`The smallest overtime claim is ${minMinutes} minutes`);
-      const day = (
-        await db.query<{ overtime_minutes: number }>(`SELECT overtime_minutes FROM attendance_daily WHERE tenant_id=$1 AND employee_id=$2 AND work_date=$3`, [
-          a.tenantId,
-          empId,
-          b.workDate,
-        ])
-      ).rows[0];
-      if (!day || day.overtime_minutes <= 0) throw conflict('Attendance shows no overtime on this day (correct the attendance first)');
-      if (b.minutes > day.overtime_minutes) throw badRequest(`Attendance shows ${day.overtime_minutes} minutes of overtime on this day; you cannot claim more`);
-      const opts = await payoutOptions(db, a.tenantId);
-      if (b.payout === 'comp_off') await requireFeature(db, a.tenantId, 'comp_off');
-      if (b.payout === 'pay' && !opts.pay) throw conflict(`Overtime cannot be paid yet: ${opts.payBlocker}`);
-      if (b.payout === 'comp_off') {
-        if (!opts.compOff) throw conflict('Compensatory off is not offered');
-        if (compOffDays(b.minutes, opts.compOff.dayMinutes) <= 0)
-          throw badRequest(`Compensatory off needs at least ${opts.compOff.dayMinutes / 2} minutes of overtime (half a day)`);
-      }
-      await assertQuarterCap(db, a.tenantId, empId, b.workDate, b.minutes);
-      const id = (
-        await db.query<{ id: string }>(
-          `INSERT INTO overtime_claims (tenant_id, employee_id, work_date, minutes, recorded_minutes, payout, reason, created_by)
+  app.post(
+    '/claims',
+    { schema: { response: { 201: R.PostOvertimeClaims201 }, body: ClaimsBody }, config: { perm: ['overtime.self'], feature: ['comp_off'] } },
+    async (req, reply) => {
+      const a = tenantActor(req, 'overtime.self');
+      const b = ClaimsBody.parse(req.body);
+      const empId = a.user.employeeId;
+      if (!empId) throw badRequest('Your account is not linked to an employee record');
+      return a.tx(async (db) => {
+        const today = await orgToday(db, a.tenantId);
+        const windowDays = await getSettingValue<number>(db, a.tenantId, 'overtime.claim_window_days');
+        if (b.workDate > today) throw badRequest('Overtime can be claimed only for days already worked');
+        if (b.workDate < addDays(today, -windowDays)) throw badRequest(`Overtime can be claimed up to ${windowDays} days back`);
+        const minMinutes = await getSettingValue<number>(db, a.tenantId, 'overtime.min_minutes');
+        if (b.minutes < minMinutes) throw badRequest(`The smallest overtime claim is ${minMinutes} minutes`);
+        const day = (
+          await db.query<{ overtime_minutes: number }>(`SELECT overtime_minutes FROM attendance_daily WHERE tenant_id=$1 AND employee_id=$2 AND work_date=$3`, [
+            a.tenantId,
+            empId,
+            b.workDate,
+          ])
+        ).rows[0];
+        if (!day || day.overtime_minutes <= 0) throw conflict('Attendance shows no overtime on this day (correct the attendance first)');
+        if (b.minutes > day.overtime_minutes) throw badRequest(`Attendance shows ${day.overtime_minutes} minutes of overtime on this day; you cannot claim more`);
+        const opts = await payoutOptions(db, a.tenantId);
+        if (b.payout === 'comp_off') await requireFeature(db, a.tenantId, 'comp_off');
+        if (b.payout === 'pay' && !opts.pay) throw conflict(`Overtime cannot be paid yet: ${opts.payBlocker}`);
+        if (b.payout === 'comp_off') {
+          if (!opts.compOff) throw conflict('Compensatory off is not offered');
+          if (compOffDays(b.minutes, opts.compOff.dayMinutes) <= 0)
+            throw badRequest(`Compensatory off needs at least ${opts.compOff.dayMinutes / 2} minutes of overtime (half a day)`);
+        }
+        await assertQuarterCap(db, a.tenantId, empId, b.workDate, b.minutes);
+        const id = (
+          await db.query<{ id: string }>(
+            `INSERT INTO overtime_claims (tenant_id, employee_id, work_date, minutes, recorded_minutes, payout, reason, created_by)
         VALUES ($1,$2,$3,$4,$5,$6,$7,$8) ON CONFLICT DO NOTHING RETURNING id`,
-          [a.tenantId, empId, b.workDate, b.minutes, day.overtime_minutes, b.payout, b.reason, a.user.userId],
-        )
-      ).rows[0]?.id;
-      if (!id) throw conflict('You already have a claim for this day');
-      const mgr = (
-        await db.query<{ user_id: string | null; name: string }>(
-          `SELECT m.user_id, trim(e.first_name||' '||coalesce(e.last_name,'')) AS name FROM employees e
+            [a.tenantId, empId, b.workDate, b.minutes, day.overtime_minutes, b.payout, b.reason, a.user.userId],
+          )
+        ).rows[0]?.id;
+        if (!id) throw conflict('You already have a claim for this day');
+        const mgr = (
+          await db.query<{ user_id: string | null; name: string }>(
+            `SELECT m.user_id, trim(e.first_name||' '||coalesce(e.last_name,'')) AS name FROM employees e
         LEFT JOIN employees m ON m.tenant_id=e.tenant_id AND m.id=e.reporting_manager_id WHERE e.tenant_id=$1 AND e.id=$2`,
-          [a.tenantId, empId],
-        )
-      ).rows[0]!;
-      // The manager confirms the work was needed and done; HR checks it against policy and the limits.
-      const steps = buildSteps({ requesterId: a.user.userId, managerUserId: mgr.user_id, then: ['overtime.approve'] });
-      const h = Math.round((b.minutes / 60) * 100) / 100;
-      const approvalId = await createApprovalRequest(db, a.tenantId, {
-        entityType: b.payout === 'comp_off' ? 'overtime_comp_off' : 'overtime_claim',
-        entityId: id,
-        requesterId: a.user.userId,
-        summary: `${mgr.name}: ${h} h overtime on ${b.workDate} (${b.payout === 'pay' ? 'paid' : 'compensatory off'})`,
-        steps,
-        excludeUserIds: [a.user.userId],
+            [a.tenantId, empId],
+          )
+        ).rows[0]!;
+        // The manager confirms the work was needed and done; HR checks it against policy and the limits.
+        const steps = buildSteps({ requesterId: a.user.userId, managerUserId: mgr.user_id, then: ['overtime.approve'] });
+        const h = Math.round((b.minutes / 60) * 100) / 100;
+        const approvalId = await createApprovalRequest(db, a.tenantId, {
+          entityType: b.payout === 'comp_off' ? 'overtime_comp_off' : 'overtime_claim',
+          entityId: id,
+          requesterId: a.user.userId,
+          summary: `${mgr.name}: ${h} h overtime on ${b.workDate} (${b.payout === 'pay' ? 'paid' : 'compensatory off'})`,
+          steps,
+          excludeUserIds: [a.user.userId],
+        });
+        await audit(db, {
+          ...a.auditBase,
+          action: 'overtime.claimed',
+          targetType: 'overtime_claim',
+          targetId: id,
+          metadata: { workDate: b.workDate, minutes: b.minutes, payout: b.payout, approvalId },
+        });
+        reply.code(201);
+        return { id };
       });
-      await audit(db, {
-        ...a.auditBase,
-        action: 'overtime.claimed',
-        targetType: 'overtime_claim',
-        targetId: id,
-        metadata: { workDate: b.workDate, minutes: b.minutes, payout: b.payout, approvalId },
-      });
-      reply.code(201);
-      return { id };
-    });
-  });
+    },
+  );
 
   app.get(
     '/claims',
@@ -312,7 +316,7 @@ export async function overtimeRoutes(app: FastifyInstance) {
   });
 
   /** The claimant takes back a claim still awaiting approval. */
-  app.post('/claims/:id/withdraw', { schema: { params: IdParams }, config: { perm: ['overtime.self'] } }, async (req) => {
+  app.post('/claims/:id/withdraw', { schema: { response: { 200: R.PostOvertimeClaimsByIdWithdraw200 }, params: IdParams }, config: { perm: ['overtime.self'] } }, async (req) => {
     const a = tenantActor(req, 'overtime.self');
     const { id } = IdParams.parse(req.params);
     return a.tx(async (db) => {
@@ -336,62 +340,66 @@ export async function overtimeRoutes(app: FastifyInstance) {
    * HR cancels an approved claim (e.g. recorded in error). Paid overtime: only before its payroll run is submitted;
    * a computed run goes back to draft so it must be recomputed. Compensatory off: the days are taken back if unused.
    */
-  app.post('/claims/:id/cancel', { schema: { params: IdParams, body: ClaimsCancelBody }, config: { perm: ['overtime.manage'] } }, async (req) => {
-    const a = tenantActor(req, 'overtime.manage');
-    const { id } = IdParams.parse(req.params);
-    const { reason } = ClaimsCancelBody.parse(req.body);
-    return a.tx(async (db) => {
-      const c = await loadClaim(db, a, id, true);
-      if (c.status !== 'approved') throw conflict(`Only approved claims can be cancelled here (this one is ${c.status})`);
-      if (c.employee_id === a.user.employeeId) throw forbidden('You cannot cancel your own overtime');
-      let rerun: string | null = null;
-      if (c.payout === 'pay' && c.payroll_run_id) {
-        const run = (
-          await db.query<{ status: string; period: string }>(`SELECT status, period FROM payroll_runs WHERE tenant_id=$1 AND id=$2 FOR UPDATE`, [a.tenantId, c.payroll_run_id])
-        ).rows[0]!;
-        if (!['draft', 'computed', 'cancelled'].includes(run.status))
-          throw conflict(`Already in the ${run.period} payroll run (${run.status}); correct it with a deduction in a later run`);
-        if (run.status === 'computed') {
-          await db.query(`UPDATE payroll_runs SET status='draft' WHERE tenant_id=$1 AND id=$2`, [a.tenantId, c.payroll_run_id]);
-          rerun = run.period;
+  app.post(
+    '/claims/:id/cancel',
+    { schema: { response: { 200: R.PostOvertimeClaimsByIdCancel200 }, params: IdParams, body: ClaimsCancelBody }, config: { perm: ['overtime.manage'] } },
+    async (req) => {
+      const a = tenantActor(req, 'overtime.manage');
+      const { id } = IdParams.parse(req.params);
+      const { reason } = ClaimsCancelBody.parse(req.body);
+      return a.tx(async (db) => {
+        const c = await loadClaim(db, a, id, true);
+        if (c.status !== 'approved') throw conflict(`Only approved claims can be cancelled here (this one is ${c.status})`);
+        if (c.employee_id === a.user.employeeId) throw forbidden('You cannot cancel your own overtime');
+        let rerun: string | null = null;
+        if (c.payout === 'pay' && c.payroll_run_id) {
+          const run = (
+            await db.query<{ status: string; period: string }>(`SELECT status, period FROM payroll_runs WHERE tenant_id=$1 AND id=$2 FOR UPDATE`, [a.tenantId, c.payroll_run_id])
+          ).rows[0]!;
+          if (!['draft', 'computed', 'cancelled'].includes(run.status))
+            throw conflict(`Already in the ${run.period} payroll run (${run.status}); correct it with a deduction in a later run`);
+          if (run.status === 'computed') {
+            await db.query(`UPDATE payroll_runs SET status='draft' WHERE tenant_id=$1 AND id=$2`, [a.tenantId, c.payroll_run_id]);
+            rerun = run.period;
+          }
         }
-      }
-      if (c.payout === 'comp_off' && c.comp_off_days) {
-        const ledger = (
-          await db.query<{ leave_type_id: string; leave_year: number }>(`SELECT leave_type_id, leave_year FROM leave_ledger WHERE tenant_id=$1 AND reference=$2`, [
-            a.tenantId,
-            `overtime:${id}:credit`,
-          ])
-        ).rows[0];
-        if (ledger) {
-          const bal = await balanceOf(db, a.tenantId, c.employee_id, ledger.leave_type_id, ledger.leave_year);
-          if (bal.available.lessThan(c.comp_off_days)) throw conflict(`The compensatory off has already been used or applied for (${bal.available.toFixed(1)} days available)`);
-          await insertLedgerEntry(db, a.tenantId, {
-            empId: c.employee_id,
-            typeId: ledger.leave_type_id,
-            year: ledger.leave_year,
-            entryType: 'reversal',
-            days: new Decimal(c.comp_off_days).neg(),
-            reference: `overtime:${id}:reverse`,
-            note: `Overtime claim for ${c.work_date} cancelled`,
-            actorId: a.user.userId,
-          });
+        if (c.payout === 'comp_off' && c.comp_off_days) {
+          const ledger = (
+            await db.query<{ leave_type_id: string; leave_year: number }>(`SELECT leave_type_id, leave_year FROM leave_ledger WHERE tenant_id=$1 AND reference=$2`, [
+              a.tenantId,
+              `overtime:${id}:credit`,
+            ])
+          ).rows[0];
+          if (ledger) {
+            const bal = await balanceOf(db, a.tenantId, c.employee_id, ledger.leave_type_id, ledger.leave_year);
+            if (bal.available.lessThan(c.comp_off_days)) throw conflict(`The compensatory off has already been used or applied for (${bal.available.toFixed(1)} days available)`);
+            await insertLedgerEntry(db, a.tenantId, {
+              empId: c.employee_id,
+              typeId: ledger.leave_type_id,
+              year: ledger.leave_year,
+              entryType: 'reversal',
+              days: new Decimal(c.comp_off_days).neg(),
+              reference: `overtime:${id}:reverse`,
+              note: `Overtime claim for ${c.work_date} cancelled`,
+              actorId: a.user.userId,
+            });
+          }
         }
-      }
-      await db.query(`UPDATE overtime_claims SET status='cancelled', cancelled_by=$3, cancel_reason=$4, payroll_run_id=NULL WHERE tenant_id=$1 AND id=$2`, [
-        a.tenantId,
-        id,
-        a.user.userId,
-        reason,
-      ]);
-      await audit(db, {
-        ...a.auditBase,
-        action: 'overtime.cancelled',
-        targetType: 'overtime_claim',
-        targetId: id,
-        metadata: { reason, payout: c.payout, minutes: c.minutes, payrollRunReset: rerun },
+        await db.query(`UPDATE overtime_claims SET status='cancelled', cancelled_by=$3, cancel_reason=$4, payroll_run_id=NULL WHERE tenant_id=$1 AND id=$2`, [
+          a.tenantId,
+          id,
+          a.user.userId,
+          reason,
+        ]);
+        await audit(db, {
+          ...a.auditBase,
+          action: 'overtime.cancelled',
+          targetType: 'overtime_claim',
+          targetId: id,
+          metadata: { reason, payout: c.payout, minutes: c.minutes, payrollRunReset: rerun },
+        });
+        return { ok: true, payrollRunToRecompute: rerun };
       });
-      return { ok: true, payrollRunToRecompute: rerun };
-    });
-  });
+    },
+  );
 }

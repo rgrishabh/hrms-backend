@@ -264,35 +264,43 @@ export async function mfaRoutes(app: FastifyInstance, opts: { publicConfig: Publ
     );
 
     /** Another code, for a sign-in in progress or for turning this off. */
-    app.post('/email/send', { schema: {}, config: { rateLimit: { max: env.AUTH_RATE_LIMIT_PER_MINUTE, timeWindow: '1 minute' } }, preHandler: sends }, async (req, reply) => {
-      const { u, tenantId } = actor(req);
-      if (u.mfaMethod !== 'email') throw conflict('This account does not use email codes');
-      waitOr(reply, await withPlatformBypass(pool, (db) => sendEmailOtp(db, cipher, tenantId, u.userId, 'login')));
-      return { sent: true };
-    });
+    app.post(
+      '/email/send',
+      { schema: { response: { 200: R.PostAuthMfaEmailSend200 } }, config: { rateLimit: { max: env.AUTH_RATE_LIMIT_PER_MINUTE, timeWindow: '1 minute' } }, preHandler: sends },
+      async (req, reply) => {
+        const { u, tenantId } = actor(req);
+        if (u.mfaMethod !== 'email') throw conflict('This account does not use email codes');
+        waitOr(reply, await withPlatformBypass(pool, (db) => sendEmailOtp(db, cipher, tenantId, u.userId, 'login')));
+        return { sent: true };
+      },
+    );
   }
 
-  app.post('/recovery-codes', { schema: { body: VerifyBody }, config: { rateLimit: { max: 5, timeWindow: '1 minute' } }, preHandler: sends }, async (req) => {
-    const { u, base } = actor(req);
-    const { code } = VerifyBody.parse(req.body);
-    const out = await withPlatformBypass(pool, async (db) => {
-      const m = await loadMfa(db, u.userId);
-      if (m.locked) return 'locked' as const;
-      const kind = await checkCode(db, u.userId, m, code);
-      if (kind !== 'totp' && kind !== 'email') {
-        await noteFailure(db, u.userId);
-        return null;
-      }
-      await noteSuccess(db, u.userId);
-      const codes = newRecoveryCodes();
-      await db.query('UPDATE users SET mfa_recovery_hashes=$2 WHERE id=$1', [u.userId, codes.map((c) => sha256(c))]);
-      await audit(db, { ...base, action: 'auth.mfa_recovery_codes_regenerated', category: 'security' });
-      return codes;
-    });
-    if (out === 'locked') throw lockedError();
-    if (!out) throw invalidCode('Enter a current code, not a recovery code.');
-    return { recoveryCodes: out };
-  });
+  app.post(
+    '/recovery-codes',
+    { schema: { response: { 200: R.PostAuthMfaRecoveryCodes200 }, body: VerifyBody }, config: { rateLimit: { max: 5, timeWindow: '1 minute' } }, preHandler: sends },
+    async (req) => {
+      const { u, base } = actor(req);
+      const { code } = VerifyBody.parse(req.body);
+      const out = await withPlatformBypass(pool, async (db) => {
+        const m = await loadMfa(db, u.userId);
+        if (m.locked) return 'locked' as const;
+        const kind = await checkCode(db, u.userId, m, code);
+        if (kind !== 'totp' && kind !== 'email') {
+          await noteFailure(db, u.userId);
+          return null;
+        }
+        await noteSuccess(db, u.userId);
+        const codes = newRecoveryCodes();
+        await db.query('UPDATE users SET mfa_recovery_hashes=$2 WHERE id=$1', [u.userId, codes.map((c) => sha256(c))]);
+        await audit(db, { ...base, action: 'auth.mfa_recovery_codes_regenerated', category: 'security' });
+        return codes;
+      });
+      if (out === 'locked') throw lockedError();
+      if (!out) throw invalidCode('Enter a current code, not a recovery code.');
+      return { recoveryCodes: out };
+    },
+  );
 
   app.post(
     '/disable',

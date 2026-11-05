@@ -298,7 +298,7 @@ export async function travelRoutes(app: FastifyInstance) {
     return id;
   };
 
-  app.post('/requests', { schema: { body: Body }, config: { perm: ['travel.self'] } }, async (req, reply) => {
+  app.post('/requests', { schema: { response: { 201: R.PostTravelRequests201 }, body: Body }, config: { perm: ['travel.self'] } }, async (req, reply) => {
     const a = tenantActor(req, 'travel.self');
     const b = Body.parse(req.body);
     const empId = a.user.employeeId;
@@ -311,18 +311,22 @@ export async function travelRoutes(app: FastifyInstance) {
   });
 
   /** A trip sent back for changes: the traveller corrects it and it goes round again, as a new approval. */
-  app.post('/requests/:id/resubmit', { schema: { params: IdParams, body: Body }, config: { perm: ['travel.self'] } }, async (req) => {
-    const a = tenantActor(req, 'travel.self');
-    const { id } = IdParams.parse(req.params);
-    const b = Body.parse(req.body);
-    return a.tx(async (db) => {
-      const t = await loadTrip(db, a, id, true);
-      if (t.employee_id !== a.user.employeeId) throw forbidden('Only the traveller can send this again');
-      if (t.status !== 'returned') throw conflict(`This request is ${t.status}`);
-      await submitTrip(db, a, b, t.employee_id, id);
-      return { ok: true };
-    });
-  });
+  app.post(
+    '/requests/:id/resubmit',
+    { schema: { response: { 200: R.PostTravelRequestsByIdResubmit200 }, params: IdParams, body: Body }, config: { perm: ['travel.self'] } },
+    async (req) => {
+      const a = tenantActor(req, 'travel.self');
+      const { id } = IdParams.parse(req.params);
+      const b = Body.parse(req.body);
+      return a.tx(async (db) => {
+        const t = await loadTrip(db, a, id, true);
+        if (t.employee_id !== a.user.employeeId) throw forbidden('Only the traveller can send this again');
+        if (t.status !== 'returned') throw conflict(`This request is ${t.status}`);
+        await submitTrip(db, a, b, t.employee_id, id);
+        return { ok: true };
+      });
+    },
+  );
 
   app.get(
     '/requests',
@@ -360,7 +364,7 @@ export async function travelRoutes(app: FastifyInstance) {
     });
   });
 
-  app.post('/requests/:id/withdraw', { schema: { params: IdParams }, config: { perm: ['travel.self'] } }, async (req) => {
+  app.post('/requests/:id/withdraw', { schema: { response: { 200: R.PostTravelRequestsByIdWithdraw200 }, params: IdParams }, config: { perm: ['travel.self'] } }, async (req) => {
     const a = tenantActor(req, 'travel.self');
     const { id } = IdParams.parse(req.params);
     return a.tx(async (db) => {
@@ -384,7 +388,7 @@ export async function travelRoutes(app: FastifyInstance) {
    * Cancel an approved trip: the traveller before it starts, finance (travel.approve) until it is completed.
    * Its field duty is cancelled; a paid advance stays outstanding until it is returned.
    */
-  app.post('/requests/:id/cancel', { schema: { params: IdParams, body: RequestsCancelBody } }, async (req) => {
+  app.post('/requests/:id/cancel', { schema: { response: { 200: R.PostTravelRequestsByIdCancel200 }, params: IdParams, body: RequestsCancelBody } }, async (req) => {
     const a = tenantActor(req);
     const { id } = IdParams.parse(req.params);
     const { reason } = RequestsCancelBody.parse(req.body);
@@ -402,40 +406,44 @@ export async function travelRoutes(app: FastifyInstance) {
   });
 
   /** Finance records the advance as paid (bank transfer / cash). Never by the traveller. */
-  app.post('/requests/:id/advance-paid', { schema: { params: IdParams, body: RequestsAdvancePaidBody }, config: { perm: ['expenses.pay'] } }, async (req) => {
-    const a = tenantActor(req, 'expenses.pay');
-    const { id } = IdParams.parse(req.params);
-    const b = RequestsAdvancePaidBody.parse(req.body);
-    return a.tx(async (db) => {
-      const t = await loadTrip(db, a, id, true);
-      if (t.employee_id === a.user.employeeId) throw forbidden('You cannot pay your own travel advance');
-      if (!['approved', 'completed'].includes(t.status)) throw conflict(`The trip is ${t.status}`);
-      if (new Decimal(t.advance_requested).lte(0)) throw conflict('No advance was requested for this trip');
-      if (t.advance_paid_amount) throw conflict('The advance is already recorded as paid');
-      await db.query(
-        `UPDATE travel_requests SET advance_paid_amount=advance_requested, advance_paid_at=now(), advance_paid_by=$3, advance_reference=$4 WHERE tenant_id=$1 AND id=$2`,
-        [a.tenantId, id, a.user.userId, b.reference],
-      );
-      if (t.user_id)
-        await notifyUsers(db, a.tenantId, [t.user_id], {
-          kind: 'travel.advance_paid',
-          title: 'Travel advance paid',
-          body: `${t.origin} → ${t.destination} · reference ${b.reference}`,
-          link: '/travel',
+  app.post(
+    '/requests/:id/advance-paid',
+    { schema: { response: { 200: R.PostTravelRequestsByIdAdvancePaid200 }, params: IdParams, body: RequestsAdvancePaidBody }, config: { perm: ['expenses.pay'] } },
+    async (req) => {
+      const a = tenantActor(req, 'expenses.pay');
+      const { id } = IdParams.parse(req.params);
+      const b = RequestsAdvancePaidBody.parse(req.body);
+      return a.tx(async (db) => {
+        const t = await loadTrip(db, a, id, true);
+        if (t.employee_id === a.user.employeeId) throw forbidden('You cannot pay your own travel advance');
+        if (!['approved', 'completed'].includes(t.status)) throw conflict(`The trip is ${t.status}`);
+        if (new Decimal(t.advance_requested).lte(0)) throw conflict('No advance was requested for this trip');
+        if (t.advance_paid_amount) throw conflict('The advance is already recorded as paid');
+        await db.query(
+          `UPDATE travel_requests SET advance_paid_amount=advance_requested, advance_paid_at=now(), advance_paid_by=$3, advance_reference=$4 WHERE tenant_id=$1 AND id=$2`,
+          [a.tenantId, id, a.user.userId, b.reference],
+        );
+        if (t.user_id)
+          await notifyUsers(db, a.tenantId, [t.user_id], {
+            kind: 'travel.advance_paid',
+            title: 'Travel advance paid',
+            body: `${t.origin} → ${t.destination} · reference ${b.reference}`,
+            link: '/travel',
+          });
+        await audit(db, {
+          ...a.auditBase,
+          action: 'travel.advance_paid',
+          targetType: 'travel_request',
+          targetId: id,
+          metadata: { amount: t.advance_requested, reference: b.reference },
         });
-      await audit(db, {
-        ...a.auditBase,
-        action: 'travel.advance_paid',
-        targetType: 'travel_request',
-        targetId: id,
-        metadata: { amount: t.advance_requested, reference: b.reference },
+        return { ok: true };
       });
-      return { ok: true };
-    });
-  });
+    },
+  );
 
   /** Back from the trip. */
-  app.post('/requests/:id/complete', { schema: { params: IdParams }, config: { perm: ['travel.self'] } }, async (req) => {
+  app.post('/requests/:id/complete', { schema: { response: { 200: R.PostTravelRequestsByIdComplete200 }, params: IdParams }, config: { perm: ['travel.self'] } }, async (req) => {
     const a = tenantActor(req, 'travel.self');
     const { id } = IdParams.parse(req.params);
     return a.tx(async (db) => {
@@ -450,56 +458,64 @@ export async function travelRoutes(app: FastifyInstance) {
   });
 
   /** Start the trip's expense claim (a draft in Expenses, linked to the trip so the advance is set off against it). */
-  app.post('/requests/:id/claim', { schema: { params: IdParams }, config: { perm: ['travel.self', 'expenses.self'] } }, async (req, reply) => {
-    const a = tenantActor(req, 'travel.self', 'expenses.self');
-    const { id } = IdParams.parse(req.params);
-    return a.tx(async (db) => {
-      const t = await loadTrip(db, a, id, true);
-      if (t.employee_id !== a.user.employeeId) throw forbidden('Only the traveller can claim the trip expenses');
-      if (!['approved', 'completed'].includes(t.status)) throw conflict(`The trip is ${t.status}`);
-      if (!(await featureOn(db, a.tenantId, 'expenses'))) throw conflict('Expenses are not in use');
-      const open = (
-        await db.query<{ id: string }>(`SELECT id FROM expense_claims WHERE tenant_id=$1 AND travel_request_id=$2 AND status IN ('draft','returned')`, [a.tenantId, id])
-      ).rows[0];
-      if (open) return { id: open.id, existing: true };
-      const when = t.start_date === t.end_date ? t.start_date : `${t.start_date} to ${t.end_date}`;
-      const cid = (
-        await db.query<{ id: string }>(
-          `INSERT INTO expense_claims (tenant_id, employee_id, title, purpose, project, created_by, travel_request_id)
+  app.post(
+    '/requests/:id/claim',
+    { schema: { response: { 201: R.PostTravelRequestsByIdClaim201 }, params: IdParams }, config: { perm: ['travel.self', 'expenses.self'] } },
+    async (req, reply) => {
+      const a = tenantActor(req, 'travel.self', 'expenses.self');
+      const { id } = IdParams.parse(req.params);
+      return a.tx(async (db) => {
+        const t = await loadTrip(db, a, id, true);
+        if (t.employee_id !== a.user.employeeId) throw forbidden('Only the traveller can claim the trip expenses');
+        if (!['approved', 'completed'].includes(t.status)) throw conflict(`The trip is ${t.status}`);
+        if (!(await featureOn(db, a.tenantId, 'expenses'))) throw conflict('Expenses are not in use');
+        const open = (
+          await db.query<{ id: string }>(`SELECT id FROM expense_claims WHERE tenant_id=$1 AND travel_request_id=$2 AND status IN ('draft','returned')`, [a.tenantId, id])
+        ).rows[0];
+        if (open) return { id: open.id, existing: true };
+        const when = t.start_date === t.end_date ? t.start_date : `${t.start_date} to ${t.end_date}`;
+        const cid = (
+          await db.query<{ id: string }>(
+            `INSERT INTO expense_claims (tenant_id, employee_id, title, purpose, project, created_by, travel_request_id)
         VALUES ($1,$2,$3,$4,$5,$6,$7) RETURNING id`,
-          [a.tenantId, t.employee_id, `Travel: ${t.origin} → ${t.destination} (${when})`.slice(0, 200), t.purpose, t.project, a.user.userId, id],
-        )
-      ).rows[0]!.id;
-      await audit(db, { ...a.auditBase, action: 'travel.claim_started', targetType: 'travel_request', targetId: id, metadata: { claimId: cid } });
-      reply.code(201);
-      return { id: cid, existing: false };
-    });
-  });
+            [a.tenantId, t.employee_id, `Travel: ${t.origin} → ${t.destination} (${when})`.slice(0, 200), t.purpose, t.project, a.user.userId, id],
+          )
+        ).rows[0]!.id;
+        await audit(db, { ...a.auditBase, action: 'travel.claim_started', targetType: 'travel_request', targetId: id, metadata: { claimId: cid } });
+        reply.code(201);
+        return { id: cid, existing: false };
+      });
+    },
+  );
 
   /** Unspent advance returned by the employee (cash or transfer). Recovery through payroll belongs to advances and loans. */
-  app.post('/requests/:id/advance-returned', { schema: { params: IdParams, body: RequestsAdvanceReturnedBody }, config: { perm: ['expenses.pay'] } }, async (req) => {
-    const a = tenantActor(req, 'expenses.pay');
-    const { id } = IdParams.parse(req.params);
-    const b = RequestsAdvanceReturnedBody.parse(req.body);
-    return a.tx(async (db) => {
-      const t = await loadTrip(db, a, id, true);
-      if (t.employee_id === a.user.employeeId) throw forbidden('You cannot record your own advance as returned');
-      const s = await settlement(db, a.tenantId, id);
-      if (!b.amount.isFinite() || b.amount.lte(0) || b.amount.decimalPlaces() > 2) throw badRequest('Enter the amount returned');
-      if (b.amount.gt(s.outstanding)) throw badRequest('That is more of the advance than is outstanding');
-      await db.query(`UPDATE travel_requests SET recovered_amount=recovered_amount+$3, recovered_note=concat_ws('; ', recovered_note, $4::text) WHERE tenant_id=$1 AND id=$2`, [
-        a.tenantId,
-        id,
-        b.amount.toFixed(2),
-        `${money(b.amount)}: ${b.note}`,
-      ]);
-      await audit(db, { ...a.auditBase, action: 'travel.advance_returned', targetType: 'travel_request', targetId: id, metadata: { amount: b.amount.toFixed(2), note: b.note } });
-      return { ok: true, outstanding: new Decimal(s.outstanding).minus(b.amount).toFixed(2) };
-    });
-  });
+  app.post(
+    '/requests/:id/advance-returned',
+    { schema: { response: { 200: R.PostTravelRequestsByIdAdvanceReturned200 }, params: IdParams, body: RequestsAdvanceReturnedBody }, config: { perm: ['expenses.pay'] } },
+    async (req) => {
+      const a = tenantActor(req, 'expenses.pay');
+      const { id } = IdParams.parse(req.params);
+      const b = RequestsAdvanceReturnedBody.parse(req.body);
+      return a.tx(async (db) => {
+        const t = await loadTrip(db, a, id, true);
+        if (t.employee_id === a.user.employeeId) throw forbidden('You cannot record your own advance as returned');
+        const s = await settlement(db, a.tenantId, id);
+        if (!b.amount.isFinite() || b.amount.lte(0) || b.amount.decimalPlaces() > 2) throw badRequest('Enter the amount returned');
+        if (b.amount.gt(s.outstanding)) throw badRequest('That is more of the advance than is outstanding');
+        await db.query(`UPDATE travel_requests SET recovered_amount=recovered_amount+$3, recovered_note=concat_ws('; ', recovered_note, $4::text) WHERE tenant_id=$1 AND id=$2`, [
+          a.tenantId,
+          id,
+          b.amount.toFixed(2),
+          `${money(b.amount)}: ${b.note}`,
+        ]);
+        await audit(db, { ...a.auditBase, action: 'travel.advance_returned', targetType: 'travel_request', targetId: id, metadata: { amount: b.amount.toFixed(2), note: b.note } });
+        return { ok: true, outstanding: new Decimal(s.outstanding).minus(b.amount).toFixed(2) };
+      });
+    },
+  );
 
   /** Finance closes a settled trip: nothing outstanding, no claim still in progress. */
-  app.post('/requests/:id/close', { schema: { params: IdParams }, config: { perm: ['expenses.pay'] } }, async (req) => {
+  app.post('/requests/:id/close', { schema: { response: { 200: R.PostTravelRequestsByIdClose200 }, params: IdParams }, config: { perm: ['expenses.pay'] } }, async (req) => {
     const a = tenantActor(req, 'expenses.pay');
     const { id } = IdParams.parse(req.params);
     return a.tx(async (db) => {

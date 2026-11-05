@@ -1,3 +1,4 @@
+import * as R from '../../core/http/responses.js';
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import { cached, invalidate } from '../../core/cache/index.js';
@@ -42,7 +43,7 @@ const MasterBody = z.object({ code: Code, name: z.string().trim().min(1).max(120
 
 const IdParams = z.object({ id: Uuid });
 export async function orgRoutes(app: FastifyInstance) {
-  app.get('/', { schema: {}, config: { permAny: ['org.read', 'employees.directory'] } }, async (req) => {
+  app.get('/', { schema: { response: { 200: R.GetOrg200 } }, config: { permAny: ['org.read', 'employees.directory'] } }, async (req) => {
     // Directory users need branch/department names for filters; full management needs org.manage.
     const a = tenantActorAny(req, 'org.read', 'employees.directory');
     return a.tx((db) =>
@@ -57,7 +58,7 @@ export async function orgRoutes(app: FastifyInstance) {
   });
 
   const upsert = <B extends z.ZodTypeAny>(entity: string, table: string, schema: B, cols: (b: z.infer<B>) => Record<string, unknown>) => {
-    app.post(`/${entity}`, { schema: { body: schema }, config: { perm: ['org.manage'] } }, async (req, reply) => {
+    app.post(`/${entity}`, { schema: { response: { 201: R.PostOrgDepartments201 }, body: schema }, config: { perm: ['org.manage'] } }, async (req, reply) => {
       const a = tenantActor(req, 'org.manage');
       const b = schema.parse(req.body);
       const c = cols(b);
@@ -73,7 +74,7 @@ export async function orgRoutes(app: FastifyInstance) {
         return { id: r.rows[0]!.id };
       });
     });
-    app.put(`/${entity}/:id`, { schema: { params: IdParams, body: schema }, config: { perm: ['org.manage'] } }, async (req) => {
+    app.put(`/${entity}/:id`, { schema: { response: { 200: R.PutOrgDepartmentsById200 }, params: IdParams, body: schema }, config: { perm: ['org.manage'] } }, async (req) => {
       const a = tenantActor(req, 'org.manage');
       const { id } = IdParams.parse(req.params);
       const c = cols(schema.parse(req.body));

@@ -250,50 +250,58 @@ export async function attendanceRoutes(app: FastifyInstance) {
   );
 
   /** The person themselves, or whoever may see their attendance. Looking at someone else's photo is audited. */
-  only(app, 'attendance.selfie').get('/selfies/:id', { schema: { params: IdParams }, config: { feature: ['attendance.selfie'] } }, async (req, reply) => {
-    const a = tenantActor(req);
-    const { id } = IdParams.parse(req.params);
-    const s = await a.tx(async (db) => {
-      await requireFeature(db, a.tenantId, 'attendance.selfie');
-      const row = (
-        await db.query<{ employee_id: string; storage_key: string | null; content_type: string }>(
-          'SELECT employee_id, storage_key, content_type FROM attendance_selfies WHERE tenant_id=$1 AND id=$2 AND erased_at IS NULL',
-          [a.tenantId, id],
-        )
-      ).rows[0];
-      if (!row?.storage_key) throw notFound('Selfie not found');
-      await assertCanViewEmployee(db, a, row.employee_id).catch((e: unknown) => {
-        if (e instanceof AppError && e.status === 403) throw notFound('Selfie not found');
-        throw e;
+  only(app, 'attendance.selfie').get(
+    '/selfies/:id',
+    { schema: { response: { 200: R.file('image/*') }, params: IdParams }, config: { feature: ['attendance.selfie'] } },
+    async (req, reply) => {
+      const a = tenantActor(req);
+      const { id } = IdParams.parse(req.params);
+      const s = await a.tx(async (db) => {
+        await requireFeature(db, a.tenantId, 'attendance.selfie');
+        const row = (
+          await db.query<{ employee_id: string; storage_key: string | null; content_type: string }>(
+            'SELECT employee_id, storage_key, content_type FROM attendance_selfies WHERE tenant_id=$1 AND id=$2 AND erased_at IS NULL',
+            [a.tenantId, id],
+          )
+        ).rows[0];
+        if (!row?.storage_key) throw notFound('Selfie not found');
+        await assertCanViewEmployee(db, a, row.employee_id).catch((e: unknown) => {
+          if (e instanceof AppError && e.status === 403) throw notFound('Selfie not found');
+          throw e;
+        });
+        if (row.employee_id !== a.user.employeeId)
+          await audit(db, { ...a.auditBase, action: 'attendance.selfie_viewed', category: 'data', targetType: 'employee', targetId: row.employee_id, metadata: { selfieId: id } });
+        return row;
       });
-      if (row.employee_id !== a.user.employeeId)
-        await audit(db, { ...a.auditBase, action: 'attendance.selfie_viewed', category: 'data', targetType: 'employee', targetId: row.employee_id, metadata: { selfieId: id } });
-      return row;
-    });
-    return reply
-      .header('content-type', s.content_type)
-      .header('cache-control', 'private, no-store')
-      .header('x-content-type-options', 'nosniff')
-      .send(await getStore()!.get(s.storage_key!));
-  });
+      return reply
+        .header('content-type', s.content_type)
+        .header('cache-control', 'private, no-store')
+        .header('x-content-type-options', 'nosniff')
+        .send(await getStore()!.get(s.storage_key!));
+    },
+  );
 
   // ------------------------------------------------------------ geofences (feature attendance.geofence)
-  only(app, 'attendance.geofence').get('/geofences', { schema: {}, config: { permAny: ['attendance.configure', 'attendance.read'] } }, async (req) => {
-    const a = tenantActorAny(req, 'attendance.configure', 'attendance.read');
-    return a.tx(async (db) => ({
-      items: (
-        await db.query(
-          `SELECT g.branch_id, b.name AS branch_name, g.latitude, g.longitude, g.radius_m, g.updated_at
+  only(app, 'attendance.geofence').get(
+    '/geofences',
+    { schema: { response: { 200: R.GetAttendanceGeofences200 } }, config: { permAny: ['attendance.configure', 'attendance.read'] } },
+    async (req) => {
+      const a = tenantActorAny(req, 'attendance.configure', 'attendance.read');
+      return a.tx(async (db) => ({
+        items: (
+          await db.query(
+            `SELECT g.branch_id, b.name AS branch_name, g.latitude, g.longitude, g.radius_m, g.updated_at
       FROM branch_geofences g JOIN branches b ON b.tenant_id=g.tenant_id AND b.id=g.branch_id WHERE g.tenant_id=$1 ORDER BY b.name`,
-          [a.tenantId],
-        )
-      ).rows,
-    }));
-  });
+            [a.tenantId],
+          )
+        ).rows,
+      }));
+    },
+  );
 
   only(app, 'attendance.geofence').put(
     '/geofences/:branchId',
-    { schema: { params: GeofencesParams, body: GeofencesBody }, config: { perm: ['attendance.configure'] } },
+    { schema: { response: { 200: R.PutAttendanceGeofencesByBranchId200 }, params: GeofencesParams, body: GeofencesBody }, config: { perm: ['attendance.configure'] } },
     async (req) => {
       const a = tenantActor(req, 'attendance.configure');
       const { branchId } = GeofencesParams.parse(req.params);
@@ -311,16 +319,20 @@ export async function attendanceRoutes(app: FastifyInstance) {
     },
   );
 
-  only(app, 'attendance.geofence').delete('/geofences/:branchId', { schema: { params: GeofencesParams }, config: { perm: ['attendance.configure'] } }, async (req) => {
-    const a = tenantActor(req, 'attendance.configure');
-    const { branchId } = GeofencesParams.parse(req.params);
-    return a.tx(async (db) => {
-      const r = await db.query('DELETE FROM branch_geofences WHERE tenant_id=$1 AND branch_id=$2', [a.tenantId, branchId]);
-      if (!r.rowCount) throw notFound('No geofence for this branch');
-      await audit(db, { ...a.auditBase, action: 'attendance.geofence_removed', category: 'configuration', targetType: 'branch', targetId: branchId });
-      return { ok: true };
-    });
-  });
+  only(app, 'attendance.geofence').delete(
+    '/geofences/:branchId',
+    { schema: { response: { 200: R.DeleteAttendanceGeofencesByBranchId200 }, params: GeofencesParams }, config: { perm: ['attendance.configure'] } },
+    async (req) => {
+      const a = tenantActor(req, 'attendance.configure');
+      const { branchId } = GeofencesParams.parse(req.params);
+      return a.tx(async (db) => {
+        const r = await db.query('DELETE FROM branch_geofences WHERE tenant_id=$1 AND branch_id=$2', [a.tenantId, branchId]);
+        if (!r.rowCount) throw notFound('No geofence for this branch');
+        await audit(db, { ...a.auditBase, action: 'attendance.geofence_removed', category: 'configuration', targetType: 'branch', targetId: branchId });
+        return { ok: true };
+      });
+    },
+  );
 
   // ------------------------------------------------------------ views
   app.get('/me', { schema: { response: { 200: R.GetAttendanceMe200 }, querystring: Range }, config: { perm: ['attendance.self'] } }, async (req) => {
@@ -365,7 +377,10 @@ export async function attendanceRoutes(app: FastifyInstance) {
 
   app.get(
     '/employees/:id',
-    { schema: { params: IdParams, querystring: Range }, config: { permAny: ['attendance.self', 'attendance.read', 'attendance.team.read'] } },
+    {
+      schema: { response: { 200: R.GetAttendanceEmployeesById200 }, params: IdParams, querystring: Range },
+      config: { permAny: ['attendance.self', 'attendance.read', 'attendance.team.read'] },
+    },
     async (req) => {
       const a = tenantActorAny(req, 'attendance.self', 'attendance.read', 'attendance.team.read');
       const { id } = IdParams.parse(req.params);
@@ -377,32 +392,35 @@ export async function attendanceRoutes(app: FastifyInstance) {
     },
   );
 
-  app.get('/daily', { schema: { querystring: DailyQuery }, config: { permAny: ['attendance.read', 'attendance.team.read'] } }, async (req) => {
-    const a = tenantActorAny(req, 'attendance.read', 'attendance.team.read');
-    const q = DailyQuery.parse(req.query);
-    return a.tx(async (db) => {
-      // Who may list a person's day here may open their selfie: the same read of the same people (assertCanViewEmployee). With the feature off, the field does not exist.
-      const selfieOn = (await evaluateFeatures(db, a.tenantId)).get('attendance.selfie')?.usable === true;
-      let scope: string[] | null = null;
-      if (!a.has('attendance.read')) scope = a.user.employeeId ? await teamEmployeeIds(db, a.tenantId, a.user.employeeId) : [];
-      const params = [a.tenantId, q.date, q.branchId ?? null, q.status ?? null, scope, q.exceptionsOnly ?? false];
-      // Left join so employees without a calculated row still appear ("not calculated").
-      const where = `e.tenant_id=$1 AND e.status IN ('active','on_notice') AND e.date_of_joining <= $2
+  app.get(
+    '/daily',
+    { schema: { response: { 200: R.GetAttendanceDaily200 }, querystring: DailyQuery }, config: { permAny: ['attendance.read', 'attendance.team.read'] } },
+    async (req) => {
+      const a = tenantActorAny(req, 'attendance.read', 'attendance.team.read');
+      const q = DailyQuery.parse(req.query);
+      return a.tx(async (db) => {
+        // Who may list a person's day here may open their selfie: the same read of the same people (assertCanViewEmployee). With the feature off, the field does not exist.
+        const selfieOn = (await evaluateFeatures(db, a.tenantId)).get('attendance.selfie')?.usable === true;
+        let scope: string[] | null = null;
+        if (!a.has('attendance.read')) scope = a.user.employeeId ? await teamEmployeeIds(db, a.tenantId, a.user.employeeId) : [];
+        const params = [a.tenantId, q.date, q.branchId ?? null, q.status ?? null, scope, q.exceptionsOnly ?? false];
+        // Left join so employees without a calculated row still appear ("not calculated").
+        const where = `e.tenant_id=$1 AND e.status IN ('active','on_notice') AND e.date_of_joining <= $2
         AND ($3::uuid IS NULL OR e.branch_id=$3) AND ($5::uuid[] IS NULL OR e.id = ANY($5))
         AND ($4::text IS NULL OR coalesce(d.status,'not_calculated')=$4) AND (NOT $6 OR cardinality(d.exceptions) > 0)`;
-      const from = `FROM employees e LEFT JOIN attendance_daily d ON d.tenant_id=e.tenant_id AND d.employee_id=e.id AND d.work_date=$2
+        const from = `FROM employees e LEFT JOIN attendance_daily d ON d.tenant_id=e.tenant_id AND d.employee_id=e.id AND d.work_date=$2
         JOIN branches b ON b.tenant_id=e.tenant_id AND b.id=e.branch_id LEFT JOIN shifts s ON s.tenant_id=d.tenant_id AND s.id=d.shift_id`;
-      const total = Number((await db.query<{ n: string }>(`SELECT count(*) AS n ${from} WHERE ${where}`, params)).rows[0]!.n);
-      const summary = (
-        await db.query(
-          `SELECT coalesce(d.status,'not_calculated') AS status, count(*)::int AS count ${from}
+        const total = Number((await db.query<{ n: string }>(`SELECT count(*) AS n ${from} WHERE ${where}`, params)).rows[0]!.n);
+        const summary = (
+          await db.query(
+            `SELECT coalesce(d.status,'not_calculated') AS status, count(*)::int AS count ${from}
         WHERE e.tenant_id=$1 AND e.status IN ('active','on_notice') AND e.date_of_joining <= $2 AND ($3::uuid IS NULL OR e.branch_id=$3)
         AND ($5::uuid[] IS NULL OR e.id = ANY($5)) AND ($4::text IS NULL OR true) AND ($6 OR true) GROUP BY 1`,
-          params,
-        )
-      ).rows;
-      const rows = await db.query(
-        `SELECT e.id AS employee_id, e.employee_code, trim(e.first_name||' '||coalesce(e.last_name,'')) AS name, b.name AS branch_name,
+            params,
+          )
+        ).rows;
+        const rows = await db.query(
+          `SELECT e.id AS employee_id, e.employee_code, trim(e.first_name||' '||coalesce(e.last_name,'')) AS name, b.name AS branch_name,
           coalesce(d.status,'not_calculated') AS status, d.first_in, d.last_out, d.worked_minutes, d.late_minutes, d.early_exit_minutes, d.overtime_minutes,
           d.exceptions, d.locked, s.code AS shift_code${
             selfieOn
@@ -412,92 +430,111 @@ export async function attendanceRoutes(app: FastifyInstance) {
               : ''
           }
         ${from} WHERE ${where} ORDER BY e.first_name, e.employee_code LIMIT $7 OFFSET $8`,
-        [...params, q.pageSize, offsetOf(q)],
-      );
-      return { ...paged(rows.rows, total, q), summary };
-    });
-  });
+          [...params, q.pageSize, offsetOf(q)],
+        );
+        return { ...paged(rows.rows, total, q), summary };
+      });
+    },
+  );
 
   // ------------------------------------------------------------ recalculation & locking
-  app.post('/recalculate', { schema: { body: RecalculateBody }, config: { perm: ['attendance.recalculate'], feature: ['attendance'] } }, async (req) => {
-    const a = tenantActor(req, 'attendance.recalculate');
-    const body = RecalculateBody.parse(req.body);
-    Range.parse(body);
-    return a.tx(async (db) => {
-      await requireFeature(db, a.tenantId, 'attendance');
-      const emps = await db.query<{ id: string }>(
-        `SELECT id FROM employees WHERE tenant_id=$1 AND ($2::uuid IS NULL OR id=$2) AND ($3::uuid IS NULL OR branch_id=$3)
+  app.post(
+    '/recalculate',
+    { schema: { response: { 200: R.PostAttendanceRecalculate200 }, body: RecalculateBody }, config: { perm: ['attendance.recalculate'], feature: ['attendance'] } },
+    async (req) => {
+      const a = tenantActor(req, 'attendance.recalculate');
+      const body = RecalculateBody.parse(req.body);
+      Range.parse(body);
+      return a.tx(async (db) => {
+        await requireFeature(db, a.tenantId, 'attendance');
+        const emps = await db.query<{ id: string }>(
+          `SELECT id FROM employees WHERE tenant_id=$1 AND ($2::uuid IS NULL OR id=$2) AND ($3::uuid IS NULL OR branch_id=$3)
         AND date_of_joining <= $5 AND (exit_date IS NULL OR exit_date >= $4)`,
-        [a.tenantId, body.employeeId ?? null, body.branchId ?? null, body.from, body.to],
-      );
-      let days = 0;
-      let skipped = 0;
-      for (const e of emps.rows) {
-        const r = await recalculateRange(db, a.tenantId, e.id, body.from, body.to);
-        days += r.results.length;
-        skipped += r.skippedLocked.length;
-      }
-      await audit(db, { ...a.auditBase, action: 'attendance.recalculated', metadata: { ...body, employees: emps.rowCount, days, skippedLockedDays: skipped } });
-      return { employees: emps.rowCount, daysCalculated: days, lockedDaysSkipped: skipped };
-    });
-  });
+          [a.tenantId, body.employeeId ?? null, body.branchId ?? null, body.from, body.to],
+        );
+        let days = 0;
+        let skipped = 0;
+        for (const e of emps.rows) {
+          const r = await recalculateRange(db, a.tenantId, e.id, body.from, body.to);
+          days += r.results.length;
+          skipped += r.skippedLocked.length;
+        }
+        await audit(db, { ...a.auditBase, action: 'attendance.recalculated', metadata: { ...body, employees: emps.rowCount, days, skippedLockedDays: skipped } });
+        return { employees: emps.rowCount, daysCalculated: days, lockedDaysSkipped: skipped };
+      });
+    },
+  );
 
-  app.get('/locks', { schema: { querystring: ListQuery }, config: { permAny: ['attendance.read', 'attendance.lock'] } }, async (req) => {
-    const a = tenantActorAny(req, 'attendance.read', 'attendance.lock');
-    const q = ListQuery.parse(req.query);
-    return a.tx((db) =>
-      pageOf(
-        db,
-        `SELECT l.id, l.period_start, l.period_end, l.locked_at, u.display_name AS locked_by
+  app.get(
+    '/locks',
+    { schema: { response: { 200: R.GetAttendanceLocks200 }, querystring: ListQuery }, config: { permAny: ['attendance.read', 'attendance.lock'] } },
+    async (req) => {
+      const a = tenantActorAny(req, 'attendance.read', 'attendance.lock');
+      const q = ListQuery.parse(req.query);
+      return a.tx((db) =>
+        pageOf(
+          db,
+          `SELECT l.id, l.period_start, l.period_end, l.locked_at, u.display_name AS locked_by
       FROM attendance_period_locks l JOIN users u ON u.id=l.locked_by WHERE l.tenant_id=$1 ORDER BY l.period_start DESC`,
-        [a.tenantId],
-        q,
-      ),
-    );
-  });
+          [a.tenantId],
+          q,
+        ),
+      );
+    },
+  );
 
   /** Freeze a period for payroll: calculate everything first, then lock. Corrections after this need an audited adjustment. */
-  app.post('/locks', { schema: { body: LocksBody }, config: { perm: ['attendance.lock'], feature: ['attendance'] } }, async (req, reply) => {
-    const a = tenantActor(req, 'attendance.lock');
-    const body = LocksBody.parse(req.body);
-    Range.parse({ from: body.periodStart, to: body.periodEnd });
-    return a.tx(async (db) => {
-      await requireFeature(db, a.tenantId, 'attendance');
-      const overlap = await db.query('SELECT 1 FROM attendance_period_locks WHERE tenant_id=$1 AND period_start <= $3 AND period_end >= $2', [
-        a.tenantId,
-        body.periodStart,
-        body.periodEnd,
-      ]);
-      if (overlap.rowCount) throw conflict('This period overlaps an existing lock');
-      const pending = await db.query<{ n: string }>(
-        `SELECT count(*) AS n FROM attendance_regularizations WHERE tenant_id=$1 AND status='pending' AND work_date BETWEEN $2 AND $3`,
-        [a.tenantId, body.periodStart, body.periodEnd],
-      );
-      if (Number(pending.rows[0]!.n) > 0) throw conflict(`${pending.rows[0]!.n} regularization request(s) in this period are still pending. Resolve them before locking.`);
-      // Leave cannot be approved once its dates are locked, which would leave the person absent with loss of pay.
-      const pendingLeave = await db.query<{ n: string }>(
-        `SELECT count(*) AS n FROM leave_requests WHERE tenant_id=$1 AND status='pending' AND start_date <= $3 AND end_date >= $2`,
-        [a.tenantId, body.periodStart, body.periodEnd],
-      );
-      if (Number(pendingLeave.rows[0]!.n) > 0) throw conflict(`${pendingLeave.rows[0]!.n} leave request(s) in this period are still pending. Resolve them before locking.`);
-      const emps = await db.query<{ id: string }>(`SELECT id FROM employees WHERE tenant_id=$1 AND date_of_joining <= $3 AND (exit_date IS NULL OR exit_date >= $2)`, [
-        a.tenantId,
-        body.periodStart,
-        body.periodEnd,
-      ]);
-      for (const e of emps.rows) await recalculateRange(db, a.tenantId, e.id, body.periodStart, body.periodEnd);
-      const r = await db.query<{ id: string }>(`INSERT INTO attendance_period_locks (tenant_id, period_start, period_end, locked_by) VALUES ($1,$2,$3,$4) RETURNING id`, [
-        a.tenantId,
-        body.periodStart,
-        body.periodEnd,
-        a.user.userId,
-      ]);
-      const locked = await db.query(`UPDATE attendance_daily SET locked=true WHERE tenant_id=$1 AND work_date BETWEEN $2 AND $3`, [a.tenantId, body.periodStart, body.periodEnd]);
-      await audit(db, { ...a.auditBase, action: 'attendance.period_locked', targetType: 'attendance_lock', targetId: r.rows[0]!.id, metadata: { ...body, rows: locked.rowCount } });
-      reply.code(201);
-      return { id: r.rows[0]!.id, rowsLocked: locked.rowCount };
-    });
-  });
+  app.post(
+    '/locks',
+    { schema: { response: { 201: R.PostAttendanceLocks201 }, body: LocksBody }, config: { perm: ['attendance.lock'], feature: ['attendance'] } },
+    async (req, reply) => {
+      const a = tenantActor(req, 'attendance.lock');
+      const body = LocksBody.parse(req.body);
+      Range.parse({ from: body.periodStart, to: body.periodEnd });
+      return a.tx(async (db) => {
+        await requireFeature(db, a.tenantId, 'attendance');
+        const overlap = await db.query('SELECT 1 FROM attendance_period_locks WHERE tenant_id=$1 AND period_start <= $3 AND period_end >= $2', [
+          a.tenantId,
+          body.periodStart,
+          body.periodEnd,
+        ]);
+        if (overlap.rowCount) throw conflict('This period overlaps an existing lock');
+        const pending = await db.query<{ n: string }>(
+          `SELECT count(*) AS n FROM attendance_regularizations WHERE tenant_id=$1 AND status='pending' AND work_date BETWEEN $2 AND $3`,
+          [a.tenantId, body.periodStart, body.periodEnd],
+        );
+        if (Number(pending.rows[0]!.n) > 0) throw conflict(`${pending.rows[0]!.n} regularization request(s) in this period are still pending. Resolve them before locking.`);
+        // Leave cannot be approved once its dates are locked, which would leave the person absent with loss of pay.
+        const pendingLeave = await db.query<{ n: string }>(
+          `SELECT count(*) AS n FROM leave_requests WHERE tenant_id=$1 AND status='pending' AND start_date <= $3 AND end_date >= $2`,
+          [a.tenantId, body.periodStart, body.periodEnd],
+        );
+        if (Number(pendingLeave.rows[0]!.n) > 0) throw conflict(`${pendingLeave.rows[0]!.n} leave request(s) in this period are still pending. Resolve them before locking.`);
+        const emps = await db.query<{ id: string }>(`SELECT id FROM employees WHERE tenant_id=$1 AND date_of_joining <= $3 AND (exit_date IS NULL OR exit_date >= $2)`, [
+          a.tenantId,
+          body.periodStart,
+          body.periodEnd,
+        ]);
+        for (const e of emps.rows) await recalculateRange(db, a.tenantId, e.id, body.periodStart, body.periodEnd);
+        const r = await db.query<{ id: string }>(`INSERT INTO attendance_period_locks (tenant_id, period_start, period_end, locked_by) VALUES ($1,$2,$3,$4) RETURNING id`, [
+          a.tenantId,
+          body.periodStart,
+          body.periodEnd,
+          a.user.userId,
+        ]);
+        const locked = await db.query(`UPDATE attendance_daily SET locked=true WHERE tenant_id=$1 AND work_date BETWEEN $2 AND $3`, [a.tenantId, body.periodStart, body.periodEnd]);
+        await audit(db, {
+          ...a.auditBase,
+          action: 'attendance.period_locked',
+          targetType: 'attendance_lock',
+          targetId: r.rows[0]!.id,
+          metadata: { ...body, rows: locked.rowCount },
+        });
+        reply.code(201);
+        return { id: r.rows[0]!.id, rowsLocked: locked.rowCount };
+      });
+    },
+  );
 
   // ------------------------------------------------------------ regularization
   const RegBody = z
@@ -510,7 +547,7 @@ export async function attendanceRoutes(app: FastifyInstance) {
     .refine((b) => b.requestedIn || b.requestedOut, 'Provide an in time, an out time, or both');
   only(app, 'attendance.regularization').post(
     '/regularizations',
-    { schema: { body: RegBody }, config: { perm: ['attendance.self'], feature: ['attendance.regularization'] } },
+    { schema: { response: { 201: R.PostAttendanceRegularizations201 }, body: RegBody }, config: { perm: ['attendance.self'], feature: ['attendance.regularization'] } },
     async (req, reply) => {
       const a = tenantActor(req, 'attendance.self');
       const body = RegBody.parse(req.body);
@@ -563,7 +600,7 @@ export async function attendanceRoutes(app: FastifyInstance) {
 
   only(app, 'attendance.regularization').get(
     '/regularizations',
-    { schema: { querystring: RegularizationsQuery }, config: { permAny: ['attendance.self', 'attendance.read'] } },
+    { schema: { response: { 200: R.GetAttendanceRegularizations200 }, querystring: RegularizationsQuery }, config: { permAny: ['attendance.self', 'attendance.read'] } },
     async (req) => {
       const a = tenantActorAny(req, 'attendance.self', 'attendance.read');
       const q = RegularizationsQuery.parse(req.query);
@@ -593,7 +630,10 @@ export async function attendanceRoutes(app: FastifyInstance) {
   // ------------------------------------------------------------ shifts
   only(app, 'shifts').get(
     '/shifts',
-    { schema: { querystring: ListQuery }, config: { permAny: ['attendance.configure', 'attendance.read', 'attendance.self'], feature: ['shifts'] } },
+    {
+      schema: { response: { 200: R.GetAttendanceShifts200 }, querystring: ListQuery },
+      config: { permAny: ['attendance.configure', 'attendance.read', 'attendance.self'], feature: ['shifts'] },
+    },
     async (req) => {
       const a = tenantActorAny(req, 'attendance.configure', 'attendance.read', 'attendance.self');
       const q = ListQuery.parse(req.query);
@@ -623,160 +663,188 @@ export async function attendanceRoutes(app: FastifyInstance) {
     s.overtimeAfterMinutes,
     s.status,
   ];
-  only(app, 'shifts').post('/shifts', { schema: { body: ShiftBody }, config: { perm: ['attendance.configure'], feature: ['shifts'] } }, async (req, reply) => {
-    const a = tenantActor(req, 'attendance.configure');
-    const body = ShiftBody.parse(req.body);
-    return a.tx(async (db) => {
-      await requireFeature(db, a.tenantId, 'shifts');
-      const r = await db.query<{ id: string }>(
-        `INSERT INTO shifts (tenant_id, code, name, start_time, end_time, break_minutes, grace_minutes, early_exit_grace_minutes,
+  only(app, 'shifts').post(
+    '/shifts',
+    { schema: { response: { 201: R.PostAttendanceShifts201 }, body: ShiftBody }, config: { perm: ['attendance.configure'], feature: ['shifts'] } },
+    async (req, reply) => {
+      const a = tenantActor(req, 'attendance.configure');
+      const body = ShiftBody.parse(req.body);
+      return a.tx(async (db) => {
+        await requireFeature(db, a.tenantId, 'shifts');
+        const r = await db.query<{ id: string }>(
+          `INSERT INTO shifts (tenant_id, code, name, start_time, end_time, break_minutes, grace_minutes, early_exit_grace_minutes,
         half_day_min_minutes, full_day_min_minutes, overtime_after_minutes, status) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12) RETURNING id`,
-        [a.tenantId, ...shiftCols(body)],
-      );
-      await audit(db, { ...a.auditBase, action: 'attendance.shift_created', category: 'configuration', targetType: 'shift', targetId: r.rows[0]!.id, metadata: body });
-      reply.code(201);
-      return { id: r.rows[0]!.id };
-    });
-  });
-
-  only(app, 'shifts').put('/shifts/:id', { schema: { params: IdParams, body: ShiftBody }, config: { perm: ['attendance.configure'], feature: ['shifts'] } }, async (req) => {
-    const a = tenantActor(req, 'attendance.configure');
-    const { id } = IdParams.parse(req.params);
-    const body = ShiftBody.parse(req.body);
-    return a.tx(async (db) => {
-      await requireFeature(db, a.tenantId, 'shifts');
-      const prev = await db.query('SELECT * FROM shifts WHERE tenant_id=$1 AND id=$2 FOR UPDATE', [a.tenantId, id]);
-      if (!prev.rowCount) throw notFound('Shift not found');
-      await db.query(
-        `UPDATE shifts SET code=$3, name=$4, start_time=$5, end_time=$6, break_minutes=$7, grace_minutes=$8, early_exit_grace_minutes=$9,
-        half_day_min_minutes=$10, full_day_min_minutes=$11, overtime_after_minutes=$12, status=$13 WHERE tenant_id=$1 AND id=$2`,
-        [a.tenantId, id, ...shiftCols(body)],
-      );
-      // Existing daily results keep their stored values; HR recalculates explicitly (locked periods are never touched).
-      await audit(db, {
-        ...a.auditBase,
-        action: 'attendance.shift_updated',
-        category: 'configuration',
-        targetType: 'shift',
-        targetId: id,
-        metadata: { from: prev.rows[0], to: body },
-      });
-      return { ok: true };
-    });
-  });
-
-  only(app, 'shifts').post('/shift-assignments', { schema: { body: ShiftAssignmentsBody }, config: { perm: ['attendance.configure'], feature: ['shifts'] } }, async (req) => {
-    const a = tenantActor(req, 'attendance.configure');
-    const body = ShiftAssignmentsBody.parse(req.body);
-    if (body.effectiveTo && body.effectiveTo < body.effectiveFrom) throw badRequest('effectiveTo must be on or after effectiveFrom');
-    return a.tx(async (db) => {
-      await requireFeature(db, a.tenantId, 'shifts');
-      const s = await db.query(`SELECT 1 FROM shifts WHERE tenant_id=$1 AND id=$2 AND status='active'`, [a.tenantId, body.shiftId]);
-      if (!s.rowCount) throw badRequest('Shift not found or inactive');
-      if ((await lockedDates(db, a.tenantId, body.effectiveFrom, body.effectiveFrom)).size) throw conflict('Cannot change shifts starting inside a locked period');
-      // A fixed shift from this day replaces any rotating roster they follow from then on.
-      await endRosters(db, a.tenantId, body.employeeIds, addDays(body.effectiveFrom, -1));
-      for (const empId of body.employeeIds) {
-        // Close any open-ended or overlapping earlier assignment the day before the new one starts.
-        await db.query(
-          `UPDATE shift_assignments SET effective_to = $3::date - 1 WHERE tenant_id=$1 AND employee_id=$2
-          AND effective_from < $3 AND (effective_to IS NULL OR effective_to >= $3)`,
-          [a.tenantId, empId, body.effectiveFrom],
+          [a.tenantId, ...shiftCols(body)],
         );
-        await db.query(`INSERT INTO shift_assignments (tenant_id, employee_id, shift_id, effective_from, effective_to, created_by) VALUES ($1,$2,$3,$4,$5,$6)`, [
-          a.tenantId,
-          empId,
-          body.shiftId,
-          body.effectiveFrom,
-          body.effectiveTo ?? null,
-          a.user.userId,
-        ]);
-      }
-      await audit(db, {
-        ...a.auditBase,
-        action: 'attendance.shift_assigned',
-        category: 'configuration',
-        targetType: 'shift',
-        targetId: body.shiftId,
-        metadata: { employees: body.employeeIds.length, effectiveFrom: body.effectiveFrom, effectiveTo: body.effectiveTo ?? null },
+        await audit(db, { ...a.auditBase, action: 'attendance.shift_created', category: 'configuration', targetType: 'shift', targetId: r.rows[0]!.id, metadata: body });
+        reply.code(201);
+        return { id: r.rows[0]!.id };
       });
-      return { assigned: body.employeeIds.length };
-    });
-  });
+    },
+  );
+
+  only(app, 'shifts').put(
+    '/shifts/:id',
+    { schema: { response: { 200: R.PutAttendanceShiftsById200 }, params: IdParams, body: ShiftBody }, config: { perm: ['attendance.configure'], feature: ['shifts'] } },
+    async (req) => {
+      const a = tenantActor(req, 'attendance.configure');
+      const { id } = IdParams.parse(req.params);
+      const body = ShiftBody.parse(req.body);
+      return a.tx(async (db) => {
+        await requireFeature(db, a.tenantId, 'shifts');
+        const prev = await db.query('SELECT * FROM shifts WHERE tenant_id=$1 AND id=$2 FOR UPDATE', [a.tenantId, id]);
+        if (!prev.rowCount) throw notFound('Shift not found');
+        await db.query(
+          `UPDATE shifts SET code=$3, name=$4, start_time=$5, end_time=$6, break_minutes=$7, grace_minutes=$8, early_exit_grace_minutes=$9,
+        half_day_min_minutes=$10, full_day_min_minutes=$11, overtime_after_minutes=$12, status=$13 WHERE tenant_id=$1 AND id=$2`,
+          [a.tenantId, id, ...shiftCols(body)],
+        );
+        // Existing daily results keep their stored values; HR recalculates explicitly (locked periods are never touched).
+        await audit(db, {
+          ...a.auditBase,
+          action: 'attendance.shift_updated',
+          category: 'configuration',
+          targetType: 'shift',
+          targetId: id,
+          metadata: { from: prev.rows[0], to: body },
+        });
+        return { ok: true };
+      });
+    },
+  );
+
+  only(app, 'shifts').post(
+    '/shift-assignments',
+    { schema: { response: { 200: R.PostAttendanceShiftAssignments200 }, body: ShiftAssignmentsBody }, config: { perm: ['attendance.configure'], feature: ['shifts'] } },
+    async (req) => {
+      const a = tenantActor(req, 'attendance.configure');
+      const body = ShiftAssignmentsBody.parse(req.body);
+      if (body.effectiveTo && body.effectiveTo < body.effectiveFrom) throw badRequest('effectiveTo must be on or after effectiveFrom');
+      return a.tx(async (db) => {
+        await requireFeature(db, a.tenantId, 'shifts');
+        const s = await db.query(`SELECT 1 FROM shifts WHERE tenant_id=$1 AND id=$2 AND status='active'`, [a.tenantId, body.shiftId]);
+        if (!s.rowCount) throw badRequest('Shift not found or inactive');
+        if ((await lockedDates(db, a.tenantId, body.effectiveFrom, body.effectiveFrom)).size) throw conflict('Cannot change shifts starting inside a locked period');
+        // A fixed shift from this day replaces any rotating roster they follow from then on.
+        await endRosters(db, a.tenantId, body.employeeIds, addDays(body.effectiveFrom, -1));
+        for (const empId of body.employeeIds) {
+          // Close any open-ended or overlapping earlier assignment the day before the new one starts.
+          await db.query(
+            `UPDATE shift_assignments SET effective_to = $3::date - 1 WHERE tenant_id=$1 AND employee_id=$2
+          AND effective_from < $3 AND (effective_to IS NULL OR effective_to >= $3)`,
+            [a.tenantId, empId, body.effectiveFrom],
+          );
+          await db.query(`INSERT INTO shift_assignments (tenant_id, employee_id, shift_id, effective_from, effective_to, created_by) VALUES ($1,$2,$3,$4,$5,$6)`, [
+            a.tenantId,
+            empId,
+            body.shiftId,
+            body.effectiveFrom,
+            body.effectiveTo ?? null,
+            a.user.userId,
+          ]);
+        }
+        await audit(db, {
+          ...a.auditBase,
+          action: 'attendance.shift_assigned',
+          category: 'configuration',
+          targetType: 'shift',
+          targetId: body.shiftId,
+          metadata: { employees: body.employeeIds.length, effectiveFrom: body.effectiveFrom, effectiveTo: body.effectiveTo ?? null },
+        });
+        return { assigned: body.employeeIds.length };
+      });
+    },
+  );
 
   // ------------------------------------------------------------ holidays
-  only(app, 'holidays').get('/holidays', { schema: { querystring: HolidaysQuery }, config: { feature: ['holidays'] } }, async (req) => {
-    const a = tenantActor(req);
-    const q = HolidaysQuery.parse(req.query);
-    return a.tx(
-      async (db) => (
-        await requireFeature(db, a.tenantId, 'holidays'),
-        {
-          items: (
-            await db.query(
-              `SELECT h.id, h.holiday_date, h.name, h.optional, h.branch_id, b.name AS branch_name
+  only(app, 'holidays').get(
+    '/holidays',
+    { schema: { response: { 200: R.GetAttendanceHolidays200 }, querystring: HolidaysQuery }, config: { feature: ['holidays'] } },
+    async (req) => {
+      const a = tenantActor(req);
+      const q = HolidaysQuery.parse(req.query);
+      return a.tx(
+        async (db) => (
+          await requireFeature(db, a.tenantId, 'holidays'),
+          {
+            items: (
+              await db.query(
+                `SELECT h.id, h.holiday_date, h.name, h.optional, h.branch_id, b.name AS branch_name
       FROM holidays h LEFT JOIN branches b ON b.tenant_id=h.tenant_id AND b.id=h.branch_id
       WHERE h.tenant_id=$1 AND extract(year FROM h.holiday_date)=$2 ORDER BY h.holiday_date`,
-              [a.tenantId, q.year],
-            )
-          ).rows,
-        }
-      ),
-    );
-  });
+                [a.tenantId, q.year],
+              )
+            ).rows,
+          }
+        ),
+      );
+    },
+  );
 
-  only(app, 'holidays').post('/holidays', { schema: { body: HolidaysBody }, config: { perm: ['attendance.configure'], feature: ['holidays'] } }, async (req, reply) => {
-    const a = tenantActor(req, 'attendance.configure');
-    const body = HolidaysBody.parse(req.body);
-    return a.tx(async (db) => {
-      await requireFeature(db, a.tenantId, 'holidays');
-      if ((await lockedDates(db, a.tenantId, body.holidayDate, body.holidayDate)).size) throw conflict('This date is in a locked attendance period');
-      const r = await db.query<{ id: string }>(`INSERT INTO holidays (tenant_id, branch_id, holiday_date, name, optional) VALUES ($1,$2,$3,$4,$5) RETURNING id`, [
-        a.tenantId,
-        body.branchId ?? null,
-        body.holidayDate,
-        body.name,
-        body.optional,
-      ]);
-      await audit(db, { ...a.auditBase, action: 'attendance.holiday_created', category: 'configuration', targetType: 'holiday', targetId: r.rows[0]!.id, metadata: body });
-      reply.code(201);
-      return { id: r.rows[0]!.id };
-    });
-  });
+  only(app, 'holidays').post(
+    '/holidays',
+    { schema: { response: { 201: R.PostAttendanceHolidays201 }, body: HolidaysBody }, config: { perm: ['attendance.configure'], feature: ['holidays'] } },
+    async (req, reply) => {
+      const a = tenantActor(req, 'attendance.configure');
+      const body = HolidaysBody.parse(req.body);
+      return a.tx(async (db) => {
+        await requireFeature(db, a.tenantId, 'holidays');
+        if ((await lockedDates(db, a.tenantId, body.holidayDate, body.holidayDate)).size) throw conflict('This date is in a locked attendance period');
+        const r = await db.query<{ id: string }>(`INSERT INTO holidays (tenant_id, branch_id, holiday_date, name, optional) VALUES ($1,$2,$3,$4,$5) RETURNING id`, [
+          a.tenantId,
+          body.branchId ?? null,
+          body.holidayDate,
+          body.name,
+          body.optional,
+        ]);
+        await audit(db, { ...a.auditBase, action: 'attendance.holiday_created', category: 'configuration', targetType: 'holiday', targetId: r.rows[0]!.id, metadata: body });
+        reply.code(201);
+        return { id: r.rows[0]!.id };
+      });
+    },
+  );
 
-  only(app, 'holidays').delete('/holidays/:id', { schema: { params: IdParams }, config: { perm: ['attendance.configure'], feature: ['holidays'] } }, async (req) => {
-    const a = tenantActor(req, 'attendance.configure');
-    const { id } = IdParams.parse(req.params);
-    return a.tx(async (db) => {
-      await requireFeature(db, a.tenantId, 'holidays');
-      const h = await db.query<{ holiday_date: string }>('SELECT holiday_date FROM holidays WHERE tenant_id=$1 AND id=$2', [a.tenantId, id]);
-      if (!h.rowCount) throw notFound();
-      if ((await lockedDates(db, a.tenantId, h.rows[0]!.holiday_date, h.rows[0]!.holiday_date)).size) throw conflict('This date is in a locked attendance period');
-      await db.query('DELETE FROM holidays WHERE tenant_id=$1 AND id=$2', [a.tenantId, id]);
-      await audit(db, { ...a.auditBase, action: 'attendance.holiday_deleted', category: 'configuration', targetType: 'holiday', targetId: id, metadata: h.rows[0] });
-      return { ok: true };
-    });
-  });
+  only(app, 'holidays').delete(
+    '/holidays/:id',
+    { schema: { response: { 200: R.DeleteAttendanceHolidaysById200 }, params: IdParams }, config: { perm: ['attendance.configure'], feature: ['holidays'] } },
+    async (req) => {
+      const a = tenantActor(req, 'attendance.configure');
+      const { id } = IdParams.parse(req.params);
+      return a.tx(async (db) => {
+        await requireFeature(db, a.tenantId, 'holidays');
+        const h = await db.query<{ holiday_date: string }>('SELECT holiday_date FROM holidays WHERE tenant_id=$1 AND id=$2', [a.tenantId, id]);
+        if (!h.rowCount) throw notFound();
+        if ((await lockedDates(db, a.tenantId, h.rows[0]!.holiday_date, h.rows[0]!.holiday_date)).size) throw conflict('This date is in a locked attendance period');
+        await db.query('DELETE FROM holidays WHERE tenant_id=$1 AND id=$2', [a.tenantId, id]);
+        await audit(db, { ...a.auditBase, action: 'attendance.holiday_deleted', category: 'configuration', targetType: 'holiday', targetId: id, metadata: h.rows[0] });
+        return { ok: true };
+      });
+    },
+  );
 
   // ------------------------------------------------------------ biometric devices (management)
-  only(app, 'attendance.biometric').get('/devices', { schema: {}, config: { permAny: ['attendance.devices.manage', 'attendance.configure'] } }, async (req) => {
-    const a = tenantActorAny(req, 'attendance.devices.manage', 'attendance.configure');
-    return a.tx(async (db) => ({
-      items: (
-        await db.query(
-          `SELECT d.id, d.serial_number, d.name, d.adapter_key, d.status, d.last_sync_at, d.last_clock_drift_seconds,
+  only(app, 'attendance.biometric').get(
+    '/devices',
+    { schema: { response: { 200: R.GetAttendanceDevices200 } }, config: { permAny: ['attendance.devices.manage', 'attendance.configure'] } },
+    async (req) => {
+      const a = tenantActorAny(req, 'attendance.devices.manage', 'attendance.configure');
+      return a.tx(async (db) => ({
+        items: (
+          await db.query(
+            `SELECT d.id, d.serial_number, d.name, d.adapter_key, d.status, d.last_sync_at, d.last_clock_drift_seconds,
         d.last_error, d.api_key_prefix, b.name AS branch_name, d.branch_id,
         (SELECT count(*)::int FROM attendance_events ev WHERE ev.tenant_id=d.tenant_id AND ev.device_id=d.id AND ev.status='unmapped') AS unmapped_events
       FROM attendance_devices d JOIN branches b ON b.tenant_id=d.tenant_id AND b.id=d.branch_id WHERE d.tenant_id=$1 ORDER BY d.name`,
-          [a.tenantId],
-        )
-      ).rows,
-    }));
-  });
+            [a.tenantId],
+          )
+        ).rows,
+      }));
+    },
+  );
 
   only(app, 'attendance.biometric').post(
     '/devices',
-    { schema: { body: DevicesBody }, config: { perm: ['attendance.devices.manage'], feature: ['attendance'] } },
+    { schema: { response: { 201: R.PostAttendanceDevices201 }, body: DevicesBody }, config: { perm: ['attendance.devices.manage'], feature: ['attendance'] } },
     async (req, reply) => {
       const a = tenantActor(req, 'attendance.devices.manage');
       const body = DevicesBody.parse(req.body);
@@ -806,21 +874,25 @@ export async function attendanceRoutes(app: FastifyInstance) {
     },
   );
 
-  only(app, 'attendance.biometric').post('/devices/:id/rotate-key', { schema: { params: IdParams }, config: { perm: ['attendance.devices.manage'] } }, async (req) => {
-    const a = tenantActor(req, 'attendance.devices.manage');
-    const { id } = IdParams.parse(req.params);
-    return a.tx(async (db) => {
-      const { prefix, secret, key } = newDeviceKey();
-      const r = await db.query(`UPDATE attendance_devices SET api_key_hash=$3, api_key_prefix=$4 WHERE tenant_id=$1 AND id=$2`, [a.tenantId, id, sha256(secret), prefix]);
-      if (!r.rowCount) throw notFound('Device not found');
-      await audit(db, { ...a.auditBase, action: 'attendance.device_key_rotated', category: 'security', targetType: 'device', targetId: id, metadata: { keyPrefix: prefix } });
-      return { apiKey: key };
-    });
-  });
+  only(app, 'attendance.biometric').post(
+    '/devices/:id/rotate-key',
+    { schema: { response: { 200: R.PostAttendanceDevicesByIdRotateKey200 }, params: IdParams }, config: { perm: ['attendance.devices.manage'] } },
+    async (req) => {
+      const a = tenantActor(req, 'attendance.devices.manage');
+      const { id } = IdParams.parse(req.params);
+      return a.tx(async (db) => {
+        const { prefix, secret, key } = newDeviceKey();
+        const r = await db.query(`UPDATE attendance_devices SET api_key_hash=$3, api_key_prefix=$4 WHERE tenant_id=$1 AND id=$2`, [a.tenantId, id, sha256(secret), prefix]);
+        if (!r.rowCount) throw notFound('Device not found');
+        await audit(db, { ...a.auditBase, action: 'attendance.device_key_rotated', category: 'security', targetType: 'device', targetId: id, metadata: { keyPrefix: prefix } });
+        return { apiKey: key };
+      });
+    },
+  );
 
   only(app, 'attendance.biometric').patch(
     '/devices/:id',
-    { schema: { params: IdParams, body: PatchDevicesBody }, config: { perm: ['attendance.devices.manage'] } },
+    { schema: { response: { 200: R.PatchAttendanceDevicesById200 }, params: IdParams, body: PatchDevicesBody }, config: { perm: ['attendance.devices.manage'] } },
     async (req) => {
       const a = tenantActor(req, 'attendance.devices.manage');
       const { id } = IdParams.parse(req.params);
@@ -848,24 +920,31 @@ export async function attendanceRoutes(app: FastifyInstance) {
     },
   );
 
-  only(app, 'attendance.biometric').get('/device-mappings', { schema: { querystring: ListQuery }, config: { perm: ['attendance.devices.manage'] } }, async (req) => {
-    const a = tenantActor(req, 'attendance.devices.manage');
-    const q = ListQuery.parse(req.query);
-    return a.tx((db) =>
-      pageOf(
-        db,
-        `SELECT m.device_user_id, m.employee_id, e.employee_code, trim(e.first_name||' '||coalesce(e.last_name,'')) AS name
+  only(app, 'attendance.biometric').get(
+    '/device-mappings',
+    { schema: { response: { 200: R.GetAttendanceDeviceMappings200 }, querystring: ListQuery }, config: { perm: ['attendance.devices.manage'] } },
+    async (req) => {
+      const a = tenantActor(req, 'attendance.devices.manage');
+      const q = ListQuery.parse(req.query);
+      return a.tx((db) =>
+        pageOf(
+          db,
+          `SELECT m.device_user_id, m.employee_id, e.employee_code, trim(e.first_name||' '||coalesce(e.last_name,'')) AS name
       FROM device_user_mappings m JOIN employees e ON e.tenant_id=m.tenant_id AND e.id=m.employee_id WHERE m.tenant_id=$1 ORDER BY m.device_user_id`,
-        [a.tenantId],
-        q,
-      ),
-    );
-  });
+          [a.tenantId],
+          q,
+        ),
+      );
+    },
+  );
 
   /** Map a device enrolment id to an employee and re-process any events that were waiting in the unmapped queue. */
   only(app, 'attendance.biometric').put(
     '/device-mappings/:deviceUserId',
-    { schema: { params: DeviceMappingsParams, body: DeviceMappingsBody }, config: { perm: ['attendance.devices.manage'] } },
+    {
+      schema: { response: { 200: R.PutAttendanceDeviceMappingsByDeviceUserId200 }, params: DeviceMappingsParams, body: DeviceMappingsBody },
+      config: { perm: ['attendance.devices.manage'] },
+    },
     async (req) => {
       const a = tenantActor(req, 'attendance.devices.manage');
       const { deviceUserId } = DeviceMappingsParams.parse(req.params);
@@ -902,20 +981,24 @@ export async function attendanceRoutes(app: FastifyInstance) {
     },
   );
 
-  only(app, 'attendance.biometric').get('/device-events/unmapped', { schema: { querystring: ListQuery }, config: { perm: ['attendance.devices.manage'] } }, async (req) => {
-    const a = tenantActor(req, 'attendance.devices.manage');
-    const q = ListQuery.parse(req.query);
-    return a.tx((db) =>
-      pageOf(
-        db,
-        `SELECT ev.id, ev.device_user_id, ev.event_time, ev.device_time, ev.direction, ev.received_at, d.name AS device_name, d.serial_number
+  only(app, 'attendance.biometric').get(
+    '/device-events/unmapped',
+    { schema: { response: { 200: R.GetAttendanceDeviceEventsUnmapped200 }, querystring: ListQuery }, config: { perm: ['attendance.devices.manage'] } },
+    async (req) => {
+      const a = tenantActor(req, 'attendance.devices.manage');
+      const q = ListQuery.parse(req.query);
+      return a.tx((db) =>
+        pageOf(
+          db,
+          `SELECT ev.id, ev.device_user_id, ev.event_time, ev.device_time, ev.direction, ev.received_at, d.name AS device_name, d.serial_number
       FROM attendance_events ev LEFT JOIN attendance_devices d ON d.tenant_id=ev.tenant_id AND d.id=ev.device_id
       WHERE ev.tenant_id=$1 AND ev.status='unmapped' ORDER BY ev.event_time DESC`,
-        [a.tenantId],
-        q,
-      ),
-    );
-  });
+          [a.tenantId],
+          q,
+        ),
+      );
+    },
+  );
 }
 
 function newDeviceKey() {
