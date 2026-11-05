@@ -22,7 +22,11 @@ export function isBreached(password: string) {
   return list.has(lower) || list.has(lower.replace(/[^a-z]+$/, ''));
 }
 
-export interface PasswordContext { minLength: number; email: string; displayName?: string }
+export interface PasswordContext {
+  minLength: number;
+  email: string;
+  displayName?: string;
+}
 export type PasswordProblem = 'too_short' | 'too_long' | 'breached' | 'personal' | 'too_simple';
 
 export function passwordProblems(password: string, c: PasswordContext): PasswordProblem[] {

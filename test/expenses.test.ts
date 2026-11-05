@@ -10,12 +10,22 @@ import { addDays, localDate } from '../src/modules/attendance/time.js';
 
 const PDF = Buffer.from('%PDF-1.7\n1 0 obj << /Type /Catalog >> endobj\n%%EOF\n');
 const today = localDate(new Date(), 'Asia/Kolkata');
-let app: FastifyInstance; let T: TenantFixture; let emp: Client; let mgr: Client; let fin1: Client; let fin2: Client;
+let app: FastifyInstance;
+let T: TenantFixture;
+let emp: Client;
+let mgr: Client;
+let fin1: Client;
+let fin2: Client;
 const cats: Record<string, string> = {};
 
 async function financeUser(key: string, roles: string[]) {
   const email = `${key}@${T.host}`;
-  const [u] = await ownerQuery<{ id: string }>(`INSERT INTO users (tenant_id, email, display_name, password_hash) VALUES ($1,$2,$3,$4) RETURNING id`, [T.id, email, key, await hashPassword(PASSWORD)]);
+  const [u] = await ownerQuery<{ id: string }>(`INSERT INTO users (tenant_id, email, display_name, password_hash) VALUES ($1,$2,$3,$4) RETURNING id`, [
+    T.id,
+    email,
+    key,
+    await hashPassword(PASSWORD),
+  ]);
   for (const r of roles) await ownerQuery(`INSERT INTO user_roles (user_id, tenant_id, role_key) VALUES ($1,$2,$3)`, [u!.id, T.id, r]);
   return Client.login(app, T.host, email);
 }
@@ -38,21 +48,31 @@ beforeAll(async () => {
     TRAVEL: { name: 'Local travel', requiresReceipt: false, maxAmount: 2000 },
     HOTEL: { name: 'Accommodation', gstApplicable: true },
     PPE: { name: 'PPE purchase', maxAmount: 5000 },
-  })) cats[code] = (await fin1.post('/api/v1/expenses/categories', { code, ...o })).json().id;
-  await ownerQuery(`INSERT INTO employee_bank_accounts (employee_id, tenant_id, account_holder, account_number_enc, account_last4, ifsc)
-    VALUES ($1,$2,'Emp N2',$3,'9012','SBIN0001234')`, [T.users.employee!.employeeId, T.id, app.deps.cipher.encrypt('123456789012')]);
+  }))
+    cats[code] = (await fin1.post('/api/v1/expenses/categories', { code, ...o })).json().id;
+  await ownerQuery(
+    `INSERT INTO employee_bank_accounts (employee_id, tenant_id, account_holder, account_number_enc, account_last4, ifsc)
+    VALUES ($1,$2,'Emp N2',$3,'9012','SBIN0001234')`,
+    [T.users.employee!.employeeId, T.id, app.deps.cipher.encrypt('123456789012')],
+  );
 });
-afterAll(async () => { await app.close(); setStore(null); await makeApp().then((x) => x.close()); });
+afterAll(async () => {
+  await app.close();
+  setStore(null);
+  await makeApp().then((x) => x.close());
+});
 
 describe('claim validation', () => {
   it('enforces receipts, limits, date window and GST pairing; computes the total in decimals', async () => {
     const id = await newClaim(emp);
-    expect(problem((await addItem(emp, id, { categoryId: cats.PPE!, expenseDate: today, amount: '120.50', description: 'Gloves' }, false))).detail).toMatch(/needs a receipt/);
-    expect(problem((await addItem(emp, id, { categoryId: cats.TRAVEL!, expenseDate: today, amount: '2500', description: 'Cab' }, false))).detail).toMatch(/limited to 2000/);
+    expect(problem(await addItem(emp, id, { categoryId: cats.PPE!, expenseDate: today, amount: '120.50', description: 'Gloves' }, false)).detail).toMatch(/needs a receipt/);
+    expect(problem(await addItem(emp, id, { categoryId: cats.TRAVEL!, expenseDate: today, amount: '2500', description: 'Cab' }, false)).detail).toMatch(/limited to 2000/);
     expect((await addItem(emp, id, { categoryId: cats.TRAVEL!, expenseDate: addDays(today, 1), amount: '10', description: 'Future' }, false)).statusCode).toBe(400);
-    expect(problem((await addItem(emp, id, { categoryId: cats.TRAVEL!, expenseDate: addDays(today, -90), amount: '10', description: 'Too old' }, false))).detail).toMatch(/older than 60 days/);
+    expect(problem(await addItem(emp, id, { categoryId: cats.TRAVEL!, expenseDate: addDays(today, -90), amount: '10', description: 'Too old' }, false)).detail).toMatch(
+      /older than 60 days/,
+    );
     expect((await addItem(emp, id, { categoryId: cats.TRAVEL!, expenseDate: today, amount: '10.123', description: 'Precision' }, false)).statusCode).toBe(400);
-    expect(problem((await addItem(emp, id, { categoryId: cats.HOTEL!, expenseDate: today, amount: '3000', description: 'Hotel', invoiceNumber: 'INV-1' }))).detail).toMatch(/GSTIN/);
+    expect(problem(await addItem(emp, id, { categoryId: cats.HOTEL!, expenseDate: today, amount: '3000', description: 'Hotel', invoiceNumber: 'INV-1' })).detail).toMatch(/GSTIN/);
     expect((await addItem(emp, id, { categoryId: cats.TRAVEL!, expenseDate: today, amount: '0.10', description: 'Auto' }, false)).statusCode).toBe(201);
     expect((await addItem(emp, id, { categoryId: cats.TRAVEL!, expenseDate: today, amount: '0.20', description: 'Auto 2' }, false)).statusCode).toBe(201);
     expect((await emp.get(`/api/v1/expenses/claims/${id}`)).json().total).toBe('0.30'); // not 0.30000000000000004
@@ -63,8 +83,15 @@ describe('claim validation', () => {
     const hotel = { categoryId: cats.HOTEL!, expenseDate: today, amount: '4200', description: 'Hotel, 1 night', gstin: '27AAAAA0000A1Z5', invoiceNumber: 'HTL/889' };
     expect((await addItem(emp, a, hotel)).statusCode).toBe(201);
     const b = await newClaim(emp, 'Hotel stay B');
-    expect(problem((await addItem(emp, b, { ...hotel, invoiceNumber: 'htl/889' }))).detail).toMatch(/already been claimed/);
-    const r = await addItem(emp, b, { categoryId: cats.HOTEL!, expenseDate: today, amount: '4200', description: 'Same night again', gstin: '27AAAAA0000A1Z5', invoiceNumber: 'HTL/890' });
+    expect(problem(await addItem(emp, b, { ...hotel, invoiceNumber: 'htl/889' })).detail).toMatch(/already been claimed/);
+    const r = await addItem(emp, b, {
+      categoryId: cats.HOTEL!,
+      expenseDate: today,
+      amount: '4200',
+      description: 'Same night again',
+      gstin: '27AAAAA0000A1Z5',
+      invoiceNumber: 'HTL/890',
+    });
     expect(r.json().possibleDuplicate).toBe(true);
   });
 });
@@ -82,10 +109,13 @@ describe('approval and payment', () => {
       expect(await item(mgr)).toBeUndefined(); // the finance step is someone else's
       expect((await mgr.post(`/api/v1/approvals/${req}/act`, { action: 'approve' })).statusCode).toBe(403);
       expect((await fin1.post(`/api/v1/approvals/${req}/act`, { action: 'approve' })).statusCode).toBe(200);
-    } finally { await ownerQuery(`DELETE FROM user_roles WHERE user_id=$1 AND role_key='finance_manager'`, [T.users.manager!.id]); }
+    } finally {
+      await ownerQuery(`DELETE FROM user_roles WHERE user_id=$1 AND role_key='finance_manager'`, [T.users.manager!.id]);
+    }
   });
 
-  let claimId = ''; let batchId = '';
+  let claimId = '';
+  let batchId = '';
   it('requires manager then finance approval; colleagues cannot see the claim', async () => {
     claimId = await newClaim(emp, 'PPE and travel — Nov');
     await addItem(emp, claimId, { categoryId: cats.PPE!, expenseDate: today, amount: '1499.00', description: 'Safety goggles' });

@@ -3,8 +3,10 @@ import type { FastifyInstance } from 'fastify';
 import { problem, makeApp, createTenant, Client, type TenantFixture, flags } from './helpers.js';
 
 // The organization's own roles: defined within the grant limits, applied at once, never a way around MFA.
-let app: FastifyInstance; let T: TenantFixture;
-let admin: Client; let it_: Client;
+let app: FastifyInstance;
+let T: TenantFixture;
+let admin: Client;
+let it_: Client;
 const login = (k: string) => Client.login(app, T.host, T.users[k]!.email);
 const me = async (c: Client) => (await c.get('/api/v1/auth/me')).json();
 const roles = async (c: Client) => (await c.get('/api/v1/tenant/roles')).json();
@@ -12,15 +14,21 @@ const roles = async (c: Client) => (await c.get('/api/v1/tenant/roles')).json();
 beforeAll(async () => {
   app = await makeApp({ ...flags('default,leave,training') });
   T = await createTenant();
-  admin = await login('admin'); it_ = await login('it');
+  admin = await login('admin');
+  it_ = await login('it');
 });
-afterAll(async () => { await app.close(); });
+afterAll(async () => {
+  await app.close();
+});
 
 describe('custom roles', () => {
   let key = '';
   it('an administrator defines a role; holders get exactly its permissions', async () => {
-    const r = await admin.post('/api/v1/tenant/roles', { name: 'Lab coordinator', description: 'Keeps training records for the floor',
-      permissions: ['training.manage', 'leave.team.read', 'training.manage'] });
+    const r = await admin.post('/api/v1/tenant/roles', {
+      name: 'Lab coordinator',
+      description: 'Keeps training records for the floor',
+      permissions: ['training.manage', 'leave.team.read', 'training.manage'],
+    });
     expect(r.statusCode).toBe(201);
     key = r.json().key;
     expect(key).toBe('custom:lab_coordinator');
@@ -60,7 +68,7 @@ describe('custom roles', () => {
     expect(problem(r).detail).toMatch(/View payroll runs/);
     r = await it_.post('/api/v1/tenant/roles', { name: 'Asset desk', permissions: ['assets.manage', 'org.read'] });
     expect(r.statusCode).toBe(201);
-    expect((await it_.patch(`/api/v1/tenant/roles/${key}`, { name: 'Mine now' })).statusCode).toBe(403);   // carries leave.team.read, which IT lacks
+    expect((await it_.patch(`/api/v1/tenant/roles/${key}`, { name: 'Mine now' })).statusCode).toBe(403); // carries leave.team.read, which IT lacks
     expect((await it_.patch(`/api/v1/tenant/roles/${r.json().key}`, { permissions: ['assets.manage', 'payroll.read'] })).statusCode).toBe(403);
     const view = await roles(it_);
     expect(view.canManage).toBe(true);

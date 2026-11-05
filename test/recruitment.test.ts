@@ -11,19 +11,46 @@ import { addDays, localDate } from '../src/modules/attendance/time.js';
 const PDF = Buffer.from('%PDF-1.7\n1 0 obj << /Type /Catalog >> endobj\n%%EOF\n');
 const today = localDate(new Date(), 'Asia/Kolkata');
 let storeDir: string;
-let app: FastifyInstance; let T: TenantFixture;
-let hr: Client; let hrHead: Client; let hrExec: Client; let mgr: Client; let emp: Client; let other: Client;
-let reqId: string; let candId: string; let appId: string; let offerId: string;
+let app: FastifyInstance;
+let T: TenantFixture;
+let hr: Client;
+let hrHead: Client;
+let hrExec: Client;
+let mgr: Client;
+let emp: Client;
+let other: Client;
+let reqId: string;
+let candId: string;
+let appId: string;
+let offerId: string;
 
 async function user(key: string, roles: string[]) {
   const email = `${key}@${T.host}`;
-  const [u] = await ownerQuery<{ id: string }>(`INSERT INTO users (tenant_id, email, display_name, password_hash) VALUES ($1,$2,$3,$4) RETURNING id`, [T.id, email, key, await hashPassword(PASSWORD)]);
+  const [u] = await ownerQuery<{ id: string }>(`INSERT INTO users (tenant_id, email, display_name, password_hash) VALUES ($1,$2,$3,$4) RETURNING id`, [
+    T.id,
+    email,
+    key,
+    await hashPassword(PASSWORD),
+  ]);
   for (const r of roles) await ownerQuery(`INSERT INTO user_roles (user_id, tenant_id, role_key) VALUES ($1,$2,$3)`, [u!.id, T.id, r]);
   return Client.login(app, T.host, email);
 }
 const addCandidate = (c: Client, f: Record<string, string>, resume?: Buffer, name = 'cv.pdf') => {
-  const m = multipart({ firstName: 'Asha', lastName: 'Rao', email: 'asha.rao@mail.example', phone: '+91 98765 43210', source: 'job_portal',
-    qualification: 'M.Sc. Analytical Chemistry', experienceMonths: '36', consent: 'true', consentNote: 'Applied via portal; consent checkbox', ...f }, resume ? { name, content: resume } : undefined);
+  const m = multipart(
+    {
+      firstName: 'Asha',
+      lastName: 'Rao',
+      email: 'asha.rao@mail.example',
+      phone: '+91 98765 43210',
+      source: 'job_portal',
+      qualification: 'M.Sc. Analytical Chemistry',
+      experienceMonths: '36',
+      consent: 'true',
+      consentNote: 'Applied via portal; consent checkbox',
+      ...f,
+    },
+    resume ? { name, content: resume } : undefined,
+  );
   return c.req('POST', '/api/v1/recruitment/candidates', m.body, m.headers);
 };
 const approveFor = async (c: Client, entityId: string) => {
@@ -31,7 +58,8 @@ const approveFor = async (c: Client, entityId: string) => {
   return c.post(`/api/v1/approvals/${item.id}/act`, { action: 'approve' });
 };
 const version = async (id: string) => (await hr.get(`/api/v1/recruitment/applications/${id}?reveal=1`)).json().version as number;
-const move = async (stage: string, extra: Record<string, unknown> = {}) => hr.post(`/api/v1/recruitment/applications/${appId}/move`, { stage, expectedVersion: await version(appId), ...extra });
+const move = async (stage: string, extra: Record<string, unknown> = {}) =>
+  hr.post(`/api/v1/recruitment/applications/${appId}/move`, { stage, expectedVersion: await version(appId), ...extra });
 
 beforeAll(async () => {
   storeDir = mkdtempSync(path.join(tmpdir(), 'hrms-rec-'));
@@ -45,12 +73,23 @@ beforeAll(async () => {
   hrHead = await user('hrhead', ['hr_admin']);
   hrExec = await user('hrexec', ['hr_executive']);
 });
-afterAll(async () => { await app.close(); setStore(null); });
+afterAll(async () => {
+  await app.close();
+  setStore(null);
+});
 
 describe('requisitions', () => {
   it('a manager requests headcount; HR approves; visibility follows the request', async () => {
-    const body = { title: 'Senior Chemist — Water lab', legalEntityId: T.legalEntityId, branchId: T.branchId, departmentId: T.deptId, designation: 'Senior Chemist',
-      positions: 1, justification: 'Backfill for resignation; NABL scope needs two authorized analysts', hiringManagerId: T.users.manager!.employeeId };
+    const body = {
+      title: 'Senior Chemist — Water lab',
+      legalEntityId: T.legalEntityId,
+      branchId: T.branchId,
+      departmentId: T.deptId,
+      designation: 'Senior Chemist',
+      positions: 1,
+      justification: 'Backfill for resignation; NABL scope needs two authorized analysts',
+      hiringManagerId: T.users.manager!.employeeId,
+    };
     expect((await mgr.post('/api/v1/recruitment/requisitions', { ...body, budgetCtcMax: 900000 })).statusCode).toBe(403); // no compensation access
     expect((await emp.post('/api/v1/recruitment/requisitions', body)).statusCode).toBe(403);
     const r = await mgr.post('/api/v1/recruitment/requisitions', body);
@@ -71,7 +110,7 @@ describe('requisitions', () => {
 
 describe('candidates', () => {
   it('requires consent and a contact; rejects non-documents; detects duplicates; restricts CTC', async () => {
-    expect(JSON.stringify(problem((await addCandidate(hr, { consent: 'false' }))).errors)).toMatch(/consent/);
+    expect(JSON.stringify(problem(await addCandidate(hr, { consent: 'false' })).errors)).toMatch(/consent/);
     expect((await addCandidate(hr, { email: '', phone: '' })).statusCode).toBe(400);
     expect((await addCandidate(hr, {}, Buffer.from('MZ\x90\x00 binary'), 'cv.exe')).statusCode).toBe(415);
     expect((await addCandidate(hrExec, { expectedCtc: '800000' })).statusCode).toBe(403);
@@ -99,7 +138,7 @@ describe('pipeline and interviews', () => {
     appId = r.json().id;
     expect((await hr.post('/api/v1/recruitment/applications', { requisitionId: reqId, candidateId: candId })).statusCode).toBe(409);
     expect((await move('interview')).statusCode).toBe(409); // must screen first
-    expect(problem((await move('hired'))).detail).toMatch(/accepted offer/);
+    expect(problem(await move('hired')).detail).toMatch(/accepted offer/);
     expect((await move('screening')).statusCode).toBe(200);
     expect((await move('rejected')).statusCode).toBe(400);
     expect((await move('interview', { note: 'Strong CRM experience' })).statusCode).toBe(200);
@@ -115,16 +154,30 @@ describe('pipeline and interviews', () => {
     expect(Object.keys(pu[0]).sort()).toEqual(['designation', 'display_name', 'id']);
     expect((await emp.get('/api/v1/recruitment/panel-users')).statusCode).toBe(403);
     const started = new Date(Date.now() - 3600e3).toISOString();
-    const iv = await hr.post(`/api/v1/recruitment/applications/${appId}/interviews`, { round: 1, kind: 'practical_lab', scheduledAt: started, location: 'Lab 2',
-      panelUserIds: [T.users.manager!.id, T.users.other!.id] });
+    const iv = await hr.post(`/api/v1/recruitment/applications/${appId}/interviews`, {
+      round: 1,
+      kind: 'practical_lab',
+      scheduledAt: started,
+      location: 'Lab 2',
+      panelUserIds: [T.users.manager!.id, T.users.other!.id],
+    });
     expect(iv.statusCode).toBe(201);
     const ivId = iv.json().id;
     expect((await ownerQuery(`SELECT 1 FROM notifications WHERE tenant_id=$1 AND user_id=$2 AND kind='recruitment.interview'`, [T.id, T.users.other!.id])).length).toBe(1);
-    const future = await hr.post(`/api/v1/recruitment/applications/${appId}/interviews`, { round: 2, kind: 'hr', scheduledAt: new Date(Date.now() + 86400e3).toISOString(), panelUserIds: [T.users.other!.id] });
-    expect((await other.post(`/api/v1/recruitment/interviews/${future.json().id}/feedback`, { rating: 4, recommendation: 'yes', notes: 'Not yet held — must be refused' })).statusCode).toBe(409);
+    const future = await hr.post(`/api/v1/recruitment/applications/${appId}/interviews`, {
+      round: 2,
+      kind: 'hr',
+      scheduledAt: new Date(Date.now() + 86400e3).toISOString(),
+      panelUserIds: [T.users.other!.id],
+    });
+    expect(
+      (await other.post(`/api/v1/recruitment/interviews/${future.json().id}/feedback`, { rating: 4, recommendation: 'yes', notes: 'Not yet held — must be refused' })).statusCode,
+    ).toBe(409);
     expect((await other.get('/api/v1/recruitment/interviews/mine')).json().items.length).toBe(2);
     expect((await emp.post(`/api/v1/recruitment/interviews/${ivId}/feedback`, { rating: 5, recommendation: 'yes', notes: 'Not on the panel at all' })).statusCode).toBe(404);
-    expect((await mgr.post(`/api/v1/recruitment/interviews/${ivId}/feedback`, { rating: 5, recommendation: 'strong_yes', notes: 'Ran ICP-OES calibration flawlessly' })).statusCode).toBe(200);
+    expect(
+      (await mgr.post(`/api/v1/recruitment/interviews/${ivId}/feedback`, { rating: 5, recommendation: 'strong_yes', notes: 'Ran ICP-OES calibration flawlessly' })).statusCode,
+    ).toBe(200);
     const seen = (await other.get(`/api/v1/recruitment/applications/${appId}?reveal=1`)).json();
     expect(seen.access).toBe('panel');
     expect(seen.events).toEqual([]);
@@ -143,8 +196,16 @@ describe('pipeline and interviews', () => {
 describe('offers and hire', () => {
   it('offer needs compensation access and a second approver; above-budget is flagged; CTC never in the approval summary', async () => {
     expect((await move('offer')).statusCode).toBe(200);
-    const body = { designation: 'Senior Chemist', legalEntityId: T.legalEntityId, branchId: T.branchId, departmentId: T.deptId, employmentType: 'permanent',
-      annualCtc: 950000, joiningDate: addDays(today, 30), probationMonths: 6 };
+    const body = {
+      designation: 'Senior Chemist',
+      legalEntityId: T.legalEntityId,
+      branchId: T.branchId,
+      departmentId: T.deptId,
+      employmentType: 'permanent',
+      annualCtc: 950000,
+      joiningDate: addDays(today, 30),
+      probationMonths: 6,
+    };
     expect((await hrExec.post(`/api/v1/recruitment/applications/${appId}/offers`, body)).statusCode).toBe(403);
     expect((await hr.post(`/api/v1/recruitment/applications/${appId}/offers`, { ...body, joiningDate: addDays(today, -1) })).statusCode).toBe(400);
     const o = await hr.post(`/api/v1/recruitment/applications/${appId}/offers`, body);
@@ -170,8 +231,16 @@ describe('offers and hire', () => {
     expect(h.statusCode).toBe(201);
     expect(h.json().requisitionClosed).toBe(true);
     const [e] = await ownerQuery<{ status: string; reporting_manager_id: string; designation: string; date_of_joining: string; probation_end_date: string; first_name: string }>(
-      `SELECT status, reporting_manager_id, designation, date_of_joining::text, probation_end_date::text, first_name FROM employees WHERE id=$1`, [h.json().employeeId]);
-    expect(e).toMatchObject({ status: 'pre_joining', reporting_manager_id: T.users.manager!.employeeId, designation: 'Senior Chemist', date_of_joining: addDays(today, 30), first_name: 'Asha' });
+      `SELECT status, reporting_manager_id, designation, date_of_joining::text, probation_end_date::text, first_name FROM employees WHERE id=$1`,
+      [h.json().employeeId],
+    );
+    expect(e).toMatchObject({
+      status: 'pre_joining',
+      reporting_manager_id: T.users.manager!.employeeId,
+      designation: 'Senior Chemist',
+      date_of_joining: addDays(today, 30),
+      first_name: 'Asha',
+    });
     expect(e!.probation_end_date > e!.date_of_joining).toBe(true);
     expect((await hr.get(`/api/v1/recruitment/applications/${appId}?reveal=1`)).json().stage).toBe('hired');
     expect((await hr.get(`/api/v1/recruitment/requisitions/${reqId}?reveal=1`)).json()).toMatchObject({ status: 'closed', filled: 1 });
@@ -183,8 +252,15 @@ describe('hiring approver', () => {
   it('management signs off requisitions and offers an HR administrator drafted, sees pay, but cannot run the pipeline', async () => {
     const director = await user('director', ['hiring_approver']);
     // HR (the only HR administrator here) drafts and submits; the director is the second approver.
-    const r = await hrHead.post('/api/v1/recruitment/requisitions', { title: 'Microbiologist — Food lab', legalEntityId: T.legalEntityId, branchId: T.branchId, departmentId: T.deptId,
-      positions: 1, justification: 'New scope: pathogen testing', budgetCtcMax: 700000 });
+    const r = await hrHead.post('/api/v1/recruitment/requisitions', {
+      title: 'Microbiologist — Food lab',
+      legalEntityId: T.legalEntityId,
+      branchId: T.branchId,
+      departmentId: T.deptId,
+      positions: 1,
+      justification: 'New scope: pathogen testing',
+      budgetCtcMax: 700000,
+    });
     expect(r.statusCode).toBe(201);
     expect((await hrHead.post(`/api/v1/recruitment/requisitions/${r.json().id}/submit`)).statusCode).toBe(200);
     expect((await approveFor(director, r.json().id)).statusCode).toBe(200);
@@ -208,7 +284,10 @@ describe('retention and erasure', () => {
     expect(existsSync(file)).toBe(true);
     await ownerQuery(`UPDATE candidates SET retain_until=$2::date - 1 WHERE id = ANY($1::uuid[])`, [[id, candId], today]);
     expect((await hr.runJob('recruitment.retention')).json().status).toBe('succeeded');
-    const [old] = await ownerQuery<{ status: string; email: string | null; first_name: string; resume_key: string | null }>(`SELECT status, email, first_name, resume_key FROM candidates WHERE id=$1`, [id]);
+    const [old] = await ownerQuery<{ status: string; email: string | null; first_name: string; resume_key: string | null }>(
+      `SELECT status, email, first_name, resume_key FROM candidates WHERE id=$1`,
+      [id],
+    );
     expect(old).toMatchObject({ status: 'anonymized', email: null, first_name: 'Anonymized', resume_key: null });
     expect(existsSync(file)).toBe(false);
     const [hired] = await ownerQuery<{ status: string }>(`SELECT status FROM candidates WHERE id=$1`, [candId]);
@@ -221,7 +300,10 @@ describe('retention and erasure', () => {
     expect((await hrExec.post(`/api/v1/recruitment/candidates/${ravi}/anonymize`, { reason: 'Candidate asked us to delete their data' })).statusCode).toBe(200);
     expect((await hrExec.post(`/api/v1/recruitment/candidates/${ravi}/anonymize`, { reason: 'again' })).statusCode).toBe(404);
     const off = await makeApp({ ...flags('default') });
-    try { expect(problem((await (await Client.login(off, T.host, T.users.hr!.email)).get('/api/v1/recruitment/requisitions?reveal=1'))).code).toBe('not_found'); }
-    finally { await off.close(); }
+    try {
+      expect(problem(await (await Client.login(off, T.host, T.users.hr!.email)).get('/api/v1/recruitment/requisitions?reveal=1')).code).toBe('not_found');
+    } finally {
+      await off.close();
+    }
   });
 });

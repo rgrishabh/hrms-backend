@@ -10,7 +10,10 @@ const code = (r: Parameters<typeof problem>[0]) => (r.statusCode >= 400 ? proble
  * routes that remembered to call requireFeature (gateFeatures on the plugin).
  */
 describe('module-wide feature gates', () => {
-  let off: FastifyInstance; let T: TenantFixture; let admin: Client; let hr: Client;
+  let off: FastifyInstance;
+  let T: TenantFixture;
+  let admin: Client;
+  let hr: Client;
   // Onboarding on, offboarding off; expenses, assets, payroll, cases, performance off.
   beforeAll(async () => {
     off = await makeApp({ ...flags('core.employees,core.onboarding,attendance,leave') });
@@ -18,14 +21,23 @@ describe('module-wide feature gates', () => {
     admin = await Client.login(off, T.host, T.users.admin!.email);
     hr = await Client.login(off, T.host, T.users.hr!.email);
   });
-  afterAll(async () => { await off.close(); });
+  afterAll(async () => {
+    await off.close();
+  });
 
   it('refuses routes of a module that is off, before permission or lookup', async () => {
     for (const [method, url] of [
-      ['GET', '/api/v1/expenses/payables'], ['GET', '/api/v1/expenses/batches'], ['GET', '/api/v1/expenses/reports/ageing'],
-      ['POST', `/api/v1/expenses/batches/${ID}/approve`], ['GET', `/api/v1/assets/${ID}/history`], ['GET', '/api/v1/cases/people'],
-      ['GET', `/api/v1/performance/reviews/${ID}`], ['POST', `/api/v1/payroll/statutory-rules/${ID}/retire`], ['GET', '/api/v1/documents'],
-      ['GET', '/api/v1/recruitment/requisitions'], ['GET', '/api/v1/policies'],
+      ['GET', '/api/v1/expenses/payables'],
+      ['GET', '/api/v1/expenses/batches'],
+      ['GET', '/api/v1/expenses/reports/ageing'],
+      ['POST', `/api/v1/expenses/batches/${ID}/approve`],
+      ['GET', `/api/v1/assets/${ID}/history`],
+      ['GET', '/api/v1/cases/people'],
+      ['GET', `/api/v1/performance/reviews/${ID}`],
+      ['POST', `/api/v1/payroll/statutory-rules/${ID}/retire`],
+      ['GET', '/api/v1/documents'],
+      ['GET', '/api/v1/recruitment/requisitions'],
+      ['GET', '/api/v1/policies'],
     ] as const) {
       const r = await admin.req(method, url, method === 'POST' ? {} : undefined);
       expect([url, r.statusCode, code(r)]).toEqual([url, 404, 'not_found']);

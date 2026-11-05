@@ -2,9 +2,15 @@ import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import type { FastifyInstance } from 'fastify';
 import { problem, makeApp, createTenant, Client, ownerQuery, type TenantFixture, flags } from './helpers.js';
 
-let app: FastifyInstance; let T: TenantFixture;
-let hr: Client; let emp: Client; let mgr: Client; let other: Client; let pay: Client;
-let empId: string; let hrId: string;
+let app: FastifyInstance;
+let T: TenantFixture;
+let hr: Client;
+let emp: Client;
+let mgr: Client;
+let other: Client;
+let pay: Client;
+let empId: string;
+let hrId: string;
 const today = new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Kolkata' }).format(new Date());
 const yearsAgo = (n: number) => `${Number(today.slice(0, 4)) - n}${today.slice(4)}`;
 
@@ -33,7 +39,9 @@ beforeAll(async () => {
   empId = T.users.employee!.employeeId!;
   hrId = T.users.hr!.employeeId!;
 });
-afterAll(async () => { await app.close(); });
+afterAll(async () => {
+  await app.close();
+});
 
 describe('employee personal details', () => {
   it('starts empty, says what is missing, and is private to the employee and full employee readers', async () => {
@@ -42,42 +50,52 @@ describe('employee personal details', () => {
     expect(r.missing).toEqual(['An emergency contact', 'Current address', 'Permanent address', 'A provident fund nominee']);
     expect(r.edit).toMatchObject({ contacts: 'direct', addresses: 'direct', nominees: 'approval', education: 'approval', experience: 'approval' });
     expect((await profile(hr)).json().edit.nominees).toBe('direct');
-    expect((await profile(pay)).statusCode).toBe(404);                 // personal details (L3) are the employee's and HR's, not payroll's
-    expect((await profile(other)).statusCode).toBe(404);               // a colleague
-    expect((await profile(mgr)).statusCode).toBe(404);                 // the manager does not see personal details
+    expect((await profile(pay)).statusCode).toBe(404); // personal details (L3) are the employee's and HR's, not payroll's
+    expect((await profile(other)).statusCode).toBe(404); // a colleague
+    expect((await profile(mgr)).statusCode).toBe(404); // the manager does not see personal details
   });
 
   it('the employee updates contacts and addresses directly; HR is not asked', async () => {
-    expect((await put(emp, 'contacts', [{ name: 'Meera Kulkarni', relationship: 'Spouse', phone: '+91 98220 12345' }, { name: 'R. Kulkarni', relationship: 'Father', phone: '9822012346', altPhone: '' }])).json()).toEqual({ applied: true });
+    expect(
+      (
+        await put(emp, 'contacts', [
+          { name: 'Meera Kulkarni', relationship: 'Spouse', phone: '+91 98220 12345' },
+          { name: 'R. Kulkarni', relationship: 'Father', phone: '9822012346', altPhone: '' },
+        ])
+      ).json(),
+    ).toEqual({ applied: true });
     expect((await put(emp, 'addresses', ADDRESSES)).json()).toEqual({ applied: true });
     const r = (await profile(emp)).json();
-    expect(r.sections.contacts.map((c: { name: string }) => c.name)).toEqual(['Meera Kulkarni', 'R. Kulkarni']);   // order = who to call first
+    expect(r.sections.contacts.map((c: { name: string }) => c.name)).toEqual(['Meera Kulkarni', 'R. Kulkarni']); // order = who to call first
     expect(r.sections.addresses).toHaveLength(2);
     expect(r.missing).toEqual(['A provident fund nominee']);
     expect((await hr.get('/api/v1/approvals/inbox')).json().items.some((x: { entity_type: string }) => x.entity_type === 'employee_profile_change')).toBe(false);
-    const [log] = await ownerQuery<{ change_metadata: Record<string, unknown> }>(`SELECT change_metadata FROM audit_logs WHERE tenant_id=$1 AND action='employee.profile_updated' AND target_id=$2 ORDER BY created_at LIMIT 1`, [T.id, empId]);
-    expect(JSON.stringify(log)).not.toMatch(/Meera|98220/);              // the audit log keeps counts, not contents
+    const [log] = await ownerQuery<{ change_metadata: Record<string, unknown> }>(
+      `SELECT change_metadata FROM audit_logs WHERE tenant_id=$1 AND action='employee.profile_updated' AND target_id=$2 ORDER BY created_at LIMIT 1`,
+      [T.id, empId],
+    );
+    expect(JSON.stringify(log)).not.toMatch(/Meera|98220/); // the audit log keeps counts, not contents
   });
 
   it('rejects invalid entries with a clear reason', async () => {
-    expect(problem((await put(emp, 'addresses', [{ ...ADDRESSES[0], postalCode: '41104' }]))).errors).toEqual([{ path: '0.postalCode', message: 'Enter a 6-digit PIN code' }]);
-    expect(problem((await put(emp, 'addresses', [ADDRESSES[0], ADDRESSES[0]]))).detail).toMatch(/once/);
+    expect(problem(await put(emp, 'addresses', [{ ...ADDRESSES[0], postalCode: '41104' }])).errors).toEqual([{ path: '0.postalCode', message: 'Enter a 6-digit PIN code' }]);
+    expect(problem(await put(emp, 'addresses', [ADDRESSES[0], ADDRESSES[0]])).detail).toMatch(/once/);
     expect((await put(emp, 'contacts', Array(6).fill({ name: 'Someone', relationship: 'Friend', phone: '9822012345' }))).statusCode).toBe(400);
-    expect((await put(other, 'contacts', [], empId)).statusCode).toBe(404);   // not someone else's
+    expect((await put(other, 'contacts', [], empId)).statusCode).toBe(404); // not someone else's
   });
 
   it('nominee changes by the employee wait for HR approval, which checks shares and minors', async () => {
     const minor = { purpose: 'pf', name: 'Aarav Kulkarni', relationship: 'Son', dateOfBirth: yearsAgo(8), sharePercent: 40 };
     const spouse = { purpose: 'pf', name: 'Meera Kulkarni', relationship: 'Spouse', dateOfBirth: yearsAgo(34), sharePercent: 60 };
-    expect(problem((await put(emp, 'nominees', [spouse, { ...minor, sharePercent: 30, guardianName: 'Meera Kulkarni' }]))).detail).toMatch(/add up to 90%/);
-    expect(problem((await put(emp, 'nominees', [spouse, minor]))).detail).toMatch(/minor: name a guardian/);
+    expect(problem(await put(emp, 'nominees', [spouse, { ...minor, sharePercent: 30, guardianName: 'Meera Kulkarni' }])).detail).toMatch(/add up to 90%/);
+    expect(problem(await put(emp, 'nominees', [spouse, minor])).detail).toMatch(/minor: name a guardian/);
     const r = await put(emp, 'nominees', [spouse, { ...minor, guardianName: 'Meera Kulkarni' }]);
     expect(r.statusCode, r.body).toBe(202);
     const { changeId } = r.json();
-    expect((await put(emp, 'nominees', [{ ...spouse, sharePercent: 100 }])).statusCode).toBe(409);   // one pending change per section
+    expect((await put(emp, 'nominees', [{ ...spouse, sharePercent: 100 }])).statusCode).toBe(409); // one pending change per section
 
     const p = (await profile(emp)).json();
-    expect(p.sections.nominees).toEqual([]);                                 // not applied yet
+    expect(p.sections.nominees).toEqual([]); // not applied yet
     expect(p.pending).toEqual([expect.objectContaining({ id: changeId, section: 'nominees' })]);
     const c = (await hr.get(`/api/v1/employees/profile-changes/${changeId}`)).json();
     expect(c).toMatchObject({ section: 'nominees', status: 'pending', current: [] });
@@ -85,13 +103,25 @@ describe('employee personal details', () => {
 
     await approve(hr, changeId);
     const after = (await profile(emp)).json();
-    expect(after.sections.nominees.map((x: { name: string; sharePercent: number }) => [x.name, x.sharePercent])).toEqual([['Meera Kulkarni', 60], ['Aarav Kulkarni', 40]]);
+    expect(after.sections.nominees.map((x: { name: string; sharePercent: number }) => [x.name, x.sharePercent])).toEqual([
+      ['Meera Kulkarni', 60],
+      ['Aarav Kulkarni', 40],
+    ]);
     expect(after.pending).toEqual([]);
     expect(after.missing).toEqual([]);
   });
 
   it('the employee can withdraw a pending change; HR never approves their own', async () => {
-    const r = await put(emp, 'education', [{ level: 'postgraduate', qualification: 'M.Sc. Analytical Chemistry', institution: 'Fergusson College', university: 'Savitribai Phule Pune University', yearOfPassing: 2019, score: '8.1 CGPA' }]);
+    const r = await put(emp, 'education', [
+      {
+        level: 'postgraduate',
+        qualification: 'M.Sc. Analytical Chemistry',
+        institution: 'Fergusson College',
+        university: 'Savitribai Phule Pune University',
+        yearOfPassing: 2019,
+        score: '8.1 CGPA',
+      },
+    ]);
     expect(r.statusCode).toBe(202);
     expect((await other.post(`/api/v1/employees/profile-changes/${r.json().changeId}/withdraw`)).statusCode).toBe(404);
     expect((await emp.post(`/api/v1/employees/profile-changes/${r.json().changeId}/withdraw`)).json()).toEqual({ ok: true });
@@ -104,8 +134,12 @@ describe('employee personal details', () => {
   });
 
   it('HR edits directly; previous employment must end by the date of joining', async () => {
-    expect(problem((await put(hr, 'experience', [{ employer: 'Acme Labs', designation: 'Chemist', fromDate: '2021-06-01', toDate: '2024-02-15' }]))).detail).toMatch(/by the date of joining/);
-    expect((await put(hr, 'experience', [{ employer: 'Acme Labs', designation: 'Chemist', fromDate: '2021-06-01', toDate: '2023-12-31', reasonForLeaving: 'Relocation' }])).json()).toEqual({ applied: true });
+    expect(problem(await put(hr, 'experience', [{ employer: 'Acme Labs', designation: 'Chemist', fromDate: '2021-06-01', toDate: '2024-02-15' }])).detail).toMatch(
+      /by the date of joining/,
+    );
+    expect(
+      (await put(hr, 'experience', [{ employer: 'Acme Labs', designation: 'Chemist', fromDate: '2021-06-01', toDate: '2023-12-31', reasonForLeaving: 'Relocation' }])).json(),
+    ).toEqual({ applied: true });
     expect((await profile(emp)).json().sections.experience).toEqual([expect.objectContaining({ employer: 'Acme Labs', toDate: '2023-12-31' })]);
     expect((await put(mgr, 'experience', [], empId)).statusCode).toBe(404);
   });
@@ -114,8 +148,8 @@ describe('employee personal details', () => {
     expect((await emp.get('/api/v1/reports/missing_personal_details')).statusCode).toBe(403);
     const r = (await hr.get('/api/v1/reports/missing_personal_details')).json();
     const by = Object.fromEntries(r.rows.map((x: { employee_code: string }) => [x.employee_code, x]));
-    expect(by.E2).toBeUndefined();                                           // the employee above is complete
+    expect(by.E2).toBeUndefined(); // the employee above is complete
     expect(by.E3).toMatchObject({ missing: 'Emergency contact, Current address, Permanent address, PF nominee', awaiting: null });
-    expect(by.E4).toMatchObject({ awaiting: 'Nominees' });                   // HR's own change, waiting for someone else
+    expect(by.E4).toMatchObject({ awaiting: 'Nominees' }); // HR's own change, waiting for someone else
   });
 });

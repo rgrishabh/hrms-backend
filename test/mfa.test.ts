@@ -15,14 +15,16 @@ const SILENT = { error: () => undefined };
 
 /** Each app gets its own address, so the per-address limits of one test leave the next alone. */
 // Mail queued here must not reach the mailer of the next test file.
-afterAll(async () => { await ownerQuery(`DELETE FROM email_outbox WHERE status <> 'sent'`); });
+afterAll(async () => {
+  await ownerQuery(`DELETE FROM email_outbox WHERE status <> 'sent'`);
+});
 
 const fresh = async (env: Record<string, string> = ON, opts: { mailerOverride?: boolean } = {}) => makeApp(env, opts);
 
 describe('TOTP (RFC 6238 / 4226)', () => {
   it('matches the RFC test vectors', () => {
     const key = Buffer.from('12345678901234567890');
-    expect(hotp(key, 0)).toBe('755224');          // RFC 4226 Appendix D
+    expect(hotp(key, 0)).toBe('755224'); // RFC 4226 Appendix D
     expect(hotp(key, 9)).toBe('520489');
     expect(hotp(key, timeStep(59_000), 8)).toBe('94287082'); // RFC 6238 Appendix B, T=59
     expect(base32Decode(base32Encode(key)).equals(key)).toBe(true);
@@ -46,15 +48,22 @@ async function enrol(c: Client) {
 const passTime = (userId: string) => ownerQuery(`UPDATE users SET mfa_last_step = mfa_last_step - 2 WHERE id=$1`, [userId]);
 
 describe('MFA_AVAILABLE=false: off for everyone, whatever was enrolled', () => {
-  let off: FastifyInstance; let on: FastifyInstance; let T: TenantFixture; let secret = '';
+  let off: FastifyInstance;
+  let on: FastifyInstance;
+  let T: TenantFixture;
+  let secret = '';
   beforeAll(async () => {
-    off = await fresh({ MFA_AVAILABLE: 'false' }); on = await fresh();
+    off = await fresh({ MFA_AVAILABLE: 'false' });
+    on = await fresh();
     T = await createTenant();
     ({ secret } = await enrol(await Client.login(on, T.host, T.users.hr!.email)));
     // The removed setting, left behind by an older release, changes nothing.
     await ownerQuery(`INSERT INTO tenant_settings (tenant_id, setting_key, setting_value) VALUES ($1,'security.mfa_enforcement','"all"')`, [T.id]);
   });
-  afterAll(async () => { await off.close(); await on.close(); });
+  afterAll(async () => {
+    await off.close();
+    await on.close();
+  });
 
   it.each(['methods', 'setup', 'enable', 'verify', 'disable', 'recovery-codes', 'email/setup', 'email/enable', 'email/send'])('/auth/mfa/%s does not exist', async (path) => {
     const c = await Client.login(off, T.host, T.users.employee!.email);
@@ -75,7 +84,7 @@ describe('MFA_AVAILABLE=false: off for everyone, whatever was enrolled', () => {
     expect(u!.mfa_secret_enc).toMatch(/^v2\./);
     expect(u!.n).toBe(10);
     const again = await Client.login(on, T.host, T.users.hr!.email);
-    expect(problem((await again.get('/api/v1/employees'))).code).toBe('mfa_required');
+    expect(problem(await again.get('/api/v1/employees')).code).toBe('mfa_required');
     await passTime(T.users.hr!.id);
     expect((await again.post('/api/v1/auth/mfa/verify', { code: codeAt(secret, now()) })).statusCode).toBe(200);
   });
@@ -88,8 +97,10 @@ describe('MFA_AVAILABLE=false: off for everyone, whatever was enrolled', () => {
   it('a session started while off is challenged once MFA is on again', async () => {
     const started = new Client(off, T.host);
     await started.post('/api/v1/auth/login', { email: T.users.hr!.email, password: PASSWORD });
-    const same = new Client(on, T.host); same.cookie = started.cookie; same.csrf = started.csrf;
-    expect(problem((await same.get('/api/v1/employees'))).code).toBe('mfa_required');
+    const same = new Client(on, T.host);
+    same.cookie = started.cookie;
+    same.csrf = started.csrf;
+    expect(problem(await same.get('/api/v1/employees')).code).toBe('mfa_required');
   });
 
   it('public config says off', async () => {
@@ -98,9 +109,15 @@ describe('MFA_AVAILABLE=false: off for everyone, whatever was enrolled', () => {
 });
 
 describe('MFA_AVAILABLE=true, MFA_ENFORCED=false: optional, per user', () => {
-  let app: FastifyInstance; let T: TenantFixture;
-  beforeAll(async () => { app = await fresh(); T = await createTenant(); });
-  afterAll(async () => { await app.close(); });
+  let app: FastifyInstance;
+  let T: TenantFixture;
+  beforeAll(async () => {
+    app = await fresh();
+    T = await createTenant();
+  });
+  afterAll(async () => {
+    await app.close();
+  });
 
   it('nobody is forced, privileged roles included; a tenant setting left behind counts for nothing', async () => {
     await ownerQuery(`INSERT INTO tenant_settings (tenant_id, setting_key, setting_value) VALUES ($1,'security.mfa_enforcement','"all"')`, [T.id]);
@@ -108,7 +125,7 @@ describe('MFA_AVAILABLE=true, MFA_ENFORCED=false: optional, per user', () => {
       const c = await Client.login(app, T.host, T.users[key]!.email);
       const me = (await c.get('/api/v1/auth/me')).json();
       expect(me.mfa.enrollmentRequired, key).toBe(false);
-      expect(problem((await c.get('/api/v1/org/branches'))).code, key).not.toBe('mfa_enrollment_required');
+      expect(problem(await c.get('/api/v1/org/branches')).code, key).not.toBe('mfa_enrollment_required');
     }
   });
 
@@ -152,9 +169,15 @@ describe('MFA_AVAILABLE=true, MFA_ENFORCED=false: optional, per user', () => {
 });
 
 describe('MFA_ENFORCED=true', () => {
-  let app: FastifyInstance; let T: TenantFixture;
-  beforeAll(async () => { app = await fresh({ ...ON, MFA_ENFORCED: 'true' }); T = await createTenant(); });
-  afterAll(async () => { await app.close(); });
+  let app: FastifyInstance;
+  let T: TenantFixture;
+  beforeAll(async () => {
+    app = await fresh({ ...ON, MFA_ENFORCED: 'true' });
+    T = await createTenant();
+  });
+  afterAll(async () => {
+    await app.close();
+  });
 
   it('everyone must enrol at next sign-in before anything else, and cannot turn it off', async () => {
     const emp = await Client.login(app, T.host, T.users.employee!.email);
@@ -167,7 +190,7 @@ describe('MFA_ENFORCED=true', () => {
     const { secret } = await enrol(emp);
     expect((await emp.get('/api/v1/employees')).statusCode).toBe(200);
     await passTime(T.users.employee!.id);
-    expect(problem((await emp.post('/api/v1/auth/mfa/disable', { password: PASSWORD, code: codeAt(secret, now()) }))).code).toBe('mfa_required_by_deployment');
+    expect(problem(await emp.post('/api/v1/auth/mfa/disable', { password: PASSWORD, code: codeAt(secret, now()) })).code).toBe('mfa_required_by_deployment');
   });
 
   it('an administrator reset means enrolling again, and the person is told', async () => {
@@ -184,7 +207,8 @@ describe('MFA_ENFORCED=true', () => {
 });
 
 describe('configuration', () => {
-  const load = (o: Record<string, string>) => loadEnv({ NODE_ENV: 'test', DATABASE_URL: TEST_APP_URL, DATA_ENCRYPTION_KEY: Buffer.alloc(32, 7).toString('base64'), COOKIE_SECURE: 'false', ...TEST_BRAND, ...o });
+  const load = (o: Record<string, string>) =>
+    loadEnv({ NODE_ENV: 'test', DATABASE_URL: TEST_APP_URL, DATA_ENCRYPTION_KEY: Buffer.alloc(32, 7).toString('base64'), COOKIE_SECURE: 'false', ...TEST_BRAND, ...o });
   it('enforcing with only email codes and no mail is refused, since nobody could enrol', () => {
     expect(() => load({ MFA_AVAILABLE: 'true', MFA_ENFORCED: 'true', MFA_METHODS: 'email' })).toThrow(/nobody could enrol/);
     expect(load({ MFA_AVAILABLE: 'true', MFA_ENFORCED: 'true', MFA_METHODS: 'totp' }).MFA_ENFORCED).toBe(true);
@@ -215,14 +239,25 @@ describe('configuration', () => {
 });
 
 describe('TOTP sign-in and recovery codes', () => {
-  let app: FastifyInstance; let T: TenantFixture; let secret = ''; let recovery: string[] = [];
-  beforeAll(async () => { app = await fresh(); T = await createTenant(); });
-  afterAll(async () => { await app.close(); });
+  let app: FastifyInstance;
+  let T: TenantFixture;
+  let secret = '';
+  let recovery: string[] = [];
+  beforeAll(async () => {
+    app = await fresh();
+    T = await createTenant();
+  });
+  afterAll(async () => {
+    await app.close();
+  });
 
   it('stores only an encrypted secret and hashed recovery codes', async () => {
     ({ secret, recovery } = await enrol(await Client.login(app, T.host, T.users.hr!.email)));
     expect(recovery).toHaveLength(10);
-    const [u] = await ownerQuery<{ mfa_secret_enc: string; mfa_recovery_hashes: string[]; mfa_method: string }>(`SELECT mfa_secret_enc, mfa_recovery_hashes, mfa_method FROM users WHERE id=$1`, [T.users.hr!.id]);
+    const [u] = await ownerQuery<{ mfa_secret_enc: string; mfa_recovery_hashes: string[]; mfa_method: string }>(
+      `SELECT mfa_secret_enc, mfa_recovery_hashes, mfa_method FROM users WHERE id=$1`,
+      [T.users.hr!.id],
+    );
     expect(u!.mfa_method).toBe('totp');
     expect(u!.mfa_secret_enc).toMatch(/^v2\./);
     expect(u!.mfa_secret_enc).not.toContain(secret);
@@ -232,7 +267,7 @@ describe('TOTP sign-in and recovery codes', () => {
   it('a new sign-in needs a code; codes cannot be replayed; recovery codes work once and tell the user', async () => {
     const c = await Client.login(app, T.host, T.users.hr!.email);
     expect(c.passwordChangeRequired).toBe(false);
-    expect(problem((await c.get('/api/v1/employees'))).code).toBe('mfa_required');
+    expect(problem(await c.get('/api/v1/employees')).code).toBe('mfa_required');
     expect((await c.get('/api/v1/auth/me')).json().permissions).toEqual([]); // nothing revealed before the code
     await passTime(T.users.hr!.id); // the code used at enrolment is in the same 30 s window
     const code = codeAt(secret, now());
@@ -254,7 +289,8 @@ describe('TOTP sign-in and recovery codes', () => {
     expect(r.json().csrfToken).toBeTruthy();
     expect(c.cookie).not.toBe(cookie);
     expect(c.csrf).not.toBe(csrf);
-    const old = new Client(app, T.host); old.cookie = cookie;
+    const old = new Client(app, T.host);
+    old.cookie = cookie;
     expect((await old.get('/api/v1/auth/me')).statusCode).toBe(401);
     expect((await c.get('/api/v1/employees')).statusCode).toBe(200);
   });
@@ -262,7 +298,8 @@ describe('TOTP sign-in and recovery codes', () => {
 
 describe('MFA changes end other sessions', () => {
   it('turning it on and off rotates this session and ends the others', async () => {
-    const app = await fresh(); const T = await createTenant();
+    const app = await fresh();
+    const T = await createTenant();
     const a = await Client.login(app, T.host, T.users.employee!.email);
     const b = await Client.login(app, T.host, T.users.employee!.email);
     const cookie = a.cookie;
@@ -281,7 +318,8 @@ describe('MFA changes end other sessions', () => {
 
 describe('brute force on the second factor', () => {
   it('five wrong codes end the session, and ten across sessions stop it answering, the right code included', async () => {
-    const app = await fresh(); const T = await createTenant();
+    const app = await fresh();
+    const T = await createTenant();
     const { secret } = await enrol(await Client.login(app, T.host, T.users.other!.email));
     const c = await Client.login(app, T.host, T.users.other!.email);
     for (let i = 0; i < 4; i++) expect((await c.post('/api/v1/auth/mfa/verify', { code: '000000' })).statusCode).toBe(400);
@@ -306,7 +344,8 @@ describe('brute force on the second factor', () => {
   });
 
   it('more than ten tries a minute from one address are refused before any code is checked', async () => {
-    const app = await fresh(); const T = await createTenant();
+    const app = await fresh();
+    const T = await createTenant();
     await enrol(await Client.login(app, T.host, T.users.manager!.email));
     const codes: number[] = [];
     for (let i = 0; i < 12; i++) {
@@ -320,18 +359,41 @@ describe('brute force on the second factor', () => {
 });
 
 describe('email codes', () => {
-  let app: FastifyInstance; let T: TenantFixture;
+  let app: FastifyInstance;
+  let T: TenantFixture;
   const sent: OutgoingMail[] = [];
-  const deliver = async () => { await deliverOutbox(app.deps.pool, SILENT); };
+  const deliver = async () => {
+    await deliverOutbox(app.deps.pool, SILENT);
+  };
   /** The newest code in the mail, as the person would read it. */
-  const lastCode = async () => { await deliver(); const m = sent.map((x) => /Your code is (\d{6})/.exec(x.text)).filter(Boolean).at(-1); if (!m) throw new Error('no code in the mail'); return m[1]!; };
+  const lastCode = async () => {
+    await deliver();
+    const m = sent
+      .map((x) => /Your code is (\d{6})/.exec(x.text))
+      .filter(Boolean)
+      .at(-1);
+    if (!m) throw new Error('no code in the mail');
+    return m[1]!;
+  };
   beforeAll(async () => {
-    setMailer({ send: async (m) => { sent.push(m); } }, 'test@test');
+    setMailer(
+      {
+        send: async (m) => {
+          sent.push(m);
+        },
+      },
+      'test@test',
+    );
     app = await fresh(ON, { mailerOverride: true });
     T = await createTenant();
   });
-  afterAll(async () => { setMailer(null); await app.close(); });
-  beforeEach(() => { sent.length = 0; });
+  afterAll(async () => {
+    setMailer(null);
+    await app.close();
+  });
+  beforeEach(() => {
+    sent.length = 0;
+  });
   const allowAnother = (userId: string) => ownerQuery(`UPDATE email_otps SET created_at = created_at - interval '2 minutes' WHERE user_id=$1`, [userId]);
   const enrolEmail = async (c: Client, userId: string) => {
     expect((await c.post('/api/v1/auth/mfa/email/setup')).json()).toEqual({ sent: true });
@@ -353,7 +415,10 @@ describe('email codes', () => {
   it('the code is hashed at rest and never readable in the outbox, before or after sending', async () => {
     const c = await Client.login(app, T.host, T.users.other!.email);
     await c.post('/api/v1/auth/mfa/email/setup');
-    const [queued] = await ownerQuery<{ text_body: string; html_body: string; secret_enc: string; kind: string }>(`SELECT text_body, html_body, secret_enc, kind FROM email_outbox WHERE tenant_id=$1 AND status='queued' ORDER BY created_at DESC LIMIT 1`, [T.id]);
+    const [queued] = await ownerQuery<{ text_body: string; html_body: string; secret_enc: string; kind: string }>(
+      `SELECT text_body, html_body, secret_enc, kind FROM email_outbox WHERE tenant_id=$1 AND status='queued' ORDER BY created_at DESC LIMIT 1`,
+      [T.id],
+    );
     expect(queued!.kind).toBe('security.email_code');
     expect(queued!.secret_enc).toMatch(/^v2\./);
     expect(queued!.text_body).not.toMatch(/\d{6}/);
@@ -362,7 +427,10 @@ describe('email codes', () => {
     const [otp] = await ownerQuery<{ code_hash: string }>(`SELECT code_hash FROM email_otps WHERE user_id=$1 ORDER BY created_at DESC LIMIT 1`, [T.users.other!.id]);
     expect(otp!.code_hash).toMatch(/^[0-9a-f]{64}$/);
     expect(otp!.code_hash).not.toContain(code);
-    const [row] = await ownerQuery<{ secret_enc: string | null; text_body: string }>(`SELECT secret_enc, text_body FROM email_outbox WHERE tenant_id=$1 AND status='sent' ORDER BY created_at DESC LIMIT 1`, [T.id]);
+    const [row] = await ownerQuery<{ secret_enc: string | null; text_body: string }>(
+      `SELECT secret_enc, text_body FROM email_outbox WHERE tenant_id=$1 AND status='sent' ORDER BY created_at DESC LIMIT 1`,
+      [T.id],
+    );
     expect(row!.secret_enc).toBeNull();
     expect(row!.text_body).not.toContain(code);
     expect((await ownerQuery(`SELECT 1 FROM notifications WHERE kind='security.email_code'`)).length).toBe(0);
@@ -392,19 +460,28 @@ describe('email codes', () => {
   });
 
   it(`a code dies after ${OTP_MAX_ATTEMPTS} wrong guesses across sessions, even the right digits after that`, async () => {
-    const X = await createTenant(); const email = X.users.employee!.email;
+    const X = await createTenant();
+    const email = X.users.employee!.email;
     const a = await fresh(ON, { mailerOverride: true });
     sent.length = 0;
     const first = await Client.login(a, X.host, email);
     await first.post('/api/v1/auth/mfa/email/setup');
     await deliverOutbox(a.deps.pool, SILENT);
-    const enrolCode = sent.filter((m) => m.to === email).map((m) => /Your code is (\d{6})/.exec(m.text)).filter(Boolean).at(-1)![1]!;
+    const enrolCode = sent
+      .filter((m) => m.to === email)
+      .map((m) => /Your code is (\d{6})/.exec(m.text))
+      .filter(Boolean)
+      .at(-1)![1]!;
     expect((await first.post('/api/v1/auth/mfa/email/enable', { code: enrolCode })).statusCode).toBe(200);
     await ownerQuery(`UPDATE email_otps SET created_at = created_at - interval '2 minutes' WHERE user_id=$1`, [X.users.employee!.id]);
     // The code from this sign-in. A second sign-in inside the minute sends none, so both sessions guess at the same one.
     const c = await Client.login(a, X.host, email);
     await deliverOutbox(a.deps.pool, SILENT);
-    const code = sent.filter((m) => m.to === email).map((m) => /Your code is (\d{6})/.exec(m.text)).filter(Boolean).at(-1)![1]!;
+    const code = sent
+      .filter((m) => m.to === email)
+      .map((m) => /Your code is (\d{6})/.exec(m.text))
+      .filter(Boolean)
+      .at(-1)![1]!;
     const wrong = code === '000000' ? '000001' : '000000';
     const d = new Client(a, X.host);
     expect((await d.post('/api/v1/auth/login', { email, password: PASSWORD })).json().mfaDelivery).toBe('wait');
@@ -423,8 +500,12 @@ describe('email codes', () => {
     expect(soon.statusCode).toBe(429);
     expect(Number(soon.headers['retry-after'])).toBeGreaterThan(0);
     await ownerQuery(`UPDATE email_otps SET created_at = created_at - interval '2 minutes' WHERE user_id=$1`, [X.users.employee!.id]);
-    for (let i = 1; i < OTP_MAX_PER_HOUR; i++) await ownerQuery(`INSERT INTO email_otps (tenant_id, user_id, purpose, code_hash, expires_at, created_at) VALUES ($1,$2,'enrol','x',now(),now() - interval '5 minutes')`, [X.id, X.users.employee!.id]);
-    const [{ n }] = await ownerQuery<{ n: number }>(`SELECT count(*)::int AS n FROM email_otps WHERE user_id=$1`, [X.users.employee!.id]) as [{ n: number }];
+    for (let i = 1; i < OTP_MAX_PER_HOUR; i++)
+      await ownerQuery(`INSERT INTO email_otps (tenant_id, user_id, purpose, code_hash, expires_at, created_at) VALUES ($1,$2,'enrol','x',now(),now() - interval '5 minutes')`, [
+        X.id,
+        X.users.employee!.id,
+      ]);
+    const [{ n }] = (await ownerQuery<{ n: number }>(`SELECT count(*)::int AS n FROM email_otps WHERE user_id=$1`, [X.users.employee!.id])) as [{ n: number }];
     expect(n).toBe(OTP_MAX_PER_HOUR);
     expect((await c.post('/api/v1/auth/mfa/email/setup')).statusCode).toBe(429);
     await a.close();
@@ -436,7 +517,11 @@ describe('email codes', () => {
     const c = await Client.login(a, X.host, X.users.manager!.email);
     await c.post('/api/v1/auth/mfa/email/setup');
     await deliverOutbox(a.deps.pool, SILENT);
-    const code = sent.filter((m) => m.to === X.users.manager!.email).map((m) => /Your code is (\d{6})/.exec(m.text)).filter(Boolean).at(-1)![1]!;
+    const code = sent
+      .filter((m) => m.to === X.users.manager!.email)
+      .map((m) => /Your code is (\d{6})/.exec(m.text))
+      .filter(Boolean)
+      .at(-1)![1]!;
     const recovery = (await c.post('/api/v1/auth/mfa/email/enable', { code })).json().recoveryCodes as string[];
     await ownerQuery(`UPDATE email_otps SET created_at = created_at - interval '2 minutes' WHERE user_id=$1`, [X.users.manager!.id]);
     const d = new Client(a, X.host);
@@ -448,14 +533,32 @@ describe('email codes', () => {
 
 describe('email codes without a mail transport', () => {
   it('enrolment says so before anyone tries, and refuses; someone already enrolled gets in with a recovery code', async () => {
-    const withMail = await (async () => { setMailer({ send: async () => undefined }, 'x@x'); return fresh(ON, { mailerOverride: true }); })();
+    const withMail = await (async () => {
+      setMailer({ send: async () => undefined }, 'x@x');
+      return fresh(ON, { mailerOverride: true });
+    })();
     const T = await createTenant();
     const sent: OutgoingMail[] = [];
-    setMailer({ send: async (m) => { sent.push(m); } }, 'x@x');
+    setMailer(
+      {
+        send: async (m) => {
+          sent.push(m);
+        },
+      },
+      'x@x',
+    );
     const c = await Client.login(withMail, T.host, T.users.employee!.email);
     await c.post('/api/v1/auth/mfa/email/setup');
     await deliverOutbox(withMail.deps.pool, SILENT);
-    const recovery = (await c.post('/api/v1/auth/mfa/email/enable', { code: sent.filter((m) => m.to === T.users.employee!.email).map((m) => /Your code is (\d{6})/.exec(m.text)).filter(Boolean).at(-1)![1]! })).json().recoveryCodes as string[];
+    const recovery = (
+      await c.post('/api/v1/auth/mfa/email/enable', {
+        code: sent
+          .filter((m) => m.to === T.users.employee!.email)
+          .map((m) => /Your code is (\d{6})/.exec(m.text))
+          .filter(Boolean)
+          .at(-1)![1]!,
+      })
+    ).json().recoveryCodes as string[];
     await withMail.close();
 
     setMailer(null);

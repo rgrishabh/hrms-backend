@@ -7,17 +7,27 @@ import { buildSpec, specCoverage, type RouteRecord } from '../src/core/http/open
 import { FEATURES } from '../src/core/features/registry.js';
 import { Client, createTenant, makeApp, problem, type TenantFixture } from './helpers.js';
 
-let doc: OpenAPIV3_1.Document; let routes: RouteRecord[];
-beforeAll(async () => { ({ document: doc, routes } = await buildSpec()); }, 60000);
+let doc: OpenAPIV3_1.Document;
+let routes: RouteRecord[];
+beforeAll(async () => {
+  ({ document: doc, routes } = await buildSpec());
+}, 60000);
 
 type Op = OpenAPIV3_1.OperationObject & Record<string, unknown>;
-const pathOf = (url: string) => url.replace(/\/$/, '').replace(/\(.*?\)/g, '').replace(/:([A-Za-z0-9_]+)/g, '{$1}');
+const pathOf = (url: string) =>
+  url
+    .replace(/\/$/, '')
+    .replace(/\(.*?\)/g, '')
+    .replace(/:([A-Za-z0-9_]+)/g, '{$1}');
 const opOf = (r: RouteRecord): Op | undefined => (doc.paths?.[pathOf(r.url)] as Record<string, Op> | undefined)?.[String(r.method).toLowerCase()];
 const schemaOf = (r: RouteRecord) => (r.schema ?? {}) as Record<string, unknown>;
 
 /** The source files that declare routes. */
 function sources(dir: string): string[] {
-  return readdirSync(dir).flatMap((f) => { const p = path.join(dir, f); return statSync(p).isDirectory() ? sources(p) : p.endsWith('.ts') ? [p] : []; });
+  return readdirSync(dir).flatMap((f) => {
+    const p = path.join(dir, f);
+    return statSync(p).isDirectory() ? sources(p) : p.endsWith('.ts') ? [p] : [];
+  });
 }
 
 describe('the document', () => {
@@ -29,7 +39,9 @@ describe('the document', () => {
   it('no route lacks a schema, and every input a handler reads is declared', () => {
     const missing: string[] = [];
     for (const r of routes) {
-      const s = schemaOf(r); const h = String(r.handler); const name = `${String(r.method)} ${r.url}`;
+      const s = schemaOf(r);
+      const h = String(r.handler);
+      const name = `${String(r.method)} ${r.url}`;
       if (r.schema === undefined) missing.push(`${name}: no schema`);
       if (/:[a-zA-Z]/.test(r.url) && !s['params']) missing.push(`${name}: params`);
       if (/\.parse\(req\.query|req\.query\b(?! as \{ reveal)/.test(h) && !s['querystring']) missing.push(`${name}: query`);
@@ -49,7 +61,11 @@ describe('the document', () => {
   it('schemas are hoisted: no handler builds one inline, so the object documented is the object that parses', () => {
     const inline: string[] = [];
     for (const f of [...sources('src/modules'), ...sources('src/core/workflow')]) {
-      readFileSync(f, 'utf8').split('\n').forEach((line, i) => { if (/\bz\.\w+\(.*\)\.(safeP|p)arse\(req\.(params|query|body)/.test(line)) inline.push(`${f}:${i + 1}`); });
+      readFileSync(f, 'utf8')
+        .split('\n')
+        .forEach((line, i) => {
+          if (/\bz\.\w+\(.*\)\.(safeP|p)arse\(req\.(params|query|body)/.test(line)) inline.push(`${f}:${i + 1}`);
+        });
     }
     expect(inline).toEqual([]);
   });
@@ -57,7 +73,8 @@ describe('the document', () => {
   it('a permission in the metadata is the one the handler asks for', () => {
     const wrong: string[] = [];
     for (const r of routes) {
-      const h = String(r.handler); const cfg = (r.config ?? {}) as { perm?: readonly string[]; permAny?: readonly string[] };
+      const h = String(r.handler);
+      const cfg = (r.config ?? {}) as { perm?: readonly string[]; permAny?: readonly string[] };
       const asked = [...h.matchAll(/tenantActor\(req,\s*([^)]*)\)/g)].flatMap((m) => [...m[1]!.matchAll(/'([a-z_.]+)'/g)].map((x) => x[1]!));
       const askedAny = [...h.matchAll(/tenantActorAny\(req,\s*([^)]*)\)/g)].flatMap((m) => [...m[1]!.matchAll(/'([a-z_.]+)'/g)].map((x) => x[1]!));
       for (const p of asked) if (!cfg.perm?.includes(p)) wrong.push(`${String(r.method)} ${r.url} needs ${p}`);
@@ -70,7 +87,8 @@ describe('the document', () => {
     const features = new Set(routes.flatMap((r) => ((opOf(r)?.['x-feature'] ?? []) as string[][]).flat()));
     // Everything the default installation leaves off still has its routes in the one document.
     for (const k of ['FEATURE_PAYROLL', 'FEATURE_LOANS', 'FEATURE_RECRUITMENT', 'FEATURE_GRIEVANCE', 'FEATURE_ASSET_MANAGEMENT', 'MFA_AVAILABLE']) expect(features).toContain(k);
-    const named = new Set(FEATURES.map((f) => f.envName)); named.add('MFA_AVAILABLE');
+    const named = new Set(FEATURES.map((f) => f.envName));
+    named.add('MFA_AVAILABLE');
     for (const f of features) expect(named).toContain(f);
     expect(doc.paths?.['/api/v1/payroll/runs']?.get).toMatchObject({ 'x-feature': [['FEATURE_PAYROLL']] });
   });
@@ -90,8 +108,12 @@ describe('the document', () => {
 });
 
 describe('a schema does not change the order of refusals', () => {
-  let app: FastifyInstance; let T: TenantFixture;
-  beforeAll(async () => { app = await makeApp(); T = await createTenant(); });
+  let app: FastifyInstance;
+  let T: TenantFixture;
+  beforeAll(async () => {
+    app = await makeApp();
+    T = await createTenant();
+  });
   afterAll(() => app.close());
 
   it('401 without a session, 403 without the permission, then 400', async () => {

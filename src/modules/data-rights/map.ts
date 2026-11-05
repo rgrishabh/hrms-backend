@@ -67,13 +67,34 @@ export const PERSONAL_TABLES: readonly PersonalTable[] = [
   { section: 'bank_account', table: 'employee_bank_accounts', by: 'employee', erase: 'keep', carveOut: 'payroll', order: 'employee_id' },
   { section: 'bank_changes', table: 'employee_bank_changes', by: 'employee', erase: 'keep', carveOut: 'payroll' },
   { section: 'loans', table: 'employee_loans', by: 'employee', erase: 'scrub', scrub: ['purpose', 'cancel_reason'], carveOut: 'payroll' },
-  { section: 'loan_recoveries', table: 'loan_recoveries', by: 'employee', where: 'loan_id IN (SELECT id FROM employee_loans WHERE tenant_id=$1 AND employee_id=$2)', erase: 'keep', carveOut: 'payroll' },
+  {
+    section: 'loan_recoveries',
+    table: 'loan_recoveries',
+    by: 'employee',
+    where: 'loan_id IN (SELECT id FROM employee_loans WHERE tenant_id=$1 AND employee_id=$2)',
+    erase: 'keep',
+    carveOut: 'payroll',
+  },
   { section: 'expense_claims', table: 'expense_claims', by: 'employee', erase: 'keep', carveOut: 'payroll' },
-  { section: 'expense_items', table: 'expense_items', by: 'employee', where: 'claim_id IN (SELECT id FROM expense_claims WHERE tenant_id=$1 AND employee_id=$2)', erase: 'keep', carveOut: 'payroll', omit: FILE_COLS },
+  {
+    section: 'expense_items',
+    table: 'expense_items',
+    by: 'employee',
+    where: 'claim_id IN (SELECT id FROM expense_claims WHERE tenant_id=$1 AND employee_id=$2)',
+    erase: 'keep',
+    carveOut: 'payroll',
+    omit: FILE_COLS,
+  },
   { section: 'travel', table: 'travel_requests', by: 'employee', erase: 'keep', carveOut: 'payroll' },
 
   { section: 'documents', table: 'documents', by: 'employee', erase: 'custom', omit: FILE_COLS },
-  { section: 'reviews', table: 'performance_reviews', by: 'employee', erase: 'scrub', scrub: ['self_comments', 'manager_comments', 'final_comments', 'employee_ack_note', 'goal_ratings'] },
+  {
+    section: 'reviews',
+    table: 'performance_reviews',
+    by: 'employee',
+    erase: 'scrub',
+    scrub: ['self_comments', 'manager_comments', 'final_comments', 'employee_ack_note', 'goal_ratings'],
+  },
   { section: 'goals', table: 'goals', by: 'employee', erase: 'scrub', scrub: ['title', 'description', 'measure'] },
   { section: 'probation', table: 'probation_reviews', by: 'employee', erase: 'scrub', scrub: ['comments'] },
   { section: 'separation', table: 'separations', by: 'employee', erase: 'scrub', scrub: ['reason', 'exit_interview', 'fnf_note'], carveOut: 'claims' },
@@ -84,11 +105,28 @@ export const PERSONAL_TABLES: readonly PersonalTable[] = [
   { section: 'assets', table: 'asset_assignments', by: 'employee', erase: 'keep', carveOut: 'claims' },
   { section: 'policy_acknowledgements', table: 'policy_acknowledgements', by: 'employee', erase: 'keep', carveOut: 'claims' },
   // POSH and grievance: what someone raised goes to them alone. A case naming them as respondent is not theirs to read (POSH Act s.16, confidentiality).
-  { section: 'cases_raised', table: 'cases', by: 'employee', column: 'complainant_id', erase: 'keep', carveOut: 'claims', selfOnly: true, open: ['description_enc', 'late_reason_enc', 'outcome_enc', 'respondent_text_enc'], omit: ['assignee_user', 'respondent_id', 'complainant_user'] },
+  {
+    section: 'cases_raised',
+    table: 'cases',
+    by: 'employee',
+    column: 'complainant_id',
+    erase: 'keep',
+    carveOut: 'claims',
+    selfOnly: true,
+    open: ['description_enc', 'late_reason_enc', 'outcome_enc', 'respondent_text_enc'],
+    omit: ['assignee_user', 'respondent_id', 'complainant_user'],
+  },
   { section: 'job_offers', table: 'job_offers', by: 'employee', erase: 'scrub', scrub: ['annual_ctc', 'notes'] },
 
   { section: 'notifications', table: 'notifications', by: 'user', erase: 'delete' },
-  { section: 'email', table: 'email_outbox', by: 'user', column: 'to_user_id', erase: 'delete', omit: ['secret_enc', 'html_body', 'text_body', 'dedupe_key', 'last_error', 'attempts', 'next_attempt_at'] },
+  {
+    section: 'email',
+    table: 'email_outbox',
+    by: 'user',
+    column: 'to_user_id',
+    erase: 'delete',
+    omit: ['secret_enc', 'html_body', 'text_body', 'dedupe_key', 'last_error', 'attempts', 'next_attempt_at'],
+  },
   { section: 'push', table: 'push_outbox', by: 'user', column: 'to_user_id', erase: 'delete', noExport: true },
   { section: 'push_subscriptions', table: 'push_subscriptions', by: 'user', erase: 'delete', noExport: true },
   { section: 'sessions', table: 'sessions', by: 'user', erase: 'delete', omit: ['mfa_failures', 'idle_timeout_minutes', 'mfa_verified_at'] },
@@ -98,7 +136,15 @@ export const PERSONAL_TABLES: readonly PersonalTable[] = [
   { section: 'report_copies', table: 'report_snapshots', by: 'user', column: 'owner_id', erase: 'delete', noExport: true },
   { section: 'roles', table: 'user_roles', by: 'user', erase: 'delete' },
   { section: 'committee', table: 'posh_committee_members', by: 'user', erase: 'delete', order: 'added_at' },
-  { section: 'approvals_requested', table: 'approval_requests', by: 'user', column: 'requester_id', erase: 'scrub', scrub: ['summary'], omit: ['excluded_user_ids', 'self_approver_id'] },
+  {
+    section: 'approvals_requested',
+    table: 'approval_requests',
+    by: 'user',
+    column: 'requester_id',
+    erase: 'scrub',
+    scrub: ['summary'],
+    omit: ['excluded_user_ids', 'self_approver_id'],
+  },
 ];
 
 /** Columns naming a person that are not about that person: who decided, who recorded. They point at an account that is itself anonymized. */
@@ -107,14 +153,28 @@ export const PERSON_COLUMNS = ['employee_id', 'user_id', 'to_user_id', 'owner_id
 /** Tables with such a column that this file leaves alone, and why. */
 export const EXEMPT_TABLES: Readonly<Record<string, string>> = {
   admin_setup_tokens: 'Handled with the account: outstanding links are ended, and the hash reveals nothing',
-  candidates: 'A hired candidate: anonymized with recruitment\'s own function, which also removes the resume',
+  candidates: "A hired candidate: anonymized with recruitment's own function, which also removes the resume",
   interview_panel: 'The user is the interviewer; notes about a candidate go with the candidate',
 };
 
 export const CARVE_OUT_BASIS: Readonly<Record<CarveOut, { setting: string; label: string; basis: string }>> = {
-  payroll: { setting: 'retention.payroll_years', label: 'Payroll and statutory records', basis: 'Books of account and vouchers: Companies Act 2013 s.128 (8 financial years). Income-tax and TDS records, PF, ESI and wage registers have shorter periods that this one covers.' },
-  attendance: { setting: 'retention.attendance_years', label: 'Attendance and leave registers', basis: 'Labour registers: five years is the period commonly applied. It varies by state and establishment.' },
-  claims: { setting: 'retention.claims_years', label: 'Records needed for disputes', basis: 'Separation, grievance, POSH and competence records: the three-year period of the Limitation Act 1963 for most claims.' },
+  payroll: {
+    setting: 'retention.payroll_years',
+    label: 'Payroll and statutory records',
+    basis:
+      'Books of account and vouchers: Companies Act 2013 s.128 (8 financial years). Income-tax and TDS records, PF, ESI and wage registers have shorter periods that this one covers.',
+  },
+  attendance: {
+    setting: 'retention.attendance_years',
+    label: 'Attendance and leave registers',
+    basis: 'Labour registers: five years is the period commonly applied. It varies by state and establishment.',
+  },
+  claims: {
+    setting: 'retention.claims_years',
+    label: 'Records needed for disputes',
+    basis: 'Separation, grievance, POSH and competence records: the three-year period of the Limitation Act 1963 for most claims.',
+  },
 };
 export const NOT_LEGAL_ADVICE = 'These periods are the defaults as best known, and can be changed in Settings. They are a technical control and not legal advice.';
-export const AUDIT_LOG_NOTE = 'The audit log is append-only and hash-chained, and is never rewritten. It holds no L3 or L4 values: changes to those record field names. It does hold what happened to L1 and L2 fields, old and new, such as a name or work email changed before the erasure, plus account ids, addresses and devices of requests.';
+export const AUDIT_LOG_NOTE =
+  'The audit log is append-only and hash-chained, and is never rewritten. It holds no L3 or L4 values: changes to those record field names. It does hold what happened to L1 and L2 fields, old and new, such as a name or work email changed before the erasure, plus account ids, addresses and devices of requests.';

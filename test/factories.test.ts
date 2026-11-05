@@ -10,7 +10,8 @@ import { DEMO_HEADCOUNT, generateDemo } from '../src/db/demo.js';
 import { CIN_RE, IFSC_RE, PAN_RE, TAN_RE, isValidGstin } from '../src/core/settings/india.js';
 import { assignableRoles } from '../src/core/auth/permissions.js';
 
-const today = '2026-11-05'; const MODES = ['single', 'single_hr', 'multi'] as const;
+const today = '2026-11-05';
+const MODES = ['single', 'single_hr', 'multi'] as const;
 
 describe('factories, as data', () => {
   it('the same seed gives the same organization; another seed another', () => {
@@ -59,7 +60,10 @@ describe('factories, as data', () => {
     for (const seed of [1, 2, 3, 4, 5]) {
       const { company: c } = organizationFactory({ seed, mode: 'single', headcount: 20, today });
       expect(isValidGstin(c.gstin), c.gstin).toBe(true);
-      expect(c.pan).toMatch(PAN_RE); expect(c.tan).toMatch(TAN_RE); expect(c.cin).toMatch(CIN_RE); expect(c.bankIfsc).toMatch(IFSC_RE);
+      expect(c.pan).toMatch(PAN_RE);
+      expect(c.tan).toMatch(TAN_RE);
+      expect(c.cin).toMatch(CIN_RE);
+      expect(c.bankIfsc).toMatch(IFSC_RE);
       expect(c.gstin.slice(2, 12)).toBe(c.pan);
       expect(c.legalName).toMatch(/\(demo\)$/);
     }
@@ -69,19 +73,36 @@ describe('factories, as data', () => {
 async function bareTenant() {
   const slug = 'f' + randomBytes(5).toString('hex');
   const [t] = await ownerQuery<{ id: string }>(`INSERT INTO tenants (slug, name) VALUES ($1,'Acme Real Client') RETURNING id`, [slug]);
-  await ownerQuery(`INSERT INTO tenant_domains (tenant_id, hostname, verification_token, verification_status, verified_at, activation_status) VALUES ($1,$2,'x','verified',now(),'active')`, [t!.id, `${slug}.test`]);
-  const [u] = await ownerQuery<{ id: string }>(`INSERT INTO users (tenant_id, email, display_name, password_hash) VALUES ($1,$2,'Admin','x') RETURNING id`, [t!.id, `a@${slug}.test`]);
+  await ownerQuery(
+    `INSERT INTO tenant_domains (tenant_id, hostname, verification_token, verification_status, verified_at, activation_status) VALUES ($1,$2,'x','verified',now(),'active')`,
+    [t!.id, `${slug}.test`],
+  );
+  const [u] = await ownerQuery<{ id: string }>(`INSERT INTO users (tenant_id, email, display_name, password_hash) VALUES ($1,$2,'Admin','x') RETURNING id`, [
+    t!.id,
+    `a@${slug}.test`,
+  ]);
   await ownerQuery(`INSERT INTO user_roles (user_id, tenant_id, role_key) VALUES ($1,$2,'tenant_admin')`, [u!.id, t!.id]);
   return t!.id;
 }
 
 describe('factories, written down', () => {
   let c: pg.Client;
-  beforeAll(async () => { c = new pg.Client({ connectionString: TEST_OWNER_URL }); await c.connect(); });
-  afterAll(async () => { await c.end(); });
+  beforeAll(async () => {
+    c = new pg.Client({ connectionString: TEST_OWNER_URL });
+    await c.connect();
+  });
+  afterAll(async () => {
+    await c.end();
+  });
 
   it.each(MODES)('%s: inserts the count, and the database reads back the same people from the same seed', async (mode) => {
-    const read = async (tid: string) => (await ownerQuery<{ s: string }>(`SELECT string_agg(employee_code||first_name||last_name||date_of_joining||coalesce(grade,'')||coalesce(designation,''), ',' ORDER BY employee_code) AS s, count(*) FILTER (WHERE user_id IS NOT NULL)::text AS logins FROM employees WHERE tenant_id=$1`, [tid]))[0]!;
+    const read = async (tid: string) =>
+      (
+        await ownerQuery<{ s: string }>(
+          `SELECT string_agg(employee_code||first_name||last_name||date_of_joining||coalesce(grade,'')||coalesce(designation,''), ',' ORDER BY employee_code) AS s, count(*) FILTER (WHERE user_id IS NOT NULL)::text AS logins FROM employees WHERE tenant_id=$1`,
+          [tid],
+        )
+      )[0]!;
     const run = async () => {
       const tid = await bareTenant();
       await c.query('BEGIN');
@@ -102,7 +123,8 @@ describe('factories, written down', () => {
 });
 
 describe('the demo dataset of about 100', () => {
-  let apps: Record<string, FastifyInstance>; let c: pg.Client;
+  let apps: Record<string, FastifyInstance>;
+  let c: pg.Client;
   const FLAGS = 'default,payroll,recruitment,assets';
   beforeAll(async () => {
     apps = {};
@@ -110,24 +132,40 @@ describe('the demo dataset of about 100', () => {
     c = new pg.Client({ connectionString: TEST_OWNER_URL });
     await c.connect();
   });
-  afterAll(async () => { await c.end(); for (const a of Object.values(apps)) await a.close(); });
+  afterAll(async () => {
+    await c.end();
+    for (const a of Object.values(apps)) await a.close();
+  });
 
-  it('the command line uses it', () => { expect(DEMO_HEADCOUNT).toBe(100); });
+  it('the command line uses it', () => {
+    expect(DEMO_HEADCOUNT).toBe(100);
+  });
 
   const generate = async (mode: (typeof MODES)[number], flagApp = apps[mode]!) => {
     const tid = await bareTenant();
-    await inApp(flagApp, () => generateDemo(c, { password: 'Demo-Test-Password-1', today, tenantId: tid, features: flagApp.deps.env.enabledFeatures, mode, headcount: DEMO_HEADCOUNT, cipher: testCipher }));
+    await inApp(flagApp, () =>
+      generateDemo(c, { password: 'Demo-Test-Password-1', today, tenantId: tid, features: flagApp.deps.env.enabledFeatures, mode, headcount: DEMO_HEADCOUNT, cipher: testCipher }),
+    );
     return tid;
   };
-  const people = async (tid: string) => (await ownerQuery<{ s: string }>(`SELECT string_agg(employee_code||first_name||last_name||date_of_joining||coalesce(grade,'')||coalesce(designation,''), ',' ORDER BY employee_code) AS s FROM employees WHERE tenant_id=$1`, [tid]))[0]!.s;
+  const people = async (tid: string) =>
+    (
+      await ownerQuery<{ s: string }>(
+        `SELECT string_agg(employee_code||first_name||last_name||date_of_joining||coalesce(grade,'')||coalesce(designation,''), ',' ORDER BY employee_code) AS s FROM employees WHERE tenant_id=$1`,
+        [tid],
+      )
+    )[0]!.s;
 
   it('in each mode: 100 people, the same people, with grades, managers, leave, attendance and payroll; no real client name', async () => {
     const seen: string[] = [];
     for (const mode of MODES) {
       const tid = await generate(mode);
-      const [n] = await ownerQuery<Record<string, number>>(`SELECT (SELECT count(*)::int FROM employees WHERE tenant_id=$1) AS employees, (SELECT count(*)::int FROM employees WHERE tenant_id=$1 AND reporting_manager_id IS NOT NULL) AS managed,
+      const [n] = await ownerQuery<Record<string, number>>(
+        `SELECT (SELECT count(*)::int FROM employees WHERE tenant_id=$1) AS employees, (SELECT count(*)::int FROM employees WHERE tenant_id=$1 AND reporting_manager_id IS NOT NULL) AS managed,
         (SELECT count(*)::int FROM grades WHERE tenant_id=$1) AS grades, (SELECT count(*)::int FROM designations WHERE tenant_id=$1) AS designations, (SELECT count(*)::int FROM departments WHERE tenant_id=$1) AS departments,
-        (SELECT count(*)::int FROM leave_requests WHERE tenant_id=$1) AS leave, (SELECT count(*)::int FROM attendance_daily WHERE tenant_id=$1) AS days, (SELECT count(*)::int FROM employee_salaries WHERE tenant_id=$1) AS salaries, (SELECT count(*)::int FROM statutory_rules WHERE tenant_id=$1) AS statutory`, [tid]);
+        (SELECT count(*)::int FROM leave_requests WHERE tenant_id=$1) AS leave, (SELECT count(*)::int FROM attendance_daily WHERE tenant_id=$1) AS days, (SELECT count(*)::int FROM employee_salaries WHERE tenant_id=$1) AS salaries, (SELECT count(*)::int FROM statutory_rules WHERE tenant_id=$1) AS statutory`,
+        [tid],
+      );
       expect(n, mode).toMatchObject({ employees: 100, salaries: 100, statutory: 0, departments: 11 });
       expect(n!.managed).toBeGreaterThan(90);
       expect(n!.leave).toBeGreaterThan(10);
@@ -141,8 +179,22 @@ describe('the demo dataset of about 100', () => {
       const [co] = await ownerQuery<{ bank_name: string | null }>(`SELECT bank_name FROM company_profile WHERE tenant_id=$1`, [tid]);
       expect(co!.bank_name).toMatch(/fictional/i);
       // Every title anyone holds is in the master.
-      expect((await ownerQuery(`SELECT 1 FROM employees e WHERE e.tenant_id=$1 AND e.designation IS NOT NULL AND NOT EXISTS (SELECT 1 FROM designations d WHERE d.tenant_id=$1 AND d.name=e.designation)`, [tid])).length).toBe(0);
-      expect((await ownerQuery(`SELECT 1 FROM employees e WHERE e.tenant_id=$1 AND e.grade IS NOT NULL AND NOT EXISTS (SELECT 1 FROM grades g WHERE g.tenant_id=$1 AND g.code=e.grade)`, [tid])).length).toBe(0);
+      expect(
+        (
+          await ownerQuery(
+            `SELECT 1 FROM employees e WHERE e.tenant_id=$1 AND e.designation IS NOT NULL AND NOT EXISTS (SELECT 1 FROM designations d WHERE d.tenant_id=$1 AND d.name=e.designation)`,
+            [tid],
+          )
+        ).length,
+      ).toBe(0);
+      expect(
+        (
+          await ownerQuery(
+            `SELECT 1 FROM employees e WHERE e.tenant_id=$1 AND e.grade IS NOT NULL AND NOT EXISTS (SELECT 1 FROM grades g WHERE g.tenant_id=$1 AND g.code=e.grade)`,
+            [tid],
+          )
+        ).length,
+      ).toBe(0);
     }
     expect(seen[0]).toBe(seen[1]);
     expect(seen[1]).toBe(seen[2]);

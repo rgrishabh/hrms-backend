@@ -41,10 +41,16 @@ export function initRuntime(env: Env, log: RuntimeLog, overrides: RuntimeOverrid
   setBrandFormats(env);
   const publicConfig = buildPublicConfig(env);
   const url = appUrl(env);
-  setEmailBrand({ brandName: publicConfig.brand.name, productName: publicConfig.product.name, primaryColor: publicConfig.brand.primaryColor,
-    supportEmail: publicConfig.brand.supportEmail, appUrl: url, locale: env.BRAND_LOCALE,
+  setEmailBrand({
+    brandName: publicConfig.brand.name,
+    productName: publicConfig.product.name,
+    primaryColor: publicConfig.brand.primaryColor,
+    supportEmail: publicConfig.brand.supportEmail,
+    appUrl: url,
+    locale: env.BRAND_LOCALE,
     // A link for the reader's mail client to load. The server never fetches a brand asset.
-    logoUrl: env.BRAND_LOGO_URL ? new URL(env.BRAND_LOGO_URL, url).toString() : null });
+    logoUrl: env.BRAND_LOGO_URL ? new URL(env.BRAND_LOGO_URL, url).toString() : null,
+  });
   // The API needs the mailer too: it decides whether to enqueue. Only the worker's scheduler ever sends.
   if (!overrides.mailerOverride) setMailer(createMailer(env));
   setEmailTransportConfigured(!!getMailer());
@@ -58,7 +64,8 @@ export function initRuntime(env: Env, log: RuntimeLog, overrides: RuntimeOverrid
   const cache = env.REDIS_URL ? createRedisCache(env.REDIS_URL, log) : null;
   setCache(cache);
   return {
-    publicConfig, features: env.enabledFeatures,
+    publicConfig,
+    features: env.enabledFeatures,
     async close() {
       if (cache) await cache.close();
       if (getCache() === cache) setCache(null);

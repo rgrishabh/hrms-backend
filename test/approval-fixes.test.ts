@@ -7,9 +7,17 @@ import { TEST_OWNER_URL } from './env.js';
 import { createApprovalRequest, type StepSpec } from '../src/core/workflow/engine.js';
 import type { Db } from '../src/db/tx.js';
 
-let app: FastifyInstance; let c: pg.Client;
-const create = (T: TenantFixture, requesterKey: string, steps: StepSpec[], excludeUserIds: string[] = []) => createApprovalRequest(c as unknown as Db, T.id, {
-  entityType: 'leave_request', entityId: randomUUID(), requesterId: T.users[requesterKey]!.id, summary: 'Engine test', steps, excludeUserIds });
+let app: FastifyInstance;
+let c: pg.Client;
+const create = (T: TenantFixture, requesterKey: string, steps: StepSpec[], excludeUserIds: string[] = []) =>
+  createApprovalRequest(c as unknown as Db, T.id, {
+    entityType: 'leave_request',
+    entityId: randomUUID(),
+    requesterId: T.users[requesterKey]!.id,
+    summary: 'Engine test',
+    steps,
+    excludeUserIds,
+  });
 const inInbox = async (cl: Client, id: string) => (await cl.get('/api/v1/approvals/inbox')).json().items.some((x: { id: string }) => x.id === id);
 const login = (T: TenantFixture, key: string) => Client.login(app, T.host, T.users[key]!.email);
 const disable = (admin: Client, id: string) => admin.patch(`/api/v1/tenant/users/${id}`, { status: 'disabled' });
@@ -19,7 +27,10 @@ beforeAll(async () => {
   c = new pg.Client({ connectionString: TEST_OWNER_URL });
   await c.connect();
 });
-afterAll(async () => { await c.end(); await app.close(); });
+afterAll(async () => {
+  await c.end();
+  await app.close();
+});
 
 describe('F-14 approvals that would stick', () => {
   it('disabling an approver moves their pending steps to their manager', async () => {
@@ -38,8 +49,11 @@ describe('F-14 approvals that would stick', () => {
     const T = await createTenant();
     const hr = await login(T, 'hr');
     const leaver = T.users.other!;
-    const [sep] = await ownerQuery<{ id: string }>(`INSERT INTO separations (tenant_id, employee_id, kind, reason, notice_date, notice_days_required, requested_lwd, approved_lwd, status, initiated_by)
-      VALUES ($1,$2,'resignation','Fixture','2025-01-01',30,'2025-02-01','2025-02-01','approved',$3) RETURNING id`, [T.id, leaver.employeeId, T.users.hr!.id]);
+    const [sep] = await ownerQuery<{ id: string }>(
+      `INSERT INTO separations (tenant_id, employee_id, kind, reason, notice_date, notice_days_required, requested_lwd, approved_lwd, status, initiated_by)
+      VALUES ($1,$2,'resignation','Fixture','2025-01-01',30,'2025-02-01','2025-02-01','approved',$3) RETURNING id`,
+      [T.id, leaver.employeeId, T.users.hr!.id],
+    );
     const id = await create(T, 'employee', [{ kind: 'user', userId: leaver.id }]);
     const done = await hr.post(`/api/v1/lifecycle/separations/${sep!.id}/complete`, { rehireEligible: true });
     expect(done.statusCode, done.body).toBe(200);

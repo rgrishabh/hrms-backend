@@ -8,9 +8,24 @@ import { createPool } from '../../db/pool.js';
 
 /** Every switch on, so that one document describes the product. Brand values are placeholders and do not reach it. */
 const SPEC_ENV: Record<string, string> = {
-  NODE_ENV: 'test', DATABASE_URL: 'postgres://spec@127.0.0.1:1/spec', COOKIE_SECURE: 'false', MFA_AVAILABLE: 'true', MFA_METHODS: 'totp,email', ORG_MANAGEMENT_MODE: 'multi',
-  BRAND_NAME: 'x', BRAND_PRODUCT_NAME: 'x', BRAND_PRIMARY_COLOR: '#000000', BRAND_SUPPORT_EMAIL: 'x@x.test', BRAND_EMAIL_FROM: 'x@x.test', BRAND_DOMAIN: 'localhost', BRAND_LOCALE: 'en-IN',
-  BRAND_TIMEZONE: 'Asia/Kolkata', BRAND_CURRENCY: 'INR', BRAND_DATE_FORMAT: 'DD/MM/YYYY', BRAND_FINANCIAL_YEAR_START: '04-01', BRAND_COUNTRY: 'IN',
+  NODE_ENV: 'test',
+  DATABASE_URL: 'postgres://spec@127.0.0.1:1/spec',
+  COOKIE_SECURE: 'false',
+  MFA_AVAILABLE: 'true',
+  MFA_METHODS: 'totp,email',
+  ORG_MANAGEMENT_MODE: 'multi',
+  BRAND_NAME: 'x',
+  BRAND_PRODUCT_NAME: 'x',
+  BRAND_PRIMARY_COLOR: '#000000',
+  BRAND_SUPPORT_EMAIL: 'x@x.test',
+  BRAND_EMAIL_FROM: 'x@x.test',
+  BRAND_DOMAIN: 'localhost',
+  BRAND_LOCALE: 'en-IN',
+  BRAND_TIMEZONE: 'Asia/Kolkata',
+  BRAND_CURRENCY: 'INR',
+  BRAND_DATE_FORMAT: 'DD/MM/YYYY',
+  BRAND_FINANCIAL_YEAR_START: '04-01',
+  BRAND_COUNTRY: 'IN',
   DATA_ENCRYPTION_KEY: Buffer.alloc(32, 1).toString('base64'),
   ...Object.fromEntries(FEATURES.filter((d) => d.envName && d.availability !== 'planned').map((d) => [d.envName!, 'true'])),
 };
@@ -28,7 +43,14 @@ export async function buildSpec(): Promise<{ document: OpenAPIV3_1.Document; rou
   await pool.end();
   // A plugin's root is registered with and without the trailing slash: one route.
   const seen = new Set<string>();
-  const unique = routes.filter((r) => r.url.startsWith('/api/')).filter((r) => { const k = `${String(r.method)} ${r.url.replace(/\/$/, '')}`; if (seen.has(k)) return false; seen.add(k); return true; });
+  const unique = routes
+    .filter((r) => r.url.startsWith('/api/'))
+    .filter((r) => {
+      const k = `${String(r.method)} ${r.url.replace(/\/$/, '')}`;
+      if (seen.has(k)) return false;
+      seen.add(k);
+      return true;
+    });
   return { document, routes: unique };
 }
 

@@ -31,7 +31,12 @@ export async function verifyPassword(password: string, stored: string | null): P
   const phc = stored ? PHC.exec(stored) : null;
   if (phc) {
     const expected = Buffer.from(phc[5]!, 'base64');
-    const actual = await argon2id(password, Buffer.from(phc[4]!, 'base64'), { memory: Number(phc[1]), passes: Number(phc[2]), parallelism: Number(phc[3]), tagLength: expected.length });
+    const actual = await argon2id(password, Buffer.from(phc[4]!, 'base64'), {
+      memory: Number(phc[1]),
+      passes: Number(phc[2]),
+      parallelism: Number(phc[3]),
+      tagLength: expected.length,
+    });
     return timingSafeEqual(expected, actual);
   }
   const parts = stored?.split('$') ?? [];
@@ -52,7 +57,8 @@ export const randomToken = (bytes = 32) => randomBytes(bytes).toString('base64ur
 export const sha256 = (v: string) => createHash('sha256').update(v).digest('hex');
 
 export function safeEqualHex(a: string, b: string): boolean {
-  const x = Buffer.from(a, 'hex'); const y = Buffer.from(b, 'hex');
+  const x = Buffer.from(a, 'hex');
+  const y = Buffer.from(b, 'hex');
   return x.length === y.length && timingSafeEqual(x, y);
 }
 
@@ -91,7 +97,11 @@ export class FieldCipher {
     }
     if (parts[0] === 'v1' && parts.length === 4) {
       for (const key of this.keys.values()) {
-        try { return open(key, parts[1]!, parts[2]!, parts[3]!); } catch { /* the next loaded key may be the one */ }
+        try {
+          return open(key, parts[1]!, parts[2]!, parts[3]!);
+        } catch {
+          /* the next loaded key may be the one */
+        }
       }
       throw new Error('No loaded key opens this ciphertext');
     }
@@ -103,7 +113,9 @@ export class FieldCipher {
     return createHmac('sha256', key).update(value).digest('hex');
   }
   /** Whether a stored value is not yet sealed with the active key. */
-  isStale(token: string) { return !token.startsWith(`v2.${this.activeKeyId}.`); }
+  isStale(token: string) {
+    return !token.startsWith(`v2.${this.activeKeyId}.`);
+  }
 }
 
 function open(key: Buffer, iv: string, tag: string, data: string) {
@@ -114,7 +126,9 @@ function open(key: Buffer, iv: string, tag: string, data: string) {
 
 let current: FieldCipher | null = null;
 /** The process's cipher, for code that has no request: payroll services, reports, jobs. Set once at startup. */
-export function setDataCipher(c: FieldCipher) { current = c; }
+export function setDataCipher(c: FieldCipher) {
+  current = c;
+}
 export function dataCipher(): FieldCipher {
   if (!current) throw new Error('The data cipher is not loaded');
   return current;

@@ -19,9 +19,16 @@ export interface BlobStore {
 
 const UUID = '[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}';
 const KEY_RE = new RegExp(`^${UUID}/(employees/${UUID}|company|expenses/${UUID}|selfies/${UUID}|policies|recruitment)/${UUID}$`);
-export function assertKey(key: string) { if (!KEY_RE.test(key)) throw new Error('invalid storage key'); }
+export function assertKey(key: string) {
+  if (!KEY_RE.test(key)) throw new Error('invalid storage key');
+}
 export function newKey(tenantId: string, employeeId: string | null, area: 'documents' | 'expenses' | 'selfies' | 'policies' | 'recruitment' = 'documents') {
-  const key = area === 'policies' || area === 'recruitment' ? `${tenantId}/${area}/${randomUUID()}` : area === 'expenses' || area === 'selfies' ? `${tenantId}/${area}/${employeeId}/${randomUUID()}` : `${tenantId}/${employeeId ? `employees/${employeeId}` : 'company'}/${randomUUID()}`;
+  const key =
+    area === 'policies' || area === 'recruitment'
+      ? `${tenantId}/${area}/${randomUUID()}`
+      : area === 'expenses' || area === 'selfies'
+        ? `${tenantId}/${area}/${employeeId}/${randomUUID()}`
+        : `${tenantId}/${employeeId ? `employees/${employeeId}` : 'company'}/${randomUUID()}`;
   assertKey(key);
   return key;
 }
@@ -29,7 +36,9 @@ export function newKey(tenantId: string, employeeId: string | null, area: 'docum
 export class LocalStore implements BlobStore {
   driver = 'local' as const;
   private root: string;
-  constructor(root: string) { this.root = path.resolve(root); }
+  constructor(root: string) {
+    this.root = path.resolve(root);
+  }
   private file(key: string) {
     assertKey(key);
     const p = path.resolve(this.root, key);
@@ -43,21 +52,31 @@ export class LocalStore implements BlobStore {
     await writeFile(tmp, data, { mode: 0o600, flag: 'wx' });
     await rename(tmp, p); // atomic: readers never see a partial file
   }
-  async get(key: string) { return readFile(this.file(key)); }
-  async delete(key: string) { await rm(this.file(key), { force: true }); }
+  async get(key: string) {
+    return readFile(this.file(key));
+  }
+  async delete(key: string) {
+    await rm(this.file(key), { force: true });
+  }
 }
 
 export class S3Store implements BlobStore {
   driver = 's3' as const;
   private client: S3Client;
   /** With an endpoint (MinIO): path-style addressing, and no KMS header, which such a store has no key for. */
-  constructor(private bucket: string, region: string, private endpoint?: string) {
+  constructor(
+    private bucket: string,
+    region: string,
+    private endpoint?: string,
+  ) {
     this.client = new S3Client({ region, ...(endpoint ? { endpoint, forcePathStyle: true } : {}) });
   }
   async put(key: string, data: Buffer, contentType: string) {
     assertKey(key);
     // Bucket default encryption is SSE-KMS with the installation key; requested explicitly as well.
-    await this.client.send(new PutObjectCommand({ Bucket: this.bucket, Key: key, Body: data, ContentType: contentType, ...(this.endpoint ? {} : { ServerSideEncryption: 'aws:kms' as const }) }));
+    await this.client.send(
+      new PutObjectCommand({ Bucket: this.bucket, Key: key, Body: data, ContentType: contentType, ...(this.endpoint ? {} : { ServerSideEncryption: 'aws:kms' as const }) }),
+    );
   }
   async get(key: string) {
     assertKey(key);
@@ -71,7 +90,9 @@ export class S3Store implements BlobStore {
 }
 
 let store: BlobStore | null = null;
-export const setStore = (s: BlobStore | null) => { store = s; };
+export const setStore = (s: BlobStore | null) => {
+  store = s;
+};
 export const getStore = () => store;
 
 export function createStore(env: Env): BlobStore | null {

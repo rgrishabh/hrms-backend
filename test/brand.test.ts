@@ -20,9 +20,14 @@ const envOf = (o: Record<string, string> = {}) => loadEnv({ DATABASE_URL: TEST_A
 
 describe('CORS', () => {
   let app: FastifyInstance;
-  beforeAll(async () => { app = await makeApp({ BRAND_DOMAIN: 'hrms.acme.test', NODE_ENV: 'production', DATABASE_SSL: 'disable', CLAMAV_HOST: 'clamav', COOKIE_SECURE: 'true' }); });
-  afterAll(async () => { await app.close(); });
-  const preflight = (origin: string) => app.inject({ method: 'OPTIONS', url: '/api/v1/config/public', headers: { host: 'hrms.acme.test', origin, 'access-control-request-method': 'POST' } });
+  beforeAll(async () => {
+    app = await makeApp({ BRAND_DOMAIN: 'hrms.acme.test', NODE_ENV: 'production', DATABASE_SSL: 'disable', CLAMAV_HOST: 'clamav', COOKIE_SECURE: 'true' });
+  });
+  afterAll(async () => {
+    await app.close();
+  });
+  const preflight = (origin: string) =>
+    app.inject({ method: 'OPTIONS', url: '/api/v1/config/public', headers: { host: 'hrms.acme.test', origin, 'access-control-request-method': 'POST' } });
 
   it('BRAND_DOMAIN alone may call the API from a browser, with cookies', async () => {
     const ok = await preflight('https://hrms.acme.test');
@@ -40,14 +45,17 @@ describe('CORS', () => {
 });
 
 describe('/brand files', () => {
-  let app: FastifyInstance; let dir: string;
+  let app: FastifyInstance;
+  let dir: string;
   beforeAll(async () => {
     dir = mkdtempSync(path.join(tmpdir(), 'hrms-brand-'));
     writeFileSync(path.join(dir, 'logo.png'), Buffer.from([0x89, 0x50, 0x4e, 0x47]));
     writeFileSync(path.join(dir, 'secret.txt'), 'no');
     app = await makeApp({ BRAND_LOGO_DARK_URL: '/brand/logo.png' }, { brandDirOverride: dir });
   });
-  afterAll(async () => { await app.close(); });
+  afterAll(async () => {
+    await app.close();
+  });
 
   it('are served from the mount, sandboxed; only images; the old path is gone', async () => {
     const r = await app.inject({ url: '/brand/logo.png', headers: { host: 'x' } });
@@ -71,7 +79,15 @@ describe('/brand files', () => {
 describe('SSRF', () => {
   it('a logo at any URL is never fetched by the server, at startup, on the config route or in an email', async () => {
     const fetchSpy = vi.spyOn(globalThis, 'fetch');
-    const app = await makeApp({ ...flags('default'), BRAND_LOGO_URL: 'https://169.254.169.254/latest/meta-data', BRAND_LOGO_DARK_URL: 'https://internal.example.test/a.png', BRAND_FAVICON_URL: 'https://localhost:9/f.ico' }, { brandDirOverride: '/nonexistent' });
+    const app = await makeApp(
+      {
+        ...flags('default'),
+        BRAND_LOGO_URL: 'https://169.254.169.254/latest/meta-data',
+        BRAND_LOGO_DARK_URL: 'https://internal.example.test/a.png',
+        BRAND_FAVICON_URL: 'https://localhost:9/f.ico',
+      },
+      { brandDirOverride: '/nonexistent' },
+    );
     const T = await createTenant();
     expect((await new Client(app, T.host).get('/api/v1/config/public')).json().brand.logoUrl).toBe('https://169.254.169.254/latest/meta-data');
     await inApp(app, () => withTenant(app.deps.pool, T.id, (db) => notifyUsers(db, T.id, [T.users.hr!.id], { kind: 'x.y', title: 'Hello' })));
@@ -88,7 +104,12 @@ describe('the config route', () => {
     const anon = new Client(app, T.host);
     const r = await anon.get('/api/v1/config/public');
     expect(r.statusCode).toBe(200);
-    expect(r.json()).toMatchObject({ product: { name: 'TestHRMS' }, features: { FEATURE_LEAVE: true, FEATURE_PAYROLL: false }, mode: 'multi', mfa: { available: false, enforced: false, methods: [] } });
+    expect(r.json()).toMatchObject({
+      product: { name: 'TestHRMS' },
+      features: { FEATURE_LEAVE: true, FEATURE_PAYROLL: false },
+      mode: 'multi',
+      mfa: { available: false, enforced: false, methods: [] },
+    });
     expect((await anon.get('/api/v1/public/config')).statusCode).toBe(404);
     await app.close();
   });
@@ -103,22 +124,37 @@ describe('SMTP', () => {
       sock.write('220 fake ESMTP\r\n');
       sock.on('data', (buf) => {
         for (const line of buf.toString().split('\r\n').filter(Boolean)) {
-          if (inData) { seen.push(line); if (line === '.') { inData = false; sock.write('250 ok\r\n'); } continue; }
+          if (inData) {
+            seen.push(line);
+            if (line === '.') {
+              inData = false;
+              sock.write('250 ok\r\n');
+            }
+            continue;
+          }
           seen.push(line);
           if (line.startsWith('EHLO')) sock.write('250-fake\r\n250-STARTTLS\r\n250 OK\r\n');
-          else if (line === 'DATA') { inData = true; sock.write('354 go\r\n'); }
-          else if (line === 'QUIT') { sock.write('221 bye\r\n'); sock.end(); }
-          else if (line === 'STARTTLS') sock.write('454 no\r\n');
+          else if (line === 'DATA') {
+            inData = true;
+            sock.write('354 go\r\n');
+          } else if (line === 'QUIT') {
+            sock.write('221 bye\r\n');
+            sock.end();
+          } else if (line === 'STARTTLS') sock.write('454 no\r\n');
           else sock.write('250 ok\r\n');
         }
       });
     });
-    return new Promise<{ port: number; seen: string[]; close: () => void }>((res) => server.listen(0, '127.0.0.1', () => res({ port: (server.address() as AddressInfo).port, seen, close: () => server.close() })));
+    return new Promise<{ port: number; seen: string[]; close: () => void }>((res) =>
+      server.listen(0, '127.0.0.1', () => res({ port: (server.address() as AddressInfo).port, seen, close: () => server.close() })),
+    );
   }
 
-  it('none sends in the clear without ever trying STARTTLS, from the brand address in the product\'s name', async () => {
+  it("none sends in the clear without ever trying STARTTLS, from the brand address in the product's name", async () => {
     const s = await fakeSmtp();
-    const mailer = createMailer(envOf({ SMTP_HOST: '127.0.0.1', SMTP_PORT: String(s.port), SMTP_SECURE: 'none', BRAND_PRODUCT_NAME: 'Acme HR', BRAND_EMAIL_FROM: 'hr@acme.test' }))!;
+    const mailer = createMailer(
+      envOf({ SMTP_HOST: '127.0.0.1', SMTP_PORT: String(s.port), SMTP_SECURE: 'none', BRAND_PRODUCT_NAME: 'Acme HR', BRAND_EMAIL_FROM: 'hr@acme.test' }),
+    )!;
     expect(getFrom()).toBe('"Acme HR" <hr@acme.test>');
     await mailer.send({ from: getFrom(), to: 'a@example.test', subject: 'Hi', text: 'Body', html: '<p>Body</p>' });
     s.close();
@@ -148,7 +184,14 @@ describe('S3_ENDPOINT', () => {
     vi.stubEnv('AWS_ACCESS_KEY_ID', 'minio-test-key');
     vi.stubEnv('AWS_SECRET_ACCESS_KEY', 'minio-test-secret');
     const seen: { url: string; sse: string | undefined }[] = [];
-    const server = createHttpServer((req, res) => { seen.push({ url: req.url!, sse: req.headers['x-amz-server-side-encryption'] as string | undefined }); req.resume(); req.on('end', () => { res.setHeader('etag', '"x"'); res.end(); }); });
+    const server = createHttpServer((req, res) => {
+      seen.push({ url: req.url!, sse: req.headers['x-amz-server-side-encryption'] as string | undefined });
+      req.resume();
+      req.on('end', () => {
+        res.setHeader('etag', '"x"');
+        res.end();
+      });
+    });
     await new Promise<void>((r) => server.listen(0, '127.0.0.1', r));
     const store = new S3Store('hrms-documents', 'us-east-1', `http://127.0.0.1:${(server.address() as AddressInfo).port}`);
     const key = '00000000-0000-4000-8000-000000000001/company/00000000-0000-4000-8000-000000000002';
@@ -175,8 +218,18 @@ describe('brand values reach what the server writes', () => {
   });
 
   it('emails carry the name, colour, link host, logo and language', () => {
-    const r = renderEmail({ brandName: 'Acme', productName: 'Acme HR', primaryColor: '#14532D', supportEmail: 'help@acme.test', appUrl: 'https://hr.acme.test', locale: 'hi-IN', logoUrl: 'https://cdn.acme.test/l.png' },
-      { title: 'Hello', link: '/leave' });
+    const r = renderEmail(
+      {
+        brandName: 'Acme',
+        productName: 'Acme HR',
+        primaryColor: '#14532D',
+        supportEmail: 'help@acme.test',
+        appUrl: 'https://hr.acme.test',
+        locale: 'hi-IN',
+        logoUrl: 'https://cdn.acme.test/l.png',
+      },
+      { title: 'Hello', link: '/leave' },
+    );
     expect(r.subject).toBe('Hello · Acme');
     expect(r.html).toContain('#14532D');
     expect(r.html).toContain('https://hr.acme.test/leave');
@@ -186,10 +239,22 @@ describe('brand values reach what the server writes', () => {
   });
 
   it('a payslip names the employer from the brand', async () => {
-    const app = await makeApp({ ...flags('default,payroll,payroll.payslips'), BRAND_NAME: 'Acme', BRAND_LEGAL_NAME: 'Acme Testing Pvt Ltd', BRAND_CURRENCY: 'USD', BRAND_LOCALE: 'en-US' });
+    const app = await makeApp({
+      ...flags('default,payroll,payroll.payslips'),
+      BRAND_NAME: 'Acme',
+      BRAND_LEGAL_NAME: 'Acme Testing Pvt Ltd',
+      BRAND_CURRENCY: 'USD',
+      BRAND_LOCALE: 'en-US',
+    });
     const T = await createTenant();
-    const [run] = await ownerQuery<{ id: string }>(`INSERT INTO payroll_runs (tenant_id, legal_entity_id, period, status, created_by) VALUES ($1,$2,'2026-01','computed',$3) RETURNING id`, [T.id, T.legalEntityId, T.users.payroll!.id]);
-    const [item] = await ownerQuery<{ id: string }>(`INSERT INTO payroll_items (tenant_id, run_id, employee_id, days_in_period, employed_days, lop_days, paid_days, data_enc, calc_version) VALUES ($1,$2,$3,31,31,0,31,$4,1) RETURNING id`, [T.id, run!.id, T.users.employee!.employeeId, seal({ lines: [], gross: 100, deductions: 0, net: 100, employerCost: 100, warnings: [] })]);
+    const [run] = await ownerQuery<{ id: string }>(
+      `INSERT INTO payroll_runs (tenant_id, legal_entity_id, period, status, created_by) VALUES ($1,$2,'2026-01','computed',$3) RETURNING id`,
+      [T.id, T.legalEntityId, T.users.payroll!.id],
+    );
+    const [item] = await ownerQuery<{ id: string }>(
+      `INSERT INTO payroll_items (tenant_id, run_id, employee_id, days_in_period, employed_days, lop_days, paid_days, data_enc, calc_version) VALUES ($1,$2,$3,31,31,0,31,$4,1) RETURNING id`,
+      [T.id, run!.id, T.users.employee!.employeeId, seal({ lines: [], gross: 100, deductions: 0, net: 100, employerCost: 100, warnings: [] })],
+    );
     await ownerQuery(`UPDATE payroll_runs SET status='finalized' WHERE id=$1`, [run!.id]);
     const emp = await Client.login(app, T.host, T.users.employee!.email);
     const slip = (await emp.get(`/api/v1/payroll/payslips/${item!.id}?reveal=1`)).json();

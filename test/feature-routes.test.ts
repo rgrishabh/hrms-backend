@@ -17,13 +17,22 @@ const dependentsClosure = (key: string): Set<string> => {
   const out = new Set([key]);
   for (let grew = true; grew;) {
     grew = false;
-    for (const d of FLAGS) if (!out.has(d.key) && d.dependencies.some((x) => out.has(x))) { out.add(d.key); grew = true; }
+    for (const d of FLAGS)
+      if (!out.has(d.key) && d.dependencies.some((x) => out.has(x))) {
+        out.add(d.key);
+        grew = true;
+      }
   }
   return out;
 };
 const needsClosure = (key: string): Set<string> => {
   const out = new Set<string>();
-  const visit = (k: string) => { const d = FEATURE_MAP.get(k)!; if (d.core) return; out.add(k); d.dependencies.forEach(visit); };
+  const visit = (k: string) => {
+    const d = FEATURE_MAP.get(k)!;
+    if (d.core) return;
+    out.add(k);
+    d.dependencies.forEach(visit);
+  };
   visit(key);
   return out;
 };
@@ -32,26 +41,56 @@ const mentions = (r: FeatureRoute, key: string) => r.requires.some((group) => gr
 const concrete = (url: string) => url.replace(/:[A-Za-z]+(\([^)]*\))?/g, ID);
 const label = (r: FeatureRoute) => `${r.method} ${r.url}`;
 
-let all: FastifyInstance; let routes: readonly FeatureRoute[]; let T: TenantFixture;
+let all: FastifyInstance;
+let routes: readonly FeatureRoute[];
+let T: TenantFixture;
 beforeAll(async () => {
   all = await makeApp({ ...ALL_ON, RATE_LIMIT_PER_MINUTE: '100000' });
   routes = all.featureRoutes.filter((r) => r.url.startsWith('/api/'));
   T = await createTenant();
 });
-afterAll(async () => { await all.close(); });
+afterAll(async () => {
+  await all.close();
+});
 
 async function statusOf(app: FastifyInstance, r: FeatureRoute, cookie?: { client: Client }) {
   if (cookie) return (await cookie.client.req(r.method as 'GET', concrete(r.url), r.method === 'GET' || r.method === 'DELETE' ? undefined : {})).statusCode;
-  return (await app.inject({ method: r.method as 'GET', url: concrete(r.url), headers: { host: T.host }, ...(r.method === 'GET' || r.method === 'DELETE' ? {} : { payload: {} }) })).statusCode;
+  return (await app.inject({ method: r.method as 'GET', url: concrete(r.url), headers: { host: T.host }, ...(r.method === 'GET' || r.method === 'DELETE' ? {} : { payload: {} }) }))
+    .statusCode;
 }
 
 describe('the manifest of routes can be trusted', () => {
   /** Written by hand on purpose: if a module's routes were left out of its gate, the manifest alone would not show it. */
   const PREFIX: Record<string, string[] | null> = {
-    auth: null, tenant: null, org: null, employees: null, approvals: null, notifications: null, reports: null, dashboard: null, config: null, public: null, mfa: null,
-    attendance: ['attendance'], leave: ['leave'], documents: ['core.documents'], expenses: ['expenses'], competency: ['training'], policies: ['core.policies'], recruitment: ['recruitment'],
-    lifecycle: ['core.onboarding', 'core.offboarding'], payroll: ['payroll'], cases: ['grievance', 'posh'], performance: ['performance'], assets: ['assets'], overtime: ['overtime'],
-    'field-duty': ['field_duty'], travel: ['travel'], loans: ['loans', 'salary_advance'], accounting: ['accounting_exports'], devices: ['attendance.biometric'],
+    auth: null,
+    tenant: null,
+    org: null,
+    employees: null,
+    approvals: null,
+    notifications: null,
+    reports: null,
+    dashboard: null,
+    config: null,
+    public: null,
+    mfa: null,
+    attendance: ['attendance'],
+    leave: ['leave'],
+    documents: ['core.documents'],
+    expenses: ['expenses'],
+    competency: ['training'],
+    policies: ['core.policies'],
+    recruitment: ['recruitment'],
+    lifecycle: ['core.onboarding', 'core.offboarding'],
+    payroll: ['payroll'],
+    cases: ['grievance', 'posh'],
+    performance: ['performance'],
+    assets: ['assets'],
+    overtime: ['overtime'],
+    'field-duty': ['field_duty'],
+    travel: ['travel'],
+    loans: ['loans', 'salary_advance'],
+    accounting: ['accounting_exports'],
+    devices: ['attendance.biometric'],
   };
 
   it('every route under a module prefix is gated by that module, and no prefix is unknown', () => {
@@ -96,7 +135,9 @@ describe.each(FLAGS.map((d): [string, FeatureDefinition] => [d.envName!, d]))('%
       for (const r of gone) expect([label(r), app.hasRoute({ method: r.method as 'GET', url: r.url })]).toEqual([label(r), false]);
       // Everything else is still there.
       for (const r of routes.filter((x) => reachable(x, on))) expect([label(r), app.hasRoute({ method: r.method as 'GET', url: r.url })]).toEqual([label(r), true]);
-    } finally { await app.close(); }
+    } finally {
+      await app.close();
+    }
   }, 120_000);
 
   it('on, with only what it needs: its routes are not 404', async () => {
@@ -106,11 +147,17 @@ describe.each(FLAGS.map((d): [string, FeatureDefinition] => [d.envName!, d]))('%
       for (const r of routes.filter((x) => mentions(x, flag.key) && reachable(x, on))) {
         expect([label(r), await statusOf(app, r)]).not.toEqual([label(r), 404]);
       }
-    } finally { await app.close(); }
+    } finally {
+      await app.close();
+    }
   }, 120_000);
 });
 
 it('with both web and mobile off, there is no clock-in route', async () => {
   const app = await makeApp({ ...flags('default'), FEATURE_ATTENDANCE_WEB: 'false', FEATURE_ATTENDANCE_MOBILE: 'false' });
-  try { expect(app.hasRoute({ method: 'POST', url: '/api/v1/attendance/punch' })).toBe(false); } finally { await app.close(); }
+  try {
+    expect(app.hasRoute({ method: 'POST', url: '/api/v1/attendance/punch' })).toBe(false);
+  } finally {
+    await app.close();
+  }
 });

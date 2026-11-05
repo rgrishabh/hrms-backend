@@ -5,14 +5,27 @@ import type { Env } from '../../config/env.js';
  * Web push: message encryption per RFC 8291 (aes128gcm, RFC 8188) and sender identification per RFC 8292 (VAPID),
  * on node:crypto alone. Nothing here sees a notification's text: pushPayload builds the only thing ever sent.
  */
-export interface PushSubscription { endpoint: string; p256dh: string; auth: string }
-export interface PushMessage { title: string; body: string; url: string }
+export interface PushSubscription {
+  endpoint: string;
+  p256dh: string;
+  auth: string;
+}
+export interface PushMessage {
+  title: string;
+  body: string;
+  url: string;
+}
 export type PushResult = { ok: true } | { ok: false; gone: boolean; error: string };
-export interface PushSender { publicKey: string; send(sub: PushSubscription, message: PushMessage): Promise<PushResult> }
+export interface PushSender {
+  publicKey: string;
+  send(sub: PushSubscription, message: PushMessage): Promise<PushResult>;
+}
 
 let sender: PushSender | null = null;
 /** Process-wide, like the mailer. Tests inject their own. */
-export const setPushSender = (s: PushSender | null) => { sender = s; };
+export const setPushSender = (s: PushSender | null) => {
+  sender = s;
+};
 export const getPushSender = () => sender;
 
 const b64u = (b: Buffer) => b.toString('base64url');
@@ -23,7 +36,11 @@ const PUSH_HOSTS = [/^fcm\.googleapis\.com$/, /^updates\.push\.services\.mozilla
 
 export function isAllowedEndpoint(endpoint: string): boolean {
   let u: URL;
-  try { u = new URL(endpoint); } catch { return false; }
+  try {
+    u = new URL(endpoint);
+  } catch {
+    return false;
+  }
   if (u.protocol !== 'https:' || u.username || u.password || (u.port && u.port !== '443')) return false;
   return PUSH_HOSTS.some((h) => h.test(u.hostname));
 }
@@ -42,7 +59,8 @@ export function encryptPayload(plaintext: Buffer, p256dh: string, authSecret: st
   const nonce = hkdf(ikm, salt, 'Content-Encoding: nonce\0', 12);
   const cipher = createCipheriv('aes-128-gcm', cek, nonce);
   const body = Buffer.concat([cipher.update(Buffer.concat([plaintext, Buffer.from([2])])), cipher.final(), cipher.getAuthTag()]);
-  const rs = Buffer.alloc(4); rs.writeUInt32BE(4096);
+  const rs = Buffer.alloc(4);
+  rs.writeUInt32BE(4096);
   return Buffer.concat([salt, rs, Buffer.from([asPublic.length]), asPublic, body]);
 }
 
@@ -66,8 +84,16 @@ export function createPushSender(env: Pick<Env, 'VAPID_PUBLIC_KEY' | 'VAPID_PRIV
     async send(sub, message) {
       if (!isAllowedEndpoint(sub.endpoint)) return { ok: false, gone: true, error: 'endpoint is not a known push service' };
       const res = await fetch(sub.endpoint, {
-        method: 'POST', redirect: 'error', signal: AbortSignal.timeout(15_000),
-        headers: { 'content-encoding': 'aes128gcm', 'content-type': 'application/octet-stream', ttl: '86400', urgency: 'normal', authorization: vapidHeader(sub.endpoint, pub, priv, subject) },
+        method: 'POST',
+        redirect: 'error',
+        signal: AbortSignal.timeout(15_000),
+        headers: {
+          'content-encoding': 'aes128gcm',
+          'content-type': 'application/octet-stream',
+          ttl: '86400',
+          urgency: 'normal',
+          authorization: vapidHeader(sub.endpoint, pub, priv, subject),
+        },
         body: new Uint8Array(encryptPayload(Buffer.from(JSON.stringify(message)), sub.p256dh, sub.auth)),
       });
       if (res.ok) return { ok: true };

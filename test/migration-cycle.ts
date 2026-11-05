@@ -24,7 +24,12 @@ const cipher = new FieldCipher(KEY);
 
 export const MIGRATIONS = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'migrations');
 
-export interface Refusal { name: string; error: string | null; appliedBefore: number; appliedAfter: number }
+export interface Refusal {
+  name: string;
+  error: string | null;
+  appliedBefore: number;
+  appliedAfter: number;
+}
 export interface CycleResult {
   /** Set if the cycle stopped early. */
   failure: string | null;
@@ -46,10 +51,12 @@ export interface CycleResult {
 
 /** Real rows in core tables, in the shapes the application writes, including every row a down file has to treat specially. */
 export const SEALED = {
-  amounts: { BASIC: 41000 }, annualCtc: 492000,
+  amounts: { BASIC: 41000 },
+  annualCtc: 492000,
   item: { lines: [{ code: 'BASIC', name: 'Basic', kind: 'earning', amount: 41000 }], gross: 41000, deductions: 1000, net: 40000, employerCost: 42000, warnings: ['short by ₹5'] },
   totals: { employees: 1, gross: 41000, deductions: 1000, net: 40000, employerCost: 42000, held: 0 },
-  adjustment: { amount: 750, note: 'Arrears for March' }, exportTotal: 40000.5,
+  adjustment: { amount: 750, note: 'Arrears for March' },
+  exportTotal: 40000.5,
   snapshot: { rows: [{ days: 2 }], totals: { days: 2 }, subjects: [] },
 };
 const seal = (v: unknown) => cipher.encrypt(JSON.stringify(v));
@@ -68,27 +75,72 @@ async function seed(c: pg.Client): Promise<void> {
   await c.query(`INSERT INTO user_roles (user_id, tenant_id, role_key) VALUES ($1,$3,'tenant_admin'), ($1,$3,'owner'), ($2,$3,'owner')`, [admin, soleOwner, t]);
   await c.query(`INSERT INTO sessions (token_hash, csrf_hash, user_id, tenant_id, expires_at) VALUES ($1,'c',$2,$3, now() + interval '1 day')`, [randomToken(), admin, t]);
   await c.query(`INSERT INTO tenant_settings (tenant_id, setting_key, setting_value) VALUES ($1,'security.max_failed_logins','5')`, [t]);
-  const emp = await one(`INSERT INTO employees (tenant_id, employee_code, first_name, legal_entity_id, branch_id, date_of_joining, user_id) VALUES ($1,'E1','E',$2,$3,'2024-01-01',$4) RETURNING id`, [t, le, br, admin]);
+  const emp = await one(
+    `INSERT INTO employees (tenant_id, employee_code, first_name, legal_entity_id, branch_id, date_of_joining, user_id) VALUES ($1,'E1','E',$2,$3,'2024-01-01',$4) RETURNING id`,
+    [t, le, br, admin],
+  );
   // Ledger and attendance rows that the old check constraints refuse.
   const lt = await one(`INSERT INTO leave_types (tenant_id, code, name) VALUES ($1,'CL','Casual') RETURNING id`, [t]);
-  await c.query(`INSERT INTO leave_ledger (tenant_id, employee_id, leave_type_id, leave_year, entry_type, days, reference) VALUES ($1,$2,$3,2026,'opening',5,'o1'), ($1,$2,$3,2026,'carry_out',-2,'yearend:x')`, [t, emp, lt]);
-  await c.query(`INSERT INTO attendance_daily (tenant_id, employee_id, work_date, day_type, status, calc_version) VALUES ($1,$2,'2026-03-02','working','present',1), ($1,$2,'2026-03-03','working','on_leave',1), ($1,$2,'2026-03-04','working','on_duty',1)`, [t, emp]);
-  await c.query(`INSERT INTO job_runs (tenant_id, job_key, period_key, trigger, status) VALUES ($1,'x','manual:1','manual','queued'), ($1,'x','2026-01','schedule','succeeded')`, [t]);
-  await c.query(`INSERT INTO email_outbox (tenant_id, to_email, subject, text_body, html_body, kind, secret_enc, expires_at) VALUES ($1,'a@seed.test','Code','{{secret}}','{{secret}}','auth.code','sealed', now() + interval '1 hour'), ($1,'b@seed.test','Hello','Hi','Hi','plain',NULL,NULL)`, [t]);
-  await c.query(`INSERT INTO admin_setup_tokens (tenant_id, user_id, token_hash, expires_at, purpose) VALUES ($1,$2,'r1', now() + interval '1 hour','reset'), ($1,$2,'s1', now() + interval '1 hour','setup')`, [t, admin]);
+  await c.query(
+    `INSERT INTO leave_ledger (tenant_id, employee_id, leave_type_id, leave_year, entry_type, days, reference) VALUES ($1,$2,$3,2026,'opening',5,'o1'), ($1,$2,$3,2026,'carry_out',-2,'yearend:x')`,
+    [t, emp, lt],
+  );
+  await c.query(
+    `INSERT INTO attendance_daily (tenant_id, employee_id, work_date, day_type, status, calc_version) VALUES ($1,$2,'2026-03-02','working','present',1), ($1,$2,'2026-03-03','working','on_leave',1), ($1,$2,'2026-03-04','working','on_duty',1)`,
+    [t, emp],
+  );
+  await c.query(`INSERT INTO job_runs (tenant_id, job_key, period_key, trigger, status) VALUES ($1,'x','manual:1','manual','queued'), ($1,'x','2026-01','schedule','succeeded')`, [
+    t,
+  ]);
+  await c.query(
+    `INSERT INTO email_outbox (tenant_id, to_email, subject, text_body, html_body, kind, secret_enc, expires_at) VALUES ($1,'a@seed.test','Code','{{secret}}','{{secret}}','auth.code','sealed', now() + interval '1 hour'), ($1,'b@seed.test','Hello','Hi','Hi','plain',NULL,NULL)`,
+    [t],
+  );
+  await c.query(
+    `INSERT INTO admin_setup_tokens (tenant_id, user_id, token_hash, expires_at, purpose) VALUES ($1,$2,'r1', now() + interval '1 hour','reset'), ($1,$2,'s1', now() + interval '1 hour','setup')`,
+    [t, admin],
+  );
   await c.query(`INSERT INTO notifications (tenant_id, user_id, kind, title, feature) VALUES ($1,$2,'loans.disbursed','Paid','loans')`, [t, admin]);
   // Approval labels 040 moved.
-  const loan = await one(`INSERT INTO employee_loans (tenant_id, employee_id, kind, amount, installments, installment_amount, first_period, purpose, created_by) VALUES ($1,$2,'salary_advance',1000,1,1000,'2026-04','Need it',$3) RETURNING id`, [t, emp, admin]);
+  const loan = await one(
+    `INSERT INTO employee_loans (tenant_id, employee_id, kind, amount, installments, installment_amount, first_period, purpose, created_by) VALUES ($1,$2,'salary_advance',1000,1,1000,'2026-04','Need it',$3) RETURNING id`,
+    [t, emp, admin],
+  );
   await c.query(`INSERT INTO approval_requests (tenant_id, entity_type, entity_id, requester_id, summary) VALUES ($1,'salary_advance',$2,$3,'Advance')`, [t, loan, admin]);
   // Sealed pay, under a finalized run whose guard must not get in the way.
-  await c.query(`INSERT INTO employee_salaries (tenant_id, employee_id, effective_from, amounts_enc, annual_ctc_enc, reason, status, created_by) VALUES ($1,$2,'2025-01-01',$3,$4,'r','active',$5)`, [t, emp, seal(SEALED.amounts), seal(SEALED.annualCtc), admin]);
-  const run = await one(`INSERT INTO payroll_runs (tenant_id, legal_entity_id, period, created_by, totals_enc) VALUES ($1,$2,'2026-03',$3,$4) RETURNING id`, [t, le, admin, seal(SEALED.totals)]);
+  await c.query(
+    `INSERT INTO employee_salaries (tenant_id, employee_id, effective_from, amounts_enc, annual_ctc_enc, reason, status, created_by) VALUES ($1,$2,'2025-01-01',$3,$4,'r','active',$5)`,
+    [t, emp, seal(SEALED.amounts), seal(SEALED.annualCtc), admin],
+  );
+  const run = await one(`INSERT INTO payroll_runs (tenant_id, legal_entity_id, period, created_by, totals_enc) VALUES ($1,$2,'2026-03',$3,$4) RETURNING id`, [
+    t,
+    le,
+    admin,
+    seal(SEALED.totals),
+  ]);
   await c.query(`INSERT INTO payroll_runs (tenant_id, legal_entity_id, period, created_by) VALUES ($1,$2,'2026-04',$3)`, [t, le, admin]);
-  await c.query(`INSERT INTO payroll_items (tenant_id, run_id, employee_id, days_in_period, employed_days, paid_days, data_enc, calc_version) VALUES ($1,$2,$3,31,31,31,$4,6)`, [t, run, emp, seal(SEALED.item)]);
-  await c.query(`INSERT INTO payroll_adjustments (tenant_id, run_id, employee_id, kind, label, data_enc, created_by) VALUES ($1,$2,$3,'earning','Arrears',$4,$5)`, [t, run, emp, seal(SEALED.adjustment), admin]);
+  await c.query(`INSERT INTO payroll_items (tenant_id, run_id, employee_id, days_in_period, employed_days, paid_days, data_enc, calc_version) VALUES ($1,$2,$3,31,31,31,$4,6)`, [
+    t,
+    run,
+    emp,
+    seal(SEALED.item),
+  ]);
+  await c.query(`INSERT INTO payroll_adjustments (tenant_id, run_id, employee_id, kind, label, data_enc, created_by) VALUES ($1,$2,$3,'earning','Arrears',$4,$5)`, [
+    t,
+    run,
+    emp,
+    seal(SEALED.adjustment),
+    admin,
+  ]);
   await c.query(`UPDATE payroll_runs SET status='finalized' WHERE id=$1`, [run]);
-  await c.query(`INSERT INTO accounting_exports (tenant_id, source_type, source_id, format, voucher_date, total_enc, exported_by) VALUES ($1,'payroll_run',$2,'csv','2026-03-31',$3,$4)`, [t, run, seal(SEALED.exportTotal), admin]);
-  await c.query(`INSERT INTO report_snapshots (tenant_id, owner_id, report_key, name, params, scope, columns, data_enc, row_count, recipient_ids, expires_at) VALUES ($1,$2,'leave_taken','Leave','{}','all','[]',$3,1,$4, now() + interval '1 day')`, [t, admin, seal(SEALED.snapshot), [admin]]);
+  await c.query(
+    `INSERT INTO accounting_exports (tenant_id, source_type, source_id, format, voucher_date, total_enc, exported_by) VALUES ($1,'payroll_run',$2,'csv','2026-03-31',$3,$4)`,
+    [t, run, seal(SEALED.exportTotal), admin],
+  );
+  await c.query(
+    `INSERT INTO report_snapshots (tenant_id, owner_id, report_key, name, params, scope, columns, data_enc, row_count, recipient_ids, expires_at) VALUES ($1,$2,'leave_taken','Leave','{}','all','[]',$3,1,$4, now() + interval '1 day')`,
+    [t, admin, seal(SEALED.snapshot), [admin]],
+  );
   // Audit rows, chained at commit. They make a chain the downs must clear, past triggers that refuse any update.
   await c.query(`INSERT INTO audit_logs (tenant_id, action) VALUES ($1,'seed.one'), ($1,'seed.two')`, [t]);
 }
@@ -130,12 +182,19 @@ export async function runMigrationCycle(url: string, file: string): Promise<void
   const back = (o: RollbackOptions) => rollback(url, quiet, { cipher, ...o });
   const c = new pg.Client({ connectionString: url });
   await c.connect();
-  const reset = async () => { await c.query('DROP SCHEMA IF EXISTS public CASCADE'); await c.query('CREATE SCHEMA public'); };
+  const reset = async () => {
+    await c.query('DROP SCHEMA IF EXISTS public CASCADE');
+    await c.query('CREATE SCHEMA public');
+  };
   const applied = async () => Number((await c.query<{ n: string }>('SELECT count(*) AS n FROM schema_migrations')).rows[0]!.n);
   const refuse = async (name: string, o: RollbackOptions) => {
     const appliedBefore = await applied();
     let error: string | null = null;
-    try { await back(o); } catch (e) { error = (e as Error).message; }
+    try {
+      await back(o);
+    } catch (e) {
+      error = (e as Error).message;
+    }
     result.refusals.push({ name, error, appliedBefore, appliedAfter: await applied() });
   };
   try {
@@ -189,11 +248,17 @@ export async function runMigrationCycle(url: string, file: string): Promise<void
     const plaintext: Record<string, unknown[]> = {};
     for (const [k, q] of Object.entries(PLAINTEXT_QUERIES)) plaintext[k] = (await c.query(q)).rows;
     await up();
-    const open = async (q: string) => { const v = (await c.query<{ v: string | null }>(q)).rows[0]!.v; return v === null ? null : cipher.decrypt(v); };
+    const open = async (q: string) => {
+      const v = (await c.query<{ v: string | null }>(q)).rows[0]!.v;
+      return v === null ? null : cipher.decrypt(v);
+    };
     const resealed: Record<string, unknown> = {
-      amounts: await open(`SELECT amounts_enc AS v FROM employee_salaries`), annualCtc: await open(`SELECT annual_ctc_enc AS v FROM employee_salaries`),
-      item: await open(`SELECT data_enc AS v FROM payroll_items`), totals: await open(`SELECT totals_enc AS v FROM payroll_runs WHERE period='2026-03'`),
-      adjustment: await open(`SELECT data_enc AS v FROM payroll_adjustments`), exportTotal: await open(`SELECT total_enc AS v FROM accounting_exports`),
+      amounts: await open(`SELECT amounts_enc AS v FROM employee_salaries`),
+      annualCtc: await open(`SELECT annual_ctc_enc AS v FROM employee_salaries`),
+      item: await open(`SELECT data_enc AS v FROM payroll_items`),
+      totals: await open(`SELECT totals_enc AS v FROM payroll_runs WHERE period='2026-03'`),
+      adjustment: await open(`SELECT data_enc AS v FROM payroll_adjustments`),
+      exportTotal: await open(`SELECT total_enc AS v FROM accounting_exports`),
       snapshot: await open(`SELECT data_enc AS v FROM report_snapshots`),
     };
     const chain = (await c.query(`SELECT ok, checked::int, broken_seq, reason FROM audit_chain_verify((SELECT id FROM tenants WHERE slug='rollback-seed'))`)).rows[0];
@@ -217,9 +282,15 @@ async function runnerChecks(c: pg.Client, reset: () => Promise<void>, url: strin
     await mkdir(path.join(dir, 'down'));
     await reset();
     await writeFile(path.join(dir, '001_table.sql'), `CREATE TABLE probe (id integer, note text);\nINSERT INTO probe VALUES (1, 'a;b'), (1, 'c');\n`);
-    await writeFile(path.join(dir, '002_index.sql'), `-- hrms:no-transaction\n-- a comment; with a semicolon\nCREATE INDEX CONCURRENTLY IF NOT EXISTS probe_note ON probe (note);\nCREATE INDEX CONCURRENTLY IF NOT EXISTS probe_id ON probe (id);\nDO $$ BEGIN PERFORM ';'; END $$;\n`);
+    await writeFile(
+      path.join(dir, '002_index.sql'),
+      `-- hrms:no-transaction\n-- a comment; with a semicolon\nCREATE INDEX CONCURRENTLY IF NOT EXISTS probe_note ON probe (note);\nCREATE INDEX CONCURRENTLY IF NOT EXISTS probe_id ON probe (id);\nDO $$ BEGIN PERFORM ';'; END $$;\n`,
+    );
     await writeFile(path.join(dir, 'down', '001_table.sql'), `DROP TABLE probe;\n`);
-    await writeFile(path.join(dir, 'down', '002_index.sql'), `-- hrms:no-transaction\nDROP INDEX CONCURRENTLY IF EXISTS probe_id;\nDROP INDEX CONCURRENTLY IF EXISTS probe_note;\n`);
+    await writeFile(
+      path.join(dir, 'down', '002_index.sql'),
+      `-- hrms:no-transaction\nDROP INDEX CONCURRENTLY IF EXISTS probe_id;\nDROP INDEX CONCURRENTLY IF EXISTS probe_note;\n`,
+    );
     await migrate(url, quiet, { dir, until: '002_index.sql' });
     const indexes = async () => (await c.query<{ n: string }>(`SELECT indexname AS n FROM pg_indexes WHERE tablename='probe' ORDER BY 1`)).rows.map((r) => r.n);
     const recorded = async () => (await c.query<{ name: string }>(`SELECT name FROM schema_migrations ORDER BY 1`)).rows.map((r) => r.name);
@@ -227,16 +298,28 @@ async function runnerChecks(c: pg.Client, reset: () => Promise<void>, url: strin
 
     // Without the marker the same statement cannot run: this is what the marker is for.
     await writeFile(path.join(dir, '003_no_marker.sql'), `CREATE INDEX CONCURRENTLY IF NOT EXISTS probe_x ON probe (id);\n`);
-    result.runner.withoutMarker = await migrate(url, quiet, { dir, until: '003_no_marker.sql' }).then(() => null, (e: Error) => e.message);
+    result.runner.withoutMarker = await migrate(url, quiet, { dir, until: '003_no_marker.sql' }).then(
+      () => null,
+      (e: Error) => e.message,
+    );
     await rm(path.join(dir, '003_no_marker.sql'));
 
     // Fails part way: what ran stays, it is not recorded. Going again finds the invalid index IF NOT EXISTS would hide, and says so. Dropped, and with the rows fixed, it goes through.
-    await writeFile(path.join(dir, '003_unique.sql'), `-- hrms:no-transaction\nCREATE TABLE IF NOT EXISTS probe2 (id integer);\nCREATE UNIQUE INDEX CONCURRENTLY IF NOT EXISTS probe_uq ON probe (id);\n`);
+    await writeFile(
+      path.join(dir, '003_unique.sql'),
+      `-- hrms:no-transaction\nCREATE TABLE IF NOT EXISTS probe2 (id integer);\nCREATE UNIQUE INDEX CONCURRENTLY IF NOT EXISTS probe_uq ON probe (id);\n`,
+    );
     await writeFile(path.join(dir, 'down', '003_unique.sql'), `-- hrms:no-transaction\nDROP INDEX CONCURRENTLY IF EXISTS probe_uq;\nDROP TABLE IF EXISTS probe2;\n`);
-    const firstTry = await migrate(url, quiet, { dir, until: '003_unique.sql' }).then(() => null, (e: Error) => e.message);
+    const firstTry = await migrate(url, quiet, { dir, until: '003_unique.sql' }).then(
+      () => null,
+      (e: Error) => e.message,
+    );
     const earlierStatementKept = Boolean((await c.query<{ t: string | null }>(`SELECT to_regclass('public.probe2') AS t`)).rows[0]!.t);
     const recordedAfterFailure = await recorded();
-    const secondTry = await migrate(url, quiet, { dir, until: '003_unique.sql' }).then(() => null, (e: Error) => e.message);
+    const secondTry = await migrate(url, quiet, { dir, until: '003_unique.sql' }).then(
+      () => null,
+      (e: Error) => e.message,
+    );
     await c.query(`DROP INDEX probe_uq`);
     await c.query(`DELETE FROM probe WHERE note='c'`);
     await migrate(url, quiet, { dir, until: '003_unique.sql' });

@@ -5,4 +5,7 @@
 const AMOUNT = /(?:₹|\bRs\.?|\bINR|\bUSD|\bEUR|\bGBP|US\$|\$|€|£|¥)\s?\d[\d,.\u00a0\u202f]*|\d[\d,.\u00a0\u202f]*\s?(?:₹|€|£)/gi;
 export const AMOUNT_REMOVED = '[amount removed]';
 export const scrubAmounts = (text: string) => text.replace(AMOUNT, AMOUNT_REMOVED);
-export const hasAmount = (text: string) => { AMOUNT.lastIndex = 0; return AMOUNT.test(text); };
+export const hasAmount = (text: string) => {
+  AMOUNT.lastIndex = 0;
+  return AMOUNT.test(text);
+};

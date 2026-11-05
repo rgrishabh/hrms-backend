@@ -24,8 +24,12 @@ import { memoized } from '../memo.js';
 const scope = new AsyncLocalStorage<ReadonlySet<string>>();
 const DEFAULTS: ReadonlySet<string> = new Set(FEATURES.filter((d) => d.core || d.defaultEnabled).map((d) => d.key));
 export const currentFeatures = (): ReadonlySet<string> => scope.getStore() ?? DEFAULTS;
-export function withFeatures<T>(features: ReadonlySet<string>, fn: () => T): T { return scope.run(features, fn); }
-export function isModuleEnabled(key: string) { return currentFeatures().has(key); }
+export function withFeatures<T>(features: ReadonlySet<string>, fn: () => T): T {
+  return scope.run(features, fn);
+}
+export function isModuleEnabled(key: string) {
+  return currentFeatures().has(key);
+}
 /** True when no feature of a key or list applies: a setting, job or report that belongs to a module that is off. */
 export function allOff(feature: string | readonly string[] | undefined | null) {
   if (!feature) return false;
@@ -50,27 +54,37 @@ export interface FeatureState {
 
 let emailTransportConfigured = false;
 let storageConfigured = false;
-export function setStorageConfigured(v: boolean) { storageConfigured = v; }
-export function setEmailTransportConfigured(v: boolean) { emailTransportConfigured = v; }
+export function setStorageConfigured(v: boolean) {
+  storageConfigured = v;
+}
+export function setEmailTransportConfigured(v: boolean) {
+  emailTransportConfigured = v;
+}
 let pushConfigured = false;
-export function setPushConfigured(v: boolean) { pushConfigured = v; }
+export function setPushConfigured(v: boolean) {
+  pushConfigured = v;
+}
 
 /** Per-feature configuration checks beyond required settings. */
 const CONFIG_CHECKS: Record<string, (db: Db, tenantId: string) => Promise<{ configured: boolean; operational: FeatureState['operational']; note?: string }>> = {
   'core.documents': async () => ({
-    configured: storageConfigured, operational: 'not_applicable',
+    configured: storageConfigured,
+    operational: 'not_applicable',
     note: storageConfigured ? undefined : 'Document storage not configured (STORAGE_DRIVER deployment setting)',
   }),
   'notifications.email': async () => ({
-    configured: emailTransportConfigured, operational: 'not_applicable',
+    configured: emailTransportConfigured,
+    operational: 'not_applicable',
     note: emailTransportConfigured ? undefined : 'Email transport not configured (SMTP_HOST deployment setting)',
   }),
   'notifications.push': async () => ({
-    configured: pushConfigured, operational: 'not_applicable',
+    configured: pushConfigured,
+    operational: 'not_applicable',
     note: pushConfigured ? undefined : 'Web push is not configured (VAPID_PUBLIC_KEY and VAPID_PRIVATE_KEY deployment settings)',
   }),
   'attendance.selfie': async () => ({
-    configured: storageConfigured, operational: 'not_applicable',
+    configured: storageConfigured,
+    operational: 'not_applicable',
     note: storageConfigured ? undefined : 'Selfie storage not configured (STORAGE_DRIVER deployment setting)',
   }),
   overtime: async (db, tenantId) => {
@@ -81,8 +95,11 @@ const CONFIG_CHECKS: Record<string, (db: Db, tenantId: string) => Promise<{ conf
     const r = await db.query<{ active: string; recent: string }>(
       `SELECT count(*) FILTER (WHERE status='active') AS active,
               count(*) FILTER (WHERE status='active' AND last_sync_at > now() - interval '24 hours') AS recent
-         FROM attendance_devices WHERE tenant_id = $1`, [tenantId]);
-    const active = Number(r.rows[0]!.active); const recent = Number(r.rows[0]!.recent);
+         FROM attendance_devices WHERE tenant_id = $1`,
+      [tenantId],
+    );
+    const active = Number(r.rows[0]!.active);
+    const recent = Number(r.rows[0]!.recent);
     return {
       configured: active > 0,
       operational: active === 0 ? 'unknown' : recent === active ? 'healthy' : 'degraded',
@@ -108,14 +125,20 @@ async function evaluate(db: Db, tenantId: string): Promise<Map<string, FeatureSt
     let dependenciesMet = true;
     for (const dep of d.dependencies) {
       const ds = await evalOne(FEATURE_MAP.get(dep)!);
-      if (!ds.usable) { dependenciesMet = false; blockers.push(`Requires '${ds.name}'`); }
+      if (!ds.usable) {
+        dependenciesMet = false;
+        blockers.push(`Requires '${ds.name}'`);
+      }
     }
     let configured = true;
     let operational: FeatureState['operational'] = 'not_applicable';
     if (supported && enabled) {
       for (const key of d.requiredSettings ?? []) {
         const v = await resolveSetting(db, tenantId, key);
-        if (v.value === null || v.value === undefined) { configured = false; blockers.push(`Setting '${key}' not configured`); }
+        if (v.value === null || v.value === undefined) {
+          configured = false;
+          blockers.push(`Setting '${key}' not configured`);
+        }
       }
       const check = CONFIG_CHECKS[d.key];
       if (check) {
@@ -126,8 +149,19 @@ async function evaluate(db: Db, tenantId: string): Promise<Map<string, FeatureSt
       }
     }
     const state: FeatureState = {
-      key: d.key, name: d.name, description: d.description, category: d.category, core: d.core, dependencies: d.dependencies,
-      supported, enabled, configured, dependenciesMet, operational, usable: supported && enabled && dependenciesMet && configured, blockers,
+      key: d.key,
+      name: d.name,
+      description: d.description,
+      category: d.category,
+      core: d.core,
+      dependencies: d.dependencies,
+      supported,
+      enabled,
+      configured,
+      dependenciesMet,
+      operational,
+      usable: supported && enabled && dependenciesMet && configured,
+      blockers,
     };
     out.set(d.key, state);
     return state;

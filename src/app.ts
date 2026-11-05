@@ -61,14 +61,24 @@ const UNSAFE = new Set(['POST', 'PUT', 'PATCH', 'DELETE']);
 export async function buildApp(deps: AppDeps): Promise<FastifyInstance> {
   const { env } = deps;
   const app = Fastify({
-    logger: env.NODE_ENV === 'test' && !deps.logStream ? false : {
-      level: env.LOG_LEVEL,
-      // Never log credentials or session material.
-      redact: LOG_REDACT_PATHS, serializers: logSerializers,
-      ...(deps.logStream ? { stream: deps.logStream } : {}),
-    },
+    logger:
+      env.NODE_ENV === 'test' && !deps.logStream
+        ? false
+        : {
+            level: env.LOG_LEVEL,
+            // Never log credentials or session material.
+            redact: LOG_REDACT_PATHS,
+            serializers: logSerializers,
+            ...(deps.logStream ? { stream: deps.logStream } : {}),
+          },
     // Fastify treats a bare number as "trust nothing", so a hop count is expressed as a function: believe that many hops.
-    trustProxy: typeof env.TRUST_PROXY === 'number' ? ((hops: number) => (_addr: string, hop: number) => hop < hops)(env.TRUST_PROXY) : env.TRUST_PROXY,
+    trustProxy:
+      typeof env.TRUST_PROXY === 'number'
+        ? (
+            (hops: number) => (_addr: string, hop: number) =>
+              hop < hops
+          )(env.TRUST_PROXY)
+        : env.TRUST_PROXY,
     genReqId: () => randomUUID(),
     bodyLimit: 1024 * 1024,
   });
@@ -85,10 +95,18 @@ export async function buildApp(deps: AppDeps): Promise<FastifyInstance> {
   app.addHook('onClose', () => runtime.close());
   // Each app's requests see its own feature set. Reading the body leaves the async context, hence the second hook.
   const memos = new WeakMap<object, Map<string, unknown>>();
-  const memoOf = (req: object) => { const m = memos.get(req) ?? new Map<string, unknown>(); memos.set(req, m); return m; };
+  const memoOf = (req: object) => {
+    const m = memos.get(req) ?? new Map<string, unknown>();
+    memos.set(req, m);
+    return m;
+  };
   const inScope = (req: object, done: () => void) => withMemo(memoOf(req), () => withFeatures(features, () => withMode(env.ORG_MANAGEMENT_MODE, done)));
-  app.addHook('onRequest', (req, _reply, done) => { inScope(req, done); });
-  app.addHook('preValidation', (req, _reply, done) => { inScope(req, done); });
+  app.addHook('onRequest', (req, _reply, done) => {
+    inScope(req, done);
+  });
+  app.addHook('preValidation', (req, _reply, done) => {
+    inScope(req, done);
+  });
   // What each route needs, for the test that goes through every flag.
   const featureRoutes: FeatureRoute[] = [];
   let mounting: readonly string[] | null = null;
@@ -122,15 +140,25 @@ export async function buildApp(deps: AppDeps): Promise<FastifyInstance> {
   }
   await app.register(cookie);
   // BRAND_DOMAIN is the only origin allowed to call the API from a browser, with cookies. Same-origin requests need none of this.
-  await app.register(cors, { credentials: true, methods: ['GET', 'HEAD', 'POST', 'PUT', 'PATCH', 'DELETE'], allowedHeaders: ['content-type', 'x-csrf-token'], maxAge: 600,
-    origin: (origin, cb) => { cb(null, !!origin && allowedCorsOrigin(env, origin)); } });
+  await app.register(cors, {
+    credentials: true,
+    methods: ['GET', 'HEAD', 'POST', 'PUT', 'PATCH', 'DELETE'],
+    allowedHeaders: ['content-type', 'x-csrf-token'],
+    maxAge: 600,
+    origin: (origin, cb) => {
+      cb(null, !!origin && allowedCorsOrigin(env, origin));
+    },
+  });
   // CSP is set per response: strict 'none' for API/JSON, sandboxed for branding files, same-origin for the SPA.
   await app.register(helmet, { contentSecurityPolicy: false, crossOriginResourcePolicy: { policy: 'same-origin' } });
   app.addHook('onSend', async (req, reply) => {
     const u = req.url;
     // The reference a problem's `instance` and every log line carry.
     reply.header('x-request-id', req.id);
-    reply.header('content-security-policy', u.startsWith('/api/') || u.startsWith('/health') || u === '/ready' || u === '/metrics' ? API_CSP : u.startsWith('/brand/') ? ASSET_CSP : SPA_CSP);
+    reply.header(
+      'content-security-policy',
+      u.startsWith('/api/') || u.startsWith('/health') || u === '/ready' || u === '/metrics' ? API_CSP : u.startsWith('/brand/') ? ASSET_CSP : SPA_CSP,
+    );
   });
   await app.register(rateLimit, { global: true, max: env.RATE_LIMIT_PER_MINUTE, timeWindow: '1 minute' });
   await app.register(multipart, { limits: { fileSize: env.STORAGE_MAX_FILE_MB * 1024 * 1024, files: 1, fields: 10, parts: 12, fieldSize: 10_000 } });
@@ -148,7 +176,11 @@ export async function buildApp(deps: AppDeps): Promise<FastifyInstance> {
   const ready = async (_req: unknown, reply: import('fastify').FastifyReply) => {
     // A probe must answer before the orchestrator's own timeout, also when every connection is busy.
     let timer: NodeJS.Timeout | undefined;
-    const late = new Promise<never>((_r, reject) => { timer = setTimeout(() => { reject(new Error('readiness timed out')); }, READINESS_TIMEOUT_MS); });
+    const late = new Promise<never>((_r, reject) => {
+      timer = setTimeout(() => {
+        reject(new Error('readiness timed out'));
+      }, READINESS_TIMEOUT_MS);
+    });
     try {
       const check = async () => {
         const status = await migrationStatus(deps.pool);
@@ -159,17 +191,30 @@ export async function buildApp(deps: AppDeps): Promise<FastifyInstance> {
       // Pending migrations: this build needs a newer schema -> not ready. Unknown (newer) migrations are
       // expected after a rollback to the previous release; migrations are expand/contract, so serve.
       if (m.pending.length) return reply.code(503).send({ status: 'unavailable' });
-      if (m.unknown.length && !warnedNewerSchema) { warnedNewerSchema = true; app.log.warn({ unknown: m.unknown }, 'database schema is newer than this build (rollback?)'); }
+      if (m.unknown.length && !warnedNewerSchema) {
+        warnedNewerSchema = true;
+        app.log.warn({ unknown: m.unknown }, 'database schema is newer than this build (rollback?)');
+      }
       if (!hasOrg) return reply.code(503).send({ status: 'unavailable' });
       return { status: 'ready' };
-    } catch { return reply.code(503).send({ status: 'unavailable' }); } finally { clearTimeout(timer); }
+    } catch {
+      return reply.code(503).send({ status: 'unavailable' });
+    } finally {
+      clearTimeout(timer);
+    }
   };
   app.get('/health/ready', noLimit, ready);
   app.get('/ready', noLimit, ready);
 
   app.addHook('onRequest', async (req) => {
-    if (req.url.startsWith('/health') || req.url === '/ready' || req.url === '/metrics') { req.ctx = { requestId: req.id, ip: req.ip, host: { kind: 'unknown', host: '' }, user: null }; return; }
-    if (!req.url.startsWith('/api/')) { req.ctx = { requestId: req.id, ip: req.ip, host: { kind: 'unknown', host: '' }, user: null }; return; }
+    if (req.url.startsWith('/health') || req.url === '/ready' || req.url === '/metrics') {
+      req.ctx = { requestId: req.id, ip: req.ip, host: { kind: 'unknown', host: '' }, user: null };
+      return;
+    }
+    if (!req.url.startsWith('/api/')) {
+      req.ctx = { requestId: req.id, ip: req.ip, host: { kind: 'unknown', host: '' }, user: null };
+      return;
+    }
     const host = await resolveHost(deps.pool, req.headers.host);
     req.ctx = { requestId: req.id, ip: req.ip, host, user: null };
     const token = req.cookies[SESSION_COOKIE];

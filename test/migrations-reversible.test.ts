@@ -20,7 +20,9 @@ import type { Catalogue } from './schema-catalogue.js';
 const cycle = JSON.parse(readFileSync(inject('migrationCycleFile'), 'utf8')) as CycleResult;
 const ok = () => expect(cycle.failure).toBeNull();
 
-const shippedSql = readdirSync(MIGRATIONS).filter((f) => f.endsWith('.sql')).sort();
+const shippedSql = readdirSync(MIGRATIONS)
+  .filter((f) => f.endsWith('.sql'))
+  .sort();
 
 describe('every migration has a way back', () => {
   it('a down file for every SQL migration on disk, a down function for every code migration', () => {
@@ -65,7 +67,8 @@ describe('the cycle on a seeded database', () => {
     const { catalogue, applied } = cycle.emptied!;
     expect(applied).toBe(0);
     expect(catalogue.relations!.map((l) => l.split(' ')[0])).toEqual(['schema_migrations']);
-    for (const section of ['extensions', 'policies', 'triggers', 'functions', 'functionGrants', 'columnGrants', 'sequences', 'views', 'types', 'defaultPrivileges']) expect(catalogue[section], section).toEqual([]);
+    for (const section of ['extensions', 'policies', 'triggers', 'functions', 'functionGrants', 'columnGrants', 'sequences', 'views', 'types', 'defaultPrivileges'])
+      expect(catalogue[section], section).toEqual([]);
     expect(catalogue.indexes).toHaveLength(1);
     expect(catalogue.tableGrants!.join()).not.toContain('hrms_app');
     expect(catalogue.schema!.join()).not.toContain('hrms_app');
@@ -100,16 +103,28 @@ describe('what the down files do to rows', () => {
   it('047: sealed mail is failed, reset links are spent, an email-MFA account can sign in again', () => {
     ok();
     const [p] = cycle.probes['047_auth.sql'] as [{ mail: unknown; links: unknown; mfa: unknown }];
-    expect(p.mail).toEqual([{ to: 'a@seed.test', status: 'failed' }, { to: 'b@seed.test', status: 'queued' }]);
-    expect(p.links).toEqual([{ hash: 'r1', used: true }, { hash: 's1', used: false }]);
-    expect(p.mfa).toEqual([{ email: 'emailmfa@seed.test', on: false }, { email: 'totp@seed.test', on: true }]);
+    expect(p.mail).toEqual([
+      { to: 'a@seed.test', status: 'failed' },
+      { to: 'b@seed.test', status: 'queued' },
+    ]);
+    expect(p.links).toEqual([
+      { hash: 'r1', used: true },
+      { hash: 's1', used: false },
+    ]);
+    expect(p.mfa).toEqual([
+      { email: 'emailmfa@seed.test', on: false },
+      { email: 'totp@seed.test', on: true },
+    ]);
   });
 
   it('044: the chain is cleared, sealed values stay until the code step, and every owner still administers', () => {
     ok();
     const [p] = cycle.probes[CONTRACT] as [{ owners: number; roles: unknown; unchained: number; audit_rows: number; still_sealed: number }];
     expect(p.owners).toBe(0);
-    expect(p.roles).toEqual([{ email: 'admin@seed.test', role: 'tenant_admin' }, { email: 'owner@seed.test', role: 'tenant_admin' }]);
+    expect(p.roles).toEqual([
+      { email: 'admin@seed.test', role: 'tenant_admin' },
+      { email: 'owner@seed.test', role: 'tenant_admin' },
+    ]);
     expect(p.unchained).toBe(p.audit_rows);
     expect(p.audit_rows).toBeGreaterThan(0);
     expect(p.still_sealed).toBe(1);
@@ -125,10 +140,16 @@ describe('what the down files do to rows', () => {
     ok();
     expect(cycle.probes['040_feature_splits.sql']).toEqual([{ entity_type: 'employee_loan' }]);
     const jobs = cycle.probes['038_job_runs_queued.sql'] as { period_key: string; status: string; error: string | null }[];
-    expect(jobs.map((j) => [j.period_key, j.status])).toEqual([['2026-01', 'succeeded'], ['manual:1', 'failed']]);
+    expect(jobs.map((j) => [j.period_key, j.status])).toEqual([
+      ['2026-01', 'succeeded'],
+      ['manual:1', 'failed'],
+    ]);
     expect(jobs[1]!.error).toContain('rolled back');
     const ledger = cycle.probes['032_leave_year_close.sql'] as { entry_type: string; days: string; note: string | null }[];
-    expect(ledger.map((l) => [l.entry_type, l.days])).toEqual([['opening', '5.00'], ['adjustment', '-2.00']]);
+    expect(ledger.map((l) => [l.entry_type, l.days])).toEqual([
+      ['opening', '5.00'],
+      ['adjustment', '-2.00'],
+    ]);
     expect(ledger[1]!.note).toContain('carry_out');
     expect((cycle.probes['021_field_duty.sql'] as { status: string }[]).map((d) => d.status)).toEqual(['present', 'on_leave', 'present']);
     expect((cycle.probes['006_leave_management.sql'] as { status: string }[]).map((d) => d.status)).toEqual(['present', 'absent', 'present']);
@@ -144,12 +165,22 @@ describe('what the down files do to rows', () => {
     const { lastApplied, plaintext: p, resealed: r, chain } = cycle.pair!;
     expect(lastApplied).toBe(EXPAND);
     expect(p.salary).toEqual([{ amounts: SEALED.amounts, annual_ctc: '492000.00', amounts_enc: null }]);
-    expect(p.item).toEqual([{ lines: SEALED.item.lines, gross: '41000.00', deductions: '1000.00', net: '40000.00', employer_cost: '42000.00', warnings: SEALED.item.warnings, data_enc: null }]);
-    expect(p.runs).toEqual([{ period: '2026-03', totals: SEALED.totals, totals_enc: null }, { period: '2026-04', totals: {}, totals_enc: null }]);
+    expect(p.item).toEqual([
+      { lines: SEALED.item.lines, gross: '41000.00', deductions: '1000.00', net: '40000.00', employer_cost: '42000.00', warnings: SEALED.item.warnings, data_enc: null },
+    ]);
+    expect(p.runs).toEqual([
+      { period: '2026-03', totals: SEALED.totals, totals_enc: null },
+      { period: '2026-04', totals: {}, totals_enc: null },
+    ]);
     expect(p.adjustment).toEqual([{ amount: '750.00', note: SEALED.adjustment.note, data_enc: null }]);
     expect(p.export).toEqual([{ total: '40000.50', total_enc: null }]);
     expect(p.snapshot).toEqual([{ rows: SEALED.snapshot.rows, totals: SEALED.snapshot.totals, data_enc: null }]);
-    expect(p.chain!.every((x) => { const l = x as Record<string, unknown>; return l.chain_seq === null && l.prev_hash === null && l.row_hash === null; })).toBe(true);
+    expect(
+      p.chain!.every((x) => {
+        const l = x as Record<string, unknown>;
+        return l.chain_seq === null && l.prev_hash === null && l.row_hash === null;
+      }),
+    ).toBe(true);
     expect(p.chain!.length).toBeGreaterThan(0);
 
     expect(JSON.parse(r.amounts as string)).toEqual(SEALED.amounts);
@@ -172,7 +203,10 @@ describe('rollback refuses, before changing anything', () => {
     expect(r.appliedAfter).toBe(r.appliedBefore);
     return r.error;
   };
-  it('without saying how far', () => { expect(refusal('no target')).toMatch(/exactly one/); expect(refusal('two targets')).toMatch(/exactly one/); });
+  it('without saying how far', () => {
+    expect(refusal('no target')).toMatch(/exactly one/);
+    expect(refusal('two targets')).toMatch(/exactly one/);
+  });
   it('with a count that makes no sense, or a name that is not applied', () => {
     expect(refusal('zero steps')).toMatch(/at least 1/);
     expect(refusal('too many steps')).toMatch(/applied/);
@@ -218,12 +252,19 @@ describe('no-transaction files', () => {
     expect(isNoTransaction('-- hrms:no-transaction  \r\nSELECT 1;')).toBe(true);
     expect(isNoTransaction('-- a comment\n-- hrms:no-transaction\nSELECT 1;')).toBe(false);
     expect(isNoTransaction('SELECT 1; -- hrms:no-transaction')).toBe(false);
-    expect(readdirSync(MIGRATIONS).filter((f) => f.endsWith('.sql') && f < '048').filter((f) => isNoTransaction(readFileSync(path.join(MIGRATIONS, f), 'utf8')))).toEqual([]);
+    expect(
+      readdirSync(MIGRATIONS)
+        .filter((f) => f.endsWith('.sql') && f < '048')
+        .filter((f) => isNoTransaction(readFileSync(path.join(MIGRATIONS, f), 'utf8'))),
+    ).toEqual([]);
   });
 
   it('statements split on top-level semicolons only', () => {
-    expect(splitStatements(`-- one; comment\nSELECT 1;\n/* two; /* nested; */ */ SELECT ';', "a;b", E'it\\'s;', 'it''s;';\nDO $$ BEGIN PERFORM 1; END $$;\nDO $tag$ SELECT $$;$$; $tag$;\n-- trailing; comment\n`))
-      .toEqual([`-- one; comment\nSELECT 1`, `/* two; /* nested; */ */ SELECT ';', "a;b", E'it\\'s;', 'it''s;'`, 'DO $$ BEGIN PERFORM 1; END $$', 'DO $tag$ SELECT $$;$$; $tag$']);
+    expect(
+      splitStatements(
+        `-- one; comment\nSELECT 1;\n/* two; /* nested; */ */ SELECT ';', "a;b", E'it\\'s;', 'it''s;';\nDO $$ BEGIN PERFORM 1; END $$;\nDO $tag$ SELECT $$;$$; $tag$;\n-- trailing; comment\n`,
+      ),
+    ).toEqual([`-- one; comment\nSELECT 1`, `/* two; /* nested; */ */ SELECT ';', "a;b", E'it\\'s;', 'it''s;'`, 'DO $$ BEGIN PERFORM 1; END $$', 'DO $tag$ SELECT $$;$$; $tag$']);
     expect(splitStatements('SELECT 1')).toEqual(['SELECT 1']);
     expect(splitStatements('-- only a comment\n;\n')).toEqual([]);
     expect(splitStatements(`SELECT $1; SELECT 'x\\'; SELECT 2`)).toEqual(['SELECT $1', `SELECT 'x\\'`, 'SELECT 2']);

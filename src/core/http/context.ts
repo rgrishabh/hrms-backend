@@ -28,11 +28,29 @@ declare module 'fastify' {
     /** Features checked at run time by `requireFeature`, besides what mounts the route. */
     feature?: readonly string[];
   }
-  interface FastifyRequest { ctx: RequestContext }
-  interface FastifyInstance { deps: AppDeps; featureRoutes: readonly FeatureRoute[] }
+  interface FastifyRequest {
+    ctx: RequestContext;
+  }
+  interface FastifyInstance {
+    deps: AppDeps;
+    featureRoutes: readonly FeatureRoute[];
+  }
 }
 
-export interface AppDeps { env: Env; pool: Pool; cipher: FieldCipher; /** Set by buildApp from DB_READ_HOST. */ readPool?: Pool; /** Tests: JSON logs go here. */ logStream?: { write(line: string): unknown }; /** Tests: refuse an answer that its declared response schema does not describe. */ verifyResponses?: boolean; /** `npm run openapi`: build the document. Serving does not load the generator. */ openapi?: boolean; onRouteRecorded?: (r: RouteOptionsRecord) => void; /** Tests: keep an injected mailer instead of building one from env. */ mailerOverride?: boolean; storeOverride?: boolean; pushOverride?: boolean; /** Tests: another directory than the fixed /brand mount. */ brandDirOverride?: string }
+export interface AppDeps {
+  env: Env;
+  pool: Pool;
+  cipher: FieldCipher;
+  /** Set by buildApp from DB_READ_HOST. */ readPool?: Pool;
+  /** Tests: JSON logs go here. */ logStream?: { write(line: string): unknown };
+  /** Tests: refuse an answer that its declared response schema does not describe. */ verifyResponses?: boolean;
+  /** `npm run openapi`: build the document. Serving does not load the generator. */ openapi?: boolean;
+  onRouteRecorded?: (r: RouteOptionsRecord) => void;
+  /** Tests: keep an injected mailer instead of building one from env. */ mailerOverride?: boolean;
+  storeOverride?: boolean;
+  pushOverride?: boolean;
+  /** Tests: another directory than the fixed /brand mount. */ brandDirOverride?: string;
+}
 
 export interface TenantActor {
   tenantId: string;
@@ -66,7 +84,8 @@ export function tenantActor(req: FastifyRequest, ...perms: string[]): TenantActo
   for (const p of perms) if (!user.permissions.has(p)) throw forbidden();
   const pool = req.server.deps.pool;
   return {
-    tenantId: tenant.id, user,
+    tenantId: tenant.id,
+    user,
     tx: (fn) => withTenant(pool, tenant.id, fn),
     read: (fn) => withTenantRead(req.server.deps.readPool ?? pool, pool, tenant.id, fn),
     has: (p) => user.permissions.has(p),
@@ -95,7 +114,8 @@ export async function requireFeature(db: Db, tenantId: string, key: string) {
  */
 export function gateFeatures(app: FastifyInstance, ...keys: [string, ...string[]]) {
   app.addHook('preHandler', async (req) => {
-    const host = req.ctx.host; const user = req.ctx.user;
+    const host = req.ctx.host;
+    const user = req.ctx.user;
     if (host.kind !== 'tenant' || !user || user.tenantId !== host.tenant.id) return;
     const states = await withTenant(req.server.deps.pool, host.tenant.id, (db) => evaluateFeatures(db, host.tenant.id));
     if (keys.some((k) => states.get(k)?.usable)) return;

@@ -19,7 +19,7 @@ import { resolveFeatures } from '../src/core/features/registry.js';
 const quiet = { info: () => undefined, error: () => undefined };
 
 describe('each app has its own set of features', () => {
-  it('a request sees its own app\'s flags whichever app was built last, on GET and after a body was read', async () => {
+  it("a request sees its own app's flags whichever app was built last, on GET and after a body was read", async () => {
     const a = await makeApp({ ...flags('default,attendance.mobile') });
     const b = await makeApp({ ...flags('default') });
     const T = await createTenant();
@@ -30,7 +30,8 @@ describe('each app has its own set of features', () => {
     expect((await cb.post('/api/v1/attendance/punch', { ...body, idempotencyKey: 'iso-mobile-2' })).statusCode).toBe(404);
     expect((await ca.get('/api/v1/auth/me')).json().capabilities['attendance.mobile']).toBe(true);
     expect((await cb.get('/api/v1/auth/me')).json().capabilities['attendance.mobile']).toBe(false);
-    await a.close(); await b.close();
+    await a.close();
+    await b.close();
   });
 
   it('outside any app, code sees the registry defaults; there is no global to leave behind', async () => {
@@ -48,7 +49,10 @@ describe('each app has its own set of features', () => {
 });
 
 describe('pending approvals of a module that is off', () => {
-  let on: FastifyInstance; let off: FastifyInstance; let T: TenantFixture; let requestId: string;
+  let on: FastifyInstance;
+  let off: FastifyInstance;
+  let T: TenantFixture;
+  let requestId: string;
   beforeAll(async () => {
     on = await makeApp({ ...flags('default') });
     off = await makeApp({ ...flags('default'), FEATURE_LEAVE: 'false' });
@@ -62,9 +66,12 @@ describe('pending approvals of a module that is off', () => {
     const [row] = await ownerQuery<{ id: string }>(`SELECT id FROM approval_requests WHERE tenant_id=$1 AND entity_type='leave_request'`, [T.id]);
     requestId = row!.id;
   });
-  afterAll(async () => { await on.close(); await off.close(); });
+  afterAll(async () => {
+    await on.close();
+    await off.close();
+  });
 
-  it('leave the inbox, the requester\'s list and the detail view, and answer 404 to every action', async () => {
+  it("leave the inbox, the requester's list and the detail view, and answer 404 to every action", async () => {
     const mgr = await Client.login(off, T.host, T.users.manager!.email);
     const emp = await Client.login(off, T.host, T.users.employee!.email);
     const hr = await Client.login(off, T.host, T.users.hr!.email);
@@ -98,14 +105,19 @@ describe('pending approvals of a module that is off', () => {
 });
 
 describe('everything an administrator can list follows the flags', () => {
-  let off: FastifyInstance; let T: TenantFixture; let admin: Client; let hr: Client;
+  let off: FastifyInstance;
+  let T: TenantFixture;
+  let admin: Client;
+  let hr: Client;
   beforeAll(async () => {
     off = await makeApp({ ...flags('default'), FEATURE_LEAVE: 'false' });
     T = await createTenant();
     admin = await Client.login(off, T.host, T.users.admin!.email);
     hr = await Client.login(off, T.host, T.users.hr!.email);
   });
-  afterAll(async () => { await off.close(); });
+  afterAll(async () => {
+    await off.close();
+  });
 
   it('role and permission listings', async () => {
     const r = (await admin.get('/api/v1/tenant/roles')).json();
@@ -161,14 +173,18 @@ describe('report snapshots', () => {
     const on = await makeApp({ ...flags('default,reports.advanced') });
     const T = await createTenant();
     const hrId = T.users.hr!.id;
-    const [s] = await ownerQuery<{ id: string }>(`INSERT INTO report_snapshots (tenant_id, owner_id, report_key, name, params, scope, columns, data_enc, row_count, recipient_ids, expires_at)
-      VALUES ($1,$2,'leave_taken','L','{}','all','[]',$4,0,$3, now() + interval '1 day') RETURNING id`, [T.id, hrId, [hrId], seal({ rows: [], totals: null })]);
+    const [s] = await ownerQuery<{ id: string }>(
+      `INSERT INTO report_snapshots (tenant_id, owner_id, report_key, name, params, scope, columns, data_enc, row_count, recipient_ids, expires_at)
+      VALUES ($1,$2,'leave_taken','L','{}','all','[]',$4,0,$3, now() + interval '1 day') RETURNING id`,
+      [T.id, hrId, [hrId], seal({ rows: [], totals: null })],
+    );
     const hrOff = await Client.login(off, T.host, T.users.hr!.email);
     const hrOn = await Client.login(on, T.host, T.users.hr!.email);
     expect((await hrOff.get('/api/v1/reports/snapshots')).json().items).toEqual([]);
     expect((await hrOff.get(`/api/v1/reports/snapshots/${s!.id}`)).statusCode).toBe(404);
     expect((await hrOn.get('/api/v1/reports/snapshots')).json().items).toHaveLength(1);
-    await off.close(); await on.close();
+    await off.close();
+    await on.close();
   });
 });
 
@@ -185,7 +201,8 @@ describe('in-app notifications', () => {
     expect((await empOff.get('/api/v1/notifications')).json().items ?? (await empOff.get('/api/v1/notifications')).json().rows).toEqual([]);
     expect((await empOff.get('/api/v1/notifications/unread-count')).json().unread).toBe(0);
     expect((await empOn.get('/api/v1/notifications/unread-count')).json().unread).toBe(1);
-    await on.close(); await off.close();
+    await on.close();
+    await off.close();
   });
 });
 
@@ -197,12 +214,16 @@ describe('fields of a module that is off', () => {
     const url = `/api/v1/employees/${T.users.employee!.employeeId}`;
     expect((await (await Client.login(on, T.host, T.users.hr!.email)).get(url)).json()).toHaveProperty('probation_end_date');
     expect((await (await Client.login(off, T.host, T.users.hr!.email)).get(url)).json()).not.toHaveProperty('probation_end_date');
-    const [c] = await ownerQuery<{ id: string }>(`INSERT INTO expense_claims (tenant_id, employee_id, title, purpose, created_by) VALUES ($1,$2,'Claim','Purpose',$3) RETURNING id`, [T.id, T.users.employee!.employeeId, T.users.employee!.id]);
+    const [c] = await ownerQuery<{ id: string }>(
+      `INSERT INTO expense_claims (tenant_id, employee_id, title, purpose, created_by) VALUES ($1,$2,'Claim','Purpose',$3) RETURNING id`,
+      [T.id, T.users.employee!.employeeId, T.users.employee!.id],
+    );
     const claim = (await (await Client.login(off, T.host, T.users.employee!.email)).get(`/api/v1/expenses/claims/${c!.id}`)).json();
     expect(claim).toHaveProperty('title');
     expect(claim).not.toHaveProperty('travel_request_id');
     expect(claim).not.toHaveProperty('advance_adjusted');
-    await on.close(); await off.close();
+    await on.close();
+    await off.close();
   });
 });
 
@@ -242,18 +263,45 @@ describe('the demo generator follows the flags', () => {
   it('creates nothing for a module that is off', async () => {
     const [t] = await ownerQuery<{ id: string }>(`INSERT INTO tenants (slug, name) VALUES ($1,'Flag Labs') RETURNING id`, ['f' + randomBytes(5).toString('hex')]);
     const tid = t!.id;
-    await ownerQuery(`INSERT INTO tenant_domains (tenant_id, hostname, verification_token, verification_status, verified_at, activation_status) VALUES ($1,$2,'x','verified',now(),'active')`, [tid, `f${randomBytes(4).toString('hex')}.test`]);
-    const [u] = await ownerQuery<{ id: string }>(`INSERT INTO users (tenant_id, email, display_name, password_hash) VALUES ($1,$2,'A','x') RETURNING id`, [tid, `a${randomBytes(3).toString('hex')}@x.test`]);
+    await ownerQuery(
+      `INSERT INTO tenant_domains (tenant_id, hostname, verification_token, verification_status, verified_at, activation_status) VALUES ($1,$2,'x','verified',now(),'active')`,
+      [tid, `f${randomBytes(4).toString('hex')}.test`],
+    );
+    const [u] = await ownerQuery<{ id: string }>(`INSERT INTO users (tenant_id, email, display_name, password_hash) VALUES ($1,$2,'A','x') RETURNING id`, [
+      tid,
+      `a${randomBytes(3).toString('hex')}@x.test`,
+    ]);
     await ownerQuery(`INSERT INTO user_roles (user_id, tenant_id, role_key) VALUES ($1,$2,'tenant_admin')`, [u!.id, tid]);
     const c = new pg.Client({ connectionString: TEST_OWNER_URL });
     await c.connect();
     try {
       const today = new Date().toISOString().slice(0, 10);
-      await generateDemo(c, { password: 'Demo-Password-123!', today, tenantId: tid, features: resolveFeatures({ FEATURE_DOCUMENTS: 'false', FEATURE_LEAVE: 'false', FEATURE_HOLIDAYS: 'false' }).features });
-    } finally { await c.end(); }
+      await generateDemo(c, {
+        password: 'Demo-Password-123!',
+        today,
+        tenantId: tid,
+        features: resolveFeatures({ FEATURE_DOCUMENTS: 'false', FEATURE_LEAVE: 'false', FEATURE_HOLIDAYS: 'false' }).features,
+      });
+    } finally {
+      await c.end();
+    }
     const count = async (table: string) => Number((await ownerQuery<{ n: string }>(`SELECT count(*) AS n FROM ${table} WHERE tenant_id=$1`, [tid]))[0]!.n);
     expect(await count('employees')).toBeGreaterThan(0);
-    for (const table of ['leave_types', 'holidays', 'overtime_claims', 'expense_claims', 'travel_requests', 'employee_loans', 'policies', 'job_requisitions', 'assets', 'review_cycles', 'training_courses', 'pay_components', 'posh_committee_members']) {
+    for (const table of [
+      'leave_types',
+      'holidays',
+      'overtime_claims',
+      'expense_claims',
+      'travel_requests',
+      'employee_loans',
+      'policies',
+      'job_requisitions',
+      'assets',
+      'review_cycles',
+      'training_courses',
+      'pay_components',
+      'posh_committee_members',
+    ]) {
       expect([table, await count(table)]).toEqual([table, 0]);
     }
   });

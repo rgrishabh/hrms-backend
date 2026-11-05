@@ -6,7 +6,13 @@ export async function pdfPages(file: Buffer | Uint8Array): Promise<string[]> {
   const pages: string[] = [];
   for (let n = 1; n <= pdf.numPages; n++) {
     const content = await (await pdf.getPage(n)).getTextContent();
-    pages.push(content.items.map((i) => ('str' in i ? i.str : '')).join(' ').replace(/\s+/g, ' ').trim());
+    pages.push(
+      content.items
+        .map((i) => ('str' in i ? i.str : ''))
+        .join(' ')
+        .replace(/\s+/g, ' ')
+        .trim(),
+    );
   }
   await pdf.cleanup();
   return pages;

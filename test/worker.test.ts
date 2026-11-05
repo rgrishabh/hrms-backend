@@ -17,13 +17,22 @@ import { createApprovalRequest } from '../src/core/workflow/engine.js';
 import { withTenant } from '../src/db/tx.js';
 
 const log = { info: () => undefined, error: () => undefined };
-const baseEnv = { NODE_ENV: 'test', DATABASE_URL: TEST_SINGLE_B_APP_URL, DATA_ENCRYPTION_KEY: Buffer.alloc(32, 7).toString('base64'), COOKIE_SECURE: 'false', LOG_LEVEL: 'silent', ...TEST_BRAND };
+const baseEnv = {
+  NODE_ENV: 'test',
+  DATABASE_URL: TEST_SINGLE_B_APP_URL,
+  DATA_ENCRYPTION_KEY: Buffer.alloc(32, 7).toString('base64'),
+  COOKIE_SECURE: 'false',
+  LOG_LEVEL: 'silent',
+  ...TEST_BRAND,
+};
 const TSX = ['--import', 'tsx'];
 
 describe('initRuntime', () => {
   it('sets up everything a process needs without any HTTP server', () => {
     const dir = mkdtempSync(path.join(os.tmpdir(), 'hrms-rt-'));
-    initRuntime(loadEnv({ ...baseEnv, SMTP_HOST: 'mail.example.test', SMTP_SECURE: 'none', BRAND_EMAIL_FROM: 'x@example.test', STORAGE_DRIVER: 'local', STORAGE_PATH: dir }), { warn: () => undefined });
+    initRuntime(loadEnv({ ...baseEnv, SMTP_HOST: 'mail.example.test', SMTP_SECURE: 'none', BRAND_EMAIL_FROM: 'x@example.test', STORAGE_DRIVER: 'local', STORAGE_PATH: dir }), {
+      warn: () => undefined,
+    });
     expect(getMailer()).not.toBeNull();
     expect(getFrom()).toContain('x@example.test');
     expect(getStore()?.driver).toBe('local');
@@ -34,16 +43,33 @@ describe('initRuntime', () => {
     initRuntime(loadEnv(baseEnv), { warn: () => undefined });
     const T: TenantFixture = await createTenant();
     const pool = createPool(baseEnv.DATABASE_URL.replace('hrms_test_single_b', 'hrms_test'), 2);
-    await expect(withTenant(pool, T.id, (db) => createApprovalRequest(db, T.id, { entityType: 'travel_request', entityId: T.id, requesterId: T.users.employee!.id, summary: 's',
-      steps: [{ kind: 'user', userId: T.users.manager!.id }] }))).resolves.toBeTruthy();
+    await expect(
+      withTenant(pool, T.id, (db) =>
+        createApprovalRequest(db, T.id, {
+          entityType: 'travel_request',
+          entityId: T.id,
+          requesterId: T.users.employee!.id,
+          summary: 's',
+          steps: [{ kind: 'user', userId: T.users.manager!.id }],
+        }),
+      ),
+    ).resolves.toBeTruthy();
     await pool.end();
   });
 });
 
 describe('"Run now" is queued for the worker', () => {
-  let app: FastifyInstance; let T: TenantFixture; let hr: Client;
-  beforeAll(async () => { app = await makeApp(); T = await createTenant(); hr = await Client.login(app, T.host, T.users.hr!.email); });
-  afterAll(async () => { await app.close(); });
+  let app: FastifyInstance;
+  let T: TenantFixture;
+  let hr: Client;
+  beforeAll(async () => {
+    app = await makeApp();
+    T = await createTenant();
+    hr = await Client.login(app, T.host, T.users.hr!.email);
+  });
+  afterAll(async () => {
+    await app.close();
+  });
 
   it('the API records the request and does not run it; a worker pass does', async () => {
     const r = await hr.post('/api/v1/tenant/jobs/leave.accrual/run');
@@ -60,16 +86,30 @@ describe('"Run now" is queued for the worker', () => {
 describe('Scheduler', () => {
   it('stop() waits for the pass that is running and starts no other', async () => {
     let release = () => undefined as void;
-    const gate = new Promise<void>((res) => { release = res; });
+    const gate = new Promise<void>((res) => {
+      release = res;
+    });
     const events: string[] = [];
     const pool = createPool(TEST_SINGLE_B_APP_URL, 2);
-    const s = new Scheduler(pool, log, 60_000, { onPassStart: () => { events.push('start'); }, onPassEnd: () => { events.push('end'); } });
+    const s = new Scheduler(pool, log, 60_000, {
+      onPassStart: () => {
+        events.push('start');
+      },
+      onPassEnd: () => {
+        events.push('end');
+      },
+    });
     const realConnect = pool.connect.bind(pool);
     // Hold the pass inside its first database call until released.
-    (pool as unknown as { connect: () => Promise<unknown> }).connect = async () => { await gate; return realConnect(); };
+    (pool as unknown as { connect: () => Promise<unknown> }).connect = async () => {
+      await gate;
+      return realConnect();
+    };
     const running = s.pass();
     let stopped = false;
-    const stopping = s.stop().then(() => { stopped = true; });
+    const stopping = s.stop().then(() => {
+      stopped = true;
+    });
     await new Promise((r) => setTimeout(r, 50));
     expect(stopped).toBe(false);
     expect(events).toEqual(['start']);

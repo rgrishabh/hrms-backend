@@ -24,20 +24,32 @@ function fakeClamd(behaviour: () => Behaviour = () => 'scan') {
   const server: Server = createServer((socket) => {
     open.add(socket);
     socket.on('close', () => open.delete(socket));
-    let buf: Buffer = Buffer.alloc(0); let started = false; const parts: Buffer[] = [];
+    let buf: Buffer = Buffer.alloc(0);
+    let started = false;
+    const parts: Buffer[] = [];
     socket.on('error', () => undefined);
     socket.on('data', (d: Buffer) => {
       const b = behaviour();
       if (b === 'hang') return;
-      if (b === 'close') { socket.destroy(); return; }
+      if (b === 'close') {
+        socket.destroy();
+        return;
+      }
       buf = Buffer.concat([buf, d]);
       if (!started) {
         const end = buf.indexOf(0);
         if (end < 0) return;
-        if (buf.toString('latin1', 0, end) !== 'zINSTREAM') { socket.end('UNKNOWN COMMAND\0'); return; }
-        buf = buf.subarray(end + 1); started = true;
+        if (buf.toString('latin1', 0, end) !== 'zINSTREAM') {
+          socket.end('UNKNOWN COMMAND\0');
+          return;
+        }
+        buf = buf.subarray(end + 1);
+        started = true;
       }
-      if (b === 'size-limit') { socket.end('INSTREAM size limit exceeded. ERROR\0'); return; }
+      if (b === 'size-limit') {
+        socket.end('INSTREAM size limit exceeded. ERROR\0');
+        return;
+      }
       while (buf.length >= 4) {
         const n = buf.readUInt32BE(0);
         if (n === 0) {
@@ -49,14 +61,25 @@ function fakeClamd(behaviour: () => Behaviour = () => 'scan') {
           return;
         }
         if (buf.length < 4 + n) return;
-        parts.push(buf.subarray(4, 4 + n)); buf = buf.subarray(4 + n);
+        parts.push(buf.subarray(4, 4 + n));
+        buf = buf.subarray(4 + n);
       }
     });
   });
-  return new Promise<{ port: number; received: Buffer[]; close: () => Promise<void> }>((resolve) => server.listen(0, '127.0.0.1', () => {
-    const a = server.address() as { port: number };
-    resolve({ port: a.port, received, close: () => new Promise((r) => { server.close(() => r()); for (const c of open) c.destroy(); }) });
-  }));
+  return new Promise<{ port: number; received: Buffer[]; close: () => Promise<void> }>((resolve) =>
+    server.listen(0, '127.0.0.1', () => {
+      const a = server.address() as { port: number };
+      resolve({
+        port: a.port,
+        received,
+        close: () =>
+          new Promise((r) => {
+            server.close(() => r());
+            for (const c of open) c.destroy();
+          }),
+      });
+    }),
+  );
 }
 
 describe('clamd INSTREAM client', () => {
@@ -102,8 +125,13 @@ describe('startup', () => {
 });
 
 describe('uploads through the app', () => {
-  let app: FastifyInstance; let T: TenantFixture; let hr: Client; let d: Awaited<ReturnType<typeof fakeClamd>>; let behaviour: Behaviour = 'scan';
-  let category = ''; let root = '';
+  let app: FastifyInstance;
+  let T: TenantFixture;
+  let hr: Client;
+  let d: Awaited<ReturnType<typeof fakeClamd>>;
+  let behaviour: Behaviour = 'scan';
+  let category = '';
+  let root = '';
   const send = (name: string, content: Buffer, title = 'Scanned file') => {
     const m = multipart({ categoryId: category, title, employeeId: T.users.employee!.employeeId! }, { name, content });
     return hr.req('POST', '/api/v1/documents', m.body, m.headers);
@@ -115,13 +143,21 @@ describe('uploads through the app', () => {
     root = mkdtempSync(path.join(tmpdir(), 'hrms-uploads-'));
     d = await fakeClamd(() => behaviour);
     setStore(new LocalStore(root));
-    app = await makeApp({ ...flags('default,attendance.selfie,core.policies,recruitment,expenses'), CLAMAV_HOST: '127.0.0.1', CLAMAV_PORT: String(d.port) }, { storeOverride: true });
+    app = await makeApp(
+      { ...flags('default,attendance.selfie,core.policies,recruitment,expenses'), CLAMAV_HOST: '127.0.0.1', CLAMAV_PORT: String(d.port) },
+      { storeOverride: true },
+    );
     T = await createTenant();
     hr = await Client.login(app, T.host, T.users.hr!.email);
     const r = await hr.post('/api/v1/documents/categories', { code: 'SCAN', name: 'Scanned' });
     category = r.json().id;
   });
-  afterAll(async () => { await app.close(); await d.close(); setStore(null); rmSync(root, { recursive: true, force: true }); });
+  afterAll(async () => {
+    await app.close();
+    await d.close();
+    setStore(null);
+    rmSync(root, { recursive: true, force: true });
+  });
 
   it('a clean file is scanned as it arrived, and stored', async () => {
     const r = await send('ok.pdf', PDF);
@@ -136,7 +172,9 @@ describe('uploads through the app', () => {
     expect(problem(r).code).toBe('malware_detected');
     expect(r.body).not.toContain('EICAR');
     expect(await count()).toBe(before);
-    const [row] = await ownerQuery<{ change_metadata: { signature: string } }>(`SELECT change_metadata FROM audit_logs WHERE tenant_id=$1 AND action='upload.malware_blocked'`, [T.id]);
+    const [row] = await ownerQuery<{ change_metadata: { signature: string } }>(`SELECT change_metadata FROM audit_logs WHERE tenant_id=$1 AND action='upload.malware_blocked'`, [
+      T.id,
+    ]);
     expect(row!.change_metadata.signature).toBe('Win.Test.EICAR_HDB-1');
   });
 
@@ -154,26 +192,38 @@ describe('uploads through the app', () => {
       const r = await send('x.pdf', PDF);
       expect(r.statusCode).toBe(503);
       expect(problem(r).code).toBe('scanner_unavailable');
-    } finally { behaviour = 'scan'; }
+    } finally {
+      behaviour = 'scan';
+    }
     expect(await count()).toBe(before);
   });
 
   it('production with no scanner refuses uploads, whichever module they belong to', async () => {
     const was = getScanner();
     setScanner(null, true);
-    try { expect(problem((await send('x.pdf', PDF))).code).toBe('scanner_unavailable'); } finally { setScanner(was, false); }
+    try {
+      expect(problem(await send('x.pdf', PDF)).code).toBe('scanner_unavailable');
+    } finally {
+      setScanner(was, false);
+    }
   });
 
   it('no scanner outside production: stored without scanning', async () => {
     const was = getScanner();
     setScanner(null, false);
-    try { expect((await send('x.pdf', PDF)).statusCode).toBe(201); } finally { setScanner(was, false); }
+    try {
+      expect((await send('x.pdf', PDF)).statusCode).toBe(201);
+    } finally {
+      setScanner(was, false);
+    }
   });
 
   it('a stored image has lost its metadata; size and hash are of what was stored', async () => {
     const r = await send('photo.jpg', JPEG_WITH_METADATA, 'Photo');
     expect(r.statusCode, r.body).toBe(201);
-    const [row] = await ownerQuery<{ storage_key: string; size_bytes: number; content_type: string }>(`SELECT storage_key, size_bytes, content_type FROM documents WHERE id=$1`, [r.json().id]);
+    const [row] = await ownerQuery<{ storage_key: string; size_bytes: number; content_type: string }>(`SELECT storage_key, size_bytes, content_type FROM documents WHERE id=$1`, [
+      r.json().id,
+    ]);
     const stored = readFileSync(path.join(root, row!.storage_key));
     expect(stored.includes(GPS_MARK)).toBe(false);
     expect(stored.length).toBe(row!.size_bytes);
@@ -210,8 +260,13 @@ describe('uploads through the app', () => {
 describe('no upload goes around the checks', () => {
   it('whatever stores a file a person sent has been through prepareUpload', () => {
     const root = 'src/modules';
-    const users = readdirSync(root, { recursive: true, encoding: 'utf8' }).filter((f) => f.endsWith('.ts')).map((f) => path.join(root, f)).filter((f) => /\.put\(key,/.test(readFileSync(f, 'utf8')));
-    expect(users.sort()).toEqual(['attendance/routes.ts', 'documents/routes.ts', 'expenses/routes.ts', 'policies/routes.ts', 'recruitment/routes.ts', 'tenant/company.ts'].map((f) => path.join(root, f)));
+    const users = readdirSync(root, { recursive: true, encoding: 'utf8' })
+      .filter((f) => f.endsWith('.ts'))
+      .map((f) => path.join(root, f))
+      .filter((f) => /\.put\(key,/.test(readFileSync(f, 'utf8')));
+    expect(users.sort()).toEqual(
+      ['attendance/routes.ts', 'documents/routes.ts', 'expenses/routes.ts', 'policies/routes.ts', 'recruitment/routes.ts', 'tenant/company.ts'].map((f) => path.join(root, f)),
+    );
     for (const f of users) expect(readFileSync(f, 'utf8'), f).toMatch(/await prepareUpload\(req, a,/);
   });
 });
@@ -280,5 +335,7 @@ describe('metadata stripping', () => {
     ['PNG with a chunk past the end', () => stripPng(Buffer.concat([TINY_PNG.subarray(0, 8), Buffer.from([0xff, 0xff, 0xff, 0xff, 0x49, 0x44, 0x41, 0x54, 0, 0, 0, 0])]))],
     ['PNG with no IEND', () => stripPng(TINY_PNG.subarray(0, 8))],
     ['WebP with a bad size', () => stripWebp(Buffer.concat([Buffer.from('RIFF', 'latin1'), Buffer.from([0xff, 0xff, 0, 0]), Buffer.from('WEBP', 'latin1')]))],
-  ])('refuses %s', (_n, fn) => { expect(fn).toThrow(ImageStructureError); });
+  ])('refuses %s', (_n, fn) => {
+    expect(fn).toThrow(ImageStructureError);
+  });
 });

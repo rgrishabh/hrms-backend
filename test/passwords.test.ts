@@ -42,7 +42,11 @@ describe('hashing', () => {
     const real = await hashPassword('correct horse battery');
     const time = async (stored: string | null) => {
       const samples: number[] = [];
-      for (let i = 0; i < 7; i++) { const t = performance.now(); await verifyPassword('some guess at it', stored); samples.push(performance.now() - t); }
+      for (let i = 0; i < 7; i++) {
+        const t = performance.now();
+        await verifyPassword('some guess at it', stored);
+        samples.push(performance.now() - t);
+      }
       return samples.sort((x, y) => x - y)[3]!;
     };
     const [known, unknown] = [await time(real), await time(null)];
@@ -61,7 +65,9 @@ describe('policy', () => {
     ['the company in the domain', 'acme-labs-winter-77', 'personal'],
     ['one character', 'aaaaaaaaaaaaaaaa', 'too_simple'],
     ['a repeated block', 'abc1abc1abc1abc1', 'too_simple'],
-  ])('refuses %s', (_n, pw, problem) => { expect(passwordProblems(pw, c)).toContain(problem); });
+  ])('refuses %s', (_n, pw, problem) => {
+    expect(passwordProblems(pw, c)).toContain(problem);
+  });
 
   it('takes a passphrase with no digit or capital, and a random string', () => {
     expect(passwordProblems('marble kettle orbit lantern', c)).toEqual([]);
@@ -76,17 +82,31 @@ describe('policy', () => {
   it('the list is bundled and the check makes no network call', () => {
     const called: string[] = [];
     const real = globalThis.fetch;
-    globalThis.fetch = ((u: string) => { called.push(String(u)); return real(u); }) as typeof fetch;
-    try { expect(isBreached('password1234')).toBe(true); expect(isBreached('marble kettle orbit lantern')).toBe(false); } finally { globalThis.fetch = real; }
+    globalThis.fetch = ((u: string) => {
+      called.push(String(u));
+      return real(u);
+    }) as typeof fetch;
+    try {
+      expect(isBreached('password1234')).toBe(true);
+      expect(isBreached('marble kettle orbit lantern')).toBe(false);
+    } finally {
+      globalThis.fetch = real;
+    }
     expect(called).toEqual([]);
     for (const file of ['src/core/auth/password-policy.ts']) expect(readFileSync(file, 'utf8')).not.toMatch(/node:(https?|net|dns)|fetch\(/);
   });
 });
 
 describe('through the app', () => {
-  let app: FastifyInstance; let T: TenantFixture;
-  beforeAll(async () => { app = await makeApp(); T = await createTenant(); });
-  afterAll(async () => { await app.close(); });
+  let app: FastifyInstance;
+  let T: TenantFixture;
+  beforeAll(async () => {
+    app = await makeApp();
+    T = await createTenant();
+  });
+  afterAll(async () => {
+    await app.close();
+  });
 
   it('a scrypt account signs in and comes out with Argon2id, and the old password still works after', async () => {
     const user = T.users.employee!;

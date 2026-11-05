@@ -2,8 +2,19 @@ import { setTimeout as sleep } from 'node:timers/promises';
 import { BOLD, INK, MUTED, PdfWriter, REGULAR, type PdfContext } from './writer.js';
 
 export type CellType = 'text' | 'int' | 'number' | 'percent' | 'money' | 'date';
-export interface TableColumn { key: string; label: string; type: CellType }
-export interface TableInput { title: string; subtitle: string[]; notes: string[]; columns: TableColumn[]; rows: Record<string, unknown>[]; totals: Record<string, unknown> | null }
+export interface TableColumn {
+  key: string;
+  label: string;
+  type: CellType;
+}
+export interface TableInput {
+  title: string;
+  subtitle: string[];
+  notes: string[];
+  columns: TableColumn[];
+  rows: Record<string, unknown>[];
+  totals: Record<string, unknown> | null;
+}
 
 const MARGIN = 28;
 const SIZES = [8, 7.5, 7, 6.5, 6];
@@ -20,7 +31,10 @@ const NUMERIC = /^-?\d+(\.\d+)?$/;
 const isText = (c: TableColumn) => c.type === 'text';
 const asNumber = (v: unknown) => (typeof v === 'number' && Number.isFinite(v)) || (typeof v === 'string' && NUMERIC.test(v.trim()));
 
-export interface TableStats { yields: number; truncated: boolean }
+export interface TableStats {
+  yields: number;
+  truncated: boolean;
+}
 
 /**
  * A report on landscape A4: one line a row, so that rows and pages are known in advance and drawing stays cheap. A number is never cut: it is
@@ -38,7 +52,11 @@ export class ReportTable {
   private yields = 0;
 
   /** `sliceMs`: only `scripts/perf-report-pdf.ts` changes it, to measure what not yielding would cost. */
-  constructor(ctx: PdfContext, private input: TableInput, private o: { sliceMs: number } = { sliceMs: SLICE_MS }) {
+  constructor(
+    ctx: PdfContext,
+    private input: TableInput,
+    private o: { sliceMs: number } = { sliceMs: SLICE_MS },
+  ) {
     this.w = new PdfWriter(ctx, { title: input.title, landscape: true, margin: MARGIN });
   }
 
@@ -52,7 +70,8 @@ export class ReportTable {
 
   /** Numbers and dates get what they need, and text shares the rest. If that does not fit, everything gets smaller. */
   private layout() {
-    const { doc } = this.w; const { columns, rows, totals } = this.input;
+    const { doc } = this.w;
+    const { columns, rows, totals } = this.input;
     const sample = rows.slice(0, WIDTH_SAMPLE).concat(totals ? [totals] : []);
     const usable = this.w.usableWidth;
     for (const size of SIZES) {
@@ -84,7 +103,8 @@ export class ReportTable {
   }
 
   private header() {
-    const { doc, ctx } = this.w; const { columns } = this.input;
+    const { doc, ctx } = this.w;
+    const { columns } = this.input;
     doc.font(BOLD).fontSize(this.size);
     const headerHeight = Math.max(...columns.map((c, i) => doc.heightOfString(this.w.t(c.label), { width: this.widths[i]! - CELL_PAD * 2 }))) + 6;
     doc.rect(MARGIN, this.y, this.w.usableWidth, headerHeight).fill(ctx.primaryColor);
@@ -105,18 +125,24 @@ export class ReportTable {
     if (!isText(c)) return { text: s, size: Math.max(3, (this.size * room) / width) };
     this.truncated = true;
     const ellipsis = doc.widthOfString('...');
-    let low = 0; let high = s.length;
+    let low = 0;
+    let high = s.length;
     while (low < high) {
       const mid = Math.ceil((low + high) / 2);
-      if (doc.widthOfString(s.slice(0, mid)) + ellipsis <= room) low = mid; else high = mid - 1;
+      if (doc.widthOfString(s.slice(0, mid)) + ellipsis <= room) low = mid;
+      else high = mid - 1;
     }
     return { text: `${s.slice(0, low).trimEnd()}...`, size: this.size };
   }
 
   private row(r: Record<string, unknown>, bold: boolean, shaded: boolean) {
-    const { doc } = this.w; const { columns } = this.input;
+    const { doc } = this.w;
+    const { columns } = this.input;
     if (shaded) doc.rect(MARGIN, this.y, this.w.usableWidth, this.rowHeight).fill('#f3f5f7');
-    doc.font(bold ? BOLD : REGULAR).fontSize(this.size).fillColor(INK);
+    doc
+      .font(bold ? BOLD : REGULAR)
+      .fontSize(this.size)
+      .fillColor(INK);
     let x = MARGIN;
     const textY = this.y + (this.rowHeight - this.size) / 2;
     columns.forEach((c, i) => {
@@ -144,7 +170,8 @@ export class ReportTable {
 
   /** The first page, up to the header. Synchronous, so a mistake here is still an ordinary error answer. */
   start() {
-    const { w, input } = this; const { doc } = w;
+    const { w, input } = this;
+    const { doc } = w;
     this.layout();
     w.letterhead('short');
     doc.font(BOLD).fontSize(13).fillColor(w.accent).text(w.t(input.title), MARGIN, doc.y, { width: w.usableWidth });
@@ -157,29 +184,46 @@ export class ReportTable {
 
   /** The remaining rows, the totals and the end of the file. Stops without a sound if the client went away, which destroys the stream. */
   async finish(): Promise<TableStats> {
-    const { w, input } = this; const { doc } = w;
+    const { w, input } = this;
+    const { doc } = w;
     let slice = performance.now();
     const total = input.rows.length;
     for (; this.rowIndex < total; this.rowIndex++) {
       if (doc.destroyed) return this.stats();
       if (this.y + this.rowHeight > w.bottom) this.newPage();
       this.row(input.rows[this.rowIndex]!, false, this.rowIndex % 2 === 1);
-      if (performance.now() - slice >= this.o.sliceMs) { await this.breathe(); slice = performance.now(); }
+      if (performance.now() - slice >= this.o.sliceMs) {
+        await this.breathe();
+        slice = performance.now();
+      }
     }
     if (doc.destroyed) return this.stats();
     if (input.totals) {
       if (this.y + this.rowHeight > w.bottom) this.newPage();
-      doc.moveTo(MARGIN, this.y).lineTo(MARGIN + w.usableWidth, this.y).lineWidth(0.75).strokeColor(INK).stroke();
+      doc
+        .moveTo(MARGIN, this.y)
+        .lineTo(MARGIN + w.usableWidth, this.y)
+        .lineWidth(0.75)
+        .strokeColor(INK)
+        .stroke();
       this.row(input.totals, true, false);
     }
-    if (!total) doc.font(REGULAR).fontSize(9).fillColor(MUTED).text('No rows.', MARGIN, this.y + 6, { lineBreak: false });
-    doc.x = MARGIN; doc.y = this.y + (total ? 2 : 20);
+    if (!total)
+      doc
+        .font(REGULAR)
+        .fontSize(9)
+        .fillColor(MUTED)
+        .text('No rows.', MARGIN, this.y + 6, { lineBreak: false });
+    doc.x = MARGIN;
+    doc.y = this.y + (total ? 2 : 20);
     w.closingNotes(this.truncated ? [TRUNCATED_NOTE] : []);
     doc.end();
     return this.stats();
   }
 
-  private stats(): TableStats { return { yields: this.yields, truncated: this.truncated }; }
+  private stats(): TableStats {
+    return { yields: this.yields, truncated: this.truncated };
+  }
 
   private async breathe() {
     this.yields++;

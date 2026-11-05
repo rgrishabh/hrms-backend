@@ -3,10 +3,17 @@ import type { FastifyInstance } from 'fastify';
 import { problem, makeApp, createTenant, Client, ownerQuery, PASSWORD, type TenantFixture } from './helpers.js';
 
 let app: FastifyInstance;
-let A: TenantFixture; let B: TenantFixture;
+let A: TenantFixture;
+let B: TenantFixture;
 
-beforeAll(async () => { app = await makeApp(); A = await createTenant(); B = await createTenant(); });
-afterAll(async () => { await app.close(); });
+beforeAll(async () => {
+  app = await makeApp();
+  A = await createTenant();
+  B = await createTenant();
+});
+afterAll(async () => {
+  await app.close();
+});
 
 describe('tenant resolution', () => {
   it('rejects requests for unknown hosts', async () => {
@@ -21,7 +28,6 @@ describe('tenant resolution', () => {
     const r = await new Client(app, `pending-${A.host}`).get('/api/v1/public/config');
     expect(r.statusCode).toBe(404);
   });
-
 
   it('rejects a malformed Host header', async () => {
     const r = await app.inject({ method: 'GET', url: '/api/v1/public/config', headers: { host: 'bad host!!' } });
@@ -38,7 +44,8 @@ describe('cross-tenant isolation', () => {
   it("rejects tenant A's session cookie replayed against tenant B's host", async () => {
     const a = await Client.login(app, A.host, A.users.hr!.email);
     const replay = new Client(app, B.host);
-    replay.cookie = a.cookie; replay.csrf = a.csrf;
+    replay.cookie = a.cookie;
+    replay.csrf = a.csrf;
     expect((await replay.get('/api/v1/employees')).statusCode).toBe(401);
     expect((await replay.get('/api/v1/auth/me')).statusCode).toBe(401);
   });
@@ -54,7 +61,9 @@ describe('cross-tenant isolation', () => {
 
   it("cannot reference another tenant's branch when creating an employee", async () => {
     const hrA = await Client.login(app, A.host, A.users.hr!.email);
-    const r = await hrA.post('/api/v1/employees', { employee: { employeeCode: 'X1', firstName: 'Cross', legalEntityId: B.legalEntityId, branchId: B.branchId, dateOfJoining: '2025-01-01' } });
+    const r = await hrA.post('/api/v1/employees', {
+      employee: { employeeCode: 'X1', firstName: 'Cross', legalEntityId: B.legalEntityId, branchId: B.branchId, dateOfJoining: '2025-01-01' },
+    });
     expect(r.statusCode).toBeGreaterThanOrEqual(400);
     expect(r.statusCode).toBeLessThan(500);
   });
@@ -65,8 +74,6 @@ describe('cross-tenant isolation', () => {
     const tenantIds = await ownerQuery<{ tenant_id: string }>(`SELECT DISTINCT tenant_id FROM audit_logs WHERE id = ANY($1)`, [r.items.map((x: { id: string }) => x.id)]);
     expect(tenantIds.every((t) => t.tenant_id === B.id)).toBe(true);
   });
-
-
 });
 
 describe('deployment-controlled configuration cannot be changed in the app', () => {
@@ -90,7 +97,8 @@ describe('deployment-controlled configuration cannot be changed in the app', () 
 describe('authentication & session security', () => {
   it('requires the CSRF token on state-changing requests', async () => {
     const c = await Client.login(app, A.host, A.users.admin!.email);
-    const csrf = c.csrf; c.csrf = '';
+    const csrf = c.csrf;
+    c.csrf = '';
     const r = await c.put('/api/v1/tenant/settings/general.date_format', { value: 'YYYY-MM-DD' });
     expect(r.statusCode).toBe(403);
     expect(problem(r).code).toBe('csrf_failed');
@@ -112,7 +120,8 @@ describe('authentication & session security', () => {
     const c = await Client.login(app, A.host, A.users.employee!.email);
     const cookie = c.cookie;
     await c.post('/api/v1/auth/logout');
-    const replay = new Client(app, A.host); replay.cookie = cookie;
+    const replay = new Client(app, A.host);
+    replay.cookie = cookie;
     expect((await replay.get('/api/v1/auth/me')).statusCode).toBe(401);
   });
 
@@ -137,7 +146,11 @@ describe('authentication & session security', () => {
     const itAdmin = await Client.login(app, T.host, it.email);
     const user = (email: string, roles: string[]) => itAdmin.post('/api/v1/tenant/users', { email, displayName: 'New Person', roles });
     // not to themselves, not to a new account, not by removing someone else's
-    for (const roles of [['it_admin', 'hr_admin'], ['it_admin', 'tenant_admin'], ['it_admin', 'payroll_manager']])
+    for (const roles of [
+      ['it_admin', 'hr_admin'],
+      ['it_admin', 'tenant_admin'],
+      ['it_admin', 'payroll_manager'],
+    ])
       expect((await itAdmin.patch(`/api/v1/tenant/users/${it!.id}`, { roles })).statusCode).toBe(403);
     expect((await user(`x1@${T.host}`, ['hr_admin'])).statusCode).toBe(403);
     expect((await user(`x2@${T.host}`, ['tenant_admin'])).statusCode).toBe(403);
@@ -155,8 +168,11 @@ describe('authentication & session security', () => {
     const admin = await Client.login(app, T.host, T.users.admin!.email);
     expect((await admin.patch(`/api/v1/tenant/users/${ok.json().id}`, { roles: ['hr_admin'] })).statusCode).toBe(200);
     // the role list tells each of them which roles they may grant, matching what the server enforces
-    const grantable = async (c: Client) => (await c.get('/api/v1/tenant/roles')).json().system
-      .filter((r: { grantable: boolean }) => r.grantable).map((r: { key: string }) => r.key) as string[];
+    const grantable = async (c: Client) =>
+      (await c.get('/api/v1/tenant/roles'))
+        .json()
+        .system.filter((r: { grantable: boolean }) => r.grantable)
+        .map((r: { key: string }) => r.key) as string[];
     const itMay = await grantable(itAdmin);
     expect(itMay).toEqual(expect.arrayContaining(['employee']));
     for (const k of ['it_admin', 'hr_admin', 'tenant_admin', 'payroll_manager']) expect(itMay).not.toContain(k);

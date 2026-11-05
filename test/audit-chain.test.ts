@@ -5,27 +5,42 @@ import { Client, createTenant, makeApp, ownerQuery, type TenantFixture } from '.
 import { TEST_APP_URL, TEST_OWNER_URL } from './env.js';
 import { redact } from '../src/core/audit/audit.js';
 
-let app: FastifyInstance; let T: TenantFixture; let admin: Client;
+let app: FastifyInstance;
+let T: TenantFixture;
+let admin: Client;
 beforeAll(async () => {
   app = await makeApp();
   T = await createTenant();
   admin = await Client.login(app, T.host, T.users.admin!.email);
   for (let i = 0; i < 3; i++) await admin.put('/api/v1/tenant/settings/approvals.escalate_after_days', { value: i + 1 });
 });
-afterAll(async () => { await app.close(); });
+afterAll(async () => {
+  await app.close();
+});
 
 const rawAs = async <R>(url: string, fn: (c: pg.Client) => Promise<R>) => {
   const c = new pg.Client({ connectionString: url });
   await c.connect();
-  try { return await fn(c); } finally { await c.end(); }
+  try {
+    return await fn(c);
+  } finally {
+    await c.end();
+  }
 };
 
 describe('hash-chained audit log', () => {
   it('each row chains to the one before it, per tenant', async () => {
-    const rows = await ownerQuery<{ chain_seq: string; prev_hash: string; row_hash: string }>(`SELECT chain_seq, prev_hash, row_hash FROM audit_logs WHERE tenant_id=$1 ORDER BY chain_seq`, [T.id]);
+    const rows = await ownerQuery<{ chain_seq: string; prev_hash: string; row_hash: string }>(
+      `SELECT chain_seq, prev_hash, row_hash FROM audit_logs WHERE tenant_id=$1 ORDER BY chain_seq`,
+      [T.id],
+    );
     expect(rows.length).toBeGreaterThanOrEqual(3);
     expect(rows[0]!.prev_hash).toBe('0'.repeat(64));
-    rows.forEach((r, i) => { expect(Number(r.chain_seq)).toBe(i + 1); if (i) expect(r.prev_hash).toBe(rows[i - 1]!.row_hash); expect(r.row_hash).toMatch(/^[0-9a-f]{64}$/); });
+    rows.forEach((r, i) => {
+      expect(Number(r.chain_seq)).toBe(i + 1);
+      if (i) expect(r.prev_hash).toBe(rows[i - 1]!.row_hash);
+      expect(r.row_hash).toMatch(/^[0-9a-f]{64}$/);
+    });
   });
 
   it('concurrent writers still make one unbroken chain', async () => {
@@ -62,7 +77,9 @@ describe('hash-chained audit log', () => {
         expect(broke).toMatchObject({ ok: false, brokenAt: 2, reason: 'row was changed' });
         await c.query(`DELETE FROM audit_logs WHERE tenant_id=$1 AND chain_seq=1`, [X.id]);
         expect((await a.get('/api/v1/tenant/audit/chain/verify')).json().ok).toBe(false);
-      } finally { await c.query('ALTER TABLE audit_logs ENABLE TRIGGER audit_logs_no_change'); }
+      } finally {
+        await c.query('ALTER TABLE audit_logs ENABLE TRIGGER audit_logs_no_change');
+      }
     });
   });
 
@@ -77,7 +94,18 @@ describe('hash-chained audit log', () => {
   });
 
   it('metadata carrying money is removed when written, and hidden on old rows', () => {
-    const clean = redact({ gross: 100, net: 90, totals: { net: 1 }, amount: 5, annualCtc: 12, pan: 'ABCDE1234F', aadhaar: '1', newLast4: '1234', nested: { employerCost: 1, ok: 'yes' }, fields: ['amount'] }) as Record<string, unknown>;
+    const clean = redact({
+      gross: 100,
+      net: 90,
+      totals: { net: 1 },
+      amount: 5,
+      annualCtc: 12,
+      pan: 'ABCDE1234F',
+      aadhaar: '1',
+      newLast4: '1234',
+      nested: { employerCost: 1, ok: 'yes' },
+      fields: ['amount'],
+    }) as Record<string, unknown>;
     expect(JSON.stringify(clean)).not.toMatch(/ABCDE1234F|: ?100|1234/);
     expect(clean.fields).toEqual(['amount']);
     expect((clean.nested as { ok: string }).ok).toBe('yes');
@@ -85,7 +113,10 @@ describe('hash-chained audit log', () => {
 
   it('old rows with amounts come back redacted from both audit views', async () => {
     const X = await createTenant();
-    await ownerQuery(`INSERT INTO audit_logs (tenant_id, action, target_type, target_id, change_metadata) VALUES ($1,'payroll.run_computed','employee',$2,'{"gross": 987654, "net": 876543}')`, [X.id, X.users.employee!.employeeId]);
+    await ownerQuery(
+      `INSERT INTO audit_logs (tenant_id, action, target_type, target_id, change_metadata) VALUES ($1,'payroll.run_computed','employee',$2,'{"gross": 987654, "net": 876543}')`,
+      [X.id, X.users.employee!.employeeId],
+    );
     const a = await Client.login(app, X.host, X.users.admin!.email);
     for (const url of ['/api/v1/tenant/audit', `/api/v1/employees/${X.users.employee!.employeeId}/history`, '/api/v1/tenant/audit/chain']) {
       const r = await a.get(url);

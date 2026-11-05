@@ -2,7 +2,12 @@
  * Every column holding ciphertext: what `rotate-keys` rewrites, and what a test checks against the schema, so a new
  * encrypted column cannot be forgotten at the next rotation. `key` is the columns that identify a row.
  */
-export interface EncryptedColumn { table: string; column: string; key: readonly string[]; guardTrigger?: string }
+export interface EncryptedColumn {
+  table: string;
+  column: string;
+  key: readonly string[];
+  guardTrigger?: string;
+}
 
 export const ENCRYPTED_COLUMNS: readonly EncryptedColumn[] = [
   { table: 'case_events', column: 'text_enc', key: ['id'] },

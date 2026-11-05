@@ -18,8 +18,14 @@ import { pgSsl } from './ssl.js';
 const ROLES = ['hrms_owner', 'hrms_app'] as const;
 
 export async function provisionDatabase(env: NodeJS.ProcessEnv = process.env, log: (m: string) => void = say) {
-  const need = (k: string) => { const v = env[k]; if (!v) throw new Error(`${k} is required`); return v; };
-  const host = need('DB_HOST'); const port = Number(env.DB_PORT ?? 5432); const dbName = env.DB_NAME ?? 'hrms';
+  const need = (k: string) => {
+    const v = env[k];
+    if (!v) throw new Error(`${k} is required`);
+    return v;
+  };
+  const host = need('DB_HOST');
+  const port = Number(env.DB_PORT ?? 5432);
+  const dbName = env.DB_NAME ?? 'hrms';
   if (!/^[a-z_][a-z0-9_]{0,62}$/.test(dbName)) throw new Error('DB_NAME must be a simple lowercase identifier');
   const passwords: Record<(typeof ROLES)[number], string> = { hrms_owner: need('DB_OWNER_PASSWORD'), hrms_app: need('DB_APP_PASSWORD') };
   for (const [r, p] of Object.entries(passwords)) if (p.length < 20) throw new Error(`password for ${r} must be at least 20 characters`);
@@ -30,8 +36,12 @@ export async function provisionDatabase(env: NodeJS.ProcessEnv = process.env, lo
     for (const role of ROLES) {
       const exists = (await admin.query('SELECT 1 FROM pg_roles WHERE rolname=$1', [role])).rowCount;
       const verb = exists ? 'ALTER' : 'CREATE';
-      const sql = (await admin.query<{ s: string }>(`SELECT format('${verb} ROLE %I WITH LOGIN NOSUPERUSER NOBYPASSRLS NOCREATEDB NOCREATEROLE PASSWORD %L', $1::text, $2::text) AS s`,
-        [role, passwords[role]])).rows[0]!.s;
+      const sql = (
+        await admin.query<{ s: string }>(`SELECT format('${verb} ROLE %I WITH LOGIN NOSUPERUSER NOBYPASSRLS NOCREATEDB NOCREATEROLE PASSWORD %L', $1::text, $2::text) AS s`, [
+          role,
+          passwords[role],
+        ])
+      ).rows[0]!.s;
       await admin.query(sql);
       log(`${exists ? 'updated' : 'created'} role ${role}`);
     }
@@ -54,5 +64,10 @@ export async function provisionDatabase(env: NodeJS.ProcessEnv = process.env, lo
 }
 
 if (process.argv[1] && fileURLToPath(import.meta.url) === path.resolve(process.argv[1])) {
-  provisionDatabase().then(() => say('provisioning complete')).catch((e) => { complain(`provisioning failed: ${(e as Error).message}`); process.exit(1); });
+  provisionDatabase()
+    .then(() => say('provisioning complete'))
+    .catch((e) => {
+      complain(`provisioning failed: ${(e as Error).message}`);
+      process.exit(1);
+    });
 }

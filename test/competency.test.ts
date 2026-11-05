@@ -5,23 +5,42 @@ import { hashPassword } from '../src/core/crypto/index.js';
 import { addDays, localDate } from '../src/modules/attendance/time.js';
 
 const today = localDate(new Date(), 'Asia/Kolkata');
-let app: FastifyInstance; let T: TenantFixture;
-let hr: Client; let lab: Client; let qm: Client; let emp: Client; let otherQ: Client;
-let empId: string; let otherId: string;
+let app: FastifyInstance;
+let T: TenantFixture;
+let hr: Client;
+let lab: Client;
+let qm: Client;
+let emp: Client;
+let otherQ: Client;
+let empId: string;
+let otherId: string;
 const course: Record<string, string> = {};
 let methodId: string;
 
 async function user(key: string, roles: string[]) {
   const email = `${key}@${T.host}`;
-  const [u] = await ownerQuery<{ id: string }>(`INSERT INTO users (tenant_id, email, display_name, password_hash) VALUES ($1,$2,$3,$4) RETURNING id`, [T.id, email, key, await hashPassword(PASSWORD)]);
+  const [u] = await ownerQuery<{ id: string }>(`INSERT INTO users (tenant_id, email, display_name, password_hash) VALUES ($1,$2,$3,$4) RETURNING id`, [
+    T.id,
+    email,
+    key,
+    await hashPassword(PASSWORD),
+  ]);
   for (const r of roles) await ownerQuery(`INSERT INTO user_roles (user_id, tenant_id, role_key) VALUES ($1,$2,$3)`, [u!.id, T.id, r]);
   return Client.login(app, T.host, email);
 }
 const train = (employeeId: string, courseId: string, completedOn = today, result = 'passed') =>
   hr.post('/api/v1/competency/training-records', { employeeId, courseId, completedOn, result, trainer: 'QA team', hours: 4 });
 const assess = (c: Client, employeeId: string, o: Record<string, unknown> = {}) =>
-  c.post('/api/v1/competency/assessments', { employeeId, methodId, activity: 'perform', approach: 'replicate', assessedOn: today, result: 'competent',
-    evidence: 'Six replicates on CRM; RSD 0.8 % within method limit', ...o });
+  c.post('/api/v1/competency/assessments', {
+    employeeId,
+    methodId,
+    activity: 'perform',
+    approach: 'replicate',
+    assessedOn: today,
+    result: 'competent',
+    evidence: 'Six replicates on CRM; RSD 0.8 % within method limit',
+    ...o,
+  });
 const request = (c: Client, assessmentId: string) => c.post('/api/v1/competency/authorizations', { assessmentId });
 const inboxItem = async (c: Client, entityId: string) => (await c.get('/api/v1/approvals/inbox')).json().items.find((x: { entity_id: string }) => x.entity_id === entityId);
 const approve = async (c: Client, entityId: string) => c.post(`/api/v1/approvals/${(await inboxItem(c, entityId)).id}/act`, { action: 'approve' });
@@ -30,24 +49,37 @@ const check = (c: Client, employeeId: string) => c.get(`/api/v1/competency/check
 beforeAll(async () => {
   app = await makeApp({ ...flags('default,training,lab.competency') });
   T = await createTenant();
-  empId = T.users.employee!.employeeId!; otherId = T.users.other!.employeeId!;
+  empId = T.users.employee!.employeeId!;
+  otherId = T.users.other!.employeeId!;
   hr = await Client.login(app, T.host, T.users.hr!.email);
   emp = await Client.login(app, T.host, T.users.employee!.email);
   lab = await user('labmgr', ['laboratory_manager']);
   qm = await user('quality', ['quality_manager']);
   await ownerQuery(`INSERT INTO user_roles (user_id, tenant_id, role_key) VALUES ($1,$2,'quality_manager')`, [T.users.other!.id, T.id]);
   otherQ = await Client.login(app, T.host, T.users.other!.email); // a quality manager who is also an analyst
-  for (const [code, o] of Object.entries({ SAFETY: { name: 'Chemical safety', kind: 'safety', validityMonths: 12 }, PH: { name: 'pH meter operation', kind: 'method', validityMonths: null } })) {
+  for (const [code, o] of Object.entries({
+    SAFETY: { name: 'Chemical safety', kind: 'safety', validityMonths: 12 },
+    PH: { name: 'pH meter operation', kind: 'method', validityMonths: null },
+  })) {
     const r = await hr.post('/api/v1/competency/courses', { code, ...o });
     expect(r.statusCode).toBe(201);
     course[code] = r.json().id;
   }
-  const m = await qm.post('/api/v1/competency/methods', { code: 'WAT-PH', name: 'pH by electrometric method', standardRef: 'IS 3025 (Part 11)', discipline: 'Chemical', matrix: 'Water',
-    reviewMonths: 12, requiredCourseIds: [course.SAFETY, course.PH] });
+  const m = await qm.post('/api/v1/competency/methods', {
+    code: 'WAT-PH',
+    name: 'pH by electrometric method',
+    standardRef: 'IS 3025 (Part 11)',
+    discipline: 'Chemical',
+    matrix: 'Water',
+    reviewMonths: 12,
+    requiredCourseIds: [course.SAFETY, course.PH],
+  });
   expect(m.statusCode).toBe(201);
   methodId = m.json().id;
 });
-afterAll(async () => { await app.close(); });
+afterAll(async () => {
+  await app.close();
+});
 
 describe('training records', () => {
   it('nobody records or revokes their own training', async () => {
@@ -60,7 +92,10 @@ describe('training records', () => {
     const r = await train(empId, course.SAFETY!);
     expect(r.statusCode).toBe(201);
     expect(r.json().expiresOn > today).toBe(true);
-    const [row] = await ownerQuery<{ months: number }>(`SELECT (extract(year from age(expires_on, completed_on))*12 + extract(month from age(expires_on, completed_on)))::int AS months FROM training_records WHERE id=$1`, [r.json().id]);
+    const [row] = await ownerQuery<{ months: number }>(
+      `SELECT (extract(year from age(expires_on, completed_on))*12 + extract(month from age(expires_on, completed_on)))::int AS months FROM training_records WHERE id=$1`,
+      [r.json().id],
+    );
     expect(row!.months).toBe(12);
     const mine = (await emp.get('/api/v1/competency/me')).json();
     expect(mine.training).toHaveLength(1);
@@ -102,7 +137,8 @@ describe('technical authorization', () => {
 
   it('nobody assesses, requests or grants their own competence', async () => {
     expect((await assess(otherQ, otherId)).statusCode).toBe(403);
-    await train(otherId, course.SAFETY!); await train(otherId, course.PH!);
+    await train(otherId, course.SAFETY!);
+    await train(otherId, course.PH!);
     const s = (await assess(lab, otherId)).json().id;
     const id = (await request(lab, s)).json().id;
     const self = await approve(otherQ, id);
@@ -115,12 +151,12 @@ describe('technical authorization', () => {
 
   it('rejects unusable assessments', async () => {
     const bad = (await assess(lab, empId, { activity: 'review', result: 'not_yet_competent' })).json().id;
-    expect(problem((await request(lab, bad))).detail).toMatch(/not find the person competent/);
+    expect(problem(await request(lab, bad)).detail).toMatch(/not find the person competent/);
     const old = (await assess(lab, empId, { activity: 'review', assessedOn: addDays(today, -200) })).json().id;
-    expect(problem((await request(lab, old))).detail).toMatch(/older than 180 days/);
+    expect(problem(await request(lab, old)).detail).toMatch(/older than 180 days/);
     const ok = (await assess(lab, empId, { activity: 'sampling', assessedOn: addDays(today, -10) })).json().id;
     await assess(lab, empId, { activity: 'sampling', assessedOn: addDays(today, -2), result: 'not_yet_competent' });
-    expect(problem((await request(lab, ok))).detail).toMatch(/later assessment/);
+    expect(problem(await request(lab, ok)).detail).toMatch(/later assessment/);
     expect((await assess(lab, empId, { assessedOn: addDays(today, 1) })).statusCode).toBe(400);
   });
 
@@ -135,7 +171,7 @@ describe('technical authorization', () => {
     expect(row.cells[methodId].perform).toMatchObject({ status: 'authorized', inForce: false });
     expect((await qm.post(`/api/v1/competency/authorizations/${authId}/suspend`, { reason: 'Training record withdrawn' })).statusCode).toBe(200);
     expect((await check(qm, empId)).json().reasons).toContain('Authorization is suspended');
-    expect(problem((await qm.post(`/api/v1/competency/authorizations/${authId}/reinstate`, { reason: 'Back' }))).code).toBe('prerequisites_missing');
+    expect(problem(await qm.post(`/api/v1/competency/authorizations/${authId}/reinstate`, { reason: 'Back' })).code).toBe('prerequisites_missing');
     await train(empId, course.PH!);
     expect((await qm.post(`/api/v1/competency/authorizations/${authId}/reinstate`, { reason: 'Retrained and verified' })).statusCode).toBe(200);
     expect((await check(qm, empId)).json().authorized).toBe(true);
@@ -177,7 +213,9 @@ describe('technical authorization', () => {
 describe('exited staff', () => {
   it('an authorization does not hold for someone who has left', async () => {
     const exitedReason = (r: { reasons: string[] }) => r.reasons.some((x) => /no longer employed/i.test(x));
-    const first = await check(qm, empId); expect(first.statusCode, first.body).toBe(200); expect(exitedReason(first.json())).toBe(false);
+    const first = await check(qm, empId);
+    expect(first.statusCode, first.body).toBe(200);
+    expect(exitedReason(first.json())).toBe(false);
     await ownerQuery(`UPDATE employees SET status='exited', exit_date=$2 WHERE id=$1`, [empId, addDays(today, -1)]);
     const r = (await check(qm, empId)).json();
     expect(r.authorized).toBe(false);
@@ -193,6 +231,8 @@ describe('module switch', () => {
       const c = await Client.login(off, T.host, T.users.hr!.email);
       const r = await c.get('/api/v1/competency/courses');
       expect(r.statusCode).toBe(404);
-    } finally { await off.close(); }
+    } finally {
+      await off.close();
+    }
   });
 });

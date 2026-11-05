@@ -41,7 +41,10 @@ async function batches(ctx: CodeMigrationContext, guard: { table: string; trigge
       if (guard) await client.query(`ALTER TABLE ${guard.table} ENABLE TRIGGER ${guard.trigger}`);
       await client.query('COMMIT');
       if (n < BATCH) return;
-    } catch (e) { await client.query('ROLLBACK').catch(() => undefined); throw e; }
+    } catch (e) {
+      await client.query('ROLLBACK').catch(() => undefined);
+      throw e;
+    }
   }
 }
 
@@ -62,14 +65,22 @@ async function encryptUp(ctx: CodeMigrationContext) {
   const seal = (v: unknown) => c!.encrypt(typeof v === 'string' ? v : JSON.stringify(v));
 
   await batches(ctx, null, async (db) => {
-    const r = await db.query<{ id: string; amounts: unknown; annual_ctc: string | null }>(`SELECT id, amounts, annual_ctc FROM employee_salaries WHERE amounts_enc IS NULL LIMIT ${BATCH} FOR UPDATE`);
-    for (const x of r.rows) await db.query('UPDATE employee_salaries SET amounts_enc=$2, annual_ctc_enc=$3 WHERE id=$1', [x.id, seal(x.amounts), x.annual_ctc === null ? null : seal(x.annual_ctc)]);
+    const r = await db.query<{ id: string; amounts: unknown; annual_ctc: string | null }>(
+      `SELECT id, amounts, annual_ctc FROM employee_salaries WHERE amounts_enc IS NULL LIMIT ${BATCH} FOR UPDATE`,
+    );
+    for (const x of r.rows)
+      await db.query('UPDATE employee_salaries SET amounts_enc=$2, annual_ctc_enc=$3 WHERE id=$1', [x.id, seal(x.amounts), x.annual_ctc === null ? null : seal(x.annual_ctc)]);
     return r.rowCount ?? 0;
   });
   await batches(ctx, ITEM_GUARD, async (db) => {
     const r = await db.query<{ id: string; lines: unknown; gross: string; deductions: string; net: string; employer_cost: string; warnings: unknown }>(
-      `SELECT id, lines, gross, deductions, net, employer_cost, warnings FROM payroll_items WHERE data_enc IS NULL LIMIT ${BATCH} FOR UPDATE`);
-    for (const x of r.rows) await db.query('UPDATE payroll_items SET data_enc=$2 WHERE id=$1', [x.id, seal({ lines: x.lines, gross: num(x.gross), deductions: num(x.deductions), net: num(x.net), employerCost: num(x.employer_cost), warnings: x.warnings })]);
+      `SELECT id, lines, gross, deductions, net, employer_cost, warnings FROM payroll_items WHERE data_enc IS NULL LIMIT ${BATCH} FOR UPDATE`,
+    );
+    for (const x of r.rows)
+      await db.query('UPDATE payroll_items SET data_enc=$2 WHERE id=$1', [
+        x.id,
+        seal({ lines: x.lines, gross: num(x.gross), deductions: num(x.deductions), net: num(x.net), employerCost: num(x.employer_cost), warnings: x.warnings }),
+      ]);
     return r.rowCount ?? 0;
   });
   await batches(ctx, null, async (db) => {
@@ -78,7 +89,9 @@ async function encryptUp(ctx: CodeMigrationContext) {
     return r.rowCount ?? 0;
   });
   await batches(ctx, ADJ_GUARD, async (db) => {
-    const r = await db.query<{ id: string; amount: string; note: string | null }>(`SELECT id, amount, note FROM payroll_adjustments WHERE data_enc IS NULL LIMIT ${BATCH} FOR UPDATE`);
+    const r = await db.query<{ id: string; amount: string; note: string | null }>(
+      `SELECT id, amount, note FROM payroll_adjustments WHERE data_enc IS NULL LIMIT ${BATCH} FOR UPDATE`,
+    );
     for (const x of r.rows) await db.query('UPDATE payroll_adjustments SET data_enc=$2 WHERE id=$1', [x.id, seal({ amount: num(x.amount), note: x.note })]);
     return r.rowCount ?? 0;
   });
@@ -108,7 +121,12 @@ async function encryptUp(ctx: CodeMigrationContext) {
     after = r.rows[r.rows.length - 1]!.id;
   }
   const money = String.raw`(₹|Rs\.?\s?[0-9]|INR\s?[0-9]|US\$|\$|€|£|¥)`;
-  for (const [table, cols] of [['notifications', ['title', 'body']], ['email_outbox', ['subject', 'text_body', 'html_body']], ['approval_requests', ['summary']], ['separations', ['fnf_note']]] as const) {
+  for (const [table, cols] of [
+    ['notifications', ['title', 'body']],
+    ['email_outbox', ['subject', 'text_body', 'html_body']],
+    ['approval_requests', ['summary']],
+    ['separations', ['fnf_note']],
+  ] as const) {
     const where = cols.map((col) => `${col} ~ '${money}'`).join(' OR ');
     for (;;) {
       const r = await client.query<Record<string, string | null>>(`SELECT id, ${cols.join(', ')} FROM ${table} WHERE ${where} LIMIT ${BATCH}`);
@@ -126,7 +144,15 @@ async function encryptUp(ctx: CodeMigrationContext) {
   }
 }
 
-const SEALED_COLUMNS = [['employee_salaries', 'amounts_enc'], ['employee_salaries', 'annual_ctc_enc'], ['payroll_items', 'data_enc'], ['payroll_runs', 'totals_enc'], ['payroll_adjustments', 'data_enc'], ['accounting_exports', 'total_enc'], ['report_snapshots', 'data_enc']] as const;
+const SEALED_COLUMNS = [
+  ['employee_salaries', 'amounts_enc'],
+  ['employee_salaries', 'annual_ctc_enc'],
+  ['payroll_items', 'data_enc'],
+  ['payroll_runs', 'totals_enc'],
+  ['payroll_adjustments', 'data_enc'],
+  ['accounting_exports', 'total_enc'],
+  ['report_snapshots', 'data_enc'],
+] as const;
 
 /** Opens one value of each sealed column. True if there was any, so an empty database needs no key, as going up. */
 async function encryptDownCheck(ctx: CodeMigrationContext): Promise<boolean> {
@@ -136,7 +162,11 @@ async function encryptDownCheck(ctx: CodeMigrationContext): Promise<boolean> {
     if (!r.rowCount) continue;
     found = true;
     const c = await ctx.cipher();
-    try { c.decrypt(r.rows[0]!.v); } catch (e) { throw new Error(`the data key cannot open ${table}.${column}: ${(e as Error).message}`); }
+    try {
+      c.decrypt(r.rows[0]!.v);
+    } catch (e) {
+      throw new Error(`the data key cannot open ${table}.${column}: ${(e as Error).message}`);
+    }
   }
   return found;
 }
@@ -147,15 +177,30 @@ async function encryptDown(ctx: CodeMigrationContext) {
   const c = await ctx.cipher();
   const open = <T>(v: string) => JSON.parse(c.decrypt(v)) as T;
   await batches(ctx, null, async (db) => {
-    const r = await db.query<{ id: string; amounts_enc: string; annual_ctc_enc: string | null }>(`SELECT id, amounts_enc, annual_ctc_enc FROM employee_salaries WHERE amounts_enc IS NOT NULL LIMIT ${BATCH} FOR UPDATE`);
-    for (const x of r.rows) await db.query('UPDATE employee_salaries SET amounts=$2, annual_ctc=$3, amounts_enc=NULL, annual_ctc_enc=NULL WHERE id=$1', [x.id, c.decrypt(x.amounts_enc), x.annual_ctc_enc ? c.decrypt(x.annual_ctc_enc) : null]);
+    const r = await db.query<{ id: string; amounts_enc: string; annual_ctc_enc: string | null }>(
+      `SELECT id, amounts_enc, annual_ctc_enc FROM employee_salaries WHERE amounts_enc IS NOT NULL LIMIT ${BATCH} FOR UPDATE`,
+    );
+    for (const x of r.rows)
+      await db.query('UPDATE employee_salaries SET amounts=$2, annual_ctc=$3, amounts_enc=NULL, annual_ctc_enc=NULL WHERE id=$1', [
+        x.id,
+        c.decrypt(x.amounts_enc),
+        x.annual_ctc_enc ? c.decrypt(x.annual_ctc_enc) : null,
+      ]);
     return r.rowCount ?? 0;
   });
   await batches(ctx, ITEM_GUARD, async (db) => {
     const r = await db.query<{ id: string; data_enc: string }>(`SELECT id, data_enc FROM payroll_items WHERE data_enc IS NOT NULL LIMIT ${BATCH} FOR UPDATE`);
     for (const x of r.rows) {
       const d = open<{ lines: unknown; gross: number; deductions: number; net: number; employerCost: number; warnings: unknown }>(x.data_enc);
-      await db.query('UPDATE payroll_items SET lines=$2, gross=$3, deductions=$4, net=$5, employer_cost=$6, warnings=$7, data_enc=NULL WHERE id=$1', [x.id, JSON.stringify(d.lines), d.gross, d.deductions, d.net, d.employerCost, JSON.stringify(d.warnings)]);
+      await db.query('UPDATE payroll_items SET lines=$2, gross=$3, deductions=$4, net=$5, employer_cost=$6, warnings=$7, data_enc=NULL WHERE id=$1', [
+        x.id,
+        JSON.stringify(d.lines),
+        d.gross,
+        d.deductions,
+        d.net,
+        d.employerCost,
+        JSON.stringify(d.warnings),
+      ]);
     }
     return r.rowCount ?? 0;
   });
@@ -166,7 +211,10 @@ async function encryptDown(ctx: CodeMigrationContext) {
   });
   await batches(ctx, ADJ_GUARD, async (db) => {
     const r = await db.query<{ id: string; data_enc: string }>(`SELECT id, data_enc FROM payroll_adjustments WHERE data_enc IS NOT NULL LIMIT ${BATCH} FOR UPDATE`);
-    for (const x of r.rows) { const d = open<{ amount: number; note: string | null }>(x.data_enc); await db.query('UPDATE payroll_adjustments SET amount=$2, note=$3, data_enc=NULL WHERE id=$1', [x.id, d.amount, d.note]); }
+    for (const x of r.rows) {
+      const d = open<{ amount: number; note: string | null }>(x.data_enc);
+      await db.query('UPDATE payroll_adjustments SET amount=$2, note=$3, data_enc=NULL WHERE id=$1', [x.id, d.amount, d.note]);
+    }
     return r.rowCount ?? 0;
   });
   await batches(ctx, null, async (db) => {
@@ -176,11 +224,27 @@ async function encryptDown(ctx: CodeMigrationContext) {
   });
   await batches(ctx, null, async (db) => {
     const r = await db.query<{ id: string; data_enc: string }>(`SELECT id, data_enc FROM report_snapshots WHERE data_enc IS NOT NULL LIMIT ${BATCH} FOR UPDATE`);
-    for (const x of r.rows) { const d = open<{ rows: unknown; totals: unknown }>(x.data_enc); await db.query('UPDATE report_snapshots SET rows=$2, totals=$3, data_enc=NULL WHERE id=$1', [x.id, JSON.stringify(d.rows), d.totals === null ? null : JSON.stringify(d.totals)]); }
+    for (const x of r.rows) {
+      const d = open<{ rows: unknown; totals: unknown }>(x.data_enc);
+      await db.query('UPDATE report_snapshots SET rows=$2, totals=$3, data_enc=NULL WHERE id=$1', [
+        x.id,
+        JSON.stringify(d.rows),
+        d.totals === null ? null : JSON.stringify(d.totals),
+      ]);
+    }
     return r.rowCount ?? 0;
   });
 }
 
 export const CODE_MIGRATIONS: readonly CodeMigration[] = [
-  { name: '043_encrypt_l4_data.code', checksum: 'code:043:v1', up: encryptUp, down: encryptDown, checkDown: async (ctx) => { await encryptDownCheck(ctx); }, rollsBackWith: '044_data_policy_contract.sql' },
+  {
+    name: '043_encrypt_l4_data.code',
+    checksum: 'code:043:v1',
+    up: encryptUp,
+    down: encryptDown,
+    checkDown: async (ctx) => {
+      await encryptDownCheck(ctx);
+    },
+    rollsBackWith: '044_data_policy_contract.sql',
+  },
 ];

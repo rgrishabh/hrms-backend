@@ -8,18 +8,33 @@ import { TEST_APP_URL } from './env.js';
  * The chain serializes audited writes of one organization. These run the contention for real: many writers, and two transactions that
  * take the head and another row in opposite orders, which is the shape an approval (audit, then its effect) has against an employee edit.
  */
-let app: FastifyInstance; let T: TenantFixture; let admin: Client;
-beforeAll(async () => { app = await makeApp(); T = await createTenant(); admin = await Client.login(app, T.host, T.users.admin!.email); });
-afterAll(async () => { await app.close(); });
+let app: FastifyInstance;
+let T: TenantFixture;
+let admin: Client;
+beforeAll(async () => {
+  app = await makeApp();
+  T = await createTenant();
+  admin = await Client.login(app, T.host, T.users.admin!.email);
+});
+afterAll(async () => {
+  await app.close();
+});
 
 const AUDIT = (action: string): [string, string[]] => [`INSERT INTO audit_logs (tenant_id, actor_type, action, category) VALUES ($1,'system',$2,'data')`, [T.id, action]];
-const connect = async () => { const c = new pg.Client({ connectionString: TEST_APP_URL }); await c.connect(); await c.query('BEGIN'); await c.query(`SELECT set_config('app.tenant_id',$1,true)`, [T.id]); return c; };
+const connect = async () => {
+  const c = new pg.Client({ connectionString: TEST_APP_URL });
+  await c.connect();
+  await c.query('BEGIN');
+  await c.query(`SELECT set_config('app.tenant_id',$1,true)`, [T.id]);
+  return c;
+};
 const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 describe('audit chain under contention', () => {
   it('two transactions taking the head and a row in opposite orders both commit', async () => {
     const empId = T.users.employee!.employeeId!;
-    const first = await connect(); const second = await connect();
+    const first = await connect();
+    const second = await connect();
     const results = await Promise.allSettled([
       (async () => {
         await first.query(...AUDIT('deadlock.first'));
@@ -34,7 +49,8 @@ describe('audit chain under contention', () => {
         await second.query('COMMIT');
       })(),
     ]);
-    await first.end().catch(() => undefined); await second.end().catch(() => undefined);
+    await first.end().catch(() => undefined);
+    await second.end().catch(() => undefined);
     expect(results.map((r) => (r.status === 'rejected' ? (r.reason as { code?: string }).code : 'ok'))).toEqual(['ok', 'ok']);
   }, 15000);
 

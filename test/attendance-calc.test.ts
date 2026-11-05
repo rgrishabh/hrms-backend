@@ -3,14 +3,33 @@ import { calculateDay, type ShiftPolicy, type Punch, type DayInput } from '../sr
 import { zonedToInstant, localDate, tzOffsetMinutes, todaysPunches } from '../src/modules/attendance/time.js';
 
 const TZ = 'Asia/Kolkata';
-const GEN: ShiftPolicy = { id: 'gen', code: 'GEN', startTime: '09:30', endTime: '18:00', breakMinutes: 30, graceMinutes: 10,
-  earlyExitGraceMinutes: 10, halfDayMinMinutes: 240, fullDayMinMinutes: 450, overtimeAfterMinutes: 540 };
+const GEN: ShiftPolicy = {
+  id: 'gen',
+  code: 'GEN',
+  startTime: '09:30',
+  endTime: '18:00',
+  breakMinutes: 30,
+  graceMinutes: 10,
+  earlyExitGraceMinutes: 10,
+  halfDayMinMinutes: 240,
+  fullDayMinMinutes: 450,
+  overtimeAfterMinutes: 540,
+};
 const NIGHT: ShiftPolicy = { ...GEN, id: 'night', code: 'NIGHT', startTime: '22:00', endTime: '06:00', fullDayMinMinutes: 420, overtimeAfterMinutes: 480 };
 
 let seq = 0;
 const p = (date: string, time: string, direction: Punch['direction'] = 'unknown'): Punch => ({ id: `p${++seq}`, time: zonedToInstant(date, time, TZ), direction });
-const day = (over: Partial<DayInput>): DayInput => ({ workDate: '2026-03-10', timezone: TZ, shift: GEN, dayType: 'working',
-  employment: { joiningDate: '2024-01-01', exitDate: null }, punches: [], minGapSeconds: 60, overtimeEnabled: false, ...over });
+const day = (over: Partial<DayInput>): DayInput => ({
+  workDate: '2026-03-10',
+  timezone: TZ,
+  shift: GEN,
+  dayType: 'working',
+  employment: { joiningDate: '2024-01-01', exitDate: null },
+  punches: [],
+  minGapSeconds: 60,
+  overtimeEnabled: false,
+  ...over,
+});
 
 describe('timezone helpers', () => {
   it('converts IST wall-clock to UTC instants', () => {
@@ -192,8 +211,23 @@ describe('calculateDay — field duty (v3)', () => {
 describe('F-8 approved corrections replace what they correct', () => {
   const wd = '2026-03-10';
   const at = (hm: string) => new Date(`${wd}T${hm}:00+05:30`);
-  const p = (id: string, hm: string, direction: Punch['direction'], source?: 'regularization', seq?: number): Punch => ({ id, time: at(hm), direction, ...(source ? { source, seq } : {}) });
-  const run = (punches: Punch[]) => calculateDay({ workDate: wd, timezone: 'Asia/Kolkata', shift: null, dayType: 'working', employment: { joiningDate: '2020-01-01', exitDate: null }, punches, minGapSeconds: 60, overtimeEnabled: false });
+  const p = (id: string, hm: string, direction: Punch['direction'], source?: 'regularization', seq?: number): Punch => ({
+    id,
+    time: at(hm),
+    direction,
+    ...(source ? { source, seq } : {}),
+  });
+  const run = (punches: Punch[]) =>
+    calculateDay({
+      workDate: wd,
+      timezone: 'Asia/Kolkata',
+      shift: null,
+      dayType: 'working',
+      employment: { joiningDate: '2020-01-01', exitDate: null },
+      punches,
+      minGapSeconds: 60,
+      overtimeEnabled: false,
+    });
 
   it('a corrected in replaces the first in', () => {
     const r = run([p('a', '09:30', 'in'), p('b', '18:00', 'out'), p('c', '09:00', 'in', 'regularization', 1)]);

@@ -8,20 +8,31 @@ import type { Env } from '../../config/env.js';
  * or larger files are refused with an error.
  */
 export type ScanResult = { clean: true } | { clean: false; signature: string };
-export interface Scanner { scan(data: Buffer): Promise<ScanResult> }
+export interface Scanner {
+  scan(data: Buffer): Promise<ScanResult>;
+}
 
 const CHUNK = 64 * 1024;
 const TIMEOUT_MS = 30_000;
 
 export class ClamdScanner implements Scanner {
-  constructor(private host: string, private port: number, private timeoutMs = TIMEOUT_MS) {}
+  constructor(
+    private host: string,
+    private port: number,
+    private timeoutMs = TIMEOUT_MS,
+  ) {}
 
   scan(data: Buffer): Promise<ScanResult> {
     return new Promise((resolve, reject) => {
       const socket = connect({ host: this.host, port: this.port });
       let reply = '';
       let done = false;
-      const finish = (fn: () => void) => { if (done) return; done = true; socket.destroy(); fn(); };
+      const finish = (fn: () => void) => {
+        if (done) return;
+        done = true;
+        socket.destroy();
+        fn();
+      };
       const parse = () => {
         const text = reply.replace(/\0/g, '').trim();
         const found = /^stream: (.+) FOUND$/.exec(text);
@@ -31,11 +42,18 @@ export class ClamdScanner implements Scanner {
       };
       socket.setTimeout(this.timeoutMs, () => finish(() => reject(new Error('clamd timed out'))));
       socket.on('error', (e) => finish(() => reject(new Error(`clamd is unreachable: ${e.message}`))));
-      socket.on('data', (d) => { reply += d.toString('latin1'); if (reply.includes('\0') || reply.includes('\n')) parse(); });
+      socket.on('data', (d) => {
+        reply += d.toString('latin1');
+        if (reply.includes('\0') || reply.includes('\n')) parse();
+      });
       socket.on('end', parse);
       socket.on('connect', () => {
         void (async () => {
-          const write = (b: Buffer) => new Promise<void>((ok) => { if (socket.write(b)) ok(); else socket.once('drain', ok); });
+          const write = (b: Buffer) =>
+            new Promise<void>((ok) => {
+              if (socket.write(b)) ok();
+              else socket.once('drain', ok);
+            });
           await write(Buffer.from('zINSTREAM\0', 'latin1'));
           for (let at = 0; at < data.length && !done; at += CHUNK) {
             const part = data.subarray(at, at + CHUNK);
@@ -53,7 +71,10 @@ export class ClamdScanner implements Scanner {
 
 let scanner: Scanner | null = null;
 let required = false;
-export const setScanner = (s: Scanner | null, mustScan: boolean) => { scanner = s; required = mustScan; };
+export const setScanner = (s: Scanner | null, mustScan: boolean) => {
+  scanner = s;
+  required = mustScan;
+};
 export const getScanner = () => scanner;
 /** Production never stores a file it could not scan. */
 export const scanRequired = () => required;

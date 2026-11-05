@@ -6,16 +6,40 @@ import type { Db } from '../../db/tx.js';
  * HR above an administrator. Product constants (configuration layer 4). An employee without a login is level 0.
  */
 const FLOORS: Readonly<Record<string, number>> = {
-  owner: 100, tenant_admin: 90, it_admin: 60, finance_manager: 50, hr_admin: 40, payroll_manager: 40, hr_executive: 30, auditor: 30,
-  department_head: 10, laboratory_manager: 10, quality_manager: 10, reporting_manager: 10, hiring_approver: 10, employee: 0,
+  owner: 100,
+  tenant_admin: 90,
+  it_admin: 60,
+  finance_manager: 50,
+  hr_admin: 40,
+  payroll_manager: 40,
+  hr_executive: 30,
+  auditor: 30,
+  department_head: 10,
+  laboratory_manager: 10,
+  quality_manager: 10,
+  reporting_manager: 10,
+  hiring_approver: 10,
+  employee: 0,
 };
 /**
  * Highest level a role can be set to. HR stays under every administrator; payroll can be made senior, but stays under Super-admin. Holding
  * several, the highest counts. Employee and manager roles say nothing here, so holding them next to HR cannot lift HR's limit.
  */
 const CEILINGS: Readonly<Record<string, number | null>> = {
-  owner: 100, tenant_admin: 100, it_admin: 89, finance_manager: 89, payroll_manager: 89, auditor: 59, hr_admin: 59, hr_executive: 59,
-  department_head: null, laboratory_manager: null, quality_manager: null, reporting_manager: null, hiring_approver: null, employee: null,
+  owner: 100,
+  tenant_admin: 100,
+  it_admin: 89,
+  finance_manager: 89,
+  payroll_manager: 89,
+  auditor: 59,
+  hr_admin: 59,
+  hr_executive: 59,
+  department_head: null,
+  laboratory_manager: null,
+  quality_manager: null,
+  reporting_manager: null,
+  hiring_approver: null,
+  employee: null,
 };
 const CUSTOM_ROLE_CEILING = 59;
 /** Someone with no role that sets a limit. They can be protected as a subject, up to below Super-admin. */
@@ -34,11 +58,17 @@ export function effectiveLevel(stored: number, roles: readonly string[]): number
 
 /** Whether someone other than this user is an active owner. The hierarchy needs a top, so the last one stays. */
 export async function anotherActiveOwner(db: Db, tenantId: string, userId: string) {
-  const r = await db.query(`SELECT 1 FROM user_roles r JOIN users u ON u.id=r.user_id WHERE r.tenant_id=$1 AND r.role_key='owner' AND u.status='active' AND r.user_id <> $2 LIMIT 1`, [tenantId, userId]);
+  const r = await db.query(
+    `SELECT 1 FROM user_roles r JOIN users u ON u.id=r.user_id WHERE r.tenant_id=$1 AND r.role_key='owner' AND u.status='active' AND r.user_id <> $2 LIMIT 1`,
+    [tenantId, userId],
+  );
   return !!r.rowCount;
 }
 
-const whenList = (map: Readonly<Record<string, number | null>>) => Object.entries(map).map(([k, v]) => `WHEN '${k}' THEN ${v === null ? 'NULL::int' : v}`).join(' ');
+const whenList = (map: Readonly<Record<string, number | null>>) =>
+  Object.entries(map)
+    .map(([k, v]) => `WHEN '${k}' THEN ${v === null ? 'NULL::int' : v}`)
+    .join(' ');
 
 /**
  * The same computation in SQL, generated from the same tables so the two cannot drift: the effective level of the user `userColumn`

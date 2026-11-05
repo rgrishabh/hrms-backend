@@ -3,7 +3,10 @@ import { ZodError } from 'zod';
 import { AppError } from './errors.js';
 
 /** One field's problem in a validation failure. */
-export interface ProblemFieldError { path: string; message: string }
+export interface ProblemFieldError {
+  path: string;
+  message: string;
+}
 
 /** RFC 7807: the only error shape the API returns. Object `details` of an AppError become extension members. */
 export interface Problem {
@@ -21,9 +24,28 @@ export const PROBLEM_CONTENT_TYPE = 'application/problem+json';
 export const problemType = (code: string) => `urn:hrms:problem:${code}`;
 
 const TITLES: Readonly<Record<number, string>> = {
-  400: 'Bad request', 401: 'Unauthorized', 403: 'Forbidden', 404: 'Not found', 405: 'Method not allowed', 406: 'Not acceptable', 408: 'Request timeout',
-  409: 'Conflict', 410: 'Gone', 411: 'Length required', 413: 'Payload too large', 414: 'URI too long', 415: 'Unsupported media type', 416: 'Range not satisfiable',
-  422: 'Unprocessable content', 429: 'Too many requests', 431: 'Request header fields too large', 500: 'Internal server error', 501: 'Not implemented', 502: 'Bad gateway', 503: 'Service unavailable', 504: 'Gateway timeout',
+  400: 'Bad request',
+  401: 'Unauthorized',
+  403: 'Forbidden',
+  404: 'Not found',
+  405: 'Method not allowed',
+  406: 'Not acceptable',
+  408: 'Request timeout',
+  409: 'Conflict',
+  410: 'Gone',
+  411: 'Length required',
+  413: 'Payload too large',
+  414: 'URI too long',
+  415: 'Unsupported media type',
+  416: 'Range not satisfiable',
+  422: 'Unprocessable content',
+  429: 'Too many requests',
+  431: 'Request header fields too large',
+  500: 'Internal server error',
+  501: 'Not implemented',
+  502: 'Bad gateway',
+  503: 'Service unavailable',
+  504: 'Gateway timeout',
 };
 const titleOf = (status: number) => TITLES[status] ?? (status >= 500 ? 'Server error' : 'Request error');
 
@@ -42,16 +64,34 @@ const FRAMEWORK_4XX: Readonly<Record<number, { code: string; detail: string }>> 
 };
 const RESERVED = new Set(['type', 'title', 'status', 'detail', 'instance', 'code', 'errors']);
 
-interface ProblemInput { status: number; code: string; detail: string; errors?: ProblemFieldError[]; extensions?: Record<string, unknown> }
+interface ProblemInput {
+  status: number;
+  code: string;
+  detail: string;
+  errors?: ProblemFieldError[];
+  extensions?: Record<string, unknown>;
+}
 
 function isFieldErrors(v: unknown): v is ProblemFieldError[] {
-  return Array.isArray(v) && v.every((x) => typeof x === 'object' && x !== null && typeof (x as ProblemFieldError).path === 'string' && typeof (x as ProblemFieldError).message === 'string');
+  return (
+    Array.isArray(v) &&
+    v.every((x) => typeof x === 'object' && x !== null && typeof (x as ProblemFieldError).path === 'string' && typeof (x as ProblemFieldError).message === 'string')
+  );
 }
 
 /** The body for an error. `instance` names this occurrence by request id: the reference the logs carry, and nothing from the address. */
 export function problemOf(requestId: string, p: ProblemInput): Problem {
   const extensions = Object.fromEntries(Object.entries(p.extensions ?? {}).filter(([k]) => !RESERVED.has(k)));
-  return { ...extensions, type: problemType(p.code), title: titleOf(p.status), status: p.status, detail: p.detail, instance: `urn:uuid:${requestId}`, code: p.code, errors: p.errors ?? [] };
+  return {
+    ...extensions,
+    type: problemType(p.code),
+    title: titleOf(p.status),
+    status: p.status,
+    detail: p.detail,
+    instance: `urn:uuid:${requestId}`,
+    code: p.code,
+    errors: p.errors ?? [],
+  };
 }
 
 function inputOf(err: unknown): ProblemInput | null {

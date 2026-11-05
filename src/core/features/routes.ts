@@ -1,7 +1,9 @@
 import type { FastifyInstance } from 'fastify';
 
 declare module 'fastify' {
-  interface FastifyContextConfig { features?: readonly string[] }
+  interface FastifyContextConfig {
+    features?: readonly string[];
+  }
 }
 
 type Verbs = Pick<FastifyInstance, 'get' | 'post' | 'put' | 'patch' | 'delete'>;
@@ -26,4 +28,8 @@ export function only(app: FastifyInstance, ...keys: [string, ...string[]]): Verb
 }
 
 /** One registered route and what it needs: every group must have a feature on. Read by the generated test of all flags. */
-export interface FeatureRoute { method: string; url: string; requires: readonly (readonly string[])[] }
+export interface FeatureRoute {
+  method: string;
+  url: string;
+  requires: readonly (readonly string[])[];
+}

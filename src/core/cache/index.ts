@@ -23,26 +23,40 @@ const TTL_SECONDS = 60;
 const GENERATION_TTL_SECONDS = 7 * 24 * 3600;
 
 let cache: Cache | null = null;
-export const setCache = (c: Cache | null) => { cache = c; };
+export const setCache = (c: Cache | null) => {
+  cache = c;
+};
 export const getCache = () => cache;
 
 type Log = { warn: (o: object, m?: string) => void };
 
 export function createRedisCache(url: string, log: Log): Cache {
   const client = new Redis(url, {
-    enableOfflineQueue: false, maxRetriesPerRequest: 1, connectTimeout: 2000, commandTimeout: 250,
+    enableOfflineQueue: false,
+    maxRetriesPerRequest: 1,
+    connectTimeout: 2000,
+    commandTimeout: 250,
     retryStrategy: (attempt) => Math.min(attempt * 500, 5000),
   });
   let lastWarning = 0;
   client.on('error', (e: Error) => {
     // The reason only, never the URL: it holds the password. At most once a minute: this repeats while Redis is down.
-    if (Date.now() - lastWarning > 60_000) { lastWarning = Date.now(); log.warn({ err: e.message }, 'redis unavailable: reading from the database'); }
+    if (Date.now() - lastWarning > 60_000) {
+      lastWarning = Date.now();
+      log.warn({ err: e.message }, 'redis unavailable: reading from the database');
+    }
   });
   return {
     get: (key) => client.get(key),
-    async set(key, value, ttl) { await client.set(key, value, 'EX', ttl); },
-    async incr(key) { await client.multi().incr(key).expire(key, GENERATION_TTL_SECONDS).exec(); },
-    async close() { client.disconnect(); },
+    async set(key, value, ttl) {
+      await client.set(key, value, 'EX', ttl);
+    },
+    async incr(key) {
+      await client.multi().incr(key).expire(key, GENERATION_TTL_SECONDS).exec();
+    },
+    async close() {
+      client.disconnect();
+    },
   };
 }
 
@@ -61,7 +75,9 @@ export async function cached<T>(db: Db, tenantId: string, ns: CacheNamespace, ke
     full = `hrms:${tenantId}:${ns}:${generation}:${key}`;
     const hit = await c.get(full);
     if (hit !== null) return JSON.parse(hit) as T;
-  } catch { return load(); }
+  } catch {
+    return load();
+  }
   const value = await load();
   await c.set(full, JSON.stringify(value), TTL_SECONDS).catch(() => undefined);
   return value;
@@ -74,5 +90,11 @@ export function invalidate(db: Db, tenantId: string, ns: CacheNamespace) {
   const set = dirty.get(db) ?? new Set<CacheNamespace>();
   set.add(ns);
   dirty.set(db, set);
-  afterCommit(db, () => c.incr(generationKey(tenantId, ns)).catch(() => undefined), () => { dirty.delete(db); });
+  afterCommit(
+    db,
+    () => c.incr(generationKey(tenantId, ns)).catch(() => undefined),
+    () => {
+      dirty.delete(db);
+    },
+  );
 }

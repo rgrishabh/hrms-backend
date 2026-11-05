@@ -38,7 +38,10 @@ export interface SessionUser {
   mfaEnrollmentRequired: boolean;
 }
 
-export interface SessionLimits { ttlHours: number; idleMinutes: number }
+export interface SessionLimits {
+  ttlHours: number;
+  idleMinutes: number;
+}
 
 export async function createSession(db: Db, userId: string, tenantId: string | null, limits: SessionLimits, ip?: string, ua?: string) {
   const token = randomToken(32);
@@ -46,7 +49,8 @@ export async function createSession(db: Db, userId: string, tenantId: string | n
   const r = await db.query<{ id: string; expires_at: Date }>(
     `INSERT INTO sessions (token_hash, csrf_hash, user_id, tenant_id, ip, user_agent, expires_at, idle_timeout_minutes)
      VALUES ($1,$2,$3,$4,$5,$6, now() + make_interval(hours => $7), $8) RETURNING id, expires_at`,
-    [sha256(token), sha256(csrf), userId, tenantId, ip ?? null, (ua ?? '').slice(0, 300), limits.ttlHours, limits.idleMinutes]);
+    [sha256(token), sha256(csrf), userId, tenantId, ip ?? null, (ua ?? '').slice(0, 300), limits.ttlHours, limits.idleMinutes],
+  );
   return { token, csrf, sessionId: r.rows[0]!.id, expiresAt: r.rows[0]!.expires_at };
 }
 
@@ -54,7 +58,11 @@ export async function createSession(db: Db, userId: string, tenantId: string | n
 export async function rotateSession(db: Db, sessionId: string) {
   const token = randomToken(32);
   const csrf = deriveCsrf(token);
-  const r = await db.query<{ expires_at: Date }>('UPDATE sessions SET token_hash=$2, csrf_hash=$3 WHERE id=$1 AND revoked_at IS NULL RETURNING expires_at', [sessionId, sha256(token), sha256(csrf)]);
+  const r = await db.query<{ expires_at: Date }>('UPDATE sessions SET token_hash=$2, csrf_hash=$3 WHERE id=$1 AND revoked_at IS NULL RETURNING expires_at', [
+    sessionId,
+    sha256(token),
+    sha256(csrf),
+  ]);
   return { token, csrf, expiresAt: r.rows[0]!.expires_at };
 }
 
@@ -65,13 +73,29 @@ export async function rotateSession(db: Db, sessionId: string) {
  */
 export async function loadSession(pool: Pool, token: string, expectedTenantId: string | null, mfa: MfaPolicy, opts: { passive?: boolean } = {}): Promise<SessionUser | null> {
   return withPlatformBypass(pool, async (db) => {
-    const r = await db.query<{ id: string; user_id: string; tenant_id: string | null; csrf_hash: string; email: string; display_name: string; status: string; touch: boolean; must_change_password: boolean; mfa_on: boolean; mfa_method: string | null; mfa_ok: boolean; salary_access_level: number }>(
+    const r = await db.query<{
+      id: string;
+      user_id: string;
+      tenant_id: string | null;
+      csrf_hash: string;
+      email: string;
+      display_name: string;
+      status: string;
+      touch: boolean;
+      must_change_password: boolean;
+      mfa_on: boolean;
+      mfa_method: string | null;
+      mfa_ok: boolean;
+      salary_access_level: number;
+    }>(
       `SELECT s.id, s.user_id, s.tenant_id, s.csrf_hash, u.email, u.display_name, u.status, u.must_change_password, u.salary_access_level,
               (u.mfa_enabled_at IS NOT NULL) AS mfa_on, u.mfa_method, (s.mfa_verified_at IS NOT NULL) AS mfa_ok,
               s.last_seen_at < now() - interval '1 minute' AS touch
          FROM sessions s JOIN users u ON u.id = s.user_id
         WHERE s.token_hash = $1 AND s.revoked_at IS NULL AND s.expires_at > now()
-          AND s.last_seen_at > now() - make_interval(mins => s.idle_timeout_minutes)`, [sha256(token)]);
+          AND s.last_seen_at > now() - make_interval(mins => s.idle_timeout_minutes)`,
+      [sha256(token)],
+    );
     const s = r.rows[0];
     if (!s || s.status !== 'active' || s.tenant_id !== expectedTenantId) return null;
     if (s.touch && !opts.passive) await db.query('UPDATE sessions SET last_seen_at = now() WHERE id = $1', [s.id]);
@@ -82,16 +106,28 @@ export async function loadSession(pool: Pool, token: string, expectedTenantId: s
       employeeId = e.rows[0]?.id ?? null;
     }
     const method = effectiveMethod(mfa, s.mfa_on, s.mfa_method);
-    return { sessionId: s.id, userId: s.user_id, tenantId: s.tenant_id, email: s.email, displayName: s.display_name,
-      csrfHash: s.csrf_hash, roles, permissions, salaryLevel: effectiveLevel(s.salary_access_level, roles), employeeId, mustChangePassword: s.must_change_password,
-      mfaEnabled: !!method, mfaMethod: method, mfaPending: !!method && !s.mfa_ok,
-      mfaEnrollmentRequired: !method && !!s.tenant_id && mfa.available && mfa.enforced };
+    return {
+      sessionId: s.id,
+      userId: s.user_id,
+      tenantId: s.tenant_id,
+      email: s.email,
+      displayName: s.display_name,
+      csrfHash: s.csrf_hash,
+      roles,
+      permissions,
+      salaryLevel: effectiveLevel(s.salary_access_level, roles),
+      employeeId,
+      mustChangePassword: s.must_change_password,
+      mfaEnabled: !!method,
+      mfaMethod: method,
+      mfaPending: !!method && !s.mfa_ok,
+      mfaEnrollmentRequired: !method && !!s.tenant_id && mfa.available && mfa.enforced,
+    };
   });
 }
 
 export async function loadPermissions(db: Db, userId: string, tenantId: string | null) {
-  const rr = await db.query<{ role_key: string }>(
-    `SELECT DISTINCT role_key FROM user_roles WHERE user_id = $1 AND tenant_id IS NOT DISTINCT FROM $2`, [userId, tenantId]);
+  const rr = await db.query<{ role_key: string }>(`SELECT DISTINCT role_key FROM user_roles WHERE user_id = $1 AND tenant_id IS NOT DISTINCT FROM $2`, [userId, tenantId]);
   const roles = rr.rows.map((r) => r.role_key);
   const permissions = new Set<string>();
   const mode = currentMode();
@@ -122,7 +158,10 @@ export async function revokeOtherSessions(db: Db, userId: string, keepSessionId:
 /** Records a sign-in from this browser. New means this account has used another browser before and never this one: a first sign-in is not news. */
 export async function rememberDevice(db: Db, tenantId: string, userId: string, deviceHash: string): Promise<{ isNew: boolean }> {
   const before = await db.query<{ here: boolean }>('SELECT device_hash = $2 AS here FROM user_devices WHERE user_id=$1', [userId, deviceHash]);
-  await db.query(`INSERT INTO user_devices (tenant_id, user_id, device_hash) VALUES ($1,$2,$3)
-    ON CONFLICT (user_id, device_hash) DO UPDATE SET last_seen_at=now()`, [tenantId, userId, deviceHash]);
+  await db.query(
+    `INSERT INTO user_devices (tenant_id, user_id, device_hash) VALUES ($1,$2,$3)
+    ON CONFLICT (user_id, device_hash) DO UPDATE SET last_seen_at=now()`,
+    [tenantId, userId, deviceHash],
+  );
   return { isNew: before.rows.length > 0 && !before.rows.some((r) => r.here) };
 }

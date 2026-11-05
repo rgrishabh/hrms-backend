@@ -7,18 +7,33 @@ import { nonWorkingDates } from '../src/modules/leave/service.js';
 import type { Db } from '../src/db/tx.js';
 
 // Rotating rosters: pattern → staggered crews → one-day overrides; attendance and leave follow the roster's days off.
-let app: FastifyInstance; let T: TenantFixture; let c: pg.Client;
-let hr: Client; let mgr: Client; let emp: Client;
-let today = ''; let D = ''; let pattern = '';
-const day = (base: string, n: number) => { const d = new Date(`${base}T00:00:00Z`); d.setUTCDate(d.getUTCDate() + n); return d.toISOString().slice(0, 10); };
+let app: FastifyInstance;
+let T: TenantFixture;
+let c: pg.Client;
+let hr: Client;
+let mgr: Client;
+let emp: Client;
+let today = '';
+let D = '';
+let pattern = '';
+const day = (base: string, n: number) => {
+  const d = new Date(`${base}T00:00:00Z`);
+  d.setUTCDate(d.getUTCDate() + n);
+  return d.toISOString().slice(0, 10);
+};
 const roster = async (cl: Client, from: string, to: string) => (await cl.get(`/api/v1/attendance/roster?from=${from}&to=${to}`)).json();
 const codes = async (empKey: string, from: string, to: string) => {
   const r = await roster(hr, from, to);
   const row = r.items.find((x: { id: string }) => x.id === T.users[empKey]!.employeeId);
-  return row.days.map((d: { shiftId: string | null; off: boolean }) => (d.off ? 'off' : r.shifts.find((s: { id: string }) => s.id === d.shiftId)?.code ?? '-'));
+  return row.days.map((d: { shiftId: string | null; off: boolean }) => (d.off ? 'off' : (r.shifts.find((s: { id: string }) => s.id === d.shiftId)?.code ?? '-')));
 };
-const daily = async (empKey: string, date: string) => (await ownerQuery<{ day_type: string; shift_id: string | null; policy_snapshot: Record<string, unknown> }>(
-  `SELECT day_type, shift_id, policy_snapshot FROM attendance_daily WHERE tenant_id=$1 AND employee_id=$2 AND work_date=$3`, [T.id, T.users[empKey]!.employeeId, date]))[0];
+const daily = async (empKey: string, date: string) =>
+  (
+    await ownerQuery<{ day_type: string; shift_id: string | null; policy_snapshot: Record<string, unknown> }>(
+      `SELECT day_type, shift_id, policy_snapshot FROM attendance_daily WHERE tenant_id=$1 AND employee_id=$2 AND work_date=$3`,
+      [T.id, T.users[empKey]!.employeeId, date],
+    )
+  )[0];
 
 beforeAll(async () => {
   app = await makeApp({ ...flags('default,leave') });
@@ -31,11 +46,14 @@ beforeAll(async () => {
   today = (await hr.get('/api/v1/approvals/delegations')).json().today;
   D = day(today, -5);
 });
-afterAll(async () => { await c.end(); await app.close(); });
+afterAll(async () => {
+  await c.end();
+  await app.close();
+});
 
 describe('rotating rosters', () => {
   it('validates patterns', async () => {
-    expect(problem((await hr.post('/api/v1/attendance/roster-patterns', { code: 'X', name: 'All off', days: [null, null] }))).detail).toMatch(/at least one working day/);
+    expect(problem(await hr.post('/api/v1/attendance/roster-patterns', { code: 'X', name: 'All off', days: [null, null] })).detail).toMatch(/at least one working day/);
     expect((await hr.post('/api/v1/attendance/roster-patterns', { code: 'X', name: 'Unknown', days: ['00000000-0000-4000-8000-000000000000'] })).statusCode).toBe(400);
     const r = await hr.post('/api/v1/attendance/roster-patterns', { code: 'lab3', name: 'Lab 2-2-2', days: [T.shiftId, T.shiftId, T.nightShiftId, T.nightShiftId, null, null] });
     expect(r.statusCode).toBe(201);
@@ -52,7 +70,7 @@ describe('rotating rosters', () => {
     expect(await codes('other', D, day(D, 5))).toEqual(['NIGHT', 'NIGHT', 'off', 'off', 'GEN', 'GEN']);
 
     const off = await daily('employee', day(D, 4));
-    expect(off).toMatchObject({ day_type: 'weekly_off', shift_id: T.nightShiftId });          // window of the last night worked
+    expect(off).toMatchObject({ day_type: 'weekly_off', shift_id: T.nightShiftId }); // window of the last night worked
     expect(off!.policy_snapshot).toMatchObject({ schedule: 'roster', roster: 'LAB3' });
     expect((await daily('employee', day(D, 2)))!.shift_id).toBe(T.nightShiftId);
 

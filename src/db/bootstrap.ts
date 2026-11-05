@@ -74,11 +74,23 @@ export async function bootstrapInstallation(client: pg.Client | pg.PoolClient, e
     const rec = (await reconcileInstallation(client, env))!;
     const tenantId = rec.tenantId;
 
-    const user = (await client.query<{ id: string; is_admin: boolean }>(`SELECT u.id,
+    const user = (
+      await client.query<{ id: string; is_admin: boolean }>(
+        `SELECT u.id,
         EXISTS (SELECT 1 FROM user_roles r WHERE r.user_id=u.id AND r.role_key='tenant_admin') AS is_admin
-      FROM users u WHERE u.tenant_id=$1 AND u.email=$2`, [tenantId, email])).rows[0];
-    const admins = Number((await client.query<{ n: string }>(`SELECT count(DISTINCT r.user_id) AS n FROM user_roles r JOIN users u ON u.id=r.user_id
-      WHERE r.tenant_id=$1 AND r.role_key='tenant_admin' AND u.status='active'`, [tenantId])).rows[0]!.n);
+      FROM users u WHERE u.tenant_id=$1 AND u.email=$2`,
+        [tenantId, email],
+      )
+    ).rows[0];
+    const admins = Number(
+      (
+        await client.query<{ n: string }>(
+          `SELECT count(DISTINCT r.user_id) AS n FROM user_roles r JOIN users u ON u.id=r.user_id
+      WHERE r.tenant_id=$1 AND r.role_key='tenant_admin' AND u.status='active'`,
+          [tenantId],
+        )
+      ).rows[0]!.n,
+    );
 
     let admin: BootstrapResult['admin'] = 'unchanged';
     let userId: string | null = null;
@@ -88,8 +100,13 @@ export async function bootstrapInstallation(client: pg.Client | pg.PoolClient, e
       } else if (admins > 0 && o.resetAdmin) {
         throw new Error(`no user ${email} in this installation; --reset-admin works on an existing account`);
       } else {
-        userId = (await client.query<{ id: string }>(`INSERT INTO users (tenant_id, email, display_name, password_hash, must_change_password)
-          VALUES ($1,$2,$3,NULL,true) RETURNING id`, [tenantId, email, o.admin.displayName.trim() || 'Administrator'])).rows[0]!.id;
+        userId = (
+          await client.query<{ id: string }>(
+            `INSERT INTO users (tenant_id, email, display_name, password_hash, must_change_password)
+          VALUES ($1,$2,$3,NULL,true) RETURNING id`,
+            [tenantId, email, o.admin.displayName.trim() || 'Administrator'],
+          )
+        ).rows[0]!.id;
         await client.query(`INSERT INTO user_roles (user_id, tenant_id, role_key) VALUES ($1,$2,'tenant_admin'), ($1,$2,'employee')`, [userId, tenantId]);
         // The first administrator is the Owner in every mode: someone has to sit above everyone, or nobody could ever produce a whole bank file.
         await client.query(`INSERT INTO user_roles (user_id, tenant_id, role_key) VALUES ($1,$2,'owner')`, [userId, tenantId]);
@@ -97,26 +114,39 @@ export async function bootstrapInstallation(client: pg.Client | pg.PoolClient, e
       }
     } else if (o.resetAdmin) {
       userId = user.id;
-      await client.query(`UPDATE users SET password_hash=NULL, must_change_password=true, status='active', failed_logins=0, locked_until=NULL,
-        mfa_secret_enc=NULL, mfa_pending_secret_enc=NULL, mfa_enabled_at=NULL, mfa_method=NULL, mfa_recovery_hashes='{}', mfa_last_step=NULL, mfa_failures=0, mfa_locked_until=NULL, updated_at=now() WHERE id=$1`, [userId]);
+      await client.query(
+        `UPDATE users SET password_hash=NULL, must_change_password=true, status='active', failed_logins=0, locked_until=NULL,
+        mfa_secret_enc=NULL, mfa_pending_secret_enc=NULL, mfa_enabled_at=NULL, mfa_method=NULL, mfa_recovery_hashes='{}', mfa_last_step=NULL, mfa_failures=0, mfa_locked_until=NULL, updated_at=now() WHERE id=$1`,
+        [userId],
+      );
       await client.query('UPDATE sessions SET revoked_at=now() WHERE user_id=$1 AND revoked_at IS NULL', [userId]);
       await client.query(`UPDATE admin_setup_tokens SET used_at=now() WHERE user_id=$1 AND used_at IS NULL`, [userId]);
       if (!user.is_admin) await client.query(`INSERT INTO user_roles (user_id, tenant_id, role_key) VALUES ($1,$2,'tenant_admin')`, [userId, tenantId]);
       // Recovery leaves someone at the top: the hierarchy has nobody else to appoint an owner.
-      const ownerElsewhere = await client.query(`SELECT 1 FROM user_roles r JOIN users u ON u.id=r.user_id WHERE r.tenant_id=$1 AND r.role_key='owner' AND u.status='active' AND r.user_id <> $2 LIMIT 1`, [tenantId, userId]);
+      const ownerElsewhere = await client.query(
+        `SELECT 1 FROM user_roles r JOIN users u ON u.id=r.user_id WHERE r.tenant_id=$1 AND r.role_key='owner' AND u.status='active' AND r.user_id <> $2 LIMIT 1`,
+        [tenantId, userId],
+      );
       if (o.makeOwner || !ownerElsewhere.rowCount) {
-        await client.query(`INSERT INTO user_roles (user_id, tenant_id, role_key) SELECT $1,$2,'owner' WHERE NOT EXISTS (SELECT 1 FROM user_roles WHERE user_id=$1 AND role_key='owner')`, [userId, tenantId]);
+        await client.query(
+          `INSERT INTO user_roles (user_id, tenant_id, role_key) SELECT $1,$2,'owner' WHERE NOT EXISTS (SELECT 1 FROM user_roles WHERE user_id=$1 AND role_key='owner')`,
+          [userId, tenantId],
+        );
       }
       admin = 'reset';
     }
 
-    let setupUrl: string | undefined; let setupExpiresAt: string | undefined;
+    let setupUrl: string | undefined;
+    let setupExpiresAt: string | undefined;
     if (o.issueLink && !o.resetAdmin) {
       if (!user) throw new Error(`no user ${email} in this installation; create them in the app first`);
       await client.query(`UPDATE admin_setup_tokens SET used_at=now() WHERE user_id=$1 AND used_at IS NULL`, [user.id]);
       const token = randomToken(32);
-      const exp = await client.query<{ expires_at: Date }>(`INSERT INTO admin_setup_tokens (tenant_id, user_id, token_hash, expires_at, purpose)
-        VALUES ($1,$2,$3, now() + make_interval(hours => $4), 'invite') RETURNING expires_at`, [tenantId, user.id, sha256(token), linkHours]);
+      const exp = await client.query<{ expires_at: Date }>(
+        `INSERT INTO admin_setup_tokens (tenant_id, user_id, token_hash, expires_at, purpose)
+        VALUES ($1,$2,$3, now() + make_interval(hours => $4), 'invite') RETURNING expires_at`,
+        [tenantId, user.id, sha256(token), linkHours],
+      );
       setupUrl = `${appUrl(env)}/setup#token=${token}`;
       setupExpiresAt = exp.rows[0]!.expires_at.toISOString();
     }
@@ -125,16 +155,21 @@ export async function bootstrapInstallation(client: pg.Client | pg.PoolClient, e
         await client.query('UPDATE users SET password_hash=$2, must_change_password=true WHERE id=$1', [userId, await hashPassword(o.password!)]);
       } else {
         const token = randomToken(32);
-        const exp = await client.query<{ expires_at: Date }>(`INSERT INTO admin_setup_tokens (tenant_id, user_id, token_hash, expires_at)
-          VALUES ($1,$2,$3, now() + make_interval(hours => $4)) RETURNING expires_at`, [tenantId, userId, sha256(token), linkHours]);
+        const exp = await client.query<{ expires_at: Date }>(
+          `INSERT INTO admin_setup_tokens (tenant_id, user_id, token_hash, expires_at)
+          VALUES ($1,$2,$3, now() + make_interval(hours => $4)) RETURNING expires_at`,
+          [tenantId, userId, sha256(token), linkHours],
+        );
         setupUrl = `${appUrl(env)}/setup#token=${token}`;
         setupExpiresAt = exp.rows[0]!.expires_at.toISOString();
       }
     }
 
-    await client.query(`INSERT INTO audit_logs (tenant_id, actor_type, action, category, target_type, target_id, change_metadata)
+    await client.query(
+      `INSERT INTO audit_logs (tenant_id, actor_type, action, category, target_type, target_id, change_metadata)
       VALUES ($1,'system','installation.bootstrap','security','tenant',$2,$3)`,
-      [tenantId, tenantId, JSON.stringify({ organizationCreated, domains: rec.domains, admin, adminEmail: email, mode: o.mode })]);
+      [tenantId, tenantId, JSON.stringify({ organizationCreated, domains: rec.domains, admin, adminEmail: email, mode: o.mode })],
+    );
     await client.query('COMMIT');
     return { tenantId, organizationCreated, domains: rec.domains, admin, setupUrl, setupExpiresAt };
   } catch (e) {
@@ -145,13 +180,18 @@ export async function bootstrapInstallation(client: pg.Client | pg.PoolClient, e
 
 /** CLI: flags or BOOTSTRAP_* env. The password is accepted ONLY from the environment. */
 export function parseBootstrapArgs(argv: string[], env: NodeJS.ProcessEnv): BootstrapOptions {
-  const flags = new Map<string, string>(); const bools = new Set<string>();
+  const flags = new Map<string, string>();
+  const bools = new Set<string>();
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i]!;
     if (!a.startsWith('--')) throw new Error(`unexpected argument ${a}`);
     const key = a.slice(2);
-    if (key === 'admin-password' || key === 'password') throw new Error('passwords are not accepted as flags; set BOOTSTRAP_ADMIN_PASSWORD from a secret store, or use the default setup-link mode');
-    if (key === 'reset-admin' || key === 'make-owner' || key === 'issue-link') { bools.add(key); continue; }
+    if (key === 'admin-password' || key === 'password')
+      throw new Error('passwords are not accepted as flags; set BOOTSTRAP_ADMIN_PASSWORD from a secret store, or use the default setup-link mode');
+    if (key === 'reset-admin' || key === 'make-owner' || key === 'issue-link') {
+      bools.add(key);
+      continue;
+    }
     const v = argv[++i];
     if (v === undefined) throw new Error(`missing value for ${a}`);
     flags.set(key, v);
@@ -162,8 +202,12 @@ export function parseBootstrapArgs(argv: string[], env: NodeJS.ProcessEnv): Boot
   const mode = (get('mode') ?? 'setup-link') as BootstrapOptions['mode'];
   if (!['setup-link', 'password'].includes(mode)) throw new Error("--mode must be 'setup-link' or 'password'");
   return {
-    admin: { email, displayName: get('admin-name') ?? 'Administrator' }, mode,
-    password: env.BOOTSTRAP_ADMIN_PASSWORD, resetAdmin: bools.has('reset-admin') || env.BOOTSTRAP_RESET_ADMIN === 'true', makeOwner: bools.has('make-owner') || env.BOOTSTRAP_MAKE_OWNER === 'true', issueLink: bools.has('issue-link'),
+    admin: { email, displayName: get('admin-name') ?? 'Administrator' },
+    mode,
+    password: env.BOOTSTRAP_ADMIN_PASSWORD,
+    resetAdmin: bools.has('reset-admin') || env.BOOTSTRAP_RESET_ADMIN === 'true',
+    makeOwner: bools.has('make-owner') || env.BOOTSTRAP_MAKE_OWNER === 'true',
+    issueLink: bools.has('issue-link'),
     linkHours: get('link-hours') ? Number(get('link-hours')) : undefined,
   };
 }
@@ -183,6 +227,11 @@ if (process.argv[1] && fileURLToPath(import.meta.url) === path.resolve(process.a
         // Printed for the operator only (single use, expires). Do not paste it into tickets or chat.
         process.stdout.write(`\nOne-time setup link (valid until ${r.setupExpiresAt}):\n${setupUrl}\n\n`);
       }
-    } finally { await c.end(); }
-  })().catch((e) => { complain(JSON.stringify({ ok: false, error: (e as Error).message })); process.exit(1); });
+    } finally {
+      await c.end();
+    }
+  })().catch((e) => {
+    complain(JSON.stringify({ ok: false, error: (e as Error).message }));
+    process.exit(1);
+  });
 }

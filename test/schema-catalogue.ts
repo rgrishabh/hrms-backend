@@ -14,11 +14,12 @@ export type Catalogue = Record<string, string[]>;
 const ACL_ROW = `(SELECT string_agg(CASE WHEN a.grantee = 0 THEN 'PUBLIC' ELSE pg_get_userbyid(a.grantee) END || ':' || a.privilege_type || CASE WHEN a.is_grantable THEN '*' ELSE '' END || ' by ' || pg_get_userbyid(a.grantor), ', '
     ORDER BY CASE WHEN a.grantee = 0 THEN 'PUBLIC' ELSE pg_get_userbyid(a.grantee) END, a.privilege_type) FROM aclexplode(%ACL%) a)`;
 const acl = (expr: string) => ACL_ROW.replace('%ACL%', expr);
-const NOT_EXTENSION = (classId: string, objId: string) => `NOT EXISTS (SELECT 1 FROM pg_depend d WHERE d.classid = '${classId}'::regclass AND d.objid = ${objId} AND d.deptype = 'e')`;
+const NOT_EXTENSION = (classId: string, objId: string) =>
+  `NOT EXISTS (SELECT 1 FROM pg_depend d WHERE d.classid = '${classId}'::regclass AND d.objid = ${objId} AND d.deptype = 'e')`;
 const PUBLIC_REL = `JOIN pg_namespace n ON n.oid = c.relnamespace AND n.nspname = 'public'`;
 
 const SECTIONS: Record<string, string> = {
-  schema: `SELECT 'public owner=' || pg_get_userbyid(nspowner) || ' acl=' || coalesce(${acl('coalesce(nspacl, acldefault(\'n\', nspowner))')}, '') AS line FROM pg_namespace WHERE nspname = 'public'`,
+  schema: `SELECT 'public owner=' || pg_get_userbyid(nspowner) || ' acl=' || coalesce(${acl("coalesce(nspacl, acldefault('n', nspowner))")}, '') AS line FROM pg_namespace WHERE nspname = 'public'`,
 
   defaultPrivileges: `SELECT pg_get_userbyid(d.defaclrole) || ' ' || d.defaclobjtype::text || ' ' || coalesce(${acl('d.defaclacl')}, '') AS line
     FROM pg_default_acl d JOIN pg_namespace n ON n.oid = d.defaclnamespace AND n.nspname = 'public'`,

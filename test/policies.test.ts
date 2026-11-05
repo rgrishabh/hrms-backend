@@ -11,7 +11,12 @@ import { localDate } from '../src/modules/attendance/time.js';
 
 const PDF = Buffer.from('%PDF-1.7\n1 0 obj << /Type /Catalog >> endobj\n%%EOF\n');
 const today = localDate(new Date(), 'Asia/Kolkata');
-let app: FastifyInstance; let T: TenantFixture; let hr: Client; let qm: Client; let emp: Client; let other: Client;
+let app: FastifyInstance;
+let T: TenantFixture;
+let hr: Client;
+let qm: Client;
+let emp: Client;
+let other: Client;
 let policyId: string;
 
 const draft = (c: Client, id: string, f: Record<string, string>, file?: Buffer) => {
@@ -30,20 +35,28 @@ beforeAll(async () => {
   hr = await Client.login(app, T.host, T.users.hr!.email);
   emp = await Client.login(app, T.host, T.users.employee!.email);
   other = await Client.login(app, T.host, T.users.other!.email);
-  const [u] = await ownerQuery<{ id: string }>(`INSERT INTO users (tenant_id, email, display_name, password_hash) VALUES ($1,$2,'Quality',$3) RETURNING id`, [T.id, `qm@${T.host}`, await hashPassword(PASSWORD)]);
+  const [u] = await ownerQuery<{ id: string }>(`INSERT INTO users (tenant_id, email, display_name, password_hash) VALUES ($1,$2,'Quality',$3) RETURNING id`, [
+    T.id,
+    `qm@${T.host}`,
+    await hashPassword(PASSWORD),
+  ]);
   await ownerQuery(`INSERT INTO user_roles (user_id, tenant_id, role_key) VALUES ($1,$2,'quality_manager')`, [u!.id, T.id]);
   qm = await Client.login(app, T.host, `qm@${T.host}`);
 });
-afterAll(async () => { await app.close(); setStore(null); });
+afterAll(async () => {
+  await app.close();
+  setStore(null);
+});
 
 describe('policies', () => {
-  let v1: string; let v2: string;
+  let v1: string;
+  let v2: string;
   it('drafts need content; only PDFs; one draft at a time; employees cannot manage', async () => {
     expect((await emp.post('/api/v1/policies', { code: 'COC', title: 'Code of conduct', category: 'code_of_conduct' })).statusCode).toBe(403);
     const p = await hr.post('/api/v1/policies', { code: 'coc', title: 'Code of conduct', category: 'code_of_conduct', owner: 'HR' });
     expect(p.statusCode).toBe(201);
     policyId = p.json().id;
-    expect(problem((await draft(hr, policyId, {}))).detail).toMatch(/text, a PDF/);
+    expect(problem(await draft(hr, policyId, {})).detail).toMatch(/text, a PDF/);
     expect((await draft(hr, policyId, {}, Buffer.from('MZ\x90\x00 not a pdf'))).statusCode).toBe(415);
     const d = await draft(hr, policyId, { body: 'Be honest. Report conflicts of interest.' }, PDF);
     expect(d.statusCode).toBe(201);
@@ -69,7 +82,7 @@ describe('policies', () => {
   });
 
   it('acknowledgement is bound to the content shown, once, and is reported', async () => {
-    expect(problem((await emp.post(`/api/v1/policies/versions/${v1}/acknowledge`, { contentSha256: '0'.repeat(64) }))).detail).toMatch(/changed since you opened/);
+    expect(problem(await emp.post(`/api/v1/policies/versions/${v1}/acknowledge`, { contentSha256: '0'.repeat(64) })).detail).toMatch(/changed since you opened/);
     const r = await ack(emp, v1);
     expect(r.json()).toMatchObject({ ok: true, alreadyAcknowledged: false });
     expect((await ack(emp, v1)).json().alreadyAcknowledged).toBe(true);
@@ -92,7 +105,7 @@ describe('policies', () => {
     const before = (await emp.get(`/api/v1/policies/versions/${v1}`)).json();
     v2 = (await draft(hr, policyId, { changeSummary: 'Added gifts section', body: 'Be honest. No gifts above ₹1000.' })).json().id;
     await qm.post(`/api/v1/policies/versions/${v2}/publish`);
-    expect(problem((await emp.post(`/api/v1/policies/versions/${v1}/acknowledge`, { contentSha256: before.contentSha256 }))).detail).toMatch(/no longer current/);
+    expect(problem(await emp.post(`/api/v1/policies/versions/${v1}/acknowledge`, { contentSha256: before.contentSha256 })).detail).toMatch(/no longer current/);
     expect((await emp.get(`/api/v1/policies/versions/${v1}`)).statusCode).toBe(200); // still readable: they acknowledged it
     expect((await other.get(`/api/v1/policies/versions/${v1}`)).statusCode).toBe(404); // superseded and never acknowledged
     const mine = (await emp.get('/api/v1/policies/mine')).json();
@@ -128,7 +141,10 @@ describe('policies', () => {
 
   it('is unavailable when the module is off', async () => {
     const off = await makeApp({ ...flags('default') });
-    try { expect(problem((await (await Client.login(off, T.host, T.users.hr!.email)).get('/api/v1/policies'))).code).toBe('not_found'); }
-    finally { await off.close(); }
+    try {
+      expect(problem(await (await Client.login(off, T.host, T.users.hr!.email)).get('/api/v1/policies')).code).toBe('not_found');
+    } finally {
+      await off.close();
+    }
   });
 });

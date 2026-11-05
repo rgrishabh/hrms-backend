@@ -2,9 +2,15 @@ import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import type { FastifyInstance } from 'fastify';
 import { makeApp, createTenant, Client, flags, ownerQuery, PASSWORD, type TenantFixture } from './helpers.js';
 
-let app: FastifyInstance; let T: TenantFixture;
-beforeAll(async () => { app = await makeApp({ AUTH_RATE_LIMIT_PER_MINUTE: '3' }); T = await createTenant(); });
-afterAll(async () => { await app.close(); });
+let app: FastifyInstance;
+let T: TenantFixture;
+beforeAll(async () => {
+  app = await makeApp({ AUTH_RATE_LIMIT_PER_MINUTE: '3' });
+  T = await createTenant();
+});
+afterAll(async () => {
+  await app.close();
+});
 
 describe('login rate limiting', () => {
   it('returns 429 once the per-IP login limit is exceeded', async () => {
@@ -63,7 +69,9 @@ describe('F-15 proxy trust and per-account login limits', () => {
     expect(codes[3]).toBe(429);
     expect((await attempt(a, t.host, email, '198.51.100.99', PASSWORD)).statusCode).toBe(429);
     expect((await attempt(a, t.host, t.users.other!.email, '198.51.100.100', PASSWORD)).statusCode).toBe(200);
-    const [{ locked }] = (await ownerQuery<{ locked: boolean }>(`SELECT locked_until IS NOT NULL AS locked FROM users WHERE id=$1`, [t.users.employee!.id])) as [{ locked: boolean }];
+    const [{ locked }] = (await ownerQuery<{ locked: boolean }>(`SELECT locked_until IS NOT NULL AS locked FROM users WHERE id=$1`, [t.users.employee!.id])) as [
+      { locked: boolean },
+    ];
     expect(locked).toBe(false);
     await a.close();
   });
@@ -72,7 +80,11 @@ describe('F-15 proxy trust and per-account login limits', () => {
 describe('tighter limits on what is worth abusing', () => {
   const as = (a: FastifyInstance, c: Client, url: string, method: 'GET' | 'POST', ip: string, payload?: unknown) =>
     a.inject({ method, url, payload: payload as never, headers: { host: c.host, cookie: c.cookie, 'x-csrf-token': c.csrf, 'x-forwarded-for': ip } });
-  const statuses = async (n: number, fn: (i: number) => Promise<{ statusCode: number }>) => { const out: number[] = []; for (let i = 0; i < n; i++) out.push((await fn(i)).statusCode); return out; };
+  const statuses = async (n: number, fn: (i: number) => Promise<{ statusCode: number }>) => {
+    const out: number[] = [];
+    for (let i = 0; i < n; i++) out.push((await fn(i)).statusCode);
+    return out;
+  };
 
   it('an export per user: spreading over addresses does not help, and someone else is not affected', async () => {
     const a = await makeApp({ ...flags('default,payroll,reports.advanced'), TRUST_PROXY: '1', EXPORT_RATE_LIMIT_PER_MINUTE: '3' });
@@ -104,7 +116,15 @@ describe('tighter limits on what is worth abusing', () => {
     const a = await makeApp(flags('default,payroll,reports.advanced,accounting_exports,expenses'));
     const { isExportRoute } = await import('../src/core/http/limits.js');
     const urls = a.featureRoutes.filter((r) => isExportRoute(r.method, r.url)).map((r) => r.url);
-    for (const u of ['/api/v1/payroll/runs/:id/bank.csv', '/api/v1/payroll/runs/:id/register.xlsx', '/api/v1/reports/:key/export.csv', '/api/v1/reports/snapshots/:id/export.xlsx', '/api/v1/accounting/payroll-runs/:id/export', '/api/v1/expenses/batches/:id/export.csv']) expect(urls, u).toContain(u);
+    for (const u of [
+      '/api/v1/payroll/runs/:id/bank.csv',
+      '/api/v1/payroll/runs/:id/register.xlsx',
+      '/api/v1/reports/:key/export.csv',
+      '/api/v1/reports/snapshots/:id/export.xlsx',
+      '/api/v1/accounting/payroll-runs/:id/export',
+      '/api/v1/expenses/batches/:id/export.csv',
+    ])
+      expect(urls, u).toContain(u);
     await a.close();
   });
 
@@ -122,7 +142,9 @@ describe('tighter limits on what is worth abusing', () => {
     const a = await makeApp({ TRUST_PROXY: '1' });
     const t = await createTenant();
     const c = await Client.login(a, t.host, t.users.employee!.email);
-    const codes = await statuses(7, (i) => as(a, c, '/api/v1/auth/password', 'POST', `198.51.100.${i}`, { currentPassword: 'not-the-password', newPassword: 'marble kettle orbit lantern' }));
+    const codes = await statuses(7, (i) =>
+      as(a, c, '/api/v1/auth/password', 'POST', `198.51.100.${i}`, { currentPassword: 'not-the-password', newPassword: 'marble kettle orbit lantern' }),
+    );
     expect(codes.slice(0, 5).every((x) => x === 400)).toBe(true);
     expect(codes[5]).toBe(429);
     await a.close();

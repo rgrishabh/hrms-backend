@@ -14,14 +14,19 @@ describe('boolean query parameters', () => {
 });
 
 describe('at the routes', () => {
-  let app: FastifyInstance; let T: TenantFixture; let hr: Client; let emp: Client;
+  let app: FastifyInstance;
+  let T: TenantFixture;
+  let hr: Client;
+  let emp: Client;
   beforeAll(async () => {
     app = await makeApp();
     T = await createTenant();
     hr = await Client.login(app, T.host, T.users.hr!.email);
     emp = await Client.login(app, T.host, T.users.employee!.email);
   });
-  afterAll(async () => { await app.close(); });
+  afterAll(async () => {
+    await app.close();
+  });
 
   it('leave types: includeInactive=false hides inactive types', async () => {
     await ownerQuery(`INSERT INTO leave_types (tenant_id, code, name, status) VALUES ($1,'OLD','Old type','inactive')`, [T.id]);
@@ -39,7 +44,11 @@ describe('at the routes', () => {
 
   it('attendance daily: exceptionsOnly=false keeps rows without exceptions', async () => {
     const date = '2026-01-05';
-    await ownerQuery(`INSERT INTO attendance_daily (tenant_id, employee_id, work_date, day_type, status, calc_version) VALUES ($1,$2,$3,'working','present',3)`, [T.id, T.users.employee!.employeeId, date]);
+    await ownerQuery(`INSERT INTO attendance_daily (tenant_id, employee_id, work_date, day_type, status, calc_version) VALUES ($1,$2,$3,'working','present',3)`, [
+      T.id,
+      T.users.employee!.employeeId,
+      date,
+    ]);
     const r = await hr.get(`/api/v1/attendance/daily?date=${date}&exceptionsOnly=false`);
     expect(r.statusCode, r.body).toBe(200);
     expect(r.json().items.some((d: { employee_id: string }) => d.employee_id === T.users.employee!.employeeId)).toBe(true);

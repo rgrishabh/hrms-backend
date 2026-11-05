@@ -15,7 +15,11 @@ const upload = (c: Client, content: Buffer, name = 'me.png') => {
 const punch = (c: Client, key: string, extra: object = {}) => c.post('/api/v1/attendance/punch', { channel: 'web', direction: 'in', idempotencyKey: key, ...extra });
 
 describe('check-in selfie', () => {
-  let app: FastifyInstance; let T: TenantFixture; let emp: Client; let hr: Client; let other: Client;
+  let app: FastifyInstance;
+  let T: TenantFixture;
+  let emp: Client;
+  let hr: Client;
+  let other: Client;
   beforeAll(async () => {
     app = await makeApp({ ...flags('default,attendance.selfie'), STORAGE_DRIVER: 'local', STORAGE_PATH: mkdtempSync(path.join(os.tmpdir(), 'hrms-selfie-')) });
     T = await createTenant();
@@ -23,7 +27,9 @@ describe('check-in selfie', () => {
     hr = await Client.login(app, T.host, T.users.hr!.email);
     other = await Client.login(app, T.host, T.users.other!.email);
   });
-  afterAll(async () => { await app.close(); });
+  afterAll(async () => {
+    await app.close();
+  });
 
   it('clock-in needs a selfie, stored through the store as L3 with a retention date', async () => {
     const r = await punch(emp, 'selfie-none-1');
@@ -34,13 +40,15 @@ describe('check-in selfie', () => {
     const ok = await punch(emp, 'selfie-yes-11', { selfieId: id });
     expect(ok.statusCode).toBe(200);
     const [row] = await ownerQuery<{ data_class: string; event_id: string; storage_key: string; days: number }>(
-      `SELECT data_class, event_id, storage_key, round(extract(epoch FROM retain_until - created_at) / 86400)::int AS days FROM attendance_selfies WHERE id=$1`, [id]);
+      `SELECT data_class, event_id, storage_key, round(extract(epoch FROM retain_until - created_at) / 86400)::int AS days FROM attendance_selfies WHERE id=$1`,
+      [id],
+    );
     expect(row).toMatchObject({ data_class: 'L3', event_id: ok.json().id, days: 90 });
     expect(row!.storage_key).toMatch(new RegExp(`^${T.id}/selfies/${T.users.employee!.employeeId}/`));
     expect(await getStore()!.get(row!.storage_key)).toEqual(PNG);
   });
 
-  it('only images, and one use each; someone else\'s selfie is refused', async () => {
+  it("only images, and one use each; someone else's selfie is refused", async () => {
     expect((await upload(emp, Buffer.from('%PDF-1.7 hello'), 'x.pdf')).statusCode).toBe(415);
     const id = (await upload(other, PNG)).json().id as string;
     const r = await punch(emp, 'selfie-steal-1', { selfieId: id, direction: 'in' });
@@ -82,7 +90,10 @@ describe('selfie on without storage', () => {
 });
 
 describe('geofence', () => {
-  let app: FastifyInstance; let T: TenantFixture; let emp: Client; let admin: Client;
+  let app: FastifyInstance;
+  let T: TenantFixture;
+  let emp: Client;
+  let admin: Client;
   const at = (lat: number, key: string) => emp.post('/api/v1/attendance/punch', { channel: 'mobile', direction: 'in', idempotencyKey: key, latitude: lat, longitude: 72.8 });
   beforeAll(async () => {
     app = await makeApp({ ...flags('default,attendance.mobile,attendance.geofence') });
@@ -92,7 +103,9 @@ describe('geofence', () => {
     await admin.put('/api/v1/tenant/settings/attendance.mobile_location_mode', { value: 'optional' });
     expect((await admin.put(`/api/v1/attendance/geofences/${T.branchId}`, { latitude: 19, longitude: 72.8, radiusMeters: 500 })).statusCode).toBe(200);
   });
-  afterAll(async () => { await app.close(); });
+  afterAll(async () => {
+    await app.close();
+  });
 
   it('flags a clock-in outside the fence, or refuses it when the organization says so', async () => {
     const inside = await at(19.001, 'geo-inside-1');

@@ -8,7 +8,9 @@ import { runMigrationCycle } from './migration-cycle.js';
 import { TEST_OWNER_URL, TEST_SINGLE_OWNER_URL, TEST_SINGLE_B_OWNER_URL } from './env.js';
 
 declare module 'vitest' {
-  export interface ProvidedContext { migrationCycleFile: string }
+  export interface ProvidedContext {
+    migrationCycleFile: string;
+  }
 }
 
 /** Fresh schema for every test run: drop + migrate (exercises the migrations themselves). */

@@ -6,7 +6,12 @@ import path from 'node:path';
  * Health signal of a process with no HTTP port: the worker writes this file on a timer, and `hrms worker-health` reads it.
  * `at` shows that the process is alive. `passStartedAt` and `passFinishedAt` show that the loop is not stuck.
  */
-export interface Heartbeat { pid: number; at: number; passStartedAt: number | null; passFinishedAt: number | null }
+export interface Heartbeat {
+  pid: number;
+  at: number;
+  passStartedAt: number | null;
+  passFinishedAt: number | null;
+}
 
 export const HEARTBEAT_INTERVAL_MS = 15_000;
 /** Longer than a job may run before the scheduler itself declares it dead. */

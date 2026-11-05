@@ -9,7 +9,8 @@ import { unsafeDatabaseRole } from './core/db-role.js';
 let env: Env;
 try {
   env = loadEnv();
-  if (env.PROCESS_ROLE !== 'api') throw new Error('Invalid deployment configuration:\n  - PROCESS_ROLE: this command is the API, but PROCESS_ROLE says worker. Run `hrms worker` instead.');
+  if (env.PROCESS_ROLE !== 'api')
+    throw new Error('Invalid deployment configuration:\n  - PROCESS_ROLE: this command is the API, but PROCESS_ROLE says worker. Run `hrms worker` instead.');
 } catch (e) {
   // Configuration errors are listed field by field; secrets are never echoed.
   process.stderr.write(`${(e as Error).message}\n`);
@@ -26,7 +27,10 @@ try {
 }
 
 const unsafe = await unsafeDatabaseRole(pool);
-if (unsafe) { app.log.fatal(unsafe); process.exit(1); }
+if (unsafe) {
+  app.log.fatal(unsafe);
+  process.exit(1);
+}
 
 // Align the organization name and domains with deployment configuration (idempotent).
 try {
@@ -44,7 +48,14 @@ for (const sig of ['SIGTERM', 'SIGINT'] as const) {
     if (shuttingDown) return;
     shuttingDown = true;
     app.log.info({ sig }, 'shutting down gracefully');
-    try { await app.close(); await pool.end(); process.exit(0); } catch (e) { app.log.error(e); process.exit(1); }
+    try {
+      await app.close();
+      await pool.end();
+      process.exit(0);
+    } catch (e) {
+      app.log.error(e);
+      process.exit(1);
+    }
   });
 }
 

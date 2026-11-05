@@ -36,35 +36,57 @@ try {
   process.exit(1);
 }
 const unsafe = await unsafeDatabaseRole(pool);
-if (unsafe) { log.fatal(unsafe); process.exit(1); }
+if (unsafe) {
+  log.fatal(unsafe);
+  process.exit(1);
+}
 
 const file = heartbeatFile();
 const beat: Heartbeat = { pid: process.pid, at: Date.now(), passStartedAt: null, passFinishedAt: null };
 let warned = false;
 const writeBeat = async () => {
   beat.at = Date.now();
-  try { await writeHeartbeat(file, beat); } catch (e) {
-    if (!warned) { warned = true; log.warn({ file, err: (e as Error).message }, 'cannot write worker heartbeat'); }
+  try {
+    await writeHeartbeat(file, beat);
+  } catch (e) {
+    if (!warned) {
+      warned = true;
+      log.warn({ file, err: (e as Error).message }, 'cannot write worker heartbeat');
+    }
   }
 };
 
 const scheduler = new Scheduler(pool, log, env.JOBS_INTERVAL_SECONDS * 1000, {
   initialDelayMs: 0,
-  onPassStart: () => { beat.passStartedAt = Date.now(); },
-  onPassEnd: () => { beat.passFinishedAt = Date.now(); },
+  onPassStart: () => {
+    beat.passStartedAt = Date.now();
+  },
+  onPassEnd: () => {
+    beat.passFinishedAt = Date.now();
+  },
 });
 // A sign-in code cannot wait for the next pass, which may be running long jobs. Claimed with SKIP LOCKED, so this overlaps safely with the pass and other workers.
 let mailing = false;
 const fastMail = setInterval(() => {
   if (mailing) return;
   mailing = true;
-  void deliverOutbox(pool, log, 20).catch((e: Error) => log.error({ err: e.message }, 'email delivery failed')).finally(() => { mailing = false; });
+  void deliverOutbox(pool, log, 20)
+    .catch((e: Error) => log.error({ err: e.message }, 'email delivery failed'))
+    .finally(() => {
+      mailing = false;
+    });
 }, FAST_MAIL_INTERVAL_MS);
 fastMail.unref();
 await writeBeat();
-const heartbeat = setInterval(() => { void writeBeat(); }, HEARTBEAT_INTERVAL_MS);
+const heartbeat = setInterval(() => {
+  void writeBeat();
+}, HEARTBEAT_INTERVAL_MS);
 // The whole loop runs with this deployment's feature set.
-withFeatures(runtime.features, () => withMode(env.ORG_MANAGEMENT_MODE, () => { scheduler.start(); }));
+withFeatures(runtime.features, () =>
+  withMode(env.ORG_MANAGEMENT_MODE, () => {
+    scheduler.start();
+  }),
+);
 // Timers of the scheduler are unref'd; this one keeps the process up until a signal.
 log.info({ intervalSeconds: env.JOBS_INTERVAL_SECONDS }, 'worker started');
 
@@ -81,6 +103,9 @@ for (const sig of ['SIGTERM', 'SIGINT'] as const) {
       await runtime.close();
       await pool.end();
       process.exit(0);
-    } catch (e) { log.error(e); process.exit(1); }
+    } catch (e) {
+      log.error(e);
+      process.exit(1);
+    }
   });
 }

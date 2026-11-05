@@ -20,29 +20,75 @@ const ACCOUNT = '501234569876';
 
 /** A real picture: pdfkit reads its structure. */
 function realPng(colour: 2 | 6 = 2, filter = 0) {
-  const chunk = (type: string, data: Buffer) => { const len = Buffer.alloc(4); len.writeUInt32BE(data.length); return Buffer.concat([len, Buffer.from(type, 'latin1'), data, Buffer.alloc(4)]); };
-  const ihdr = Buffer.alloc(13); ihdr.writeUInt32BE(1, 0); ihdr.writeUInt32BE(1, 4); ihdr[8] = 8; ihdr[9] = colour;
+  const chunk = (type: string, data: Buffer) => {
+    const len = Buffer.alloc(4);
+    len.writeUInt32BE(data.length);
+    return Buffer.concat([len, Buffer.from(type, 'latin1'), data, Buffer.alloc(4)]);
+  };
+  const ihdr = Buffer.alloc(13);
+  ihdr.writeUInt32BE(1, 0);
+  ihdr.writeUInt32BE(1, 4);
+  ihdr[8] = 8;
+  ihdr[9] = colour;
   const row = Buffer.from(colour === 2 ? [filter, 200, 30, 30] : [filter, 200, 30, 30, 128]);
   return Buffer.concat([Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]), chunk('IHDR', ihdr), chunk('IDAT', deflateSync(row)), chunk('IEND', Buffer.alloc(0))]);
 }
 const REAL_JPEG = Buffer.from([0xff, 0xd8, 0xff, 0xc0, 0x00, 0x0b, 0x08, 0x00, 0x01, 0x00, 0x01, 0x01, 0x01, 0x11, 0x00, 0xff, 0xd9]);
 const images = (b: Buffer) => (b.toString('latin1').match(/\/Subtype \/Image/g) ?? []).length;
 
-let app: FastifyInstance; let T: TenantFixture; let run: string; let root: string; let paidItem: string;
+let app: FastifyInstance;
+let T: TenantFixture;
+let run: string;
+let root: string;
+let paidItem: string;
 const c: Record<string, Client> = {};
 const emp = (k: string) => T.users[k]!.employeeId!;
 
 async function item(runId: string, employeeId: string, gross = 71111, o: { hold?: boolean } = {}) {
-  const [i] = await ownerQuery<{ id: string }>(`INSERT INTO payroll_items (tenant_id, run_id, employee_id, days_in_period, employed_days, paid_days, data_enc, calc_version, hold) VALUES ($1,$2,$3,31,31,30,$4,6,$5) RETURNING id`, [T.id, runId, employeeId,
-    seal({ lines: [{ code: 'BASIC', name: 'Basic pay', kind: 'earning', amount: gross }, { code: 'PF_EE', name: 'Provident fund', kind: 'deduction', amount: 1800 }, { code: 'PF_ER', name: 'Employer share', kind: 'employer', amount: 4242 }], gross, deductions: 1800, net: gross - 1800, employerCost: gross + 4242, warnings: [] }), !!o.hold]);
+  const [i] = await ownerQuery<{ id: string }>(
+    `INSERT INTO payroll_items (tenant_id, run_id, employee_id, days_in_period, employed_days, paid_days, data_enc, calc_version, hold) VALUES ($1,$2,$3,31,31,30,$4,6,$5) RETURNING id`,
+    [
+      T.id,
+      runId,
+      employeeId,
+      seal({
+        lines: [
+          { code: 'BASIC', name: 'Basic pay', kind: 'earning', amount: gross },
+          { code: 'PF_EE', name: 'Provident fund', kind: 'deduction', amount: 1800 },
+          { code: 'PF_ER', name: 'Employer share', kind: 'employer', amount: 4242 },
+        ],
+        gross,
+        deductions: 1800,
+        net: gross - 1800,
+        employerCost: gross + 4242,
+        warnings: [],
+      }),
+      !!o.hold,
+    ],
+  );
   return i!.id;
 }
 const newRun = async (period: string, status: string) => {
-  const [r] = await ownerQuery<{ id: string }>(`INSERT INTO payroll_runs (tenant_id, legal_entity_id, period, created_by, totals_enc) VALUES ($1,$2,$3,$4,$5) RETURNING id`, [T.id, T.legalEntityId, period, T.users.payroll!.id, seal({ employees: 1, gross: 1, deductions: 0, net: 1, employerCost: 1, held: 0 })]);
-  return { id: r!.id, seal: () => (status === 'draft' ? Promise.resolve([]) : ownerQuery(`UPDATE payroll_runs SET status=$2, computed_at=now(), finalized_at=now(), paid_at=CASE WHEN $2='paid' THEN now() END WHERE id=$1`, [r!.id, status])) };
+  const [r] = await ownerQuery<{ id: string }>(`INSERT INTO payroll_runs (tenant_id, legal_entity_id, period, created_by, totals_enc) VALUES ($1,$2,$3,$4,$5) RETURNING id`, [
+    T.id,
+    T.legalEntityId,
+    period,
+    T.users.payroll!.id,
+    seal({ employees: 1, gross: 1, deductions: 0, net: 1, employerCost: 1, held: 0 }),
+  ]);
+  return {
+    id: r!.id,
+    seal: () =>
+      status === 'draft'
+        ? Promise.resolve([])
+        : ownerQuery(`UPDATE payroll_runs SET status=$2, computed_at=now(), finalized_at=now(), paid_at=CASE WHEN $2='paid' THEN now() END WHERE id=$1`, [r!.id, status]),
+  };
 };
-const auditRows = (action: string, target?: string) => ownerQuery<{ target_id: string; change_metadata: { path: string; fields: string[]; letter?: string; l4?: boolean; format?: string } }>(
-  `SELECT target_id, change_metadata FROM audit_logs WHERE tenant_id=$1 AND action=$2 AND ($3::text IS NULL OR target_id::text=$3) ORDER BY created_at`, [T.id, action, target ?? null]);
+const auditRows = (action: string, target?: string) =>
+  ownerQuery<{ target_id: string; change_metadata: { path: string; fields: string[]; letter?: string; l4?: boolean; format?: string } }>(
+    `SELECT target_id, change_metadata FROM audit_logs WHERE tenant_id=$1 AND action=$2 AND ($3::text IS NULL OR target_id::text=$3) ORDER BY created_at`,
+    [T.id, action, target ?? null],
+  );
 
 beforeAll(async () => {
   root = await mkdtemp(path.join(tmpdir(), 'hrms-pdf-'));
@@ -50,16 +96,31 @@ beforeAll(async () => {
   T = await createTenant();
   await ownerQuery(`UPDATE legal_entities SET name='Northwind Assays Private Limited', cin='U12345MH2020PTC000001', gstin='27AAAAA0000A1Z5' WHERE id=$1`, [T.legalEntityId]);
   await ownerQuery(`UPDATE employees SET first_name='Asha', last_name='Verma', designation='Senior Analyst' WHERE id=$1`, [emp('employee')]);
-  await ownerQuery(`INSERT INTO employee_statutory (tenant_id, employee_id, uan, pan_enc, pan_last4) VALUES ($1,$2,'100200300400',$3,'1234')`, [T.id, emp('employee'), testCipher.encrypt(FULL_PAN)]);
-  await ownerQuery(`INSERT INTO employee_bank_accounts (employee_id, tenant_id, account_holder, account_number_enc, account_last4, ifsc) VALUES ($1,$2,'Asha Verma',$3,$4,'HDFC0001234')`, [emp('employee'), T.id, testCipher.encrypt(ACCOUNT), ACCOUNT.slice(-4)]);
-  await ownerQuery(`INSERT INTO employee_salaries (tenant_id, employee_id, effective_from, amounts_enc, annual_ctc_enc, reason, status, created_by, approved_at) VALUES ($1,$2,'2025-01-01',$3,$4,'fixture','active',$5,now())`, [T.id, emp('employee'), seal({ BASIC: 71111 }), seal(853332), T.users.payroll!.id]);
-  const r = await newRun('2026-01', 'paid'); run = r.id;
+  await ownerQuery(`INSERT INTO employee_statutory (tenant_id, employee_id, uan, pan_enc, pan_last4) VALUES ($1,$2,'100200300400',$3,'1234')`, [
+    T.id,
+    emp('employee'),
+    testCipher.encrypt(FULL_PAN),
+  ]);
+  await ownerQuery(
+    `INSERT INTO employee_bank_accounts (employee_id, tenant_id, account_holder, account_number_enc, account_last4, ifsc) VALUES ($1,$2,'Asha Verma',$3,$4,'HDFC0001234')`,
+    [emp('employee'), T.id, testCipher.encrypt(ACCOUNT), ACCOUNT.slice(-4)],
+  );
+  await ownerQuery(
+    `INSERT INTO employee_salaries (tenant_id, employee_id, effective_from, amounts_enc, annual_ctc_enc, reason, status, created_by, approved_at) VALUES ($1,$2,'2025-01-01',$3,$4,'fixture','active',$5,now())`,
+    [T.id, emp('employee'), seal({ BASIC: 71111 }), seal(853332), T.users.payroll!.id],
+  );
+  const r = await newRun('2026-01', 'paid');
+  run = r.id;
   paidItem = await item(run, emp('employee'));
   await item(run, emp('other'), 62222);
   await r.seal();
   for (const k of ['employee', 'other', 'manager', 'hr', 'admin', 'payroll']) c[k] = await Client.login(app, T.host, T.users[k]!.email);
 }, 60000);
-afterAll(async () => { await app.close(); setStore(null); await rm(root, { recursive: true, force: true }); });
+afterAll(async () => {
+  await app.close();
+  setStore(null);
+  await rm(root, { recursive: true, force: true });
+});
 
 const paid = () => paidItem;
 const slip = (id = paid()) => `/api/v1/payroll/payslips/${id}/payslip.pdf`;
@@ -73,7 +134,21 @@ describe('payslip PDF', () => {
     expect(r.headers['cache-control']).toBe('private, no-store');
     expect(r.rawPayload.subarray(0, 5).toString()).toBe('%PDF-');
     const text = await pdfText(r.rawPayload);
-    for (const want of ['Northwind Assays', 'Northwind Assays Private Limited', 'U12345MH2020PTC000001', '27AAAAA0000A1Z5', 'Asha Verma', 'Senior Analyst', 'January 2026', 'Basic pay', '71,111.00', 'Provident fund', '1,800.00', 'INR 69,311.00']) expect(text).toContain(want);
+    for (const want of [
+      'Northwind Assays',
+      'Northwind Assays Private Limited',
+      'U12345MH2020PTC000001',
+      '27AAAAA0000A1Z5',
+      'Asha Verma',
+      'Senior Analyst',
+      'January 2026',
+      'Basic pay',
+      '71,111.00',
+      'Provident fund',
+      '1,800.00',
+      'INR 69,311.00',
+    ])
+      expect(text).toContain(want);
     expect(text).not.toContain('Employer share');
     expect(text).not.toContain('₹');
   });
@@ -121,7 +196,10 @@ describe('payslip PDF', () => {
       expect(r.body).not.toContain('Asha');
     }
     // HR, at 40, and a person who is at an administrator's level.
-    const [e] = await ownerQuery<{ id: string }>(`INSERT INTO employees (tenant_id, employee_code, first_name, legal_entity_id, branch_id, date_of_joining, user_id) VALUES ($1,'TOP','Top',$2,$3,'2024-01-01',$4) RETURNING id`, [T.id, T.legalEntityId, T.branchId, T.users.admin!.id]);
+    const [e] = await ownerQuery<{ id: string }>(
+      `INSERT INTO employees (tenant_id, employee_code, first_name, legal_entity_id, branch_id, date_of_joining, user_id) VALUES ($1,'TOP','Top',$2,$3,'2024-01-01',$4) RETURNING id`,
+      [T.id, T.legalEntityId, T.branchId, T.users.admin!.id],
+    );
     T.users.admin!.employeeId = e!.id;
     const draft = await newRun('2026-06', 'draft');
     expect((await c.hr!.get(slip(await item(draft.id, e!.id, 99999)))).statusCode).toBe(404);
@@ -140,7 +218,8 @@ describe('payslip PDF', () => {
 
   it('a GET needs no CSRF token', async () => {
     const bare = new Client(app, T.host);
-    bare.cookie = c.employee!.cookie; bare.device = c.employee!.device;
+    bare.cookie = c.employee!.cookie;
+    bare.device = c.employee!.device;
     expect(bare.csrf).toBe('');
     expect((await bare.get(slip())).statusCode).toBe(200);
   });
@@ -151,7 +230,10 @@ describe('payslip PDF', () => {
     await heldRun.seal();
     const draftRun = await newRun('2026-03', 'draft');
     const draft = await item(draftRun.id, emp('employee'));
-    for (const [id, mark] of [[held, 'ON HOLD'], [draft, 'NOT FINAL']] as const) {
+    for (const [id, mark] of [
+      [held, 'ON HOLD'],
+      [draft, 'NOT FINAL'],
+    ] as const) {
       const json = await c.employee!.get(`/api/v1/payroll/payslips/${id}`);
       expect(json.statusCode).toBe(404);
       const own = await c.employee!.get(slip(id));
@@ -175,7 +257,9 @@ describe('payslip PDF', () => {
       const second = await u.get(slip());
       expect(second.statusCode).toBe(429);
       expect(problem(second).code).toBe('rate_limited');
-    } finally { await tight.close(); }
+    } finally {
+      await tight.close();
+    }
   });
 
   it('feature off is 404, whoever asks', async () => {
@@ -187,11 +271,16 @@ describe('payslip PDF', () => {
         expect(r.statusCode, k).toBe(404);
         expect(problem(r).status).toBe(404);
       }
-    } finally { await off.close(); }
+    } finally {
+      await off.close();
+    }
   });
 
   it('a name the fonts cannot draw does not crash: it prints as ? with the code beside it, and says so', async () => {
-    const [e] = await ownerQuery<{ id: string }>(`INSERT INTO employees (tenant_id, employee_code, first_name, last_name, legal_entity_id, branch_id, date_of_joining, reporting_manager_id) VALUES ($1,'DEVA1','रमेश','الكتاب 李雷',$2,$3,'2024-01-01',NULL) RETURNING id`, [T.id, T.legalEntityId, T.branchId]);
+    const [e] = await ownerQuery<{ id: string }>(
+      `INSERT INTO employees (tenant_id, employee_code, first_name, last_name, legal_entity_id, branch_id, date_of_joining, reporting_manager_id) VALUES ($1,'DEVA1','रमेश','الكتاب 李雷',$2,$3,'2024-01-01',NULL) RETURNING id`,
+      [T.id, T.legalEntityId, T.branchId],
+    );
     const r0 = await newRun('2026-04', 'paid');
     const id = await item(r0.id, e!.id);
     await r0.seal();
@@ -206,18 +295,61 @@ describe('payslip PDF', () => {
 });
 
 describe('brand input', () => {
-  const data: PayslipData = { period: '2026-01', kind: 'regular', days_in_period: '31', employed_days: '31', lop_days: '0', paid_days: '31', employee_code: 'E1', name: 'Asha Verma', designation: null, date_of_joining: '2024-01-05', department: null, branch: 'HQ', legal_entity: 'LE', uan: null, ifsc: null, pan: null, account: null,
-    lines: [{ code: 'B', name: 'Basic', kind: 'earning', amount: 100 }], gross: '100.00', deductions: '0.00', net: '100.00' };
-  const company = { legalName: null, gstin: null, pan: null, tan: null, cin: null, registeredAddress: null, pfRegistration: null, esiRegistration: null, ptRegistration: null, signatoryName: null, signatoryDesignation: null, signatureKey: null, stampKey: null };
+  const data: PayslipData = {
+    period: '2026-01',
+    kind: 'regular',
+    days_in_period: '31',
+    employed_days: '31',
+    lop_days: '0',
+    paid_days: '31',
+    employee_code: 'E1',
+    name: 'Asha Verma',
+    designation: null,
+    date_of_joining: '2024-01-05',
+    department: null,
+    branch: 'HQ',
+    legal_entity: 'LE',
+    uan: null,
+    ifsc: null,
+    pan: null,
+    account: null,
+    lines: [{ code: 'B', name: 'Basic', kind: 'earning', amount: 100 }],
+    gross: '100.00',
+    deductions: '0.00',
+    net: '100.00',
+  };
+  const company = {
+    legalName: null,
+    gstin: null,
+    pan: null,
+    tan: null,
+    cin: null,
+    registeredAddress: null,
+    pfRegistration: null,
+    esiRegistration: null,
+    ptRegistration: null,
+    signatoryName: null,
+    signatoryDesignation: null,
+    signatureKey: null,
+    stampKey: null,
+  };
   const fakeApp = (over: Record<string, unknown>, brandDirOverride?: string) => ({ deps: { env: { ...TEST_BRAND, ...over }, brandDirOverride } }) as unknown as FastifyInstance;
-  const body = async (doc: PDFKit.PDFDocument) => { const parts: Buffer[] = []; for await (const p of doc) parts.push(p as Buffer); return Buffer.concat(parts); };
+  const body = async (doc: PDFKit.PDFDocument) => {
+    const parts: Buffer[] = [];
+    for await (const p of doc) parts.push(p as Buffer);
+    return Buffer.concat(parts);
+  };
 
   it('a PNG or JPEG in the mount is drawn, and the brand name stays in the footer', async () => {
     const dir = await mkdtemp(path.join(tmpdir(), 'hrms-brand-'));
     await writeFile(path.join(dir, 'logo.png'), realPng());
     await writeFile(path.join(dir, 'alpha.png'), realPng(6));
     await writeFile(path.join(dir, 'logo.jpg'), REAL_JPEG);
-    for (const [file, count] of [['logo.png', 1], ['alpha.png', 2], ['logo.jpg', 1]] as const) {
+    for (const [file, count] of [
+      ['logo.png', 1],
+      ['alpha.png', 2],
+      ['logo.jpg', 1],
+    ] as const) {
       const ctx = await loadPdfContext(fakeApp({ BRAND_LOGO_URL: `/brand/${file}` }, dir), { company, dateFormat: 'DD/MM/YYYY' });
       expect(ctx.images.logo, file).not.toBeNull();
       const out = await body(payslipPdf(ctx, data, { status: 'paid', hold: false }));
@@ -251,15 +383,32 @@ describe('brand input', () => {
   });
 
   it('signature, stamp, signatory and company details from the profile are drawn; a key that cannot be read is left out', async () => {
-    const store = new LocalStore(root); setStore(store);
-    const sig = newKey(T.id, null); const stamp = newKey(T.id, null);
-    await store.put(sig, realPng()); await store.put(stamp, REAL_JPEG);
-    const profile = { ...company, legalName: 'Profile Legal Name Ltd', cin: 'CIN-XYZ', gstin: 'GST-XYZ', tan: 'TAN-XYZ', registeredAddress: '12 Mill Road, Pune', pfRegistration: 'PF-XYZ', esiRegistration: 'ESI-XYZ', signatoryName: 'Meera Rao', signatoryDesignation: 'Director', signatureKey: sig, stampKey: stamp };
+    const store = new LocalStore(root);
+    setStore(store);
+    const sig = newKey(T.id, null);
+    const stamp = newKey(T.id, null);
+    await store.put(sig, realPng());
+    await store.put(stamp, REAL_JPEG);
+    const profile = {
+      ...company,
+      legalName: 'Profile Legal Name Ltd',
+      cin: 'CIN-XYZ',
+      gstin: 'GST-XYZ',
+      tan: 'TAN-XYZ',
+      registeredAddress: '12 Mill Road, Pune',
+      pfRegistration: 'PF-XYZ',
+      esiRegistration: 'ESI-XYZ',
+      signatoryName: 'Meera Rao',
+      signatoryDesignation: 'Director',
+      signatureKey: sig,
+      stampKey: stamp,
+    };
     const ctx = await loadPdfContext(fakeApp({}), { company: profile, dateFormat: 'DD/MM/YYYY' });
     const out = await body(payslipPdf(ctx, data, { status: 'paid', hold: false }));
     expect(images(out)).toBe(2);
     const text = await pdfText(out);
-    for (const want of ['Profile Legal Name Ltd', 'CIN-XYZ', 'GST-XYZ', 'TAN-XYZ', '12 Mill Road, Pune', 'PF-XYZ', 'ESI-XYZ', 'Meera Rao', 'Director']) expect(text).toContain(want);
+    for (const want of ['Profile Legal Name Ltd', 'CIN-XYZ', 'GST-XYZ', 'TAN-XYZ', '12 Mill Road, Pune', 'PF-XYZ', 'ESI-XYZ', 'Meera Rao', 'Director'])
+      expect(text).toContain(want);
     const gone = await loadPdfContext(fakeApp({}), { company: { ...profile, signatureKey: newKey(T.id, null), stampKey: 'not/a/key' }, dateFormat: 'DD/MM/YYYY' });
     expect(gone.images.signature).toBeNull();
     expect(gone.images.stamp).toBeNull();
@@ -290,19 +439,70 @@ describe('brand input', () => {
 });
 
 describe('report PDF', () => {
-  const ctx = (): PdfContext => ({ brandName: 'Northwind Assays', productName: 'P', legalName: 'Northwind Assays Pvt Ltd', primaryColor: '#1f5f8b', locale: 'en-IN', currency: 'INR', dateFormat: 'DD/MM/YYYY', images: { logo: null, signature: null, stamp: null },
-    company: { legalName: null, gstin: null, pan: null, tan: null, cin: null, registeredAddress: null, pfRegistration: null, esiRegistration: null, ptRegistration: null, signatoryName: null, signatoryDesignation: null, signatureKey: null, stampKey: null } });
-  const wide = { title: 'Wide', subtitle: ['Generated today'], notes: ['Your reporting team only.'],
-    columns: [{ key: 'code', label: 'Code', type: 'text' as const }, { key: 'name', label: 'Employee name', type: 'text' as const }, { key: 'joined', label: 'Joined', type: 'date' as const }, ...Array.from({ length: 14 }, (_, i) => ({ key: `m${i}`, label: `Month ${i} gross`, type: 'money' as const }))],
-    totals: { code: 'x', m0: 98765432.1 } };
-  const rowsOf = (n: number) => Array.from({ length: n }, (_, i) => ({ code: `E${i}`, name: `A person with an exceedingly long name that cannot fit in any column ${i}`, joined: '2024-02-03', ...Object.fromEntries(Array.from({ length: 14 }, (_, k) => [`m${k}`, 1234567.89 + i])) }));
-  const read = async (t: ReportTable) => { const parts: Buffer[] = []; const done = (async () => { for await (const p of t.w.doc) parts.push(p as Buffer); })(); t.start(); const stats = await t.finish(); await done; return { file: Buffer.concat(parts), stats }; };
+  const ctx = (): PdfContext => ({
+    brandName: 'Northwind Assays',
+    productName: 'P',
+    legalName: 'Northwind Assays Pvt Ltd',
+    primaryColor: '#1f5f8b',
+    locale: 'en-IN',
+    currency: 'INR',
+    dateFormat: 'DD/MM/YYYY',
+    images: { logo: null, signature: null, stamp: null },
+    company: {
+      legalName: null,
+      gstin: null,
+      pan: null,
+      tan: null,
+      cin: null,
+      registeredAddress: null,
+      pfRegistration: null,
+      esiRegistration: null,
+      ptRegistration: null,
+      signatoryName: null,
+      signatoryDesignation: null,
+      signatureKey: null,
+      stampKey: null,
+    },
+  });
+  const wide = {
+    title: 'Wide',
+    subtitle: ['Generated today'],
+    notes: ['Your reporting team only.'],
+    columns: [
+      { key: 'code', label: 'Code', type: 'text' as const },
+      { key: 'name', label: 'Employee name', type: 'text' as const },
+      { key: 'joined', label: 'Joined', type: 'date' as const },
+      ...Array.from({ length: 14 }, (_, i) => ({ key: `m${i}`, label: `Month ${i} gross`, type: 'money' as const })),
+    ],
+    totals: { code: 'x', m0: 98765432.1 },
+  };
+  const rowsOf = (n: number) =>
+    Array.from({ length: n }, (_, i) => ({
+      code: `E${i}`,
+      name: `A person with an exceedingly long name that cannot fit in any column ${i}`,
+      joined: '2024-02-03',
+      ...Object.fromEntries(Array.from({ length: 14 }, (_, k) => [`m${k}`, 1234567.89 + i])),
+    }));
+  const read = async (t: ReportTable) => {
+    const parts: Buffer[] = [];
+    const done = (async () => {
+      for await (const p of t.w.doc) parts.push(p as Buffer);
+    })();
+    t.start();
+    const stats = await t.finish();
+    await done;
+    return { file: Buffer.concat(parts), stats };
+  };
 
   it('wide tables fit on landscape pages: the header repeats, numbers are whole, long text is cut with a note', async () => {
     const { file, stats } = await read(new ReportTable(ctx(), { ...wide, rows: rowsOf(300) }));
     const pages = await pdfPages(file);
     expect(pages.length).toBeGreaterThan(3);
-    for (const p of pages) { expect(p).toContain('Employee'); expect(p).toContain('Month 13'); expect(p).toContain('Page '); }
+    for (const p of pages) {
+      expect(p).toContain('Employee');
+      expect(p).toContain('Month 13');
+      expect(p).toContain('Page ');
+    }
     const all = pages.join('\n');
     expect(all).toContain('12,34,567.89');
     expect(all).toContain('03/02/2024');
@@ -317,8 +517,13 @@ describe('report PDF', () => {
   });
 
   it(`at the row limit it lets the event loop through, so the longest stall stays short`, async () => {
-    const gaps: number[] = []; let last = performance.now();
-    const beat = setInterval(() => { const n = performance.now(); gaps.push(n - last); last = n; }, 1);
+    const gaps: number[] = [];
+    let last = performance.now();
+    const beat = setInterval(() => {
+      const n = performance.now();
+      gaps.push(n - last);
+      last = n;
+    }, 1);
     const { file, stats } = await read(new ReportTable(ctx(), { ...wide, rows: rowsOf(5000) }));
     clearInterval(beat);
     expect(stats.yields).toBeGreaterThan(5);
@@ -342,7 +547,9 @@ describe('report PDF', () => {
     const t = new ReportTable(ctx(), { ...wide, rows: rowsOf(5000) });
     t.start();
     let finished = false;
-    const drawing = t.finish().then(() => { finished = true; });
+    const drawing = t.finish().then(() => {
+      finished = true;
+    });
     await new Promise((resolve) => setTimeout(resolve, 3000));
     expect(finished).toBe(false);
     expect(t.w.doc.readableLength).toBeLessThan(512 * 1024);
@@ -355,11 +562,19 @@ describe('report PDF', () => {
     const address = await app.listen({ port: 0, host: '127.0.0.1' });
     const u = new URL(address);
     const { headers, file } = await new Promise<{ headers: IncomingHttpHeaders; file: Buffer }>((resolve, reject) => {
-      httpGet({ host: u.hostname, port: u.port, path: '/api/v1/reports/payroll_cost/export.pdf?from=2026-01&to=2026-01', headers: { host: T.host, cookie: [c.hr!.cookie, c.hr!.device].filter(Boolean).join('; ') } }, (m) => {
-        const parts: Buffer[] = [];
-        m.on('data', (b: Buffer) => parts.push(b));
-        m.on('end', () => resolve({ headers: m.headers, file: Buffer.concat(parts) }));
-      }).on('error', reject);
+      httpGet(
+        {
+          host: u.hostname,
+          port: u.port,
+          path: '/api/v1/reports/payroll_cost/export.pdf?from=2026-01&to=2026-01',
+          headers: { host: T.host, cookie: [c.hr!.cookie, c.hr!.device].filter(Boolean).join('; ') },
+        },
+        (m) => {
+          const parts: Buffer[] = [];
+          m.on('data', (b: Buffer) => parts.push(b));
+          m.on('end', () => resolve({ headers: m.headers, file: Buffer.concat(parts) }));
+        },
+      ).on('error', reject);
     });
     expect(headers['transfer-encoding']).toBe('chunked');
     expect(headers['content-length']).toBeUndefined();
@@ -395,7 +610,10 @@ describe('report PDF', () => {
     const count = (list: string[], id: string) => list.filter((x) => x === id).length;
     expect(added.length).toBeGreaterThan(before.length);
     for (const id of new Set(added)) expect(count(added, id) - count(before, id), id).toBe(2);
-    const log = await ownerQuery<{ change_metadata: { format: string } }>(`SELECT change_metadata FROM audit_logs WHERE tenant_id=$1 AND action='reports.exported' ORDER BY created_at`, [T.id]);
+    const log = await ownerQuery<{ change_metadata: { format: string } }>(
+      `SELECT change_metadata FROM audit_logs WHERE tenant_id=$1 AND action='reports.exported' ORDER BY created_at`,
+      [T.id],
+    );
     expect(log.length).toBe(exported + 2);
     expect(log.map((x) => x.change_metadata.format)).toContain('pdf');
   });
@@ -410,8 +628,20 @@ describe('report PDF', () => {
 
   it('a scheduled copy as a PDF: its recipient only, and audited', async () => {
     const data = seal({ rows: [{ grp: 'Lab', n: 3 }], totals: { grp: 'x', n: 3 }, subjects: [] });
-    const [s] = await ownerQuery<{ id: string }>(`INSERT INTO report_snapshots (tenant_id, owner_id, report_key, name, params, scope, columns, data_enc, row_count, recipient_ids, expires_at)
-      VALUES ($1,$2,'headcount','Weekly headcount','{}','all',$3,$4,1,$5, now()+interval '1 day') RETURNING id`, [T.id, T.users.hr!.id, JSON.stringify([{ key: 'grp', label: 'Group', type: 'text' }, { key: 'n', label: 'People', type: 'int' }]), data, [T.users.hr!.id]]);
+    const [s] = await ownerQuery<{ id: string }>(
+      `INSERT INTO report_snapshots (tenant_id, owner_id, report_key, name, params, scope, columns, data_enc, row_count, recipient_ids, expires_at)
+      VALUES ($1,$2,'headcount','Weekly headcount','{}','all',$3,$4,1,$5, now()+interval '1 day') RETURNING id`,
+      [
+        T.id,
+        T.users.hr!.id,
+        JSON.stringify([
+          { key: 'grp', label: 'Group', type: 'text' },
+          { key: 'n', label: 'People', type: 'int' },
+        ]),
+        data,
+        [T.users.hr!.id],
+      ],
+    );
     const r = await c.hr!.get(`/api/v1/reports/snapshots/${s!.id}/export.pdf`);
     expect(r.statusCode, r.body).toBe(200);
     const text = await pdfText(r.rawPayload);
@@ -419,7 +649,10 @@ describe('report PDF', () => {
     expect(text).toContain('People');
     expect(String(r.headers['content-disposition'])).toMatch(/headcount-\d{4}-\d{2}-\d{2}\.pdf/);
     expect((await c.other!.get(`/api/v1/reports/snapshots/${s!.id}/export.pdf`)).statusCode).toBe(404);
-    const rows = await ownerQuery<{ change_metadata: { format: string } }>(`SELECT change_metadata FROM audit_logs WHERE tenant_id=$1 AND action='reports.exported' AND target_id=$2`, [T.id, s!.id]);
+    const rows = await ownerQuery<{ change_metadata: { format: string } }>(
+      `SELECT change_metadata FROM audit_logs WHERE tenant_id=$1 AND action='reports.exported' AND target_id=$2`,
+      [T.id, s!.id],
+    );
     expect(rows.map((x) => x.change_metadata.format)).toEqual(['pdf']);
   });
 });
@@ -427,7 +660,10 @@ describe('report PDF', () => {
 describe('letters', () => {
   const separate = async (employeeId: string, status: string, lwd: string, kind = 'resignation') => {
     await ownerQuery(`DELETE FROM separations WHERE tenant_id=$1 AND employee_id=$2`, [T.id, employeeId]);
-    await ownerQuery(`INSERT INTO separations (tenant_id, employee_id, kind, reason, notice_date, requested_lwd, notice_days_required, status, initiated_by) VALUES ($1,$2,$5,'A private reason','2026-01-01',$3,30,$4,$6)`, [T.id, employeeId, lwd, status, kind, T.users.hr!.id]);
+    await ownerQuery(
+      `INSERT INTO separations (tenant_id, employee_id, kind, reason, notice_date, requested_lwd, notice_days_required, status, initiated_by) VALUES ($1,$2,$5,'A private reason','2026-01-01',$3,30,$4,$6)`,
+      [T.id, employeeId, lwd, status, kind, T.users.hr!.id],
+    );
   };
 
   it('appointment: HR above them gets it with brand, employer and role; audited; no salary unless asked and allowed', async () => {
@@ -437,7 +673,8 @@ describe('letters', () => {
     expect(r.headers['content-disposition']).toBe('attachment; filename="appointment-letter.pdf"');
     expect(r.headers['x-pay-included']).toBe('0');
     const text = await pdfText(r.rawPayload);
-    for (const want of ['Northwind Assays Private Limited', 'Asha Verma', 'Senior Analyst', '01/01/2024', 'Letter of appointment', 'Authorised signatory']) expect(text).toContain(want);
+    for (const want of ['Northwind Assays Private Limited', 'Asha Verma', 'Senior Analyst', '01/01/2024', 'Letter of appointment', 'Authorised signatory'])
+      expect(text).toContain(want);
     expect(text).not.toContain('8,53,332');
     const rows = await auditRows('lifecycle.letter_issued', emp('employee'));
     expect(rows.length).toBe(before + 1);
@@ -452,7 +689,10 @@ describe('letters', () => {
     expect(await pdfText(r.rawPayload)).toContain('INR 8,53,332.00');
     expect((await auditRows('l4.export', emp('employee'))).length).toBe(before + 1);
     // HR without any pay permission gets the letter and no figure, and no L4 row is written.
-    const [u] = await ownerQuery<{ id: string }>(`INSERT INTO users (tenant_id, email, display_name, password_hash) SELECT tenant_id, $2, 'Exec', password_hash FROM users WHERE id=$1 RETURNING id`, [T.users.hr!.id, `exec@${T.host}`]);
+    const [u] = await ownerQuery<{ id: string }>(
+      `INSERT INTO users (tenant_id, email, display_name, password_hash) SELECT tenant_id, $2, 'Exec', password_hash FROM users WHERE id=$1 RETURNING id`,
+      [T.users.hr!.id, `exec@${T.host}`],
+    );
     await ownerQuery(`INSERT INTO user_roles (user_id, tenant_id, role_key) VALUES ($1,$2,'hr_executive')`, [u!.id, T.id]);
     const exec = await Client.login(app, T.host, `exec@${T.host}`);
     const noPay = await exec.get(letter('appointment', emp('employee'), '?includePay=1'));
@@ -471,7 +711,9 @@ describe('letters', () => {
     expect(problem(await c.hr!.get(letter('appointment', emp('hr')))).status).toBe(404);
     await ownerQuery(`UPDATE users SET salary_access_level=95 WHERE id=$1`, [T.users.manager!.id]);
     await ownerQuery(`INSERT INTO user_roles (user_id, tenant_id, role_key) VALUES ($1,$2,'tenant_admin')`, [T.users.manager!.id, T.id]);
-    try { expect((await c.hr!.get(letter('appointment', emp('manager')))).statusCode).toBe(404); } finally {
+    try {
+      expect((await c.hr!.get(letter('appointment', emp('manager')))).statusCode).toBe(404);
+    } finally {
       await ownerQuery(`DELETE FROM user_roles WHERE user_id=$1 AND role_key='tenant_admin'`, [T.users.manager!.id]);
       await ownerQuery(`UPDATE users SET salary_access_level=0 WHERE id=$1`, [T.users.manager!.id]);
     }
@@ -531,12 +773,16 @@ describe('letters', () => {
       const o = await Client.login(only, T.host, T.users.hr!.email);
       expect((await o.get(letter('appointment', emp('employee')))).statusCode).toBe(200);
       for (const k of ['experience', 'relieving']) expect((await o.get(letter(k, emp('employee')))).statusCode, k).toBe(404);
-    } finally { await off.close(); await only.close(); }
+    } finally {
+      await off.close();
+      await only.close();
+    }
   });
 
   it('a GET needs no CSRF token', async () => {
     const bare = new Client(app, T.host);
-    bare.cookie = c.hr!.cookie; bare.device = c.hr!.device;
+    bare.cookie = c.hr!.cookie;
+    bare.device = c.hr!.device;
     expect((await bare.get(letter('appointment', emp('employee')))).statusCode).toBe(200);
   });
 });

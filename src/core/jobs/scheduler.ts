@@ -22,8 +22,11 @@ const RUNNING_TIMEOUT_MIN = 60;
 type Log = { info: (o: object, m?: string) => void; error: (o: object, m?: string) => void };
 
 export function localNow(tz: string, now: Date) {
-  const p = Object.fromEntries(new Intl.DateTimeFormat('en-CA', { timeZone: tz, year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', hourCycle: 'h23' })
-    .formatToParts(now).map((x) => [x.type, x.value]));
+  const p = Object.fromEntries(
+    new Intl.DateTimeFormat('en-CA', { timeZone: tz, year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', hourCycle: 'h23' })
+      .formatToParts(now)
+      .map((x) => [x.type, x.value]),
+  );
   return { date: `${p.year}-${p.month}-${p.day}`, time: `${p.hour}:${p.minute}` };
 }
 
@@ -32,14 +35,24 @@ async function execute(pool: Pool, log: Log, tenantId: string, runId: string, jo
   try {
     // One memo per run: `attendance.close_day` would otherwise read the same settings for every employee.
     const result = await withMemo(new Map(), () => withTenant(pool, tenantId, (db) => job.run(db, tenantId, { period, localDate, actorId })));
-    await withTenant(pool, tenantId, (db) => db.query(`UPDATE job_runs SET status='succeeded', finished_at=now(), result=$3, error=NULL, next_retry_at=NULL
-      WHERE tenant_id=$1 AND id=$2`, [tenantId, runId, JSON.stringify({ ...result, durationMs: Date.now() - started })]));
+    await withTenant(pool, tenantId, (db) =>
+      db.query(
+        `UPDATE job_runs SET status='succeeded', finished_at=now(), result=$3, error=NULL, next_retry_at=NULL
+      WHERE tenant_id=$1 AND id=$2`,
+        [tenantId, runId, JSON.stringify({ ...result, durationMs: Date.now() - started })],
+      ),
+    );
     log.info({ job: job.key, period, ms: Date.now() - started }, 'job succeeded');
     return { status: 'succeeded' as const, result };
   } catch (e) {
     const msg = ((e as Error).message ?? String(e)).slice(0, 1000);
-    await withTenant(pool, tenantId, (db) => db.query(`UPDATE job_runs SET status='failed', finished_at=now(), error=$3,
-      next_retry_at = CASE WHEN attempts < ${MAX_ATTEMPTS} THEN now() + make_interval(mins => 5 * attempts) END WHERE tenant_id=$1 AND id=$2`, [tenantId, runId, msg]));
+    await withTenant(pool, tenantId, (db) =>
+      db.query(
+        `UPDATE job_runs SET status='failed', finished_at=now(), error=$3,
+      next_retry_at = CASE WHEN attempts < ${MAX_ATTEMPTS} THEN now() + make_interval(mins => 5 * attempts) END WHERE tenant_id=$1 AND id=$2`,
+        [tenantId, runId, msg],
+      ),
+    );
     log.error({ job: job.key, period, err: msg }, 'job failed');
     return { status: 'failed' as const, error: msg };
   }
@@ -57,21 +70,30 @@ export async function tick(pool: Pool, log: Log, now = new Date()) {
     const { date, time } = localNow(tz, now);
     const due: { runId: string; job: JobDefinition; period: string }[] = [];
     await withTenant(pool, tenantId, async (db) => {
-      await db.query(`UPDATE job_runs SET status='failed', finished_at=now(), error='Timed out (process stopped or job exceeded ${RUNNING_TIMEOUT_MIN} min)',
+      await db.query(
+        `UPDATE job_runs SET status='failed', finished_at=now(), error='Timed out (process stopped or job exceeded ${RUNNING_TIMEOUT_MIN} min)',
           next_retry_at = CASE WHEN attempts < ${MAX_ATTEMPTS} THEN now() END
-        WHERE tenant_id=$1 AND status='running' AND started_at < now() - make_interval(mins => ${RUNNING_TIMEOUT_MIN})`, [tenantId]);
+        WHERE tenant_id=$1 AND status='running' AND started_at < now() - make_interval(mins => ${RUNNING_TIMEOUT_MIN})`,
+        [tenantId],
+      );
       for (const job of JOBS) {
         if (!jobActive(job, (k) => !!usable.get(k))) continue;
         const period = duePeriod(job.schedule, date, time);
         if (!period) continue;
-        const claimed = await db.query<{ id: string }>(`INSERT INTO job_runs (tenant_id, job_key, period_key, trigger, status)
-          VALUES ($1,$2,$3,'schedule','running') ON CONFLICT (tenant_id, job_key, period_key) DO NOTHING RETURNING id`, [tenantId, job.key, period]);
+        const claimed = await db.query<{ id: string }>(
+          `INSERT INTO job_runs (tenant_id, job_key, period_key, trigger, status)
+          VALUES ($1,$2,$3,'schedule','running') ON CONFLICT (tenant_id, job_key, period_key) DO NOTHING RETURNING id`,
+          [tenantId, job.key, period],
+        );
         if (claimed.rows[0]) due.push({ runId: claimed.rows[0].id, job, period });
       }
-      const retries = await db.query<{ id: string; job_key: string; period_key: string }>(`UPDATE job_runs SET status='running', attempts=attempts+1, started_at=now(),
+      const retries = await db.query<{ id: string; job_key: string; period_key: string }>(
+        `UPDATE job_runs SET status='running', attempts=attempts+1, started_at=now(),
           finished_at=NULL, next_retry_at=NULL
         WHERE tenant_id=$1 AND status='failed' AND attempts < ${MAX_ATTEMPTS} AND next_retry_at <= now() AND trigger='schedule'
-        RETURNING id, job_key, period_key`, [tenantId]);
+        RETURNING id, job_key, period_key`,
+        [tenantId],
+      );
       for (const r of retries.rows) {
         const job = JOB_MAP.get(r.job_key);
         if (job && jobActive(job, (k) => !!usable.get(k))) due.push({ runId: r.id, job, period: r.period_key });
@@ -81,7 +103,7 @@ export async function tick(pool: Pool, log: Log, now = new Date()) {
       const r = await execute(pool, log, tenantId, d.runId, d.job, d.period, date, null);
       ran.push({ tenantId, job: d.job.key, period: d.period, status: r.status });
     }
-    ran.push(...await runQueued(pool, log, tenantId, now));
+    ran.push(...(await runQueued(pool, log, tenantId, now)));
   }
   return ran;
 }
@@ -90,17 +112,23 @@ export async function tick(pool: Pool, log: Log, now = new Date()) {
 export async function runQueued(pool: Pool, log: Log, tenantId: string, now: Date) {
   const { tz, claimed } = await withTenant(pool, tenantId, async (db) => ({
     tz: await getSettingValue<string>(db, tenantId, 'general.timezone'),
-    claimed: (await db.query<{ id: string; job_key: string; triggered_by: string | null }>(
-      `UPDATE job_runs SET status='running', started_at=now() WHERE id IN (
+    claimed: (
+      await db.query<{ id: string; job_key: string; triggered_by: string | null }>(
+        `UPDATE job_runs SET status='running', started_at=now() WHERE id IN (
          SELECT id FROM job_runs WHERE tenant_id=$1 AND status='queued' ORDER BY started_at LIMIT 20 FOR UPDATE SKIP LOCKED)
-       RETURNING id, job_key, triggered_by`, [tenantId])).rows,
+       RETURNING id, job_key, triggered_by`,
+        [tenantId],
+      )
+    ).rows,
   }));
   const { date } = localNow(tz, now);
   const ran: { tenantId: string; job: string; period: string; status: string }[] = [];
   for (const q of claimed) {
     const job = JOB_MAP.get(q.job_key);
     if (!job || (!job.retention && allOff(job.feature))) {
-      await withTenant(pool, tenantId, (db) => db.query(`UPDATE job_runs SET status='failed', finished_at=now(), error='Its module is off' WHERE tenant_id=$1 AND id=$2`, [tenantId, q.id]));
+      await withTenant(pool, tenantId, (db) =>
+        db.query(`UPDATE job_runs SET status='failed', finished_at=now(), error='Its module is off' WHERE tenant_id=$1 AND id=$2`, [tenantId, q.id]),
+      );
       continue;
     }
     const r = await execute(pool, log, tenantId, q.id, job, date, date, q.triggered_by);
@@ -115,8 +143,18 @@ export async function runQueued(pool: Pool, log: Log, tenantId: string, now: Dat
  */
 export async function enqueueRun(pool: Pool, tenantId: string, jobKey: string, actorId: string | null) {
   if (!JOB_MAP.has(jobKey)) throw new Error(`Unknown job ${jobKey}`);
-  const runId = await withTenant(pool, tenantId, async (db) => (await db.query<{ id: string }>(`INSERT INTO job_runs (tenant_id, job_key, period_key, trigger, status, triggered_by)
-    VALUES ($1,$2,$3,'manual','queued',$4) RETURNING id`, [tenantId, jobKey, `manual:${randomUUID()}`, actorId])).rows[0]!.id);
+  const runId = await withTenant(
+    pool,
+    tenantId,
+    async (db) =>
+      (
+        await db.query<{ id: string }>(
+          `INSERT INTO job_runs (tenant_id, job_key, period_key, trigger, status, triggered_by)
+    VALUES ($1,$2,$3,'manual','queued',$4) RETURNING id`,
+          [tenantId, jobKey, `manual:${randomUUID()}`, actorId],
+        )
+      ).rows[0]!.id,
+  );
   return { runId, status: 'queued' as const };
 }
 
@@ -145,25 +183,48 @@ export class Scheduler {
   private first: NodeJS.Timeout | null = null;
   private running: Promise<void> | null = null;
   private stopping = false;
-  constructor(private pool: Pool, private log: Log, private intervalMs = 60_000, private hooks: SchedulerHooks = {}) {}
+  constructor(
+    private pool: Pool,
+    private log: Log,
+    private intervalMs = 60_000,
+    private hooks: SchedulerHooks = {},
+  ) {}
 
   /** One pass, unless one is already running or the scheduler is stopping. */
   pass(): Promise<void> {
     if (this.stopping) return Promise.resolve();
     this.running ??= (async () => {
       this.hooks.onPassStart?.();
-      try { await tick(this.pool, this.log); } catch (e) { this.log.error({ err: (e as Error).message }, 'scheduler tick failed'); }
-      try { await deliverOutbox(this.pool, this.log); } catch (e) { this.log.error({ err: (e as Error).message }, 'email delivery pass failed'); }
-      try { await deliverPushOutbox(this.pool, this.log); } catch (e) { this.log.error({ err: (e as Error).message }, 'push delivery pass failed'); }
+      try {
+        await tick(this.pool, this.log);
+      } catch (e) {
+        this.log.error({ err: (e as Error).message }, 'scheduler tick failed');
+      }
+      try {
+        await deliverOutbox(this.pool, this.log);
+      } catch (e) {
+        this.log.error({ err: (e as Error).message }, 'email delivery pass failed');
+      }
+      try {
+        await deliverPushOutbox(this.pool, this.log);
+      } catch (e) {
+        this.log.error({ err: (e as Error).message }, 'push delivery pass failed');
+      }
       this.hooks.onPassEnd?.();
-    })().finally(() => { this.running = null; });
+    })().finally(() => {
+      this.running = null;
+    });
     return this.running;
   }
 
   start() {
-    this.first = setTimeout(() => { void this.pass(); }, this.hooks.initialDelayMs ?? 10_000);
+    this.first = setTimeout(() => {
+      void this.pass();
+    }, this.hooks.initialDelayMs ?? 10_000);
     this.first.unref();
-    this.timer = setInterval(() => { void this.pass(); }, this.intervalMs);
+    this.timer = setInterval(() => {
+      void this.pass();
+    }, this.intervalMs);
     this.timer.unref();
   }
 
@@ -172,7 +233,8 @@ export class Scheduler {
     this.stopping = true;
     if (this.first) clearTimeout(this.first);
     if (this.timer) clearInterval(this.timer);
-    this.first = null; this.timer = null;
+    this.first = null;
+    this.timer = null;
     await this.running;
   }
 }

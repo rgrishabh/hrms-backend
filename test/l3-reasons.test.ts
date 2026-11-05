@@ -4,22 +4,46 @@ import { Client, createTenant, flags, makeApp, ownerQuery, type TenantFixture } 
 
 /** Overtime and field-duty reasons are L3: self, HR above them, and whoever decides the request while it waits (D39). */
 const REASON = 'Private-reason-text';
-let app: FastifyInstance; let T: TenantFixture;
-let hr: Client; let hrPeer: Client; let emp: Client; let mgr: Client; let other: Client; let payroll: Client;
-let hrEmpId: string; let peerEmpId: string; let delegateUser: string;
+let app: FastifyInstance;
+let T: TenantFixture;
+let hr: Client;
+let hrPeer: Client;
+let emp: Client;
+let mgr: Client;
+let other: Client;
+let payroll: Client;
+let hrEmpId: string;
+let peerEmpId: string;
+let delegateUser: string;
 
-const insClaim = async (employeeId: string, day: string, status = 'pending') => (await ownerQuery<{ id: string }>(
-  `INSERT INTO overtime_claims (tenant_id, employee_id, work_date, minutes, recorded_minutes, payout, reason, status, created_by) VALUES ($1,$2,$3,60,60,'pay',$4,$5,$6) RETURNING id`, [T.id, employeeId, day, REASON, status, T.users.admin!.id]))[0]!.id;
-const insDuty = async (employeeId: string, day: string, status = 'pending') => (await ownerQuery<{ id: string }>(
-  `INSERT INTO field_duty_requests (tenant_id, employee_id, start_date, end_date, day_part, purpose, place, reason, status, created_by) VALUES ($1,$2,$3,$3,'full','field_sampling','Site',$4,$5,$6) RETURNING id`, [T.id, employeeId, day, REASON, status, T.users.admin!.id]))[0]!.id;
+const insClaim = async (employeeId: string, day: string, status = 'pending') =>
+  (
+    await ownerQuery<{ id: string }>(
+      `INSERT INTO overtime_claims (tenant_id, employee_id, work_date, minutes, recorded_minutes, payout, reason, status, created_by) VALUES ($1,$2,$3,60,60,'pay',$4,$5,$6) RETURNING id`,
+      [T.id, employeeId, day, REASON, status, T.users.admin!.id],
+    )
+  )[0]!.id;
+const insDuty = async (employeeId: string, day: string, status = 'pending') =>
+  (
+    await ownerQuery<{ id: string }>(
+      `INSERT INTO field_duty_requests (tenant_id, employee_id, start_date, end_date, day_part, purpose, place, reason, status, created_by) VALUES ($1,$2,$3,$3,'full','field_sampling','Site',$4,$5,$6) RETURNING id`,
+      [T.id, employeeId, day, REASON, status, T.users.admin!.id],
+    )
+  )[0]!.id;
 
 beforeAll(async () => {
   app = await makeApp(flags('default,payroll,overtime,comp_off,field_duty'));
   T = await createTenant();
   hrEmpId = T.users.hr!.employeeId!;
-  const [e] = await ownerQuery<{ id: string }>(`INSERT INTO employees (tenant_id, employee_code, first_name, legal_entity_id, branch_id, date_of_joining) VALUES ($1,'EP','Peer',$2,$3,'2024-01-01') RETURNING id`, [T.id, T.legalEntityId, T.branchId]);
+  const [e] = await ownerQuery<{ id: string }>(
+    `INSERT INTO employees (tenant_id, employee_code, first_name, legal_entity_id, branch_id, date_of_joining) VALUES ($1,'EP','Peer',$2,$3,'2024-01-01') RETURNING id`,
+    [T.id, T.legalEntityId, T.branchId],
+  );
   peerEmpId = e!.id;
-  const [u] = await ownerQuery<{ id: string }>(`INSERT INTO users (tenant_id, email, display_name, password_hash) SELECT tenant_id, $2, 'HR peer', password_hash FROM users WHERE id=$1 RETURNING id`, [T.users.hr!.id, `hrpeer@${T.host}`]);
+  const [u] = await ownerQuery<{ id: string }>(
+    `INSERT INTO users (tenant_id, email, display_name, password_hash) SELECT tenant_id, $2, 'HR peer', password_hash FROM users WHERE id=$1 RETURNING id`,
+    [T.users.hr!.id, `hrpeer@${T.host}`],
+  );
   delegateUser = u!.id;
   await ownerQuery(`INSERT INTO user_roles (user_id, tenant_id, role_key) VALUES ($1,$2,'hr_admin')`, [u!.id, T.id]);
   await ownerQuery(`UPDATE employees SET user_id=$1 WHERE id=$2`, [u!.id, peerEmpId]);
@@ -31,11 +55,19 @@ beforeAll(async () => {
   other = await Client.login(app, T.host, T.users.other!.email);
   payroll = await Client.login(app, T.host, T.users.payroll!.email);
 });
-afterAll(async () => { await app.close(); });
+afterAll(async () => {
+  await app.close();
+});
 
 const paths = [
   { name: 'overtime', list: '/api/v1/overtime/claims', one: (id: string) => `/api/v1/overtime/claims/${id}`, ins: insClaim, day: ['2026-02-02', '2026-02-03', '2026-02-04'] },
-  { name: 'field duty', list: '/api/v1/field-duty/requests', one: (id: string) => `/api/v1/field-duty/requests/${id}`, ins: insDuty, day: ['2026-03-02', '2026-03-03', '2026-03-04'] },
+  {
+    name: 'field duty',
+    list: '/api/v1/field-duty/requests',
+    one: (id: string) => `/api/v1/field-duty/requests/${id}`,
+    ins: insDuty,
+    day: ['2026-03-02', '2026-03-03', '2026-03-04'],
+  },
 ];
 
 describe.each(paths)('$name reasons', ({ list, one, ins, day }) => {
@@ -85,8 +117,15 @@ describe.each(paths)('$name reasons', ({ list, one, ins, day }) => {
 
   it('a delegate holding the step reads it while it is pending', async () => {
     const id = await ins(hrEmpId, '2026-04-07');
-    const [req] = await ownerQuery<{ id: string }>(`INSERT INTO approval_requests (tenant_id, entity_type, entity_id, requester_id, summary) VALUES ($1,$2,$3,$4,'x') RETURNING id`, [T.id, list.includes('overtime') ? 'overtime_claim' : 'field_duty', id, T.users.admin!.id]);
-    await ownerQuery(`INSERT INTO approval_steps (tenant_id, request_id, step_index, approver_kind, approver_user_id, status) VALUES ($1,$2,0,'user',$3,'active')`, [T.id, req!.id, delegateUser]);
+    const [req] = await ownerQuery<{ id: string }>(
+      `INSERT INTO approval_requests (tenant_id, entity_type, entity_id, requester_id, summary) VALUES ($1,$2,$3,$4,'x') RETURNING id`,
+      [T.id, list.includes('overtime') ? 'overtime_claim' : 'field_duty', id, T.users.admin!.id],
+    );
+    await ownerQuery(`INSERT INTO approval_steps (tenant_id, request_id, step_index, approver_kind, approver_user_id, status) VALUES ($1,$2,0,'user',$3,'active')`, [
+      T.id,
+      req!.id,
+      delegateUser,
+    ]);
     expect((await hrPeer.get(one(id))).json().reason).toBe(REASON);
   });
 });

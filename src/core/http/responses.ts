@@ -12,23 +12,27 @@ export const DeleteAuthSessionsById200 = z.strictObject({
 });
 
 export const GetAccountingLedgerMap200 = z.strictObject({
-  heads: z.array(z.strictObject({
-    key: z.string(),
-    label: z.string(),
-  })),
+  heads: z.array(
+    z.strictObject({
+      key: z.string(),
+      label: z.string(),
+    }),
+  ),
   items: z.array(z.unknown()),
 });
 
 export const GetAccountingPayrollRunsByIdJournal200 = z.strictObject({
   balanced: z.boolean(),
   date: z.string(),
-  entries: z.array(z.strictObject({
-    credit: z.string(),
-    debit: z.string(),
-    key: z.string(),
-    label: z.string(),
-    ledger: z.string().nullable(),
-  })),
+  entries: z.array(
+    z.strictObject({
+      credit: z.string(),
+      debit: z.string(),
+      key: z.string(),
+      label: z.string(),
+      ledger: z.string().nullable(),
+    }),
+  ),
   missing: z.array(z.string()),
   narration: z.string(),
   number: z.string(),
@@ -38,13 +42,15 @@ export const GetAccountingPayrollRunsByIdJournal200 = z.strictObject({
 export const GetAccountingReimbursementBatchesByIdJournal200 = z.strictObject({
   balanced: z.boolean(),
   date: z.string(),
-  entries: z.array(z.strictObject({
-    credit: z.string(),
-    debit: z.string(),
-    key: z.string(),
-    label: z.string(),
-    ledger: z.string().nullable(),
-  })),
+  entries: z.array(
+    z.strictObject({
+      credit: z.string(),
+      debit: z.string(),
+      key: z.string(),
+      label: z.string(),
+      ledger: z.string().nullable(),
+    }),
+  ),
   missing: z.array(z.string()),
   narration: z.string(),
   number: z.string(),
@@ -52,39 +58,47 @@ export const GetAccountingReimbursementBatchesByIdJournal200 = z.strictObject({
 });
 
 export const GetAccountingSources200 = z.strictObject({
-  batches: z.array(z.strictObject({
-    claim_count: z.number(),
-    created_at: z.string(),
-    id: z.string(),
-    last_export: z.unknown().optional(),
-    paid_at: z.unknown().optional(),
-    payment_reference: z.unknown().optional(),
-    status: z.string(),
-    total: z.string(),
-  })),
-  runs: z.array(z.strictObject({
-    excluded: z.number().optional(),
-    id: z.string(),
-    kind: z.string(),
-    last_export: z.strictObject({
-      at: z.string(),
-      by: z.string(),
-      format: z.string(),
-    }).nullable(),
-    legal_entity: z.string(),
-    masked: z.boolean().optional(),
-    maskedFields: z.array(z.string()).optional(),
-    period: z.string(),
-    status: z.string(),
-    totals: z.strictObject({
-      deductions: z.number(),
-      employees: z.number(),
-      employerCost: z.number(),
-      gross: z.number(),
-      held: z.number(),
-      net: z.number(),
-    }).nullable(),
-  })),
+  batches: z.array(
+    z.strictObject({
+      claim_count: z.number(),
+      created_at: z.string(),
+      id: z.string(),
+      last_export: z.unknown().optional(),
+      paid_at: z.unknown().optional(),
+      payment_reference: z.unknown().optional(),
+      status: z.string(),
+      total: z.string(),
+    }),
+  ),
+  runs: z.array(
+    z.strictObject({
+      excluded: z.number().optional(),
+      id: z.string(),
+      kind: z.string(),
+      last_export: z
+        .strictObject({
+          at: z.string(),
+          by: z.string(),
+          format: z.string(),
+        })
+        .nullable(),
+      legal_entity: z.string(),
+      masked: z.boolean().optional(),
+      maskedFields: z.array(z.string()).optional(),
+      period: z.string(),
+      status: z.string(),
+      totals: z
+        .strictObject({
+          deductions: z.number(),
+          employees: z.number(),
+          employerCost: z.number(),
+          gross: z.number(),
+          held: z.number(),
+          net: z.number(),
+        })
+        .nullable(),
+    }),
+  ),
 });
 
 export const GetApprovalsById200 = z.strictObject({
@@ -95,21 +109,23 @@ export const GetApprovalsById200 = z.strictObject({
   id: z.string(),
   requester_id: z.string(),
   status: z.string(),
-  steps: z.array(z.strictObject({
-    acted_at: z.string(),
-    acted_by_name: z.string(),
-    acted_for_name: z.string(),
-    acted_via: z.string(),
-    approver_kind: z.string(),
-    approver_name: z.string(),
-    approver_permission: z.unknown().optional(),
-    comment: z.unknown().optional(),
-    escalated_at: z.string().nullable(),
-    escalated_permission: z.unknown().optional(),
-    escalated_to_name: z.string().nullable(),
-    status: z.string(),
-    step_index: z.number(),
-  })),
+  steps: z.array(
+    z.strictObject({
+      acted_at: z.string(),
+      acted_by_name: z.string(),
+      acted_for_name: z.string(),
+      acted_via: z.string(),
+      approver_kind: z.string(),
+      approver_name: z.string(),
+      approver_permission: z.unknown().optional(),
+      comment: z.unknown().optional(),
+      escalated_at: z.string().nullable(),
+      escalated_permission: z.unknown().optional(),
+      escalated_to_name: z.string().nullable(),
+      status: z.string(),
+      step_index: z.number(),
+    }),
+  ),
   summary: z.string(),
 });
 
@@ -117,25 +133,27 @@ export const GetApprovalsInbox200 = z.strictObject({
   page: z.number(),
   pageSize: z.number(),
   total: z.number(),
-  items: z.array(z.strictObject({
-    approver_kind: z.string(),
-    approver_name: z.string().nullable(),
-    approver_permission: z.string().nullable(),
-    approver_user_id: z.string().nullable(),
-    created_at: z.string(),
-    current_step: z.number(),
-    delegated_by: z.string().nullable(),
-    entity_id: z.string(),
-    entity_type: z.string(),
-    escalated_at: z.string().nullable(),
-    escalated_permission: z.string().nullable(),
-    escalated_to: z.string().nullable(),
-    id: z.string(),
-    on_behalf_of: z.string().nullable(),
-    requester_name: z.string(),
-    summary: z.string(),
-    via: z.string().nullable(),
-  })),
+  items: z.array(
+    z.strictObject({
+      approver_kind: z.string(),
+      approver_name: z.string().nullable(),
+      approver_permission: z.string().nullable(),
+      approver_user_id: z.string().nullable(),
+      created_at: z.string(),
+      current_step: z.number(),
+      delegated_by: z.string().nullable(),
+      entity_id: z.string(),
+      entity_type: z.string(),
+      escalated_at: z.string().nullable(),
+      escalated_permission: z.string().nullable(),
+      escalated_to: z.string().nullable(),
+      id: z.string(),
+      on_behalf_of: z.string().nullable(),
+      requester_name: z.string(),
+      summary: z.string(),
+      via: z.string().nullable(),
+    }),
+  ),
 });
 
 export const GetApprovalsMine200 = z.strictObject({
@@ -146,33 +164,37 @@ export const GetApprovalsMine200 = z.strictObject({
 });
 
 export const GetAttendanceMe200 = z.strictObject({
-  days: z.array(z.strictObject({
-    calc_version: z.number(),
-    day_type: z.string(),
-    duty_fraction: z.string(),
-    early_exit_minutes: z.number(),
-    exceptions: z.array(z.string()),
-    first_in: z.string().nullable(),
-    last_out: z.string().nullable(),
-    late_minutes: z.number(),
-    leave_fraction: z.string(),
-    leave_type_code: z.unknown().optional(),
-    locked: z.boolean(),
-    overtime_minutes: z.number(),
-    punch_count: z.number(),
-    shift_code: z.string(),
-    status: z.string(),
-    work_date: z.string(),
-    worked_minutes: z.number(),
-  })),
-  events: z.array(z.strictObject({
-    device_time: z.unknown().optional(),
-    direction: z.string(),
-    event_time: z.string(),
-    id: z.string(),
-    source: z.string(),
-    status: z.string(),
-  })),
+  days: z.array(
+    z.strictObject({
+      calc_version: z.number(),
+      day_type: z.string(),
+      duty_fraction: z.string(),
+      early_exit_minutes: z.number(),
+      exceptions: z.array(z.string()),
+      first_in: z.string().nullable(),
+      last_out: z.string().nullable(),
+      late_minutes: z.number(),
+      leave_fraction: z.string(),
+      leave_type_code: z.unknown().optional(),
+      locked: z.boolean(),
+      overtime_minutes: z.number(),
+      punch_count: z.number(),
+      shift_code: z.string(),
+      status: z.string(),
+      work_date: z.string(),
+      worked_minutes: z.number(),
+    }),
+  ),
+  events: z.array(
+    z.strictObject({
+      device_time: z.unknown().optional(),
+      direction: z.string(),
+      event_time: z.string(),
+      id: z.string(),
+      source: z.string(),
+      status: z.string(),
+    }),
+  ),
   timezone: z.string(),
 });
 
@@ -181,42 +203,46 @@ export const GetAttendanceMeToday200 = z.strictObject({
     mobile: z.boolean(),
     web: z.boolean(),
   }),
-  daily: z.strictObject({
-    calc_version: z.number(),
-    calculated_at: z.string(),
-    day_type: z.string(),
-    duty_fraction: z.string(),
-    early_exit_minutes: z.number(),
-    employee_id: z.string(),
-    exceptions: z.array(z.string()),
-    first_in: z.string(),
-    last_out: z.unknown().optional(),
-    late_minutes: z.number(),
-    leave_fraction: z.string(),
-    leave_type_code: z.unknown().optional(),
-    locked: z.boolean(),
-    overtime_minutes: z.number(),
-    policy_snapshot: z.strictObject({
-      minGapSeconds: z.number(),
-      overtimeEnabled: z.boolean(),
-      schedule: z.string(),
-      shift: z.string(),
-      timezone: z.string(),
-      weeklyOffs: z.array(z.number()),
+  daily: z
+    .strictObject({
+      calc_version: z.number(),
+      calculated_at: z.string(),
+      day_type: z.string(),
+      duty_fraction: z.string(),
+      early_exit_minutes: z.number(),
+      employee_id: z.string(),
+      exceptions: z.array(z.string()),
+      first_in: z.string(),
+      last_out: z.unknown().optional(),
+      late_minutes: z.number(),
+      leave_fraction: z.string(),
+      leave_type_code: z.unknown().optional(),
+      locked: z.boolean(),
+      overtime_minutes: z.number(),
+      policy_snapshot: z.strictObject({
+        minGapSeconds: z.number(),
+        overtimeEnabled: z.boolean(),
+        schedule: z.string(),
+        shift: z.string(),
+        timezone: z.string(),
+        weeklyOffs: z.array(z.number()),
+      }),
+      punch_count: z.number(),
+      shift_id: z.string(),
+      status: z.string(),
+      tenant_id: z.string(),
+      work_date: z.string(),
+      worked_minutes: z.number(),
+    })
+    .nullable(),
+  events: z.array(
+    z.strictObject({
+      direction: z.string(),
+      event_time: z.string(),
+      id: z.string(),
+      source: z.string(),
     }),
-    punch_count: z.number(),
-    shift_id: z.string(),
-    status: z.string(),
-    tenant_id: z.string(),
-    work_date: z.string(),
-    worked_minutes: z.number(),
-  }).nullable(),
-  events: z.array(z.strictObject({
-    direction: z.string(),
-    event_time: z.string(),
-    id: z.string(),
-    source: z.string(),
-  })),
+  ),
   linked: z.boolean(),
   locationMode: z.string(),
   nextDirection: z.string(),
@@ -241,16 +267,20 @@ export const GetAuthMe200 = z.strictObject({
   }),
   passwordChangeRequired: z.boolean(),
   permissions: z.array(z.string()),
-  preferences: z.strictObject({
-    dateFormat: z.string(),
-    emailNotifications: z.boolean(),
-    timezone: z.string(),
-  }).nullable(),
-  roles: z.array(z.strictObject({
-    group: z.string(),
-    key: z.string(),
-    name: z.string(),
-  })),
+  preferences: z
+    .strictObject({
+      dateFormat: z.string(),
+      emailNotifications: z.boolean(),
+      timezone: z.string(),
+    })
+    .nullable(),
+  roles: z.array(
+    z.strictObject({
+      group: z.string(),
+      key: z.string(),
+      name: z.string(),
+    }),
+  ),
   salaryLevel: z.number(),
   user: z.strictObject({
     displayName: z.string(),
@@ -258,35 +288,41 @@ export const GetAuthMe200 = z.strictObject({
     employeeId: z.string().nullable(),
     id: z.string(),
   }),
-  views: z.array(z.strictObject({
-    key: z.string(),
-    label: z.string(),
-  })),
+  views: z.array(
+    z.strictObject({
+      key: z.string(),
+      label: z.string(),
+    }),
+  ),
 });
 
 export const GetAuthMfaMethods200 = z.strictObject({
   enabled: z.boolean(),
   enforced: z.boolean(),
   method: z.unknown().optional(),
-  methods: z.array(z.strictObject({
-    method: z.string(),
-    reason: z.string().optional(),
-    usable: z.boolean(),
-  })),
+  methods: z.array(
+    z.strictObject({
+      method: z.string(),
+      reason: z.string().optional(),
+      usable: z.boolean(),
+    }),
+  ),
   recoveryCodesLeft: z.number(),
 });
 
 export const GetAuthSessions200 = z.strictObject({
-  items: z.array(z.strictObject({
-    created_at: z.string(),
-    current: z.boolean(),
-    expires_at: z.string(),
-    id: z.string(),
-    ip: z.string(),
-    last_seen_at: z.string(),
-    mfa_verified: z.boolean(),
-    user_agent: z.string(),
-  })),
+  items: z.array(
+    z.strictObject({
+      created_at: z.string(),
+      current: z.boolean(),
+      expires_at: z.string(),
+      id: z.string(),
+      ip: z.string(),
+      last_seen_at: z.string(),
+      mfa_verified: z.boolean(),
+      user_agent: z.string(),
+    }),
+  ),
 });
 
 export const GetConfigPublic200 = z.strictObject({
@@ -328,68 +364,80 @@ export const GetConfigPublic200 = z.strictObject({
 });
 
 export const GetDashboard200 = z.strictObject({
-  lists: z.array(z.strictObject({
-    href: z.string().optional(),
-    items: z.array(z.strictObject({
-      date: z.string().optional(),
-      primary: z.string(),
-      secondary: z.string().optional(),
-    })),
-    key: z.string(),
-    more: z.number().optional(),
-    title: z.string(),
-  })),
-  sections: z.array(z.strictObject({
-    key: z.string(),
-    tiles: z.array(z.strictObject({
-      detail: z.string().optional(),
-      href: z.string(),
+  lists: z.array(
+    z.strictObject({
+      href: z.string().optional(),
+      items: z.array(
+        z.strictObject({
+          date: z.string().optional(),
+          primary: z.string(),
+          secondary: z.string().optional(),
+        }),
+      ),
       key: z.string(),
-      label: z.string(),
-      tone: z.string().optional(),
-      value: z.union([z.number(), z.string()]),
-    })),
-    title: z.string(),
-  })),
+      more: z.number().optional(),
+      title: z.string(),
+    }),
+  ),
+  sections: z.array(
+    z.strictObject({
+      key: z.string(),
+      tiles: z.array(
+        z.strictObject({
+          detail: z.string().optional(),
+          href: z.string(),
+          key: z.string(),
+          label: z.string(),
+          tone: z.string().optional(),
+          value: z.union([z.number(), z.string()]),
+        }),
+      ),
+      title: z.string(),
+    }),
+  ),
   today: z.string(),
 });
 
 export const GetDocuments200 = z.strictObject({
-  items: z.array(z.strictObject({
-    category_id: z.string(),
-    category_name: z.string(),
-    content_type: z.string(),
-    created_at: z.string(),
-    employee_code: z.string().nullable(),
-    employee_id: z.string().nullable(),
-    employee_name: z.string().nullable(),
-    expires_on: z.unknown().optional(),
-    file_name: z.string(),
-    id: z.string(),
-    restricted: z.boolean(),
-    size_bytes: z.number(),
-    status: z.string(),
-    title: z.string(),
-    uploaded_by_name: z.string(),
-  })),
+  items: z.array(
+    z.strictObject({
+      category_id: z.string(),
+      category_name: z.string(),
+      content_type: z.string(),
+      created_at: z.string(),
+      employee_code: z.string().nullable(),
+      employee_id: z.string().nullable(),
+      employee_name: z.string().nullable(),
+      expires_on: z.unknown().optional(),
+      file_name: z.string(),
+      id: z.string(),
+      restricted: z.boolean(),
+      size_bytes: z.number(),
+      status: z.string(),
+      title: z.string(),
+      uploaded_by_name: z.string(),
+    }),
+  ),
   page: z.number(),
   pageSize: z.number(),
   total: z.number(),
 });
 
 export const GetDocumentsCategories200 = z.strictObject({
-  items: z.array(z.strictObject({
-    code: z.string(),
-    employee_upload: z.boolean(),
-    employee_visible: z.boolean(),
-    id: z.string(),
-    name: z.string(),
-    payroll_related: z.boolean(),
-    requires_expiry: z.boolean(),
-    restricted: z.boolean(),
-    scope: z.string(),
-    status: z.string(),
-  })),
+  items: z.array(
+    z.strictObject({
+      code: z.string(),
+      employee_upload: z.boolean(),
+      employee_visible: z.boolean(),
+      id: z.string(),
+      name: z.string(),
+      payroll_related: z.boolean(),
+      requires_expiry: z.boolean(),
+      restricted: z.boolean(),
+      scope: z.string(),
+      status: z.string(),
+    }),
+  ),
 });
 
 export const GetEmployeesById200 = z.record(z.string(), z.unknown());
@@ -426,56 +474,68 @@ export const GetEmployeesByIdProfile200 = z.strictObject({
     nominees: z.string(),
   }),
   missing: z.array(z.string()),
-  pending: z.array(z.strictObject({
-    approval_id: z.string(),
-    created_at: z.string(),
-    id: z.string(),
-    items: z.array(z.strictObject({
-      address: z.unknown().optional(),
-      dateOfBirth: z.string(),
-      guardianName: z.string().nullable(),
-      name: z.string(),
-      purpose: z.string(),
-      relationship: z.string(),
-      sharePercent: z.number(),
-    })),
-    note: z.unknown().optional(),
-    requested_by_name: z.string(),
-    section: z.string(),
-  })),
+  pending: z.array(
+    z.strictObject({
+      approval_id: z.string(),
+      created_at: z.string(),
+      id: z.string(),
+      items: z.array(
+        z.strictObject({
+          address: z.unknown().optional(),
+          dateOfBirth: z.string(),
+          guardianName: z.string().nullable(),
+          name: z.string(),
+          purpose: z.string(),
+          relationship: z.string(),
+          sharePercent: z.number(),
+        }),
+      ),
+      note: z.unknown().optional(),
+      requested_by_name: z.string(),
+      section: z.string(),
+    }),
+  ),
   sections: z.strictObject({
-    addresses: z.array(z.strictObject({
-      city: z.string(),
-      country: z.string(),
-      kind: z.string(),
-      line1: z.string(),
-      line2: z.string().nullable(),
-      postalCode: z.string(),
-      state: z.string(),
-    })),
-    contacts: z.array(z.strictObject({
-      altPhone: z.unknown().optional(),
-      name: z.string(),
-      phone: z.string(),
-      relationship: z.string(),
-    })),
+    addresses: z.array(
+      z.strictObject({
+        city: z.string(),
+        country: z.string(),
+        kind: z.string(),
+        line1: z.string(),
+        line2: z.string().nullable(),
+        postalCode: z.string(),
+        state: z.string(),
+      }),
+    ),
+    contacts: z.array(
+      z.strictObject({
+        altPhone: z.unknown().optional(),
+        name: z.string(),
+        phone: z.string(),
+        relationship: z.string(),
+      }),
+    ),
     education: z.array(z.unknown()),
-    experience: z.array(z.strictObject({
-      designation: z.string(),
-      employer: z.string(),
-      fromDate: z.string(),
-      reasonForLeaving: z.string(),
-      toDate: z.string(),
-    })),
-    nominees: z.array(z.strictObject({
-      address: z.unknown().optional(),
-      dateOfBirth: z.string(),
-      guardianName: z.string().nullable(),
-      name: z.string(),
-      purpose: z.string(),
-      relationship: z.string(),
-      sharePercent: z.number(),
-    })),
+    experience: z.array(
+      z.strictObject({
+        designation: z.string(),
+        employer: z.string(),
+        fromDate: z.string(),
+        reasonForLeaving: z.string(),
+        toDate: z.string(),
+      }),
+    ),
+    nominees: z.array(
+      z.strictObject({
+        address: z.unknown().optional(),
+        dateOfBirth: z.string(),
+        guardianName: z.string().nullable(),
+        name: z.string(),
+        purpose: z.string(),
+        relationship: z.string(),
+        sharePercent: z.number(),
+      }),
+    ),
   }),
 });
 
@@ -501,25 +561,27 @@ export const GetExpensesClaimsById200 = z.strictObject({
   employee_id: z.string(),
   employee_name: z.string(),
   id: z.string(),
-  items: z.array(z.strictObject({
-    amount: z.string(),
-    calc: z.string().nullable(),
-    category_code: z.string(),
-    category_name: z.string(),
-    description: z.string(),
-    duplicate_of: z.unknown().optional(),
-    expense_date: z.string(),
-    gstin: z.unknown().optional(),
-    has_receipt: z.boolean(),
-    id: z.string(),
-    invoice_number: z.unknown().optional(),
-    merchant: z.unknown().optional(),
-    quantity: z.string().nullable(),
-    rate: z.string().nullable(),
-    receipt_name: z.string().nullable(),
-    tier: z.string().nullable(),
-    vehicle: z.string().nullable(),
-  })),
+  items: z.array(
+    z.strictObject({
+      amount: z.string(),
+      calc: z.string().nullable(),
+      category_code: z.string(),
+      category_name: z.string(),
+      description: z.string(),
+      duplicate_of: z.unknown().optional(),
+      expense_date: z.string(),
+      gstin: z.unknown().optional(),
+      has_receipt: z.boolean(),
+      id: z.string(),
+      invoice_number: z.unknown().optional(),
+      merchant: z.unknown().optional(),
+      quantity: z.string().nullable(),
+      rate: z.string().nullable(),
+      receipt_name: z.string().nullable(),
+      tier: z.string().nullable(),
+      vehicle: z.string().nullable(),
+    }),
+  ),
   paid_at: z.string().nullable(),
   payment_reference: z.string().nullable(),
   project: z.string().nullable(),
@@ -535,32 +597,34 @@ export const GetExpensesClaimsById200 = z.strictObject({
 });
 
 export const GetFieldDutyRequests200 = z.strictObject({
-  items: z.array(z.strictObject({
-    approval_request_id: z.string().nullable(),
-    cancel_reason: z.unknown().optional(),
-    client_name: z.string().nullable(),
-    created_at: z.string(),
-    day_part: z.string(),
-    decided_at: z.string().nullable(),
-    department: z.string().nullable(),
-    employee_code: z.string(),
-    employee_id: z.string(),
-    end_date: z.string(),
-    id: z.string(),
-    masked: z.boolean().optional(),
-    maskedFields: z.array(z.string()).optional(),
-    name: z.string(),
-    outcome: z.string().nullable(),
-    outcome_note: z.string().nullable(),
-    place: z.string(),
-    purpose: z.string(),
-    reason: z.string().nullable(),
-    recorded_by_other: z.boolean(),
-    reference: z.string().nullable(),
-    reported_at: z.string().nullable(),
-    start_date: z.string(),
-    status: z.string(),
-  })),
+  items: z.array(
+    z.strictObject({
+      approval_request_id: z.string().nullable(),
+      cancel_reason: z.unknown().optional(),
+      client_name: z.string().nullable(),
+      created_at: z.string(),
+      day_part: z.string(),
+      decided_at: z.string().nullable(),
+      department: z.string().nullable(),
+      employee_code: z.string(),
+      employee_id: z.string(),
+      end_date: z.string(),
+      id: z.string(),
+      masked: z.boolean().optional(),
+      maskedFields: z.array(z.string()).optional(),
+      name: z.string(),
+      outcome: z.string().nullable(),
+      outcome_note: z.string().nullable(),
+      place: z.string(),
+      purpose: z.string(),
+      reason: z.string().nullable(),
+      recorded_by_other: z.boolean(),
+      reference: z.string().nullable(),
+      reported_at: z.string().nullable(),
+      start_date: z.string(),
+      status: z.string(),
+    }),
+  ),
   page: z.number(),
   pageSize: z.number(),
   today: z.string(),
@@ -596,20 +660,22 @@ export const GetFieldDutyRequestsById200 = z.strictObject({
 
 export const GetLeaveBalances200 = z.strictObject({
   employeeId: z.string(),
-  items: z.array(z.strictObject({
-    accrual_method: z.string(),
-    allow_half_day: z.boolean(),
-    annual_entitlement: z.string(),
-    available: z.string(),
-    balance: z.string(),
-    code: z.string(),
-    id: z.string(),
-    name: z.string(),
-    paid: z.boolean(),
-    pending: z.string(),
-    requires_balance: z.boolean(),
-    used: z.string(),
-  })),
+  items: z.array(
+    z.strictObject({
+      accrual_method: z.string(),
+      allow_half_day: z.boolean(),
+      annual_entitlement: z.string(),
+      available: z.string(),
+      balance: z.string(),
+      code: z.string(),
+      id: z.string(),
+      name: z.string(),
+      paid: z.boolean(),
+      pending: z.string(),
+      requires_balance: z.boolean(),
+      used: z.string(),
+    }),
+  ),
   leaveYear: z.number(),
   period: z.strictObject({
     end: z.string(),
@@ -618,19 +684,21 @@ export const GetLeaveBalances200 = z.strictObject({
 });
 
 export const GetLeaveCalendar200 = z.strictObject({
-  items: z.array(z.strictObject({
-    days: z.string(),
-    employee_code: z.string(),
-    employee_id: z.string(),
-    end_date: z.string(),
-    end_half: z.string(),
-    id: z.string(),
-    name: z.string(),
-    start_date: z.string(),
-    start_half: z.string(),
-    status: z.string(),
-    type_code: z.string(),
-  })),
+  items: z.array(
+    z.strictObject({
+      days: z.string(),
+      employee_code: z.string(),
+      employee_id: z.string(),
+      end_date: z.string(),
+      end_half: z.string(),
+      id: z.string(),
+      name: z.string(),
+      start_date: z.string(),
+      start_half: z.string(),
+      status: z.string(),
+      type_code: z.string(),
+    }),
+  ),
 });
 
 export const GetLeaveRequests200 = z.strictObject({
@@ -641,53 +709,57 @@ export const GetLeaveRequests200 = z.strictObject({
 });
 
 export const GetLeaveTypes200 = z.strictObject({
-  items: z.array(z.strictObject({
-    accrual_method: z.string(),
-    allow_half_day: z.boolean(),
-    annual_entitlement: z.string(),
-    applicable_employment_types: z.array(z.unknown()),
-    carry_forward_max: z.string(),
-    code: z.string(),
-    count_non_working_days: z.boolean(),
-    description: z.unknown().optional(),
-    eligible_after_days: z.number(),
-    id: z.string(),
-    max_balance: z.string().nullable(),
-    max_consecutive_days: z.unknown().optional(),
-    min_notice_days: z.number(),
-    name: z.string(),
-    paid: z.boolean(),
-    requires_balance: z.boolean(),
-    status: z.string(),
-    version: z.number(),
-  })),
+  items: z.array(
+    z.strictObject({
+      accrual_method: z.string(),
+      allow_half_day: z.boolean(),
+      annual_entitlement: z.string(),
+      applicable_employment_types: z.array(z.unknown()),
+      carry_forward_max: z.string(),
+      code: z.string(),
+      count_non_working_days: z.boolean(),
+      description: z.unknown().optional(),
+      eligible_after_days: z.number(),
+      id: z.string(),
+      max_balance: z.string().nullable(),
+      max_consecutive_days: z.unknown().optional(),
+      min_notice_days: z.number(),
+      name: z.string(),
+      paid: z.boolean(),
+      requires_balance: z.boolean(),
+      status: z.string(),
+      version: z.number(),
+    }),
+  ),
 });
 
 export const GetLoansRequests200 = z.strictObject({
-  items: z.array(z.strictObject({
-    amount: z.string(),
-    approval_request_id: z.unknown().optional(),
-    cancel_reason: z.unknown().optional(),
-    closed_at: z.unknown().optional(),
-    created_at: z.string(),
-    decided_at: z.string(),
-    department: z.string(),
-    disbursed_at: z.string(),
-    disbursement_reference: z.string(),
-    employee_code: z.string(),
-    employee_id: z.string(),
-    first_period: z.string(),
-    id: z.string(),
-    installment_amount: z.string(),
-    installments: z.number(),
-    kind: z.string(),
-    name: z.string(),
-    outstanding: z.string(),
-    purpose: z.string(),
-    recorded_by_other: z.boolean(),
-    skip_periods: z.array(z.unknown()),
-    status: z.string(),
-  })),
+  items: z.array(
+    z.strictObject({
+      amount: z.string(),
+      approval_request_id: z.unknown().optional(),
+      cancel_reason: z.unknown().optional(),
+      closed_at: z.unknown().optional(),
+      created_at: z.string(),
+      decided_at: z.string(),
+      department: z.string(),
+      disbursed_at: z.string(),
+      disbursement_reference: z.string(),
+      employee_code: z.string(),
+      employee_id: z.string(),
+      first_period: z.string(),
+      id: z.string(),
+      installment_amount: z.string(),
+      installments: z.number(),
+      kind: z.string(),
+      name: z.string(),
+      outstanding: z.string(),
+      purpose: z.string(),
+      recorded_by_other: z.boolean(),
+      skip_periods: z.array(z.unknown()),
+      status: z.string(),
+    }),
+  ),
   page: z.number(),
   pageSize: z.number(),
   total: z.number(),
@@ -696,15 +768,17 @@ export const GetLoansRequests200 = z.strictObject({
 export const GetLoansRequestsById200 = z.record(z.string(), z.unknown());
 
 export const GetNotifications200 = z.strictObject({
-  items: z.array(z.strictObject({
-    body: z.string().nullable(),
-    created_at: z.string(),
-    id: z.string(),
-    kind: z.string(),
-    link: z.string().nullable(),
-    read_at: z.string().nullable(),
-    title: z.string(),
-  })),
+  items: z.array(
+    z.strictObject({
+      body: z.string().nullable(),
+      created_at: z.string(),
+      id: z.string(),
+      kind: z.string(),
+      link: z.string().nullable(),
+      read_at: z.string().nullable(),
+      title: z.string(),
+    }),
+  ),
   page: z.number(),
   pageSize: z.number(),
   total: z.number(),
@@ -719,29 +793,31 @@ export const GetNotificationsUnreadCount200 = z.strictObject({
 });
 
 export const GetOvertimeClaims200 = z.strictObject({
-  items: z.array(z.strictObject({
-    approval_request_id: z.string().nullable(),
-    cancel_reason: z.unknown().optional(),
-    comp_off_days: z.string().nullable(),
-    created_at: z.string(),
-    decided_at: z.string().nullable(),
-    employee_code: z.string(),
-    employee_id: z.string(),
-    id: z.string(),
-    masked: z.boolean().optional(),
-    maskedFields: z.array(z.string()).optional(),
-    minutes: z.number(),
-    name: z.string(),
-    payout: z.string(),
-    payroll_period: z.string().nullable(),
-    payroll_run_id: z.string().nullable(),
-    payroll_status: z.string().nullable(),
-    reason: z.string().nullable(),
-    recorded_minutes: z.number(),
-    status: z.string(),
-    user_id: z.string(),
-    work_date: z.string(),
-  })),
+  items: z.array(
+    z.strictObject({
+      approval_request_id: z.string().nullable(),
+      cancel_reason: z.unknown().optional(),
+      comp_off_days: z.string().nullable(),
+      created_at: z.string(),
+      decided_at: z.string().nullable(),
+      employee_code: z.string(),
+      employee_id: z.string(),
+      id: z.string(),
+      masked: z.boolean().optional(),
+      maskedFields: z.array(z.string()).optional(),
+      minutes: z.number(),
+      name: z.string(),
+      payout: z.string(),
+      payroll_period: z.string().nullable(),
+      payroll_run_id: z.string().nullable(),
+      payroll_status: z.string().nullable(),
+      reason: z.string().nullable(),
+      recorded_minutes: z.number(),
+      status: z.string(),
+      user_id: z.string(),
+      work_date: z.string(),
+    }),
+  ),
   minutesByStatus: z.strictObject({
     approved: z.number().optional(),
     pending: z.number().optional(),
@@ -779,23 +855,27 @@ export const GetPayrollEmployeesByIdSalaries200 = z.strictObject({
   page: z.number(),
   pageSize: z.number(),
   total: z.number(),
-  items: z.array(z.strictObject({
-    amounts: z.strictObject({
-      BASIC: z.number(),
-      HRA: z.number().optional(),
-      SPECIAL: z.number().optional(),
-    }).nullable(),
-    annual_ctc: z.string().nullable(),
-    approved_at: z.string(),
-    created_at: z.string(),
-    created_by_name: z.string(),
-    effective_from: z.string(),
-    id: z.string(),
-    masked: z.boolean().optional(),
-    maskedFields: z.array(z.string()).optional(),
-    reason: z.string(),
-    status: z.string(),
-  })),
+  items: z.array(
+    z.strictObject({
+      amounts: z
+        .strictObject({
+          BASIC: z.number(),
+          HRA: z.number().optional(),
+          SPECIAL: z.number().optional(),
+        })
+        .nullable(),
+      annual_ctc: z.string().nullable(),
+      approved_at: z.string(),
+      created_at: z.string(),
+      created_by_name: z.string(),
+      effective_from: z.string(),
+      id: z.string(),
+      masked: z.boolean().optional(),
+      maskedFields: z.array(z.string()).optional(),
+      reason: z.string(),
+      status: z.string(),
+    }),
+  ),
 });
 
 export const GetPayrollEmployeesByIdStatutory200 = z.strictObject({
@@ -815,21 +895,25 @@ export const GetPayrollEmployeesByIdStatutory200 = z.strictObject({
 export const GetPayrollFnfSuggestionsByEmployeeId200 = z.strictObject({
   kind: z.string(),
   lastWorkingDay: z.string(),
-  leaveBalances: z.array(z.strictObject({
-    balance: z.string(),
-    code: z.string(),
-    name: z.string(),
-    paid: z.boolean(),
-  })),
+  leaveBalances: z.array(
+    z.strictObject({
+      balance: z.string(),
+      code: z.string(),
+      name: z.string(),
+      paid: z.boolean(),
+    }),
+  ),
   leaveYear: z.number(),
   masked: z.boolean().optional(),
   maskedFields: z.array(z.string()).optional(),
   note: z.string(),
   noticeShortfallDays: z.number(),
   period: z.string(),
-  salary: z.strictObject({
-    BASIC: z.number(),
-  }).nullable(),
+  salary: z
+    .strictObject({
+      BASIC: z.number(),
+    })
+    .nullable(),
   shortfallWaived: z.boolean(),
   today: z.string(),
 });
@@ -858,13 +942,17 @@ export const GetPayrollPayslipsById200 = z.strictObject({
   ifsc: z.string().nullable(),
   kind: z.string(),
   legal_entity: z.string(),
-  lines: z.array(z.strictObject({
-    amount: z.number(),
-    basis: z.string().optional(),
-    code: z.string(),
-    kind: z.string(),
-    name: z.string(),
-  })).nullable(),
+  lines: z
+    .array(
+      z.strictObject({
+        amount: z.number(),
+        basis: z.string().optional(),
+        code: z.string(),
+        kind: z.string(),
+        name: z.string(),
+      }),
+    )
+    .nullable(),
   lop_days: z.string(),
   masked: z.boolean().optional(),
   maskedFields: z.array(z.string()).optional(),
@@ -877,64 +965,72 @@ export const GetPayrollPayslipsById200 = z.strictObject({
 });
 
 export const GetPayrollPayslipsMine200 = z.strictObject({
-  items: z.array(z.strictObject({
-    deductions: z.string(),
-    gross: z.string(),
-    id: z.string(),
-    kind: z.string(),
-    net: z.string(),
-    period: z.string(),
-    status: z.string(),
-  })),
+  items: z.array(
+    z.strictObject({
+      deductions: z.string(),
+      gross: z.string(),
+      id: z.string(),
+      kind: z.string(),
+      net: z.string(),
+      period: z.string(),
+      status: z.string(),
+    }),
+  ),
 });
 
 export const GetPayrollRuns200 = z.strictObject({
   page: z.number(),
   pageSize: z.number(),
   total: z.number(),
-  items: z.array(z.strictObject({
-    computed_at: z.string(),
-    created_by_name: z.string(),
-    employee_name: z.unknown().optional(),
-    excluded: z.number().optional(),
-    finalized_at: z.string(),
-    id: z.string(),
-    kind: z.string(),
-    released_count: z.number(),
+  items: z.array(
+    z.strictObject({
+      computed_at: z.string(),
+      created_by_name: z.string(),
+      employee_name: z.unknown().optional(),
+      excluded: z.number().optional(),
+      finalized_at: z.string(),
+      id: z.string(),
+      kind: z.string(),
+      released_count: z.number(),
       legal_entity_name: z.string(),
-    masked: z.boolean().optional(),
-    maskedFields: z.array(z.string()).optional(),
-    paid_at: z.string().nullable(),
-    payment_reference: z.unknown().optional(),
-    period: z.string(),
-    status: z.string(),
-    totals: z.strictObject({
-      deductions: z.number(),
-      employees: z.number(),
-      employerCost: z.number(),
-      gross: z.number(),
-      held: z.number(),
-      net: z.number(),
-    }).nullable(),
-    warnings: z.number(),
-    warnings_acknowledged: z.boolean(),
-  })),
+      masked: z.boolean().optional(),
+      maskedFields: z.array(z.string()).optional(),
+      paid_at: z.string().nullable(),
+      payment_reference: z.unknown().optional(),
+      period: z.string(),
+      status: z.string(),
+      totals: z
+        .strictObject({
+          deductions: z.number(),
+          employees: z.number(),
+          employerCost: z.number(),
+          gross: z.number(),
+          held: z.number(),
+          net: z.number(),
+        })
+        .nullable(),
+      warnings: z.number(),
+      warnings_acknowledged: z.boolean(),
+    }),
+  ),
 });
 
 export const GetPayrollRunsById200 = z.strictObject({
   page: z.number(),
   pageSize: z.number(),
   total: z.number(),
-  adjustments: z.array(z.strictObject({
-    amount: z.string(),
-    created_by_name: z.string(),
-    employee_id: z.string(),
-    id: z.string(),
-    kind: z.string(),
-    label: z.string(),
-    note: z.unknown().optional(),
-    taxable: z.boolean(),
-  })),
+  adjustments: z.array(
+    z.strictObject({
+      amount: z.string(),
+      created_by_name: z.string(),
+      employee_id: z.string(),
+      id: z.string(),
+      kind: z.string(),
+      label: z.string(),
+      note: z.unknown().optional(),
+      taxable: z.boolean(),
+    }),
+  ),
   approved_at: z.string().nullable(),
   attendanceLocked: z.boolean(),
   computed_at: z.string(),
@@ -945,29 +1041,33 @@ export const GetPayrollRunsById200 = z.strictObject({
   excluded: z.number(),
   finalized_at: z.string().nullable(),
   id: z.string(),
-  items: z.array(z.strictObject({
-    deductions: z.string(),
-    employed_days: z.string(),
-    employee_code: z.string(),
-    employee_id: z.string(),
-    employee_name: z.string(),
-    employer_cost: z.string(),
-    gross: z.string(),
-    hold: z.boolean(),
+  items: z.array(
+    z.strictObject({
+      deductions: z.string(),
+      employed_days: z.string(),
+      employee_code: z.string(),
+      employee_id: z.string(),
+      employee_name: z.string(),
+      employer_cost: z.string(),
+      gross: z.string(),
+      hold: z.boolean(),
       hold_released_at: z.string().nullable().optional(),
-    id: z.string(),
-    lines: z.array(z.strictObject({
-      amount: z.number(),
-      basis: z.string().optional(),
-      code: z.string(),
-      kind: z.string(),
-      name: z.string(),
-    })),
-    lop_days: z.string(),
-    net: z.string(),
-    paid_days: z.string(),
-    warnings: z.array(z.string()),
-  })),
+      id: z.string(),
+      lines: z.array(
+        z.strictObject({
+          amount: z.number(),
+          basis: z.string().optional(),
+          code: z.string(),
+          kind: z.string(),
+          name: z.string(),
+        }),
+      ),
+      lop_days: z.string(),
+      net: z.string(),
+      paid_days: z.string(),
+      warnings: z.array(z.string()),
+    }),
+  ),
   kind: z.string(),
   legal_entity_id: z.string(),
   released_count: z.number(),
@@ -990,69 +1090,77 @@ export const GetPayrollRunsById200 = z.strictObject({
 });
 
 export const GetPolicies200 = z.strictObject({
-  items: z.array(z.strictObject({
-    acknowledged: z.number(),
-    audience: z.number(),
-    category: z.string(),
-    code: z.string(),
-    created_at: z.string(),
-    drafts: z.number(),
-    effective_from: z.string(),
-    id: z.string(),
-    owner: z.string(),
-    published_at: z.string(),
-    published_version: z.number(),
-    published_version_id: z.string(),
-    requires_ack: z.boolean(),
-    status: z.string(),
-    title: z.string(),
-  })),
+  items: z.array(
+    z.strictObject({
+      acknowledged: z.number(),
+      audience: z.number(),
+      category: z.string(),
+      code: z.string(),
+      created_at: z.string(),
+      drafts: z.number(),
+      effective_from: z.string(),
+      id: z.string(),
+      owner: z.string(),
+      published_at: z.string(),
+      published_version: z.number(),
+      published_version_id: z.string(),
+      requires_ack: z.boolean(),
+      status: z.string(),
+      title: z.string(),
+    }),
+  ),
 });
 
 export const GetPoliciesMine200 = z.strictObject({
   date: z.string(),
-  items: z.array(z.strictObject({
-    acknowledged_at: z.string().nullable(),
-    category: z.string(),
-    change_summary: z.string(),
-    code: z.string(),
-    due_on: z.string(),
-    effective_from: z.string(),
-    id: z.string(),
-    published_at: z.string(),
-    requires_ack: z.boolean(),
-    title: z.string(),
-    version_no: z.number(),
-  })),
+  items: z.array(
+    z.strictObject({
+      acknowledged_at: z.string().nullable(),
+      category: z.string(),
+      change_summary: z.string(),
+      code: z.string(),
+      due_on: z.string(),
+      effective_from: z.string(),
+      id: z.string(),
+      published_at: z.string(),
+      requires_ack: z.boolean(),
+      title: z.string(),
+      version_no: z.number(),
+    }),
+  ),
   overdue: z.number(),
   pending: z.number(),
 });
 
 export const GetReportsSnapshots200 = z.strictObject({
-  items: z.array(z.strictObject({
-    expires_at: z.string(),
-    generated_at: z.string(),
-    id: z.string(),
-    name: z.string(),
-    owner: z.string(),
-    params: z.strictObject({
-      asOf: z.string().optional(),
-      from: z.string().optional(),
-      groupBy: z.string().optional(),
-      to: z.string().optional(),
+  items: z.array(
+    z.strictObject({
+      expires_at: z.string(),
+      generated_at: z.string(),
+      id: z.string(),
+      name: z.string(),
+      owner: z.string(),
+      params: z.strictObject({
+        asOf: z.string().optional(),
+        from: z.string().optional(),
+        groupBy: z.string().optional(),
+        to: z.string().optional(),
+      }),
+      report_key: z.string(),
+      row_count: z.number(),
+      scope: z.string(),
     }),
-    report_key: z.string(),
-    row_count: z.number(),
-    scope: z.string(),
-  })),
+  ),
 });
 
 export const GetReportsSnapshotsById200 = z.strictObject({
-  columns: z.array(z.strictObject({
-    key: z.string(),
-    label: z.string(),
-    type: z.string(),
-  })),
+  columns: z.array(
+    z.strictObject({
+      key: z.string(),
+      label: z.string(),
+      type: z.string(),
+    }),
+  ),
   generatedAt: z.string(),
   id: z.string(),
   key: z.string(),
@@ -1206,10 +1314,12 @@ export const PostLeaveRequestsPreview200 = z.strictObject({
   days: z.string(),
   leaveYear: z.number(),
   paid: z.boolean(),
-  perDate: z.array(z.strictObject({
-    date: z.string(),
-    fraction: z.number(),
-  })),
+  perDate: z.array(
+    z.strictObject({
+      date: z.string(),
+      fraction: z.number(),
+    }),
+  ),
   requiresBalance: z.boolean(),
   sufficient: z.boolean(),
 });
@@ -1234,14 +1344,16 @@ export const PostPayrollRunsByIdCompute200 = z.strictObject({
   excluded: z.number().optional(),
   masked: z.boolean().optional(),
   maskedFields: z.array(z.string()).optional(),
-  totals: z.strictObject({
-    deductions: z.number(),
-    employees: z.number(),
-    employerCost: z.number(),
-    gross: z.number(),
-    held: z.number(),
-    net: z.number(),
-  }).nullable(),
+  totals: z
+    .strictObject({
+      deductions: z.number(),
+      employees: z.number(),
+      employerCost: z.number(),
+      gross: z.number(),
+      held: z.number(),
+      net: z.number(),
+    })
+    .nullable(),
   warnings: z.number(),
 });
 

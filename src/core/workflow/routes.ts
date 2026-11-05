@@ -13,7 +13,7 @@ const ActBody = z.object({ action: z.enum(['approve', 'reject', 'return']), comm
 export async function approvalRoutes(app: FastifyInstance) {
   await delegationRoutes(app);
 
-  app.get('/inbox', { schema: { querystring: LongListQuery, response: { 200: R.GetApprovalsInbox200 },} }, async (req) => {
+  app.get('/inbox', { schema: { querystring: LongListQuery, response: { 200: R.GetApprovalsInbox200 } } }, async (req) => {
     const a = tenantActor(req);
     const q = LongListQuery.parse(req.query);
     return a.tx(async (db) => {
@@ -22,11 +22,18 @@ export async function approvalRoutes(app: FastifyInstance) {
     });
   });
 
-  app.get('/mine', { schema: { querystring: ListQuery, response: { 200: R.GetApprovalsMine200 },} }, async (req) => {
+  app.get('/mine', { schema: { querystring: ListQuery, response: { 200: R.GetApprovalsMine200 } } }, async (req) => {
     const a = tenantActor(req);
     const q = ListQuery.parse(req.query);
-    return a.tx((db) => pageOf(db, `SELECT id, entity_type, entity_id, summary, status, created_at, decided_at
-      FROM approval_requests WHERE tenant_id=$1 AND requester_id=$2 AND NOT (entity_type = ANY($3)) ORDER BY created_at DESC`, [a.tenantId, a.user.userId, offEntityTypes()], q));
+    return a.tx((db) =>
+      pageOf(
+        db,
+        `SELECT id, entity_type, entity_id, summary, status, created_at, decided_at
+      FROM approval_requests WHERE tenant_id=$1 AND requester_id=$2 AND NOT (entity_type = ANY($3)) ORDER BY created_at DESC`,
+        [a.tenantId, a.user.userId, offEntityTypes()],
+        q,
+      ),
+    );
   });
 
   /** For whoever can sort it out: reassigning a request nobody can decide is theirs already (POST /:id/reassign). */
@@ -40,14 +47,25 @@ export async function approvalRoutes(app: FastifyInstance) {
     const a = tenantActor(req);
     const { id } = IdParams.parse(req.params);
     return a.tx(async (db) => {
-      const r = await db.query<{ requester_id: string }>(`SELECT id, entity_type, entity_id, summary, status, requester_id, created_at, decided_at
-        FROM approval_requests WHERE tenant_id=$1 AND id=$2 AND NOT (entity_type = ANY($3))`, [a.tenantId, id, offEntityTypes()]);
+      const r = await db.query<{ requester_id: string }>(
+        `SELECT id, entity_type, entity_id, summary, status, requester_id, created_at, decided_at
+        FROM approval_requests WHERE tenant_id=$1 AND id=$2 AND NOT (entity_type = ANY($3))`,
+        [a.tenantId, id, offEntityTypes()],
+      );
       const rq = r.rows[0];
       if (!rq) throw notFound();
       const steps = await requestHistory(db, a.tenantId, id);
       const { items: mine } = await inbox(db, a.tenantId, { userId: a.user.userId, permissions: a.user.permissions });
-      const involved = rq.requester_id === a.user.userId || mine.some((m) => m.id === id) ||
-        (await db.query('SELECT 1 FROM approval_steps WHERE tenant_id=$1 AND request_id=$2 AND (approver_user_id=$3 OR acted_by=$3 OR acted_for=$3 OR escalated_to=$3)', [a.tenantId, id, a.user.userId])).rowCount;
+      const involved =
+        rq.requester_id === a.user.userId ||
+        mine.some((m) => m.id === id) ||
+        (
+          await db.query('SELECT 1 FROM approval_steps WHERE tenant_id=$1 AND request_id=$2 AND (approver_user_id=$3 OR acted_by=$3 OR acted_for=$3 OR escalated_to=$3)', [
+            a.tenantId,
+            id,
+            a.user.userId,
+          ])
+        ).rowCount;
       if (!involved) throw forbidden();
       return { ...rq, steps };
     });
@@ -67,8 +85,9 @@ export async function approvalRoutes(app: FastifyInstance) {
     const a = tenantActor(req);
     const { id } = IdParams.parse(req.params);
     const body = ActBody.parse(req.body);
-    return a.tx((db) => actOnRequest(db, a.tenantId, id, { userId: a.user.userId, permissions: a.user.permissions }, body.action, body.comment,
-      { requestId: req.id, ip: req.ctx.ip }));
+    return a.tx((db) =>
+      actOnRequest(db, a.tenantId, id, { userId: a.user.userId, permissions: a.user.permissions }, body.action, body.comment, { requestId: req.id, ip: req.ctx.ip }),
+    );
   });
 
   app.post('/:id/cancel', { schema: { params: IdParams } }, async (req) => {

@@ -14,7 +14,10 @@ import { TEST_APP_URL, TEST_BRAND, TEST_OWNER_URL } from './env.js';
 
 /** The body of an error answer, checked to be RFC 7807 on the way. `.detail` is the message and `.errors` the field list. */
 // eslint-disable-next-line @typescript-eslint/no-explicit-any -- extension members vary per code; tests read what they expect.
-export function problem(res: Pick<LightMyRequestResponse, 'json' | 'statusCode' | 'headers'>): Record<string, any> & { type: string; title: string; status: number; detail: string; instance: string; code: string; errors: { path: string; message: string }[] } {
+type ProblemExtensions = Record<string, any>;
+export function problem(
+  res: Pick<LightMyRequestResponse, 'json' | 'statusCode' | 'headers'>,
+): ProblemExtensions & { type: string; title: string; status: number; detail: string; instance: string; code: string; errors: { path: string; message: string }[] } {
   if (res.statusCode < 400) throw new Error(`expected an error answer, got ${res.statusCode}`);
   if (!String(res.headers['content-type']).startsWith('application/problem+json')) throw new Error(`not a problem document: ${String(res.headers['content-type'])}`);
   const b = res.json();
@@ -32,22 +35,47 @@ let pwHash: string | null = null;
  * comma-separated; 'default' stands for the registry's defaults.
  */
 export function flags(spec: string): Record<string, string> {
-  const tokens = spec.split(',').map((t) => t.trim()).filter(Boolean);
+  const tokens = spec
+    .split(',')
+    .map((t) => t.trim())
+    .filter(Boolean);
   const on = (d: FeatureDefinition) => tokens.includes(d.key) || (tokens.includes('default') && d.defaultEnabled);
   for (const t of tokens) if (t !== 'default' && !FEATURE_MAP.has(t)) throw new Error(`unknown feature ${t}`);
   return Object.fromEntries(FEATURES.filter((d) => d.envName).map((d) => [d.envName!, String(on(d))]));
 }
 
-export async function makeApp(overrides: Record<string, string> = {}, opts: { mailerOverride?: boolean; storeOverride?: boolean; pushOverride?: boolean; brandDirOverride?: string; logStream?: { write(line: string): unknown } } = {}): Promise<FastifyInstance> {
+export async function makeApp(
+  overrides: Record<string, string> = {},
+  opts: { mailerOverride?: boolean; storeOverride?: boolean; pushOverride?: boolean; brandDirOverride?: string; logStream?: { write(line: string): unknown } } = {},
+): Promise<FastifyInstance> {
   const env = loadEnv({
-    NODE_ENV: 'test', DATABASE_URL: TEST_APP_URL, COOKIE_SECURE: 'false', ...TEST_BRAND,
+    NODE_ENV: 'test',
+    DATABASE_URL: TEST_APP_URL,
+    COOKIE_SECURE: 'false',
+    ...TEST_BRAND,
     ...flags('default,attendance.mobile,attendance.biometric'),
-    DATA_ENCRYPTION_KEY: Buffer.alloc(32, 7).toString('base64'), SESSION_TTL_HOURS: '24', AUTH_RATE_LIMIT_PER_MINUTE: '10000', AUTH_ACCOUNT_RATE_LIMIT_PER_MINUTE: '10000', EXPORT_RATE_LIMIT_PER_MINUTE: '10000',
+    DATA_ENCRYPTION_KEY: Buffer.alloc(32, 7).toString('base64'),
+    SESSION_TTL_HOURS: '24',
+    AUTH_RATE_LIMIT_PER_MINUTE: '10000',
+    AUTH_ACCOUNT_RATE_LIMIT_PER_MINUTE: '10000',
+    EXPORT_RATE_LIMIT_PER_MINUTE: '10000',
     ...overrides,
   });
   const pool = createPool(env.DATABASE_URL, 5);
-  const app = await buildApp({ env, pool, cipher: new FieldCipher(env.DATA_ENCRYPTION_KEY!), mailerOverride: opts.mailerOverride, storeOverride: opts.storeOverride, pushOverride: opts.pushOverride, brandDirOverride: opts.brandDirOverride, logStream: opts.logStream, verifyResponses: true });
-  app.addHook('onClose', async () => { await pool.end(); });
+  const app = await buildApp({
+    env,
+    pool,
+    cipher: new FieldCipher(env.DATA_ENCRYPTION_KEY!),
+    mailerOverride: opts.mailerOverride,
+    storeOverride: opts.storeOverride,
+    pushOverride: opts.pushOverride,
+    brandDirOverride: opts.brandDirOverride,
+    logStream: opts.logStream,
+    verifyResponses: true,
+  });
+  app.addHook('onClose', async () => {
+    await pool.end();
+  });
   return app;
 }
 
@@ -70,11 +98,19 @@ export async function ownerQuery<T extends pg.QueryResultRow = Record<string, un
     const r = await c.query<T>(sql, params);
     await c.query('COMMIT');
     return r.rows;
-  } finally { await c.end(); }
+  } finally {
+    await c.end();
+  }
 }
 
 export interface TenantFixture {
-  id: string; host: string; legalEntityId: string; branchId: string; deptId: string; shiftId: string; nightShiftId: string;
+  id: string;
+  host: string;
+  legalEntityId: string;
+  branchId: string;
+  deptId: string;
+  shiftId: string;
+  nightShiftId: string;
   users: Record<string, { id: string; email: string; employeeId?: string }>;
 }
 
@@ -90,22 +126,37 @@ export async function createTenant(): Promise<TenantFixture> {
   const [t] = await ownerQuery<{ id: string }>(`INSERT INTO tenants (slug, name) VALUES ($1,$2) RETURNING id`, [slug, `Tenant ${slug}`]);
   const id = t!.id;
   await ownerQuery(`INSERT INTO tenant_branding (tenant_id, display_name) VALUES ($1,$2)`, [id, `Tenant ${slug}`]);
-  await ownerQuery(`INSERT INTO tenant_domains (tenant_id, hostname, verification_token, verification_status, verified_at, activation_status)
-    VALUES ($1,$2,'x','verified',now(),'active')`, [id, host]);
+  await ownerQuery(
+    `INSERT INTO tenant_domains (tenant_id, hostname, verification_token, verification_status, verified_at, activation_status)
+    VALUES ($1,$2,'x','verified',now(),'active')`,
+    [id, host],
+  );
   const [le] = await ownerQuery<{ id: string }>(`INSERT INTO legal_entities (tenant_id, name) VALUES ($1,'LE') RETURNING id`, [id]);
-  const [br] = await ownerQuery<{ id: string }>(`INSERT INTO branches (tenant_id, legal_entity_id, code, name, state) VALUES ($1,$2,'HQ','HQ','Maharashtra') RETURNING id`, [id, le!.id]);
+  const [br] = await ownerQuery<{ id: string }>(`INSERT INTO branches (tenant_id, legal_entity_id, code, name, state) VALUES ($1,$2,'HQ','HQ','Maharashtra') RETURNING id`, [
+    id,
+    le!.id,
+  ]);
   const [dp] = await ownerQuery<{ id: string }>(`INSERT INTO departments (tenant_id, code, name) VALUES ($1,'LAB','Lab') RETURNING id`, [id]);
-  const [sh] = await ownerQuery<{ id: string }>(`INSERT INTO shifts (tenant_id, code, name, start_time, end_time, break_minutes, grace_minutes, early_exit_grace_minutes,
-    half_day_min_minutes, full_day_min_minutes, overtime_after_minutes) VALUES ($1,'GEN','General','09:30','18:00',30,10,10,240,450,540) RETURNING id`, [id]);
-  const [ns] = await ownerQuery<{ id: string }>(`INSERT INTO shifts (tenant_id, code, name, start_time, end_time, break_minutes, grace_minutes, early_exit_grace_minutes,
-    half_day_min_minutes, full_day_min_minutes, overtime_after_minutes) VALUES ($1,'NIGHT','Night','22:00','06:00',30,10,10,240,420,480) RETURNING id`, [id]);
+  const [sh] = await ownerQuery<{ id: string }>(
+    `INSERT INTO shifts (tenant_id, code, name, start_time, end_time, break_minutes, grace_minutes, early_exit_grace_minutes,
+    half_day_min_minutes, full_day_min_minutes, overtime_after_minutes) VALUES ($1,'GEN','General','09:30','18:00',30,10,10,240,450,540) RETURNING id`,
+    [id],
+  );
+  const [ns] = await ownerQuery<{ id: string }>(
+    `INSERT INTO shifts (tenant_id, code, name, start_time, end_time, break_minutes, grace_minutes, early_exit_grace_minutes,
+    half_day_min_minutes, full_day_min_minutes, overtime_after_minutes) VALUES ($1,'NIGHT','Night','22:00','06:00',30,10,10,240,420,480) RETURNING id`,
+    [id],
+  );
 
   const fx: TenantFixture = { id, host, legalEntityId: le!.id, branchId: br!.id, deptId: dp!.id, shiftId: sh!.id, nightShiftId: ns!.id, users: {} };
   let n = 0;
   const mkEmp = async (managerId: string | null) => {
     n++;
-    const [e] = await ownerQuery<{ id: string }>(`INSERT INTO employees (tenant_id, employee_code, first_name, last_name, legal_entity_id, branch_id, department_id,
-      reporting_manager_id, date_of_joining) VALUES ($1,$2,'Emp',$3,$4,$5,$6,$7,'2024-01-01') RETURNING id`, [id, `E${n}`, `N${n}`, le!.id, br!.id, dp!.id, managerId]);
+    const [e] = await ownerQuery<{ id: string }>(
+      `INSERT INTO employees (tenant_id, employee_code, first_name, last_name, legal_entity_id, branch_id, department_id,
+      reporting_manager_id, date_of_joining) VALUES ($1,$2,'Emp',$3,$4,$5,$6,$7,'2024-01-01') RETURNING id`,
+      [id, `E${n}`, `N${n}`, le!.id, br!.id, dp!.id, managerId],
+    );
     await ownerQuery(`INSERT INTO shift_assignments (tenant_id, employee_id, shift_id, effective_from) VALUES ($1,$2,$3,'2024-01-01')`, [id, e!.id, sh!.id]);
     return e!.id;
   };
@@ -132,10 +183,16 @@ export async function createTenant(): Promise<TenantFixture> {
 
 /** Authenticated client bound to one host. Sends cookie + CSRF automatically. */
 export class Client {
-  cookie = ''; csrf = ''; passwordChangeRequired = false; device = '';
+  cookie = '';
+  csrf = '';
+  passwordChangeRequired = false;
+  device = '';
   /** A person keeps their browser: each sign-in of one account in a test comes from the same one, unless the test says otherwise. */
   private static devices = new Map<string, string>();
-  constructor(private app: FastifyInstance, public host: string) {}
+  constructor(
+    private app: FastifyInstance,
+    public host: string,
+  ) {}
   static async login(app: FastifyInstance, host: string, email: string, password = PASSWORD) {
     const c = new Client(app, host);
     const key = `${host}|${email.toLowerCase()}`;
@@ -146,14 +203,26 @@ export class Client {
     return c;
   }
   async req(method: 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE', url: string, payload?: unknown, headers: Record<string, string> = {}): Promise<LightMyRequestResponse> {
-    const r = await this.app.inject({ method, url, payload: payload as never, headers: {
-      host: this.host, ...(this.cookie || this.device ? { cookie: [this.cookie, this.device].filter(Boolean).join('; ') } : {}), ...(this.csrf ? { 'x-csrf-token': this.csrf } : {}), ...headers } });
+    const r = await this.app.inject({
+      method,
+      url,
+      payload: payload as never,
+      headers: {
+        host: this.host,
+        ...(this.cookie || this.device ? { cookie: [this.cookie, this.device].filter(Boolean).join('; ') } : {}),
+        ...(this.csrf ? { 'x-csrf-token': this.csrf } : {}),
+        ...headers,
+      },
+    });
     const set = r.headers['set-cookie'];
     for (const sc of [set ?? []].flat()) {
       if (sc.startsWith('hrms_sid=')) this.cookie = sc.split(';')[0]!;
       if (sc.startsWith('hrms_did=')) this.device = sc.split(';')[0]!;
     }
-    if (url === '/api/v1/auth/login' && r.statusCode === 200) { this.csrf = r.json().csrfToken; this.passwordChangeRequired = r.json().passwordChangeRequired; }
+    if (url === '/api/v1/auth/login' && r.statusCode === 200) {
+      this.csrf = r.json().csrfToken;
+      this.passwordChangeRequired = r.json().passwordChangeRequired;
+    }
     // A rotated token comes with its new CSRF token.
     else if (set && r.statusCode < 300 && String(r.headers['content-type']).includes('json') && r.json().csrfToken) this.csrf = r.json().csrfToken;
     return r;
@@ -182,7 +251,9 @@ export function multipart(fields: Record<string, string>, file?: { name: string;
   const parts: Buffer[] = [];
   for (const [k, v] of Object.entries(fields)) parts.push(Buffer.from(`--${boundary}\r\nContent-Disposition: form-data; name="${k}"\r\n\r\n${v}\r\n`));
   if (file) {
-    parts.push(Buffer.from(`--${boundary}\r\nContent-Disposition: form-data; name="file"; filename="${file.name}"\r\nContent-Type: ${file.type ?? 'application/octet-stream'}\r\n\r\n`));
+    parts.push(
+      Buffer.from(`--${boundary}\r\nContent-Disposition: form-data; name="file"; filename="${file.name}"\r\nContent-Type: ${file.type ?? 'application/octet-stream'}\r\n\r\n`),
+    );
     parts.push(file.content, Buffer.from('\r\n'));
   }
   parts.push(Buffer.from(`--${boundary}--\r\n`));
@@ -193,11 +264,17 @@ export function multipart(fields: Record<string, string>, file?: { name: string;
 export function readXlsx(buf: Buffer): Record<string, string> {
   const eocd = buf.lastIndexOf(Buffer.from([0x50, 0x4b, 0x05, 0x06]));
   if (eocd < 0) throw new Error('not a zip file');
-  const count = buf.readUInt16LE(eocd + 10); let p = buf.readUInt32LE(eocd + 16);
+  const count = buf.readUInt16LE(eocd + 10);
+  let p = buf.readUInt32LE(eocd + 16);
   const out: Record<string, string> = {};
   for (let i = 0; i < count; i++) {
-    const method = buf.readUInt16LE(p + 10), size = buf.readUInt32LE(p + 20), nameLen = buf.readUInt16LE(p + 28), extra = buf.readUInt16LE(p + 30), comment = buf.readUInt16LE(p + 32);
-    const local = buf.readUInt32LE(p + 42); const name = buf.toString('utf8', p + 46, p + 46 + nameLen);
+    const method = buf.readUInt16LE(p + 10),
+      size = buf.readUInt32LE(p + 20),
+      nameLen = buf.readUInt16LE(p + 28),
+      extra = buf.readUInt16LE(p + 30),
+      comment = buf.readUInt16LE(p + 32);
+    const local = buf.readUInt32LE(p + 42);
+    const name = buf.toString('utf8', p + 46, p + 46 + nameLen);
     const start = local + 30 + buf.readUInt16LE(local + 26) + buf.readUInt16LE(local + 28);
     const data = buf.subarray(start, start + size);
     out[name] = (method === 8 ? inflateRawSync(data) : data).toString('utf8');

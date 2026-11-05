@@ -10,11 +10,21 @@ const FLAGS = flags('default,overtime,comp_off,expenses,payroll,payroll.payslips
 const LEAVE = (d: string) => ({ leaveTypeId: '', startDate: d, endDate: d, reason: 'Family function' });
 
 async function leaveType(T: TenantFixture) {
-  const [t] = await ownerQuery<{ id: string }>(`INSERT INTO leave_types (tenant_id, code, name, paid, requires_balance, accrual_method) VALUES ($1,'LWP','Without pay',false,false,'none') RETURNING id`, [T.id]);
+  const [t] = await ownerQuery<{ id: string }>(
+    `INSERT INTO leave_types (tenant_id, code, name, paid, requires_balance, accrual_method) VALUES ($1,'LWP','Without pay',false,false,'none') RETURNING id`,
+    [T.id],
+  );
   return t!.id;
 }
-const nextWeekday = (n: number) => { const d = new Date(Date.UTC(2031, 0, 6 + n)); return d.toISOString().slice(0, 10); };
-const stepsOf = (requestId: string) => ownerQuery<{ approver_kind: string; approver_user_id: string | null; approver_permission: string | null; step_index: number }>(`SELECT approver_kind, approver_user_id, approver_permission, step_index FROM approval_steps WHERE request_id=$1 ORDER BY step_index`, [requestId]);
+const nextWeekday = (n: number) => {
+  const d = new Date(Date.UTC(2031, 0, 6 + n));
+  return d.toISOString().slice(0, 10);
+};
+const stepsOf = (requestId: string) =>
+  ownerQuery<{ approver_kind: string; approver_user_id: string | null; approver_permission: string | null; step_index: number }>(
+    `SELECT approver_kind, approver_user_id, approver_permission, step_index FROM approval_steps WHERE request_id=$1 ORDER BY step_index`,
+    [requestId],
+  );
 
 describe('roles', () => {
   it('the thirteen existing roles keep their keys and go by the six names; owner resolves to Super-admin in multi', () => {
@@ -39,7 +49,11 @@ describe('roles', () => {
 });
 
 describe('single', () => {
-  let app: FastifyInstance; let T: TenantFixture; let owner: Client; let emp: Client; let type: string;
+  let app: FastifyInstance;
+  let T: TenantFixture;
+  let owner: Client;
+  let emp: Client;
+  let type: string;
   beforeAll(async () => {
     app = await makeApp({ ...FLAGS, ORG_MANAGEMENT_MODE: 'single' });
     T = await createTenant();
@@ -50,7 +64,9 @@ describe('single', () => {
     emp = await Client.login(app, T.host, T.users.employee!.email);
     type = await leaveType(T);
   });
-  afterAll(async () => { await app.close(); });
+  afterAll(async () => {
+    await app.close();
+  });
 
   it('the owner has everything and role management does not exist', async () => {
     const me = (await owner.get('/api/v1/auth/me')).json();
@@ -58,7 +74,12 @@ describe('single', () => {
     expect(me.permissions).toContain('payroll.manage');
     expect(me.permissions).toContain('employees.manage');
     expect(me.views.map((v: { key: string }) => v.key)).toEqual(expect.arrayContaining(['employee', 'hr', 'payroll', 'admin', 'owner']));
-    for (const [m, url] of [['GET', '/roles'], ['POST', '/roles'], ['PATCH', '/roles/custom:x'], ['DELETE', '/roles/custom:x']] as const) {
+    for (const [m, url] of [
+      ['GET', '/roles'],
+      ['POST', '/roles'],
+      ['PATCH', '/roles/custom:x'],
+      ['DELETE', '/roles/custom:x'],
+    ] as const) {
       expect((await owner.req(m, `/api/v1/tenant${url}`, m === 'GET' || m === 'DELETE' ? undefined : { name: 'XX', permissions: ['org.read'] })).statusCode, url).toBe(404);
     }
     expect((await emp.get('/api/v1/auth/me')).json().views.map((v: { key: string }) => v.key)).toEqual(['employee']);
@@ -90,7 +111,12 @@ describe('single', () => {
 });
 
 describe('single_hr', () => {
-  let app: FastifyInstance; let T: TenantFixture; let owner: Client; let hr: Client; let emp: Client; let type: string;
+  let app: FastifyInstance;
+  let T: TenantFixture;
+  let owner: Client;
+  let hr: Client;
+  let emp: Client;
+  let type: string;
   beforeAll(async () => {
     app = await makeApp({ ...FLAGS, ORG_MANAGEMENT_MODE: 'single_hr' });
     T = await createTenant();
@@ -100,7 +126,9 @@ describe('single_hr', () => {
     emp = await Client.login(app, T.host, T.users.employee!.email);
     type = await leaveType(T);
   });
-  afterAll(async () => { await app.close(); });
+  afterAll(async () => {
+    await app.close();
+  });
 
   it('role screens are gone; HR handles people and has no pay or settings', async () => {
     expect((await owner.get('/api/v1/tenant/roles')).statusCode).toBe(404);
@@ -132,7 +160,12 @@ describe('single_hr', () => {
     const c = await emp.post('/api/v1/expenses/claims', { title: 'Taxi fare', purpose: 'Client visit' });
     expect(c.statusCode, c.body).toBe(201);
     const claim = c.json().id;
-    const item = await emp.post(`/api/v1/expenses/claims/${claim}/items`, { categoryId: cat!.id, expenseDate: new Date().toISOString().slice(0, 10), amount: 100, description: 'Taxi' });
+    const item = await emp.post(`/api/v1/expenses/claims/${claim}/items`, {
+      categoryId: cat!.id,
+      expenseDate: new Date().toISOString().slice(0, 10),
+      amount: 100,
+      description: 'Taxi',
+    });
     expect(item.statusCode, item.body).toBe(201);
     const s = await emp.post(`/api/v1/expenses/claims/${claim}/submit`);
     expect(s.statusCode, s.body).toBe(200);
@@ -146,7 +179,12 @@ describe('single_hr', () => {
     const id = r.json().approvalRequestId as string;
     // Delegation: the other employee covers for HR today.
     const today = new Date().toISOString().slice(0, 10);
-    await ownerQuery(`INSERT INTO approval_delegations (tenant_id, delegator_id, delegate_id, starts_on, ends_on, created_by) VALUES ($1,$2,$3,$4::date - 1,$4::date + 2,$2)`, [T.id, T.users.hr!.id, T.users.other!.id, today]);
+    await ownerQuery(`INSERT INTO approval_delegations (tenant_id, delegator_id, delegate_id, starts_on, ends_on, created_by) VALUES ($1,$2,$3,$4::date - 1,$4::date + 2,$2)`, [
+      T.id,
+      T.users.hr!.id,
+      T.users.other!.id,
+      today,
+    ]);
     const other = await Client.login(app, T.host, T.users.other!.email);
     const inbox = (await other.get('/api/v1/approvals/inbox')).json().items;
     expect(inbox.map((x: { id: string }) => x.id)).toContain(id);

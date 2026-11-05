@@ -15,7 +15,10 @@ const PNG = TINY_PNG;
 const root = mkdtempSync(path.join(tmpdir(), 'hrms-docs-'));
 const today = localDate(new Date(), 'Asia/Kolkata');
 
-let app: FastifyInstance; let T: TenantFixture; let hr: Client; let emp: Client;
+let app: FastifyInstance;
+let T: TenantFixture;
+let hr: Client;
+let emp: Client;
 const cats: Record<string, string> = {};
 const upload = (c: Client, fields: Record<string, string>, file?: { name: string; content: Buffer }) => {
   const m = multipart(fields, file);
@@ -40,7 +43,11 @@ beforeAll(async () => {
     cats[code] = r.json().id;
   }
 });
-afterAll(async () => { await app.close(); setStore(null); await makeApp().then((x) => x.close()); });
+afterAll(async () => {
+  await app.close();
+  setStore(null);
+  await makeApp().then((x) => x.close());
+});
 
 describe('file safety (unit)', () => {
   it('detects types by content, not by name', () => {
@@ -61,10 +68,17 @@ describe('file safety (unit)', () => {
 describe('upload, list and download', () => {
   let contractId = '';
   it('HR uploads an employee document; it is stored under an application-generated key', async () => {
-    const r = await upload(hr, { categoryId: cats.CONTRACT!, title: 'Appointment letter', employeeId: T.users.employee!.employeeId! }, { name: 'Appointment Letter (signed).pdf', content: PDF });
+    const r = await upload(
+      hr,
+      { categoryId: cats.CONTRACT!, title: 'Appointment letter', employeeId: T.users.employee!.employeeId! },
+      { name: 'Appointment Letter (signed).pdf', content: PDF },
+    );
     expect(r.statusCode, r.body).toBe(201);
     contractId = r.json().id;
-    const [d] = await ownerQuery<{ storage_key: string; file_name: string; sha256: string; size_bytes: number }>(`SELECT storage_key, file_name, sha256, size_bytes FROM documents WHERE id=$1`, [contractId]);
+    const [d] = await ownerQuery<{ storage_key: string; file_name: string; sha256: string; size_bytes: number }>(
+      `SELECT storage_key, file_name, sha256, size_bytes FROM documents WHERE id=$1`,
+      [contractId],
+    );
     expect(d!.storage_key).toMatch(new RegExp(`^${T.id}/employees/${T.users.employee!.employeeId}/[0-9a-f-]{36}$`));
     expect(d!.file_name).toBe('Appointment Letter signed.pdf');
     expect(readFileSync(path.join(root, d!.storage_key)).equals(PDF)).toBe(true);
@@ -109,28 +123,41 @@ describe('upload, list and download', () => {
   });
 
   it('only users cleared for restricted documents can change a restricted category', async () => {
-    const [u] = await ownerQuery<{ id: string }>(`INSERT INTO users (tenant_id, email, display_name, password_hash) SELECT tenant_id, $2, 'HR Exec', password_hash FROM users WHERE id=$1 RETURNING id`,
-      [T.users.hr!.id, `hrexec@${T.host}`]);
+    const [u] = await ownerQuery<{ id: string }>(
+      `INSERT INTO users (tenant_id, email, display_name, password_hash) SELECT tenant_id, $2, 'HR Exec', password_hash FROM users WHERE id=$1 RETURNING id`,
+      [T.users.hr!.id, `hrexec@${T.host}`],
+    );
     await ownerQuery(`INSERT INTO user_roles (user_id, tenant_id, role_key) VALUES ($1,$2,'hr_executive')`, [u!.id, T.id]);
     const exec = await Client.login(app, T.host, `hrexec@${T.host}`);
     const body = { code: 'MEDICAL', name: 'Medical certificate', employeeUpload: true };
     expect((await exec.put(`/api/v1/documents/categories/${cats.MEDICAL}`, { ...body, restricted: false })).statusCode).toBe(403);
     expect((await exec.post('/api/v1/documents/categories', { code: 'IDPROOF', name: 'Identity proof', restricted: false })).statusCode).toBe(201);
-    expect((await exec.put(`/api/v1/documents/categories/${(await exec.get('/api/v1/documents/categories')).json().items.find((c: { code: string }) => c.code === 'IDPROOF').id}`,
-      { code: 'IDPROOF', name: 'Identity proof', restricted: true })).statusCode).toBe(403);
+    expect(
+      (
+        await exec.put(`/api/v1/documents/categories/${(await exec.get('/api/v1/documents/categories')).json().items.find((c: { code: string }) => c.code === 'IDPROOF').id}`, {
+          code: 'IDPROOF',
+          name: 'Identity proof',
+          restricted: true,
+        })
+      ).statusCode,
+    ).toBe(403);
     expect((await hr.put(`/api/v1/documents/categories/${cats.MEDICAL}`, { ...body, restricted: true })).statusCode).toBe(200);
   });
 
   it('employees can only upload to permitted categories, for themselves', async () => {
-    expect((await upload(emp, { categoryId: cats.CONTRACT!, title: 'Fake contract', employeeId: T.users.employee!.employeeId! }, { name: 'c.pdf', content: PDF })).statusCode).toBe(403);
-    expect((await upload(emp, { categoryId: cats.MEDICAL!, title: 'For colleague', employeeId: T.users.other!.employeeId! }, { name: 'c.pdf', content: PDF })).statusCode).toBe(403);
+    expect((await upload(emp, { categoryId: cats.CONTRACT!, title: 'Fake contract', employeeId: T.users.employee!.employeeId! }, { name: 'c.pdf', content: PDF })).statusCode).toBe(
+      403,
+    );
+    expect((await upload(emp, { categoryId: cats.MEDICAL!, title: 'For colleague', employeeId: T.users.other!.employeeId! }, { name: 'c.pdf', content: PDF })).statusCode).toBe(
+      403,
+    );
     expect((await emp.post('/api/v1/documents/categories', { code: 'HACK', name: 'Hack' })).statusCode).toBe(403);
   });
 
   it('validates type, size, expiry and scope', async () => {
     const id = T.users.employee!.employeeId!;
     expect((await upload(hr, { categoryId: cats.CONTRACT!, title: 'Exe', employeeId: id }, { name: 'x.pdf', content: Buffer.from('MZ fake exe') })).statusCode).toBe(415);
-    expect(problem((await upload(hr, { categoryId: cats.CERT!, title: 'No expiry', employeeId: id }, { name: 'c.pdf', content: PDF }))).detail).toMatch(/expiry date/);
+    expect(problem(await upload(hr, { categoryId: cats.CERT!, title: 'No expiry', employeeId: id }, { name: 'c.pdf', content: PDF })).detail).toMatch(/expiry date/);
     expect((await upload(hr, { categoryId: cats.POLICY!, title: 'Linked', employeeId: id }, { name: 'p.pdf', content: PDF })).statusCode).toBe(400);
     expect((await upload(hr, { categoryId: cats.CONTRACT!, title: 'No file', employeeId: id })).statusCode).toBe(400);
     const small = await makeApp({ STORAGE_MAX_FILE_MB: '1' }, { storeOverride: true });
@@ -168,7 +195,11 @@ describe('upload, list and download', () => {
 
 describe('expiry reminders', () => {
   it('notifies the employee and document managers 7 days before expiry, once', async () => {
-    const r = await upload(emp, { categoryId: cats.CERT!, title: 'ISO 17025 internal auditor', employeeId: T.users.employee!.employeeId!, expiresOn: addDays(today, 7) }, { name: 'cert.pdf', content: PDF });
+    const r = await upload(
+      emp,
+      { categoryId: cats.CERT!, title: 'ISO 17025 internal auditor', employeeId: T.users.employee!.employeeId!, expiresOn: addDays(today, 7) },
+      { name: 'cert.pdf', content: PDF },
+    );
     expect(r.statusCode, r.body).toBe(201);
     const quiet = { info: () => undefined, error: () => undefined };
     await tick(app.deps.pool, quiet, new Date(`${today}T23:00:00+05:30`));

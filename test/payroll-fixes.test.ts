@@ -6,7 +6,10 @@ import { calculateDay, type DayInput } from '../src/modules/attendance/calc.js';
 import { csvCell } from '../src/core/http/csv.js';
 
 const MODULES = 'default,payroll,payroll.payslips,payroll.statutory';
-let app: FastifyInstance; let T: TenantFixture; let pay: Client; let emp: string;
+let app: FastifyInstance;
+let T: TenantFixture;
+let pay: Client;
+let emp: string;
 
 beforeAll(async () => {
   app = await makeApp({ ...flags(MODULES) });
@@ -15,13 +18,21 @@ beforeAll(async () => {
   emp = T.users.employee!.employeeId!;
   await seedComponents(T);
   await activeSalary(T, emp, '2020-01-01', { BASIC: 30000 });
-  await ownerQuery(`INSERT INTO leave_types (tenant_id, code, name, paid, requires_balance, accrual_method) VALUES ($1,'CL','Casual',true,true,'annual'),($1,'LWP','Without pay',false,false,'none')`, [T.id]);
+  await ownerQuery(
+    `INSERT INTO leave_types (tenant_id, code, name, paid, requires_balance, accrual_method) VALUES ($1,'CL','Casual',true,true,'annual'),($1,'LWP','Without pay',false,false,'none')`,
+    [T.id],
+  );
 });
-afterAll(async () => { await app.close(); });
+afterAll(async () => {
+  await app.close();
+});
 
 async function finance(W: TenantFixture) {
   const email = `fin@${W.host}`;
-  const [u] = await ownerQuery<{ id: string }>(`INSERT INTO users (tenant_id, email, display_name, password_hash) SELECT tenant_id, $2, 'fin', password_hash FROM users WHERE id=$1 RETURNING id`, [W.users.payroll!.id, email]);
+  const [u] = await ownerQuery<{ id: string }>(
+    `INSERT INTO users (tenant_id, email, display_name, password_hash) SELECT tenant_id, $2, 'fin', password_hash FROM users WHERE id=$1 RETURNING id`,
+    [W.users.payroll!.id, email],
+  );
   await ownerQuery(`INSERT INTO user_roles (user_id, tenant_id, role_key) VALUES ($1,$2,'finance_manager')`, [u!.id, W.id]);
   return Client.login(app, W.host, email);
 }
@@ -34,13 +45,29 @@ async function toApproved(p: Client, f: Client, runId: string) {
 }
 
 describe('F-1 half-day leave and loss of pay', () => {
-  const dayInput = (o: Partial<DayInput>): DayInput => ({ workDate: '2026-01-05', timezone: 'Asia/Kolkata', shift: null, dayType: 'working', employment: { joiningDate: '2020-01-01', exitDate: null },
-    punches: [], minGapSeconds: 60, overtimeEnabled: false, ...o });
+  const dayInput = (o: Partial<DayInput>): DayInput => ({
+    workDate: '2026-01-05',
+    timezone: 'Asia/Kolkata',
+    shift: null,
+    dayType: 'working',
+    employment: { joiningDate: '2020-01-01', exitDate: null },
+    punches: [],
+    minGapSeconds: 60,
+    overtimeEnabled: false,
+    ...o,
+  });
 
   it('the engine reports half paid leave with no work as half_day, and a worked other half as present', () => {
     expect(calculateDay(dayInput({ leave: { fraction: 0.5, code: 'CL' } })).status).toBe('half_day');
-    const worked = calculateDay(dayInput({ leave: { fraction: 0.5, code: 'CL' }, punches: [
-      { id: 'a', time: new Date('2026-01-05T04:00:00Z'), direction: 'in' }, { id: 'b', time: new Date('2026-01-05T09:00:00Z'), direction: 'out' }] }));
+    const worked = calculateDay(
+      dayInput({
+        leave: { fraction: 0.5, code: 'CL' },
+        punches: [
+          { id: 'a', time: new Date('2026-01-05T04:00:00Z'), direction: 'in' },
+          { id: 'b', time: new Date('2026-01-05T09:00:00Z'), direction: 'out' },
+        ],
+      }),
+    );
     expect(worked.status).toBe('present');
   });
 
@@ -60,7 +87,8 @@ describe('F-1 half-day leave and loss of pay', () => {
 
 describe('F-5 ESI contribution periods through a run', () => {
   const ESI = { employeeRate: 1, employerRate: 3, wageThreshold: 21000, rounding: 'up' };
-  let W: TenantFixture; let p: Client;
+  let W: TenantFixture;
+  let p: Client;
   beforeAll(async () => {
     W = await createTenant();
     p = await Client.login(app, W.host, W.users.payroll!.email);
@@ -69,7 +97,8 @@ describe('F-5 ESI contribution periods through a run', () => {
   });
 
   it('a raise mid-period keeps cover until the next period; a cut mid-period does not start it', async () => {
-    const raised = W.users.employee!.employeeId!; const cut = W.users.other!.employeeId!;
+    const raised = W.users.employee!.employeeId!;
+    const cut = W.users.other!.employeeId!;
     await activeSalary(W, raised, '2024-01-01', { BASIC: 20000 });
     await activeSalary(W, raised, '2026-07-01', { BASIC: 25000 });
     await activeSalary(W, cut, '2024-01-01', { BASIC: 25000 });
@@ -82,7 +111,7 @@ describe('F-5 ESI contribution periods through a run', () => {
     await compute(p, oct);
     expect(lineOf(await itemOf(p, oct, raised), 'ESI_EE')).toBeUndefined();
     expect(lineOf(await itemOf(p, oct, cut), 'ESI_EE')).toBe(200);
-    const jan = await createRun(p, W, '2027-01');   // same contribution period as October
+    const jan = await createRun(p, W, '2027-01'); // same contribution period as October
     await compute(p, jan);
     expect(lineOf(await itemOf(p, jan, cut), 'ESI_EE')).toBe(200);
   });
@@ -99,7 +128,9 @@ describe('F-5 ESI contribution periods through a run', () => {
 });
 
 describe('F-6 salary change within the month', () => {
-  let W: TenantFixture; let p: Client; let e: string;
+  let W: TenantFixture;
+  let p: Client;
+  let e: string;
   beforeAll(async () => {
     W = await createTenant();
     p = await Client.login(app, W.host, W.users.payroll!.email);
@@ -125,7 +156,7 @@ describe('F-6 salary change within the month', () => {
     await compute(p, id);
     const i = await itemOf(p, id, e);
     // 31 days: 19 at 30000 less one absent day = 18/31 × 30000; 12 at 62000 = 12/31 × 62000.
-    expect(lineOf(i, 'BASIC')).toBe(Math.round(18 / 31 * 30000) + Math.round(12 / 31 * 62000));
+    expect(lineOf(i, 'BASIC')).toBe(Math.round((18 / 31) * 30000) + Math.round((12 / 31) * 62000));
     expect(i!.lop_days).toBe('1.00');
     expect(i!.paid_days).toBe('30.00');
   });
@@ -143,13 +174,17 @@ describe('F-6 salary change within the month', () => {
 });
 
 describe('F-3 full-and-final and regular runs never pay the same days', () => {
-  let W: TenantFixture; let p: Client;
+  let W: TenantFixture;
+  let p: Client;
   const leaver = async (who: string, lwd: string) => {
     const id = W.users[who]!.employeeId!;
     await activeSalary(W, id, '2024-01-01', { BASIC: 30000 });
     await ownerQuery(`UPDATE employees SET exit_date=$2, status='on_notice' WHERE id=$1`, [id, lwd]);
-    await ownerQuery(`INSERT INTO separations (tenant_id, employee_id, kind, reason, notice_date, notice_days_required, requested_lwd, approved_lwd, status, initiated_by)
-      VALUES ($1,$2,'resignation','Fixture','2025-01-01',30,$3,$3,'approved',$4)`, [W.id, id, lwd, W.users.hr!.id]);
+    await ownerQuery(
+      `INSERT INTO separations (tenant_id, employee_id, kind, reason, notice_date, notice_days_required, requested_lwd, approved_lwd, status, initiated_by)
+      VALUES ($1,$2,'resignation','Fixture','2025-01-01',30,$3,$3,'approved',$4)`,
+      [W.id, id, lwd, W.users.hr!.id],
+    );
     return id;
   };
   beforeAll(async () => {
@@ -164,7 +199,7 @@ describe('F-3 full-and-final and regular runs never pay the same days', () => {
     const id = await leaver('employee', '2026-03-15');
     const fnf = await createRun(p, W, '2026-03', { kind: 'fnf', employeeId: id });
     await compute(p, fnf);
-    expect(lineOf(await itemOf(p, fnf, id), 'BASIC')).toBe(Math.round(15 / 31 * 30000));
+    expect(lineOf(await itemOf(p, fnf, id), 'BASIC')).toBe(Math.round((15 / 31) * 30000));
     const reg = await createRun(p, W, '2026-03');
     await compute(p, reg);
     expect(await itemOf(p, reg, id)).toBeUndefined();
@@ -215,7 +250,10 @@ describe('F-3 full-and-final and regular runs never pay the same days', () => {
 });
 
 describe('F-7 finalize refuses a stale result', () => {
-  let W: TenantFixture; let p: Client; let f: Client; let e: string;
+  let W: TenantFixture;
+  let p: Client;
+  let f: Client;
+  let e: string;
   beforeAll(async () => {
     W = await createTenant();
     p = await Client.login(app, W.host, W.users.payroll!.email);
@@ -256,12 +294,18 @@ describe('F-7 finalize refuses a stale result', () => {
     const o = W.users.other!.employeeId!;
     await activeSalary(W, o, '2024-01-01', { BASIC: 30000 });
     await ownerQuery(`UPDATE employees SET exit_date='2026-04-10', status='on_notice' WHERE id=$1`, [o]);
-    await ownerQuery(`INSERT INTO separations (tenant_id, employee_id, kind, reason, notice_date, notice_days_required, requested_lwd, approved_lwd, status, initiated_by)
-      VALUES ($1,$2,'resignation','Fixture','2026-03-01',30,'2026-04-10','2026-04-10','approved',$3)`, [W.id, o, W.users.hr!.id]);
+    await ownerQuery(
+      `INSERT INTO separations (tenant_id, employee_id, kind, reason, notice_date, notice_days_required, requested_lwd, approved_lwd, status, initiated_by)
+      VALUES ($1,$2,'resignation','Fixture','2026-03-01',30,'2026-04-10','2026-04-10','approved',$3)`,
+      [W.id, o, W.users.hr!.id],
+    );
     const id = await createRun(p, W, '2026-04', { kind: 'fnf', employeeId: o });
     await compute(p, id);
     await toApproved(p, f, id);
-    await ownerQuery(`INSERT INTO attendance_daily (tenant_id, employee_id, work_date, day_type, status, calc_version, calculated_at) VALUES ($1,$2,'2026-04-06','working','absent',3,now() + interval '1 minute')`, [W.id, o]);
+    await ownerQuery(
+      `INSERT INTO attendance_daily (tenant_id, employee_id, work_date, day_type, status, calc_version, calculated_at) VALUES ($1,$2,'2026-04-06','working','absent',3,now() + interval '1 minute')`,
+      [W.id, o],
+    );
     expect((await p.post(`/api/v1/payroll/runs/${id}/finalize`)).statusCode).toBe(409);
   });
 
@@ -273,7 +317,10 @@ describe('F-7 finalize refuses a stale result', () => {
 });
 
 describe('other payroll findings (AUDIT 4.2)', () => {
-  let W: TenantFixture; let p: Client; let f: Client; let e: string;
+  let W: TenantFixture;
+  let p: Client;
+  let f: Client;
+  let e: string;
   beforeAll(async () => {
     W = await createTenant();
     p = await Client.login(app, W.host, W.users.payroll!.email);
@@ -334,22 +381,36 @@ describe('other payroll findings (AUDIT 4.2)', () => {
 });
 
 describe('F-12 held pay', () => {
-  let W: TenantFixture; let p: Client; let f: Client; let e: string; let loan: string; let run: string;
+  let W: TenantFixture;
+  let p: Client;
+  let f: Client;
+  let e: string;
+  let loan: string;
+  let run: string;
   let loansApp: FastifyInstance;
   beforeAll(async () => {
     loansApp = await makeApp({ ...flags(`${MODULES},loans,salary_advance`) });
     W = await createTenant();
     p = await Client.login(loansApp, W.host, W.users.payroll!.email);
     const email = `fin@${W.host}`;
-    const [u] = await ownerQuery<{ id: string }>(`INSERT INTO users (tenant_id, email, display_name, password_hash) SELECT tenant_id, $2, 'fin', password_hash FROM users WHERE id=$1 RETURNING id`, [W.users.payroll!.id, email]);
+    const [u] = await ownerQuery<{ id: string }>(
+      `INSERT INTO users (tenant_id, email, display_name, password_hash) SELECT tenant_id, $2, 'fin', password_hash FROM users WHERE id=$1 RETURNING id`,
+      [W.users.payroll!.id, email],
+    );
     await ownerQuery(`INSERT INTO user_roles (user_id, tenant_id, role_key) VALUES ($1,$2,'finance_manager')`, [u!.id, W.id]);
     f = await Client.login(loansApp, W.host, email);
     e = W.users.employee!.employeeId!;
     await seedComponents(W);
     await activeSalary(W, e, '2024-01-01', { BASIC: 30000 });
-    await ownerQuery(`INSERT INTO employee_bank_accounts (employee_id, tenant_id, account_holder, account_number_enc, account_last4, ifsc) VALUES ($1,$2,'Emp',$3,'9012','SBIN0001234')`, [e, W.id, loansApp.deps.cipher.encrypt('123456789012')]);
-    const [l] = await ownerQuery<{ id: string }>(`INSERT INTO employee_loans (tenant_id, employee_id, kind, amount, installments, installment_amount, first_period, purpose, status, created_by, disbursed_at)
-      VALUES ($1,$2,'salary_advance',1000,1,1000,'2026-01','Fixture purpose','disbursed',$3,now()) RETURNING id`, [W.id, e, W.users.hr!.id]);
+    await ownerQuery(
+      `INSERT INTO employee_bank_accounts (employee_id, tenant_id, account_holder, account_number_enc, account_last4, ifsc) VALUES ($1,$2,'Emp',$3,'9012','SBIN0001234')`,
+      [e, W.id, loansApp.deps.cipher.encrypt('123456789012')],
+    );
+    const [l] = await ownerQuery<{ id: string }>(
+      `INSERT INTO employee_loans (tenant_id, employee_id, kind, amount, installments, installment_amount, first_period, purpose, status, created_by, disbursed_at)
+      VALUES ($1,$2,'salary_advance',1000,1,1000,'2026-01','Fixture purpose','disbursed',$3,now()) RETURNING id`,
+      [W.id, e, W.users.hr!.id],
+    );
     loan = l!.id;
     await p.post('/api/v1/attendance/locks', { periodStart: '2026-01-01', periodEnd: '2026-01-31' });
     run = await createRun(p, W, '2026-01');
@@ -358,7 +419,9 @@ describe('F-12 held pay', () => {
     await toApproved(p, f, run);
     expect((await p.post(`/api/v1/payroll/runs/${run}/finalize`)).statusCode).toBe(200);
   });
-  afterAll(async () => { await loansApp.close(); });
+  afterAll(async () => {
+    await loansApp.close();
+  });
   const status = async () => (await ownerQuery<{ status: string }>(`SELECT status FROM employee_loans WHERE id=$1`, [loan]))[0]!.status;
 
   it('held pay is not a final recovery: the loan stays open and shows the amount in progress', async () => {
@@ -383,7 +446,7 @@ describe('F-12 held pay', () => {
     const emp = await Client.login(loansApp, W.host, W.users.employee!.email);
     expect((await emp.get('/api/v1/payroll/payslips/mine?reveal=1')).json().items).toHaveLength(1);
     expect((await ownerQuery(`SELECT 1 FROM notifications WHERE tenant_id=$1 AND user_id=$2 AND kind='payroll.payslip'`, [W.id, W.users.employee!.id])).length).toBe(1);
-    expect((await p.get(`/api/v1/payroll/runs/${run}/bank.csv`)).body).not.toContain('123456789012');   // the original file does not change
+    expect((await p.get(`/api/v1/payroll/runs/${run}/bank.csv`)).body).not.toContain('123456789012'); // the original file does not change
     expect((await p.get(`/api/v1/payroll/runs/${run}/bank-released.csv`)).body).toContain('123456789012');
     await expect(ownerQuery(`UPDATE payroll_items SET data_enc='x' WHERE run_id=$1`, [run])).rejects.toThrow(/cannot be changed/);
   });
@@ -395,12 +458,16 @@ describe('F-12 held pay', () => {
 });
 
 describe('sandwiched unpaid leave', () => {
-  let W: TenantFixture; let p: Client;
+  let W: TenantFixture;
+  let p: Client;
   beforeAll(async () => {
     W = await createTenant();
     p = await Client.login(app, W.host, W.users.payroll!.email);
     await seedComponents(W);
-    await ownerQuery(`INSERT INTO leave_types (tenant_id, code, name, paid, requires_balance, accrual_method, count_non_working_days) VALUES ($1,'SLWP','Sandwich unpaid',false,false,'none',true)`, [W.id]);
+    await ownerQuery(
+      `INSERT INTO leave_types (tenant_id, code, name, paid, requires_balance, accrual_method, count_non_working_days) VALUES ($1,'SLWP','Sandwich unpaid',false,false,'none',true)`,
+      [W.id],
+    );
   });
 
   it('a weekly off the leave type counts as leave is loss of pay when that leave is unpaid', async () => {
@@ -415,7 +482,18 @@ describe('sandwiched unpaid leave', () => {
   });
 
   it('the attendance engine records it on the off day, only for a type that counts it', () => {
-    const off = (leave: DayInput['leave']) => calculateDay({ workDate: '2026-03-08', timezone: 'Asia/Kolkata', shift: null, dayType: 'weekly_off', employment: { joiningDate: '2020-01-01', exitDate: null }, punches: [], minGapSeconds: 60, overtimeEnabled: false, leave });
+    const off = (leave: DayInput['leave']) =>
+      calculateDay({
+        workDate: '2026-03-08',
+        timezone: 'Asia/Kolkata',
+        shift: null,
+        dayType: 'weekly_off',
+        employment: { joiningDate: '2020-01-01', exitDate: null },
+        punches: [],
+        minGapSeconds: 60,
+        overtimeEnabled: false,
+        leave,
+      });
     expect(off({ fraction: 1, code: 'SLWP', chargedOnOffDay: true })).toMatchObject({ status: 'weekly_off', leaveFraction: 1, leaveTypeCode: 'SLWP' });
     expect(off({ fraction: 1, code: 'CL' })).toMatchObject({ status: 'weekly_off', leaveFraction: 0 });
   });

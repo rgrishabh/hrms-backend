@@ -10,19 +10,31 @@ import { makeApp, createTenant, flags, ownerQuery, inApp } from './helpers.js';
 import { notifyUsers } from '../src/core/notify/service.js';
 import { withTenant } from '../src/db/tx.js';
 
-const walk = async (dir: string): Promise<string[]> => (await Promise.all((await readdir(dir, { withFileTypes: true })).map((d) => (d.isDirectory() ? walk(path.join(dir, d.name)) : [path.join(dir, d.name)])))).flat();
+const walk = async (dir: string): Promise<string[]> =>
+  (await Promise.all((await readdir(dir, { withFileTypes: true })).map((d) => (d.isDirectory() ? walk(path.join(dir, d.name)) : [path.join(dir, d.name)])))).flat();
 
 describe('L3 and L4 stay out of logs, errors, analytics and URLs', () => {
   const capture = () => {
     const lines: string[] = [];
-    const log = pino({ redact: LOG_REDACT_PATHS, serializers: logSerializers }, new Writable({ write(c, _e, done) { lines.push(String(c)); done(); } }));
+    const log = pino(
+      { redact: LOG_REDACT_PATHS, serializers: logSerializers },
+      new Writable({
+        write(c, _e, done) {
+          lines.push(String(c));
+          done();
+        },
+      }),
+    );
     return { log, lines };
   };
 
   it('redacts classified fields by name, wherever they sit in a logged object', () => {
     const { log, lines } = capture();
     const secret = 'S3CRET-VALUE';
-    for (const f of LOG_REDACTED_FIELDS) { log.info({ [f]: secret }, 'top'); log.info({ body: { [f]: secret } }, 'nested'); }
+    for (const f of LOG_REDACTED_FIELDS) {
+      log.info({ [f]: secret }, 'top');
+      log.info({ body: { [f]: secret } }, 'nested');
+    }
     expect(lines.length).toBe(LOG_REDACTED_FIELDS.length * 2);
     expect(lines.join('')).not.toContain(secret);
   });
@@ -56,20 +68,26 @@ describe('L3 and L4 stay out of logs, errors, analytics and URLs', () => {
   it('the source has no console.log and does not interpolate figures into thrown errors', async () => {
     const files = (await walk(path.resolve('src'))).filter((f) => f.endsWith('.ts'));
     const hits: string[] = [];
-    for (const f of files) for (const [i, line] of (await readFile(f, 'utf8')).split('\n').entries()) {
-      // Command-line tools print to their operator; everything that runs in the API or the worker uses the logger.
-      if (/console\.log\(/.test(line) && !path.dirname(f).endsWith(`${path.sep}db`)) hits.push(`${f}:${i + 1}`);
-      if (/throw .*\$\{[^}]*\b(net|gross|outstanding|salary|ctc|pan|aadhaar)\b/i.test(line)) hits.push(`${f}:${i + 1}`);
-    }
+    for (const f of files)
+      for (const [i, line] of (await readFile(f, 'utf8')).split('\n').entries()) {
+        // Command-line tools print to their operator; everything that runs in the API or the worker uses the logger.
+        if (/console\.log\(/.test(line) && !path.dirname(f).endsWith(`${path.sep}db`)) hits.push(`${f}:${i + 1}`);
+        if (/throw .*\$\{[^}]*\b(net|gross|outstanding|salary|ctc|pan|aadhaar)\b/i.test(line)) hits.push(`${f}:${i + 1}`);
+      }
     expect(hits).toEqual([]);
   });
 
   it('text the server stores or sends never carries a figure', async () => {
-    for (const t of ['Loan paid: ₹15,000', 'advance Rs. 1,500.50', 'INR 200', 'US$1,000.00', '1.000,50 €']) { expect(hasAmount(t), t).toBe(true); expect(scrubAmounts(t)).toContain('[amount removed]'); }
+    for (const t of ['Loan paid: ₹15,000', 'advance Rs. 1,500.50', 'INR 200', 'US$1,000.00', '1.000,50 €']) {
+      expect(hasAmount(t), t).toBe(true);
+      expect(scrubAmounts(t)).toContain('[amount removed]');
+    }
     expect(hasAmount('Payroll 2026-01 — review the register')).toBe(false);
     const app = await makeApp(flags('default'));
     const T = await createTenant();
-    await inApp(app, () => withTenant(app.deps.pool, T.id, (db) => notifyUsers(db, T.id, [T.users.employee!.id], { kind: 'x', title: 'Loan paid: ₹15,000', body: 'Advance ₹2,000 paid' })));
+    await inApp(app, () =>
+      withTenant(app.deps.pool, T.id, (db) => notifyUsers(db, T.id, [T.users.employee!.id], { kind: 'x', title: 'Loan paid: ₹15,000', body: 'Advance ₹2,000 paid' })),
+    );
     const [n] = await ownerQuery<{ title: string; body: string }>(`SELECT title, body FROM notifications WHERE tenant_id=$1 AND kind='x'`, [T.id]);
     expect(`${n!.title} ${n!.body}`).not.toMatch(/15,000|2,000/);
     await app.close();

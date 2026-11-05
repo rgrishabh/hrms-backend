@@ -12,7 +12,10 @@ const prod = { ...base, NODE_ENV: 'production', BRAND_DOMAIN: 'hrms.customer-a.i
 describe('deployment configuration', () => {
   it('requires everything the contract marks as required in Layer 2, naming each', () => {
     const { DATABASE_URL, DATA_ENCRYPTION_KEY } = base;
-    try { loadEnv({ DATABASE_URL, DATA_ENCRYPTION_KEY }); throw new Error('should have failed'); } catch (e) {
+    try {
+      loadEnv({ DATABASE_URL, DATA_ENCRYPTION_KEY });
+      throw new Error('should have failed');
+    } catch (e) {
       for (const k of Object.keys(TEST_BRAND)) expect((e as Error).message).toContain(k);
     }
   });
@@ -61,7 +64,7 @@ describe('deployment configuration', () => {
     expect(loadEnv({ ...base, BRAND_FINANCIAL_YEAR_START: '02-29' }).BRAND_FINANCIAL_YEAR_START).toBe('02-29');
   });
 
-  it('SMTP_SECURE takes the contract\'s values; production refuses none; credentials come as a pair', () => {
+  it("SMTP_SECURE takes the contract's values; production refuses none; credentials come as a pair", () => {
     expect(loadEnv(base).SMTP_SECURE).toBe('starttls');
     expect(() => loadEnv({ ...base, SMTP_SECURE: 'true' })).toThrow(/SMTP_SECURE: must be starttls, tls or none/);
     expect(loadEnv({ ...base, SMTP_SECURE: 'none' }).SMTP_SECURE).toBe('none');
@@ -93,7 +96,7 @@ describe('deployment configuration', () => {
     expect(organizationName({ BRAND_NAME: 'Acme', BRAND_LEGAL_NAME: 'Acme Testing Pvt Ltd' })).toBe('Acme Testing Pvt Ltd');
   });
 
-  it('public config has the contract\'s shape and never includes secrets, connection details or descriptions', () => {
+  it("public config has the contract's shape and never includes secrets, connection details or descriptions", () => {
     const cfg = buildPublicConfig(loadEnv({ ...base, BRAND_NAME: 'Customer A', BRAND_PRODUCT_NAME: 'CustomerHR', FEATURE_LOANS: 'false' }));
     expect(Object.keys(cfg).sort()).toEqual(['auth', 'brand', 'features', 'mfa', 'mode', 'product']);
     expect(cfg.product).toEqual({ name: 'CustomerHR' });
@@ -121,25 +124,64 @@ describe('docker compose style environment', () => {
 });
 
 describe('feature flags', () => {
-  const problems = (env: Record<string, string>) => { try { loadEnv({ ...base, ...env }); return ''; } catch (e) { return (e as Error).message; } };
+  const problems = (env: Record<string, string>) => {
+    try {
+      loadEnv({ ...base, ...env });
+      return '';
+    } catch (e) {
+      return (e as Error).message;
+    }
+  };
 
   it('every flag of the contract is in the registry with the contract default and dependencies', () => {
     const table: [string, boolean, string[]][] = [
-      ['FEATURE_DOCUMENTS', true, []], ['FEATURE_ONBOARDING', false, []], ['FEATURE_OFFBOARDING', false, []], ['FEATURE_POLICIES', false, []],
-      ['FEATURE_ATTENDANCE', true, []], ['FEATURE_ATTENDANCE_WEB', true, ['ATTENDANCE']], ['FEATURE_ATTENDANCE_MOBILE', false, ['ATTENDANCE']],
-      ['FEATURE_ATTENDANCE_GEOFENCE', false, ['ATTENDANCE']], ['FEATURE_ATTENDANCE_SELFIE', false, ['ATTENDANCE']], ['FEATURE_ATTENDANCE_BIOMETRIC', false, ['ATTENDANCE']],
-      ['FEATURE_ATTENDANCE_REGULARIZATION', true, ['ATTENDANCE']], ['FEATURE_SHIFTS', true, ['ATTENDANCE']], ['FEATURE_HOLIDAYS', true, ['ATTENDANCE']], ['FEATURE_LEAVE', true, []],
-      ['FEATURE_OVERTIME', false, ['ATTENDANCE']], ['FEATURE_COMP_OFF', false, ['LEAVE', 'OVERTIME']], ['FEATURE_FIELD_DUTY', false, ['ATTENDANCE']], ['FEATURE_PAYROLL', false, ['ATTENDANCE']],
-      ['FEATURE_PAYSLIPS', false, ['PAYROLL']], ['FEATURE_PAYROLL_STATUTORY', false, ['PAYROLL']], ['FEATURE_LOANS', false, ['PAYROLL']], ['FEATURE_SALARY_ADVANCE', false, ['PAYROLL']],
-      ['FEATURE_ACCOUNTING_EXPORTS', false, ['PAYROLL']], ['FEATURE_EXPENSE_CLAIMS', false, []], ['FEATURE_TRAVEL', false, ['EXPENSE_CLAIMS']], ['FEATURE_RECRUITMENT', false, []],
-      ['FEATURE_PERFORMANCE_REVIEW', false, []], ['FEATURE_TRAINING', false, []], ['FEATURE_LAB_COMPETENCY', false, ['TRAINING']], ['FEATURE_ASSET_MANAGEMENT', false, []],
-      ['FEATURE_GRIEVANCE', false, []], ['FEATURE_POSH', false, []], ['FEATURE_REPORTS_ADVANCED', false, []], ['FEATURE_EMAIL_NOTIFICATIONS', true, []], ['FEATURE_PUSH_NOTIFICATIONS', false, []],
+      ['FEATURE_DOCUMENTS', true, []],
+      ['FEATURE_ONBOARDING', false, []],
+      ['FEATURE_OFFBOARDING', false, []],
+      ['FEATURE_POLICIES', false, []],
+      ['FEATURE_ATTENDANCE', true, []],
+      ['FEATURE_ATTENDANCE_WEB', true, ['ATTENDANCE']],
+      ['FEATURE_ATTENDANCE_MOBILE', false, ['ATTENDANCE']],
+      ['FEATURE_ATTENDANCE_GEOFENCE', false, ['ATTENDANCE']],
+      ['FEATURE_ATTENDANCE_SELFIE', false, ['ATTENDANCE']],
+      ['FEATURE_ATTENDANCE_BIOMETRIC', false, ['ATTENDANCE']],
+      ['FEATURE_ATTENDANCE_REGULARIZATION', true, ['ATTENDANCE']],
+      ['FEATURE_SHIFTS', true, ['ATTENDANCE']],
+      ['FEATURE_HOLIDAYS', true, ['ATTENDANCE']],
+      ['FEATURE_LEAVE', true, []],
+      ['FEATURE_OVERTIME', false, ['ATTENDANCE']],
+      ['FEATURE_COMP_OFF', false, ['LEAVE', 'OVERTIME']],
+      ['FEATURE_FIELD_DUTY', false, ['ATTENDANCE']],
+      ['FEATURE_PAYROLL', false, ['ATTENDANCE']],
+      ['FEATURE_PAYSLIPS', false, ['PAYROLL']],
+      ['FEATURE_PAYROLL_STATUTORY', false, ['PAYROLL']],
+      ['FEATURE_LOANS', false, ['PAYROLL']],
+      ['FEATURE_SALARY_ADVANCE', false, ['PAYROLL']],
+      ['FEATURE_ACCOUNTING_EXPORTS', false, ['PAYROLL']],
+      ['FEATURE_EXPENSE_CLAIMS', false, []],
+      ['FEATURE_TRAVEL', false, ['EXPENSE_CLAIMS']],
+      ['FEATURE_RECRUITMENT', false, []],
+      ['FEATURE_PERFORMANCE_REVIEW', false, []],
+      ['FEATURE_TRAINING', false, []],
+      ['FEATURE_LAB_COMPETENCY', false, ['TRAINING']],
+      ['FEATURE_ASSET_MANAGEMENT', false, []],
+      ['FEATURE_GRIEVANCE', false, []],
+      ['FEATURE_POSH', false, []],
+      ['FEATURE_REPORTS_ADVANCED', false, []],
+      ['FEATURE_EMAIL_NOTIFICATIONS', true, []],
+      ['FEATURE_PUSH_NOTIFICATIONS', false, []],
     ];
     expect([...FEATURE_BY_ENV.keys()].sort()).toEqual(table.map((t) => t[0]).sort());
     for (const [name, def, deps] of table) {
       const d = FEATURE_BY_ENV.get(name)!;
       expect([name, d.defaultEnabled]).toEqual([name, def]);
-      expect([name, d.dependencies.filter((k) => !FEATURE_MAP.get(k)!.core).map((k) => FEATURE_MAP.get(k)!.envName!.replace('FEATURE_', '')).sort()]).toEqual([name, [...deps].sort()]);
+      expect([
+        name,
+        d.dependencies
+          .filter((k) => !FEATURE_MAP.get(k)!.core)
+          .map((k) => FEATURE_MAP.get(k)!.envName!.replace('FEATURE_', ''))
+          .sort(),
+      ]).toEqual([name, [...deps].sort()]);
     }
   });
 

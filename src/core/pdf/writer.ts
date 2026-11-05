@@ -15,10 +15,23 @@ import { getStore } from '../storage/index.js';
  * amounts carry the ISO code, not a sign, and text outside that set is printed as `?` with a note at the end of the document.
  */
 export type Doc = PDFKit.PDFDocument;
-export interface PdfImages { logo: Buffer | null; signature: Buffer | null; stamp: Buffer | null }
-export interface PdfIdentity { company: CompanyProfile; dateFormat: string }
+export interface PdfImages {
+  logo: Buffer | null;
+  signature: Buffer | null;
+  stamp: Buffer | null;
+}
+export interface PdfIdentity {
+  company: CompanyProfile;
+  dateFormat: string;
+}
 export interface PdfContext extends PdfIdentity {
-  brandName: string; productName: string; legalName: string; primaryColor: string; locale: string; currency: string; images: PdfImages;
+  brandName: string;
+  productName: string;
+  legalName: string;
+  primaryColor: string;
+  locale: string;
+  currency: string;
+  images: PdfImages;
 }
 
 const MAX_IMAGE_BYTES = 5 * 1024 * 1024;
@@ -34,11 +47,24 @@ export function drawableImage(b: Buffer): boolean {
   if (b.length > 3 && b[0] === 0xff && b[1] === 0xd8 && b[2] === 0xff) return true;
   if (!b.subarray(0, 8).equals(PNG_SIGNATURE)) return false;
   try {
-    let at = 8; const idat: Buffer[] = []; let width = 0; let height = 0; let bits = 0; let colour = -1; let interlace = 0;
+    let at = 8;
+    const idat: Buffer[] = [];
+    let width = 0;
+    let height = 0;
+    let bits = 0;
+    let colour = -1;
+    let interlace = 0;
     while (at + 8 <= b.length) {
-      const len = b.readUInt32BE(at); const type = b.toString('latin1', at + 4, at + 8);
+      const len = b.readUInt32BE(at);
+      const type = b.toString('latin1', at + 4, at + 8);
       if (at + 12 + len > b.length) return false;
-      if (type === 'IHDR') { width = b.readUInt32BE(at + 8); height = b.readUInt32BE(at + 12); bits = b[at + 16]!; colour = b[at + 17]!; interlace = b[at + 20]!; }
+      if (type === 'IHDR') {
+        width = b.readUInt32BE(at + 8);
+        height = b.readUInt32BE(at + 12);
+        bits = b[at + 16]!;
+        colour = b[at + 17]!;
+        interlace = b[at + 20]!;
+      }
       if (type === 'IDAT') idat.push(b.subarray(at + 8, at + 8 + len));
       if (type === 'IEND') break;
       at += 12 + len;
@@ -51,7 +77,9 @@ export function drawableImage(b: Buffer): boolean {
     if (pixels.length < stride * height) return false;
     for (let row = 0; row < height; row++) if (pixels[row * stride]! > 4) return false;
     return true;
-  } catch { return false; }
+  } catch {
+    return false;
+  }
 }
 
 /** The logo, when it is a PNG or JPEG in the mounted directory. The server never fetches a brand asset, so an `https://` logo prints as the name. */
@@ -78,13 +106,24 @@ export async function loadPdfIdentity(db: Db, tenantId: string): Promise<PdfIden
 export async function loadPdfContext(app: FastifyInstance, identity: PdfIdentity): Promise<PdfContext> {
   const { env } = app.deps;
   const [logo, signature, stamp] = await Promise.all([loadLogo(app), loadStored(identity.company.signatureKey), loadStored(identity.company.stampKey)]);
-  return { ...identity, brandName: env.BRAND_NAME, productName: env.BRAND_PRODUCT_NAME, legalName: identity.company.legalName ?? organizationName(env),
-    primaryColor: env.BRAND_PRIMARY_COLOR, locale: env.BRAND_LOCALE, currency: env.BRAND_CURRENCY, images: { logo, signature, stamp } };
+  return {
+    ...identity,
+    brandName: env.BRAND_NAME,
+    productName: env.BRAND_PRODUCT_NAME,
+    legalName: identity.company.legalName ?? organizationName(env),
+    primaryColor: env.BRAND_PRIMARY_COLOR,
+    locale: env.BRAND_LOCALE,
+    currency: env.BRAND_CURRENCY,
+    images: { logo, signature, stamp },
+  };
 }
 
 // ---------------------------------------------------------------- text
 /** Windows-1252 outside Latin-1, which is what the standard fonts draw. */
-const WIN_ANSI_EXTRA = new Set([0x20ac, 0x201a, 0x192, 0x201e, 0x2026, 0x2020, 0x2021, 0x2c6, 0x2030, 0x160, 0x2039, 0x152, 0x17d, 0x2018, 0x2019, 0x201c, 0x201d, 0x2022, 0x2013, 0x2014, 0x2dc, 0x2122, 0x161, 0x203a, 0x153, 0x17e, 0x178]);
+const WIN_ANSI_EXTRA = new Set([
+  0x20ac, 0x201a, 0x192, 0x201e, 0x2026, 0x2020, 0x2021, 0x2c6, 0x2030, 0x160, 0x2039, 0x152, 0x17d, 0x2018, 0x2019, 0x201c, 0x201d, 0x2022, 0x2013, 0x2014, 0x2dc, 0x2122, 0x161,
+  0x203a, 0x153, 0x17e, 0x178,
+]);
 const printable = (code: number) => (code >= 0x20 && code <= 0x7e) || (code >= 0xa0 && code <= 0xff) || WIN_ANSI_EXTRA.has(code);
 const PLAIN = /^[\x20-\x7e]*$/;
 const SPACES = /[\t\r\n\u00a0\u1680\u2000-\u200a\u202f\u205f\u3000]+/g;
@@ -93,14 +132,22 @@ const MARKS = /\p{M}+/gu;
 /** Text the standard fonts can draw, and whether anything had to go. Accents that have no glyph come off (`ā` to `a`); anything else becomes `?`. */
 export function printableText(raw: string): { text: string; lossy: boolean } {
   if (PLAIN.test(raw)) return { text: raw, lossy: false };
-  let text = ''; let lossy = false;
+  let text = '';
+  let lossy = false;
   for (const ch of raw.normalize('NFC').replace(/₹/g, 'INR ').replace(SPACES, ' ')) {
     const code = ch.codePointAt(0)!;
-    if (printable(code)) { text += ch; continue; }
+    if (printable(code)) {
+      text += ch;
+      continue;
+    }
     if (code < 0x20 || (code >= 0x7f && code < 0xa0) || code === 0x200b || code === 0x200c || code === 0x200d || code === 0xfeff) continue;
     const bare = ch.normalize('NFD').replace(MARKS, '');
-    if (bare && [...bare].every((c) => printable(c.codePointAt(0)!))) { text += bare; continue; }
-    text += '?'; lossy = true;
+    if (bare && [...bare].every((c) => printable(c.codePointAt(0)!))) {
+      text += bare;
+      continue;
+    }
+    text += '?';
+    lossy = true;
   }
   return { text, lossy };
 }
@@ -141,23 +188,42 @@ export class PdfWriter {
   private numbers: Intl.NumberFormat;
   private page = 1;
 
-  constructor(readonly ctx: PdfContext, o: { title: string; landscape?: boolean; margin?: number }) {
+  constructor(
+    readonly ctx: PdfContext,
+    o: { title: string; landscape?: boolean; margin?: number },
+  ) {
     this.margin = o.margin ?? 48;
-    this.doc = new PDFDocument({ size: 'A4', layout: o.landscape ? 'landscape' : 'portrait', margin: this.margin, bufferPages: false, compress: true,
-      info: { Title: printableText(o.title).text, Author: printableText(ctx.brandName).text, Creator: printableText(ctx.productName).text } });
+    this.doc = new PDFDocument({
+      size: 'A4',
+      layout: o.landscape ? 'landscape' : 'portrait',
+      margin: this.margin,
+      bufferPages: false,
+      compress: true,
+      info: { Title: printableText(o.title).text, Author: printableText(ctx.brandName).text, Creator: printableText(ctx.productName).text },
+    });
     this.accent = luminance(ctx.primaryColor) > 0.75 ? INK : ctx.primaryColor;
     this.onPrimary = luminance(ctx.primaryColor) > 0.55 ? INK : '#ffffff';
     this.numbers = new Intl.NumberFormat(ctx.locale, { numberingSystem: 'latn', minimumFractionDigits: 2, maximumFractionDigits: 2 });
-    this.doc.on('pageAdded', () => { this.page++; this.footer(); this.body(); });
+    this.doc.on('pageAdded', () => {
+      this.page++;
+      this.footer();
+      this.body();
+    });
     this.footer();
     this.body();
   }
 
-  get usableWidth() { return this.doc.page.width - this.margin * 2; }
+  get usableWidth() {
+    return this.doc.page.width - this.margin * 2;
+  }
   /** The lowest a row may reach: the footer sits below it. */
-  get bottom() { return this.doc.page.height - this.margin; }
+  get bottom() {
+    return this.doc.page.height - this.margin;
+  }
 
-  body(size = 10.5) { this.doc.font(REGULAR).fontSize(size).fillColor(INK); }
+  body(size = 10.5) {
+    this.doc.font(REGULAR).fontSize(size).fillColor(INK);
+  }
 
   /** Text for the page. Every string that came from data goes through here. */
   t(v: unknown): string {
@@ -166,55 +232,103 @@ export class PdfWriter {
     return text;
   }
   /** An amount without its currency, for a column headed with it. */
-  amount(n: number | string) { return this.numbers.format(Number(n)).replace(SPACES, ' ').replace(/−/g, '-'); }
+  amount(n: number | string) {
+    return this.numbers.format(Number(n)).replace(SPACES, ' ').replace(/−/g, '-');
+  }
   /** An amount with the ISO code: the standard fonts have no rupee sign. */
-  money(n: number | string) { return `${this.ctx.currency} ${this.amount(n)}`; }
-  date(v: unknown) { return formatDate(v, this.ctx.dateFormat); }
+  money(n: number | string) {
+    return `${this.ctx.currency} ${this.amount(n)}`;
+  }
+  date(v: unknown) {
+    return formatDate(v, this.ctx.dateFormat);
+  }
 
   private footer() {
-    const { doc } = this; const [x, y] = [doc.x, doc.y]; const at = doc.page.height - this.margin + 14;
+    const { doc } = this;
+    const [x, y] = [doc.x, doc.y];
+    const at = doc.page.height - this.margin + 14;
     doc.font(REGULAR).fontSize(7.5).fillColor(MUTED);
     doc.text(printableText(`${this.ctx.brandName} · Generated by ${this.ctx.productName} · Confidential`).text, this.margin, at, { lineBreak: false });
     const n = `Page ${this.page}`;
     doc.text(n, doc.page.width - this.margin - doc.widthOfString(n), at, { lineBreak: false });
-    doc.x = x; doc.y = y;
+    doc.x = x;
+    doc.y = y;
   }
 
   /** The brand at the top left (logo, or the name if there is none we can draw), and who the employer is at the right. */
   letterhead(details: 'full' | 'short' = 'full') {
-    const { doc, ctx, margin } = this; const top = margin; const c = ctx.company;
+    const { doc, ctx, margin } = this;
+    const top = margin;
+    const c = ctx.company;
     let drawn = false;
     if (ctx.images.logo) {
-      try { doc.image(ctx.images.logo, margin, top, { fit: [130, 48] }); drawn = true; } catch { drawn = false; }
+      try {
+        doc.image(ctx.images.logo, margin, top, { fit: [130, 48] });
+        drawn = true;
+      } catch {
+        drawn = false;
+      }
     }
-    if (!drawn) doc.font(BOLD).fontSize(16).fillColor(this.accent).text(this.t(ctx.brandName), margin, top + 4, { width: 220 });
-    const rightX = margin + 230; const width = this.usableWidth - 230;
+    if (!drawn)
+      doc
+        .font(BOLD)
+        .fontSize(16)
+        .fillColor(this.accent)
+        .text(this.t(ctx.brandName), margin, top + 4, { width: 220 });
+    const rightX = margin + 230;
+    const width = this.usableWidth - 230;
     doc.font(BOLD).fontSize(10.5).fillColor(INK).text(this.t(ctx.legalName), rightX, top, { width, align: 'right' });
-    const ids = details === 'full'
-      ? [c.cin && `CIN ${c.cin}`, c.gstin && `GSTIN ${c.gstin}`, c.tan && `TAN ${c.tan}`, c.pfRegistration && `PF ${c.pfRegistration}`, c.esiRegistration && `ESI ${c.esiRegistration}`, c.ptRegistration && `PT ${c.ptRegistration}`]
-      : [c.cin && `CIN ${c.cin}`, c.gstin && `GSTIN ${c.gstin}`];
+    const ids =
+      details === 'full'
+        ? [
+            c.cin && `CIN ${c.cin}`,
+            c.gstin && `GSTIN ${c.gstin}`,
+            c.tan && `TAN ${c.tan}`,
+            c.pfRegistration && `PF ${c.pfRegistration}`,
+            c.esiRegistration && `ESI ${c.esiRegistration}`,
+            c.ptRegistration && `PT ${c.ptRegistration}`,
+          ]
+        : [c.cin && `CIN ${c.cin}`, c.gstin && `GSTIN ${c.gstin}`];
     doc.font(REGULAR).fontSize(8).fillColor(MUTED);
     if (c.registeredAddress) doc.text(this.t(c.registeredAddress), rightX, doc.y + 1, { width, align: 'right' });
     const line = ids.filter(Boolean).join('  ·  ');
     if (line) doc.text(this.t(line), rightX, doc.y + 1, { width, align: 'right' });
     const y = Math.max(doc.y, top + 50) + 6;
-    doc.moveTo(margin, y).lineTo(margin + this.usableWidth, y).lineWidth(1.5).strokeColor(this.accent).stroke();
-    doc.x = margin; doc.y = y + 12;
+    doc
+      .moveTo(margin, y)
+      .lineTo(margin + this.usableWidth, y)
+      .lineWidth(1.5)
+      .strokeColor(this.accent)
+      .stroke();
+    doc.x = margin;
+    doc.y = y + 12;
     this.body();
   }
 
   /** The signature, stamp and signatory, for whichever of them this organization has. */
   signOff(o: { always: boolean }) {
-    const { doc, ctx, margin } = this; const c = ctx.company; const { signature, stamp } = ctx.images;
+    const { doc, ctx, margin } = this;
+    const c = ctx.company;
+    const { signature, stamp } = ctx.images;
     if (!o.always && !signature && !stamp && !c.signatoryName) return;
     if (doc.y + 110 > this.bottom) doc.addPage();
-    doc.x = margin; doc.moveDown(1);
+    doc.x = margin;
+    doc.moveDown(1);
     this.body(10);
     doc.text(this.t(`For ${ctx.legalName}`), margin);
     const y = doc.y + 4;
-    const place = (img: Buffer | null, x: number) => { if (!img) return false; try { doc.image(img, x, y, { fit: [110, 50] }); return true; } catch { return false; } };
+    const place = (img: Buffer | null, x: number) => {
+      if (!img) return false;
+      try {
+        doc.image(img, x, y, { fit: [110, 50] });
+        return true;
+      } catch {
+        return false;
+      }
+    };
     const drew = [place(signature, margin), place(stamp, margin + 130)].some(Boolean);
-    doc.x = margin; doc.y = y + (drew ? 56 : 30);
+    doc.x = margin;
+    doc.y = y + (drew ? 56 : 30);
     this.body(10);
     doc.font(BOLD).text(this.t(c.signatoryName ?? 'Authorised signatory'), margin);
     doc.font(REGULAR);
@@ -227,7 +341,8 @@ export class PdfWriter {
     if (!notes.length) return;
     const { doc, margin } = this;
     if (doc.y + 16 * notes.length + 8 > this.bottom) doc.addPage();
-    doc.x = margin; doc.y += 8;
+    doc.x = margin;
+    doc.y += 8;
     doc.font(REGULAR).fontSize(8).fillColor(MUTED);
     for (const n of notes) doc.text(printableText(n).text, margin, doc.y, { width: this.usableWidth });
   }

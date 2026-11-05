@@ -21,7 +21,11 @@ export async function withTenant<T>(pool: Pool, tenantId: string, fn: (db: Db) =
 export async function withTenantRead<T>(read: Pool, primary: Pool, tenantId: string, fn: (db: Db) => Promise<T>): Promise<T> {
   let pool = read;
   if (read !== primary) {
-    try { (await read.connect()).release(); } catch { pool = primary; }
+    try {
+      (await read.connect()).release();
+    } catch {
+      pool = primary;
+    }
   }
   return runTx(pool, async (db) => {
     await db.query('SET TRANSACTION READ ONLY');
@@ -42,7 +46,10 @@ export async function withPlatformBypass<T>(pool: Pool, fn: (db: Db) => Promise<
   });
 }
 
-interface TxHooks { committed: (() => Promise<void>)[]; ended: (() => void)[] }
+interface TxHooks {
+  committed: (() => Promise<void>)[];
+  ended: (() => void)[];
+}
 const hooks = new WeakMap<object, TxHooks>();
 
 /**
@@ -51,7 +58,11 @@ const hooks = new WeakMap<object, TxHooks>();
  */
 export function afterCommit(db: Db, fn: () => Promise<void>, end?: () => void) {
   const h = hooks.get(db);
-  if (!h) { void fn(); end?.(); return; }
+  if (!h) {
+    void fn();
+    end?.();
+    return;
+  }
   h.committed.push(fn);
   if (end) h.ended.push(end);
 }

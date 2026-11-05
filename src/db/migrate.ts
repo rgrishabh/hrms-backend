@@ -93,16 +93,28 @@ export function splitStatements(sql: string): string[] {
       let depth = 1;
       i += 2;
       while (i < sql.length && depth > 0) {
-        if (sql[i] === '/' && sql[i + 1] === '*') { depth++; i += 2; } else if (sql[i] === '*' && sql[i + 1] === '/') { depth--; i += 2; } else i++;
+        if (sql[i] === '/' && sql[i + 1] === '*') {
+          depth++;
+          i += 2;
+        } else if (sql[i] === '*' && sql[i + 1] === '/') {
+          depth--;
+          i += 2;
+        } else i++;
       }
     } else if (ch === "'" || ch === '"') {
       const escapes = ch === "'" && /[eE]/.test(sql[i - 1] ?? '') && !/[\w$]/.test(sql[i - 2] ?? '');
       hasCode = true;
       i++;
       while (i < sql.length) {
-        if (escapes && sql[i] === '\\') { i += 2; continue; }
+        if (escapes && sql[i] === '\\') {
+          i += 2;
+          continue;
+        }
         if (sql[i] === ch) {
-          if (sql[i + 1] === ch) { i += 2; continue; }
+          if (sql[i + 1] === ch) {
+            i += 2;
+            continue;
+          }
           break;
         }
         i++;
@@ -140,7 +152,8 @@ async function runFile(client: pg.Client, sql: string, record: () => Promise<unk
     // A failed CREATE INDEX CONCURRENTLY leaves an invalid index behind, and IF NOT EXISTS is then satisfied by it.
     const invalid = await client.query<{ name: string }>(`SELECT c.relname AS name FROM pg_index i JOIN pg_class c ON c.oid = i.indexrelid
       JOIN pg_namespace n ON n.oid = c.relnamespace WHERE n.nspname = 'public' AND NOT i.indisvalid ORDER BY 1`);
-    if (invalid.rowCount) throw new Error(`invalid index left by an earlier attempt: ${invalid.rows.map((r) => r.name).join(', ')}. Drop it (DROP INDEX CONCURRENTLY) and run again`);
+    if (invalid.rowCount)
+      throw new Error(`invalid index left by an earlier attempt: ${invalid.rows.map((r) => r.name).join(', ')}. Drop it (DROP INDEX CONCURRENTLY) and run again`);
     await record();
     return;
   }
@@ -170,8 +183,7 @@ export async function migrate(connectionString: string, log: (m: string) => void
       name text PRIMARY KEY, checksum text NOT NULL, applied_at timestamptz NOT NULL DEFAULT now())`);
     // Serialize concurrent deploys.
     await client.query(`SELECT pg_advisory_lock(727274)`);
-    const applied = new Map((await client.query<{ name: string; checksum: string }>(
-      'SELECT name, checksum FROM schema_migrations')).rows.map((r) => [r.name, r.checksum]));
+    const applied = new Map((await client.query<{ name: string; checksum: string }>('SELECT name, checksum FROM schema_migrations')).rows.map((r) => [r.name, r.checksum]));
     const code = new Map(CODE_MIGRATIONS.map((m) => [m.name, m]));
     const files = [...(await readdir(dir)).filter((f) => f.endsWith('.sql')), ...code.keys()].sort();
     let cipher = opts.cipher;
@@ -242,11 +254,18 @@ export async function rollback(connectionString: string, log: (m: string) => voi
   const client = new pg.Client({ connectionString, ssl: pgSsl() });
   await client.connect();
   try {
-    if (!(await client.query<{ t: string | null }>(`SELECT to_regclass('public.schema_migrations') AS t`)).rows[0]!.t) throw new Error('Nothing to roll back: no schema_migrations table');
+    if (!(await client.query<{ t: string | null }>(`SELECT to_regclass('public.schema_migrations') AS t`)).rows[0]!.t)
+      throw new Error('Nothing to roll back: no schema_migrations table');
     await client.query(`SELECT pg_advisory_lock(727274)`);
     const rows = (await client.query<{ name: string; checksum: string }>('SELECT name, checksum FROM schema_migrations')).rows;
     const checksums = new Map(rows.map((r) => [r.name, r.checksum]));
-    const plan = rollbackPlan(rows.map((r) => r.name).sort().reverse(), opts);
+    const plan = rollbackPlan(
+      rows
+        .map((r) => r.name)
+        .sort()
+        .reverse(),
+      opts,
+    );
     const code = new Map(CODE_MIGRATIONS.map((m) => [m.name, m]));
 
     const downs = new Map<string, string>();
@@ -257,7 +276,12 @@ export async function rollback(connectionString: string, log: (m: string) => voi
       if (existsSync(file)) downs.set(name, await readFile(file, 'utf8'));
       else missing.push(name);
       const up = path.join(dir, name);
-      if (existsSync(up) && createHash('sha256').update(await readFile(up, 'utf8')).digest('hex') !== checksums.get(name)) {
+      if (
+        existsSync(up) &&
+        createHash('sha256')
+          .update(await readFile(up, 'utf8'))
+          .digest('hex') !== checksums.get(name)
+      ) {
         throw new Error(`Migration ${name} was modified after being applied; its down file may not fit what the database holds`);
       }
     }
@@ -266,7 +290,9 @@ export async function rollback(connectionString: string, log: (m: string) => voi
     if (!opts.allowUnsafeStop) {
       for (const step of CODE_MIGRATIONS) {
         if (step.rollsBackWith && plan.includes(step.rollsBackWith) && !plan.includes(step.name)) {
-          throw new Error(`Cannot stop at ${step.name}: rolling back ${step.rollsBackWith} leaves placeholder values that only rolling back ${step.name} replaces. Roll back further. Nothing was changed`);
+          throw new Error(
+            `Cannot stop at ${step.name}: rolling back ${step.rollsBackWith} leaves placeholder values that only rolling back ${step.name} replaces. Roll back further. Nothing was changed`,
+          );
         }
       }
     }
@@ -326,18 +352,38 @@ export function parseRollbackArgs(argv: readonly string[]): RollbackOptions {
 
 if (process.argv[1] && fileURLToPath(import.meta.url) === path.resolve(process.argv[1])) {
   const url = process.env.DATABASE_MIGRATION_URL;
-  if (!url) { complain('DATABASE_MIGRATION_URL is required'); process.exit(1); }
+  if (!url) {
+    complain('DATABASE_MIGRATION_URL is required');
+    process.exit(1);
+  }
   if (process.argv.includes('--status')) {
     // Exit 0 when up to date, 2 when migrations are pending, 3 when the database is ahead of this build.
     const c = new pg.Client({ connectionString: url, ssl: pgSsl() });
-    c.connect().then(() => migrationStatus(c)).then((st) => {
-      say(JSON.stringify(st));
-      process.exitCode = st.unknown.length ? 3 : st.pending.length ? 2 : 0;
-    }).catch((e) => { complain(e.message); process.exitCode = 1; }).finally(() => c.end());
+    c.connect()
+      .then(() => migrationStatus(c))
+      .then((st) => {
+        say(JSON.stringify(st));
+        process.exitCode = st.unknown.length ? 3 : st.pending.length ? 2 : 0;
+      })
+      .catch((e) => {
+        complain(e.message);
+        process.exitCode = 1;
+      })
+      .finally(() => c.end());
   } else if (process.argv.includes('--rollback')) {
-    Promise.resolve().then(() => rollback(url, say, parseRollbackArgs(process.argv.slice(2))))
-      .then((done) => say(`rolled back ${done.length} migration(s)`)).catch((e) => { complain(e.message); process.exit(1); });
+    Promise.resolve()
+      .then(() => rollback(url, say, parseRollbackArgs(process.argv.slice(2))))
+      .then((done) => say(`rolled back ${done.length} migration(s)`))
+      .catch((e) => {
+        complain(e.message);
+        process.exit(1);
+      });
   } else {
-    migrate(url).then(() => say('migrations complete')).catch((e) => { complain(e.message); process.exit(1); });
+    migrate(url)
+      .then(() => say('migrations complete'))
+      .catch((e) => {
+        complain(e.message);
+        process.exit(1);
+      });
   }
 }

@@ -8,7 +8,9 @@ import { AsyncLocalStorage } from 'node:async_hooks';
 const store = new AsyncLocalStorage<Map<string, unknown>>();
 
 export const withMemo = <T>(memo: Map<string, unknown>, fn: () => T): T => store.run(memo, fn);
-export const clearMemo = () => { store.getStore()?.clear(); };
+export const clearMemo = () => {
+  store.getStore()?.clear();
+};
 
 export async function memoized<T>(key: string, load: () => Promise<T>): Promise<T> {
   const memo = store.getStore();

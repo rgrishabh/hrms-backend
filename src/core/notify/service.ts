@@ -16,7 +16,9 @@ import { dataCipher } from '../crypto/index.js';
  * enabled, a transport is configured, and the user has not opted out.
  */
 let brand: EmailBrand = { brandName: 'HRMS', productName: 'HRMS', primaryColor: '#1f5f8b', supportEmail: null, appUrl: 'http://localhost' };
-export function setEmailBrand(b: EmailBrand) { brand = b; }
+export function setEmailBrand(b: EmailBrand) {
+  brand = b;
+}
 
 export interface NotifyMessage {
   kind: string;
@@ -35,10 +37,28 @@ export interface NotifyMessage {
 
 /** Kind prefixes that belong to one module. Others are platform notices; a cross-module one (approval.*, cases.*) names its feature in the message. */
 const KIND_FEATURES: readonly (readonly [string, string])[] = [
-  ['assets.', 'assets'], ['cases.committee', 'posh'], ['cases.posh', 'posh'], ['cases.deadline', 'posh'], ['cases.grievance', 'grievance'], ['cases.assigned', 'grievance'], ['cases.overdue', 'grievance'],
-  ['lifecycle.onboarding', 'core.onboarding'], ['lifecycle.probation', 'core.onboarding'], ['lifecycle.offboarding', 'core.offboarding'], ['competency.', 'lab.competency'], ['documents.', 'core.documents'], ['expenses.', 'expenses'], ['loans.', 'loans'],
-  ['payroll.payslip', 'payroll.payslips'], ['payroll.', 'payroll'], ['performance.', 'performance'], ['policies.', 'core.policies'], ['recruitment.', 'recruitment'],
-  ['reports.', 'reports.advanced'], ['training.', 'training'], ['travel.', 'travel'],
+  ['assets.', 'assets'],
+  ['cases.committee', 'posh'],
+  ['cases.posh', 'posh'],
+  ['cases.deadline', 'posh'],
+  ['cases.grievance', 'grievance'],
+  ['cases.assigned', 'grievance'],
+  ['cases.overdue', 'grievance'],
+  ['lifecycle.onboarding', 'core.onboarding'],
+  ['lifecycle.probation', 'core.onboarding'],
+  ['lifecycle.offboarding', 'core.offboarding'],
+  ['competency.', 'lab.competency'],
+  ['documents.', 'core.documents'],
+  ['expenses.', 'expenses'],
+  ['loans.', 'loans'],
+  ['payroll.payslip', 'payroll.payslips'],
+  ['payroll.', 'payroll'],
+  ['performance.', 'performance'],
+  ['policies.', 'core.policies'],
+  ['recruitment.', 'recruitment'],
+  ['reports.', 'reports.advanced'],
+  ['training.', 'training'],
+  ['travel.', 'travel'],
 ];
 export const featureOfKind = (kind: string) => KIND_FEATURES.find(([prefix]) => kind.startsWith(prefix))?.[1];
 
@@ -50,26 +70,33 @@ export async function notifyUsers(db: Db, tenantId: string, userIds: string[], m
   // Security notices cannot be opted out of: someone turned off notification email, not the warning that their account changed hands.
   const mandatory = msg.kind.startsWith('security.');
   if (!ids.length || allOff(feature)) return { inApp: 0, emails: 0 };
-  const inApp = await db.query(`INSERT INTO notifications (tenant_id, user_id, kind, title, body, link, dedupe_key, feature)
+  const inApp = await db.query(
+    `INSERT INTO notifications (tenant_id, user_id, kind, title, body, link, dedupe_key, feature)
     SELECT $1, u.id, $3, $4, $5, $6, $7, $8 FROM users u WHERE u.tenant_id=$1 AND u.id = ANY($2) AND u.status='active'
     ON CONFLICT (tenant_id, user_id, dedupe_key) WHERE dedupe_key IS NOT NULL DO NOTHING`,
-    [tenantId, ids, msg.kind, msg.title.slice(0, 200), msg.body?.slice(0, 1000) ?? null, msg.link ?? null, msg.dedupeKey ?? null, feature ?? null]);
+    [tenantId, ids, msg.kind, msg.title.slice(0, 200), msg.body?.slice(0, 1000) ?? null, msg.link ?? null, msg.dedupeKey ?? null, feature ?? null],
+  );
   let emails = 0;
   if (msg.email !== false && getMailer() && isModuleEnabled('notifications.email')) {
     const rendered = renderEmail(brand, { ...msg, mandatory });
-    const r = await db.query(`INSERT INTO email_outbox (tenant_id, to_user_id, to_email, subject, text_body, html_body, kind, dedupe_key)
+    const r = await db.query(
+      `INSERT INTO email_outbox (tenant_id, to_user_id, to_email, subject, text_body, html_body, kind, dedupe_key)
       SELECT $1, u.id, u.email, $3, $4, $5, $6, $7 FROM users u
        WHERE u.tenant_id=$1 AND u.id = ANY($2) AND u.status='active' AND (u.email_notifications OR $8)
       ON CONFLICT (tenant_id, to_email, dedupe_key) WHERE dedupe_key IS NOT NULL DO NOTHING`,
-      [tenantId, ids, rendered.subject, rendered.text, rendered.html, msg.kind, msg.dedupeKey ?? null, mandatory]);
+      [tenantId, ids, rendered.subject, rendered.text, rendered.html, msg.kind, msg.dedupeKey ?? null, mandatory],
+    );
     emails = r.rowCount ?? 0;
   }
   if (msg.push !== false && getPushSender() && isModuleEnabled('notifications.push')) {
     // Only the kind is kept: the outbox holds nothing a push could leak.
-    await db.query(`INSERT INTO push_outbox (tenant_id, to_user_id, kind, dedupe_key)
+    await db.query(
+      `INSERT INTO push_outbox (tenant_id, to_user_id, kind, dedupe_key)
       SELECT $1, u.id, $3, $4 FROM users u WHERE u.tenant_id=$1 AND u.id = ANY($2) AND u.status='active'
         AND EXISTS (SELECT 1 FROM push_subscriptions p WHERE p.tenant_id=u.tenant_id AND p.user_id=u.id)
-      ON CONFLICT (tenant_id, to_user_id, dedupe_key) WHERE dedupe_key IS NOT NULL DO NOTHING`, [tenantId, ids, msg.kind, msg.dedupeKey ?? null]);
+      ON CONFLICT (tenant_id, to_user_id, dedupe_key) WHERE dedupe_key IS NOT NULL DO NOTHING`,
+      [tenantId, ids, msg.kind, msg.dedupeKey ?? null],
+    );
   }
   return { inApp: inApp.rowCount ?? 0, emails };
 }
@@ -82,20 +109,32 @@ export const SECRET_PLACEHOLDER = '__SECRET__';
  * send, and cleared after, so a copy of the outbox holds no working link. Not written as an in-app notification. Ignores the email preference,
  * and needs a mailer: callers check.
  */
-export async function queueSecretEmail(db: Db, tenantId: string, userId: string, msg: { kind: string; title: string; body: string; link?: string; actionLabel?: string }, secret: string, expiresAt: Date) {
+export async function queueSecretEmail(
+  db: Db,
+  tenantId: string,
+  userId: string,
+  msg: { kind: string; title: string; body: string; link?: string; actionLabel?: string },
+  secret: string,
+  expiresAt: Date,
+) {
   const rendered = renderEmail(brand, { ...msg, mandatory: true });
-  await db.query(`INSERT INTO email_outbox (tenant_id, to_user_id, to_email, subject, text_body, html_body, kind, secret_enc, expires_at)
+  await db.query(
+    `INSERT INTO email_outbox (tenant_id, to_user_id, to_email, subject, text_body, html_body, kind, secret_enc, expires_at)
     SELECT $1, u.id, u.email, $3, $4, $5, $6, $7, $8 FROM users u WHERE u.tenant_id=$1 AND u.id=$2`,
-    [tenantId, userId, rendered.subject, rendered.text, rendered.html, msg.kind, dataCipher().encrypt(secret), expiresAt]);
+    [tenantId, userId, rendered.subject, rendered.text, rendered.html, msg.kind, dataCipher().encrypt(secret), expiresAt],
+  );
 }
 
 /** Active users holding a permission through system or custom roles. */
 export async function usersWithPermission(db: Db, tenantId: string, permission: string): Promise<string[]> {
   const mode = currentMode();
   const systemRoles = SYSTEM_ROLES.filter((r) => (resolveRolePermissions(r.key, mode) as readonly string[]).includes(permission)).map((r) => r.key);
-  const r = await db.query<{ id: string }>(`SELECT DISTINCT u.id FROM users u JOIN user_roles ur ON ur.user_id=u.id AND ur.tenant_id=u.tenant_id
+  const r = await db.query<{ id: string }>(
+    `SELECT DISTINCT u.id FROM users u JOIN user_roles ur ON ur.user_id=u.id AND ur.tenant_id=u.tenant_id
     LEFT JOIN tenant_roles tr ON tr.tenant_id=ur.tenant_id AND tr.key=ur.role_key
-    WHERE u.tenant_id=$1 AND u.status='active' AND (ur.role_key = ANY($2) OR ($4 AND $3 = ANY(tr.permissions)))`, [tenantId, systemRoles, permission, mode === 'multi']);
+    WHERE u.tenant_id=$1 AND u.status='active' AND (ur.role_key = ANY($2) OR ($4 AND $3 = ANY(tr.permissions)))`,
+    [tenantId, systemRoles, permission, mode === 'multi'],
+  );
   return r.rows.map((x) => x.id);
 }
 
@@ -113,12 +152,17 @@ export async function deliverOutbox(pool: Pool, log: { error: (o: object, m?: st
     await db.query(`UPDATE email_outbox SET status='queued' WHERE status='sending' AND next_attempt_at < now() - interval '10 minutes'`);
     // A code or link that has already expired is not worth sending. Its secret goes.
     await db.query(`UPDATE email_outbox SET status='failed', secret_enc=NULL, last_error='expired before it could be sent' WHERE status='queued' AND expires_at < now()`);
-    return (await db.query<{ id: string; tenant_id: string; to_email: string; subject: string; text_body: string; html_body: string; attempts: number; secret_enc: string | null }>(
-      `UPDATE email_outbox SET status='sending', attempts=attempts+1, next_attempt_at=now()
+    return (
+      await db.query<{ id: string; tenant_id: string; to_email: string; subject: string; text_body: string; html_body: string; attempts: number; secret_enc: string | null }>(
+        `UPDATE email_outbox SET status='sending', attempts=attempts+1, next_attempt_at=now()
         WHERE id IN (SELECT id FROM email_outbox WHERE status='queued' AND next_attempt_at <= now() ORDER BY created_at LIMIT $1 FOR UPDATE SKIP LOCKED)
-        RETURNING id, tenant_id, to_email, subject, text_body, html_body, attempts, secret_enc`, [limit])).rows;
+        RETURNING id, tenant_id, to_email, subject, text_body, html_body, attempts, secret_enc`,
+        [limit],
+      )
+    ).rows;
   });
-  let sent = 0; let failed = 0;
+  let sent = 0;
+  let failed = 0;
   for (const m of claimed) {
     try {
       const secret = m.secret_enc ? dataCipher().decrypt(m.secret_enc) : null;
@@ -130,10 +174,15 @@ export async function deliverOutbox(pool: Pool, log: { error: (o: object, m?: st
       failed++;
       const err = ((e as Error).message ?? 'send failed').slice(0, 500);
       log.error({ outboxId: m.id, attempts: m.attempts, err }, 'email delivery failed');
-      await withPlatformBypass(pool, (db) => db.query(`UPDATE email_outbox SET last_error=$2,
+      await withPlatformBypass(pool, (db) =>
+        db.query(
+          `UPDATE email_outbox SET last_error=$2,
           status = CASE WHEN attempts >= ${MAX_EMAIL_ATTEMPTS} THEN 'failed' ELSE 'queued' END,
           secret_enc = CASE WHEN attempts >= ${MAX_EMAIL_ATTEMPTS} THEN NULL ELSE secret_enc END,
-          next_attempt_at = now() + make_interval(mins => power(2, attempts)::int) WHERE id=$1`, [m.id, err]));
+          next_attempt_at = now() + make_interval(mins => power(2, attempts)::int) WHERE id=$1`,
+          [m.id, err],
+        ),
+      );
     }
   }
   return { sent, failed };
@@ -148,15 +197,28 @@ export async function deliverPushOutbox(pool: Pool, log: { error: (o: object, m?
   const claimed = await withPlatformBypass(pool, async (db) => {
     await db.query(`DELETE FROM push_outbox WHERE status IN ('sent','failed') AND created_at < now() - interval '30 days'`);
     await db.query(`UPDATE push_outbox SET status='queued' WHERE status='sending' AND next_attempt_at < now() - interval '10 minutes'`);
-    return (await db.query<{ id: string; tenant_id: string; to_user_id: string; kind: string; attempts: number }>(
-      `UPDATE push_outbox SET status='sending', attempts=attempts+1, next_attempt_at=now()
+    return (
+      await db.query<{ id: string; tenant_id: string; to_user_id: string; kind: string; attempts: number }>(
+        `UPDATE push_outbox SET status='sending', attempts=attempts+1, next_attempt_at=now()
         WHERE id IN (SELECT id FROM push_outbox WHERE status='queued' AND next_attempt_at <= now() ORDER BY created_at LIMIT $1 FOR UPDATE SKIP LOCKED)
-        RETURNING id, tenant_id, to_user_id, kind, attempts`, [limit])).rows;
+        RETURNING id, tenant_id, to_user_id, kind, attempts`,
+        [limit],
+      )
+    ).rows;
   });
-  let sent = 0; let failed = 0;
+  let sent = 0;
+  let failed = 0;
   for (const m of claimed) {
-    const subs = await withPlatformBypass(pool, async (db) => (await db.query<{ id: string; endpoint: string; p256dh: string; auth: string }>(
-      'SELECT id, endpoint, p256dh, auth FROM push_subscriptions WHERE tenant_id=$1 AND user_id=$2', [m.tenant_id, m.to_user_id])).rows);
+    const subs = await withPlatformBypass(
+      pool,
+      async (db) =>
+        (
+          await db.query<{ id: string; endpoint: string; p256dh: string; auth: string }>(
+            'SELECT id, endpoint, p256dh, auth FROM push_subscriptions WHERE tenant_id=$1 AND user_id=$2',
+            [m.tenant_id, m.to_user_id],
+          )
+        ).rows,
+    );
     const payload = pushPayload(m.kind, brand.productName);
     let lastError: string | null = null;
     for (const sub of subs) {
@@ -165,13 +227,20 @@ export async function deliverPushOutbox(pool: Pool, log: { error: (o: object, m?
         if (r.ok) await withPlatformBypass(pool, (db) => db.query('UPDATE push_subscriptions SET last_used_at=now() WHERE id=$1', [sub.id]));
         else if (r.gone) await withPlatformBypass(pool, (db) => db.query('DELETE FROM push_subscriptions WHERE id=$1', [sub.id]));
         else lastError = r.error;
-      } catch (e) { lastError = ((e as Error).message ?? 'send failed').slice(0, 500); }
+      } catch (e) {
+        lastError = ((e as Error).message ?? 'send failed').slice(0, 500);
+      }
     }
     if (lastError) {
       failed++;
       log.error({ pushId: m.id, attempts: m.attempts, err: lastError }, 'push delivery failed');
-      await withPlatformBypass(pool, (db) => db.query(`UPDATE push_outbox SET last_error=$2, status = CASE WHEN attempts >= ${MAX_PUSH_ATTEMPTS} THEN 'failed' ELSE 'queued' END,
-        next_attempt_at = now() + make_interval(mins => power(2, attempts)::int) WHERE id=$1`, [m.id, lastError]));
+      await withPlatformBypass(pool, (db) =>
+        db.query(
+          `UPDATE push_outbox SET last_error=$2, status = CASE WHEN attempts >= ${MAX_PUSH_ATTEMPTS} THEN 'failed' ELSE 'queued' END,
+        next_attempt_at = now() + make_interval(mins => power(2, attempts)::int) WHERE id=$1`,
+          [m.id, lastError],
+        ),
+      );
     } else {
       sent++;
       await withPlatformBypass(pool, (db) => db.query(`UPDATE push_outbox SET status='sent', sent_at=now(), last_error=NULL WHERE id=$1`, [m.id]));

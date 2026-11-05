@@ -7,9 +7,12 @@ import { getScanner, scanRequired } from './clamav.js';
 import { detectFile, type Detected } from './sniff.js';
 import { ImageStructureError, stripMetadata } from './strip.js';
 
-export interface PreparedUpload extends Detected { bytes: Buffer }
+export interface PreparedUpload extends Detected {
+  bytes: Buffer;
+}
 
-const NOT_SCANNED = () => new AppError(503, 'scanner_unavailable', 'Files cannot be scanned for malware right now, so this upload was refused. Try again later, or tell your administrator.');
+const NOT_SCANNED = () =>
+  new AppError(503, 'scanner_unavailable', 'Files cannot be scanned for malware right now, so this upload was refused. Try again later, or tell your administrator.');
 
 /**
  * Every upload path goes through here, before any transaction: the content decides the type (magic bytes), clamd sees the bytes as they arrived,
@@ -21,9 +24,19 @@ export async function prepareUpload(req: Pick<FastifyRequest, 'log'>, a: Pick<Te
   const scanner = getScanner();
   if (!scanner && scanRequired()) throw NOT_SCANNED();
   if (scanner) {
-    const result = await scanner.scan(buf).catch((e: Error) => { req.log.error({ err: e.message }, 'malware scan failed'); throw NOT_SCANNED(); });
+    const result = await scanner.scan(buf).catch((e: Error) => {
+      req.log.error({ err: e.message }, 'malware scan failed');
+      throw NOT_SCANNED();
+    });
     if (!result.clean) {
-      await a.tx((db) => audit(db, { ...a.auditBase, action: 'upload.malware_blocked', category: 'security', metadata: { signature: result.signature, contentType: detected.contentType, sha256: createHash('sha256').update(buf).digest('hex') } }));
+      await a.tx((db) =>
+        audit(db, {
+          ...a.auditBase,
+          action: 'upload.malware_blocked',
+          category: 'security',
+          metadata: { signature: result.signature, contentType: detected.contentType, sha256: createHash('sha256').update(buf).digest('hex') },
+        }),
+      );
       throw new AppError(422, 'malware_detected', 'This file was flagged by the malware scanner and was not stored.');
     }
   }

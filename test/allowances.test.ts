@@ -4,7 +4,11 @@ import { problem, makeApp, createTenant, Client, ownerQuery, PASSWORD, type Tena
 import { hashPassword } from '../src/core/crypto/index.js';
 
 // Per-diem and mileage: the organization's effective-dated rates price items from days or km.
-let app: FastifyInstance; let T: TenantFixture; let emp: Client; let mgr: Client; let fin: Client;
+let app: FastifyInstance;
+let T: TenantFixture;
+let emp: Client;
+let mgr: Client;
+let fin: Client;
 const cats: Record<string, string> = {};
 const today = new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Kolkata' }).format(new Date());
 const plus = (n: number) => new Date(Date.parse(`${today}T00:00:00Z`) + n * 86_400_000).toISOString().slice(0, 10);
@@ -15,7 +19,11 @@ const newClaim = async () => (await emp.post('/api/v1/expenses/claims', { title:
 beforeAll(async () => {
   app = await makeApp({ ...flags('default,expenses,travel') });
   T = await createTenant();
-  const [u] = await ownerQuery<{ id: string }>(`INSERT INTO users (tenant_id, email, display_name, password_hash) VALUES ($1,$2,'finance',$3) RETURNING id`, [T.id, `finance@${T.host}`, await hashPassword(PASSWORD)]);
+  const [u] = await ownerQuery<{ id: string }>(`INSERT INTO users (tenant_id, email, display_name, password_hash) VALUES ($1,$2,'finance',$3) RETURNING id`, [
+    T.id,
+    `finance@${T.host}`,
+    await hashPassword(PASSWORD),
+  ]);
   await ownerQuery(`INSERT INTO user_roles (user_id, tenant_id, role_key) VALUES ($1,$2,'finance_manager')`, [u!.id, T.id]);
   await ownerQuery(`UPDATE employees SET grade='L3' WHERE id=$1`, [T.users.employee!.employeeId]);
   fin = await Client.login(app, T.host, `finance@${T.host}`);
@@ -24,9 +32,12 @@ beforeAll(async () => {
   for (const [code, o] of Object.entries({
     PERDIEM: { name: 'Daily allowance', requiresReceipt: false, calc: 'per_diem' },
     MILEAGE: { name: 'Own vehicle', requiresReceipt: false, calc: 'mileage' },
-  })) cats[code] = (await fin.post('/api/v1/expenses/categories', { code, ...o })).json().id;
+  }))
+    cats[code] = (await fin.post('/api/v1/expenses/categories', { code, ...o })).json().id;
 });
-afterAll(async () => { await app.close(); });
+afterAll(async () => {
+  await app.close();
+});
 
 describe('allowance rates', () => {
   it('finance sets effective-dated rates; nothing is assumed', async () => {
@@ -38,14 +49,18 @@ describe('allowance rates', () => {
     expect((await rate({ kind: 'per_diem', tier: 'METRO', grade: 'L3', rate: 1500, effectiveFrom: plus(-30) })).statusCode).toBe(201);
     expect((await rate({ kind: 'per_diem', tier: 'METRO', rate: 1400, effectiveFrom: plus(15), note: 'Revised policy' })).statusCode).toBe(201);
     expect((await rate({ kind: 'mileage', vehicle: 'car', rate: 9.5, effectiveFrom: plus(-30) })).statusCode).toBe(201);
-    expect((await rate({ kind: 'per_diem', tier: 'METRO', rate: 1300, effectiveFrom: plus(-30) })).statusCode).toBe(409);   // same class, same day
-    expect(problem((await rate({ kind: 'mileage', vehicle: 'car', rate: 9, effectiveFrom: plus(-120) }))).detail).toMatch(/90 days back/);
+    expect((await rate({ kind: 'per_diem', tier: 'METRO', rate: 1300, effectiveFrom: plus(-30) })).statusCode).toBe(409); // same class, same day
+    expect(problem(await rate({ kind: 'mileage', vehicle: 'car', rate: 9, effectiveFrom: plus(-120) })).detail).toMatch(/90 days back/);
     expect((await emp.post('/api/v1/expenses/allowance-rates', { kind: 'mileage', vehicle: 'car', rate: 50, effectiveFrom: today })).statusCode).toBe(403);
 
     const list = (await emp.get('/api/v1/expenses/allowance-rates')).json();
     expect(list.tiers).toEqual(['METRO']);
-    expect(list.items.filter((x: { state: string }) => x.state === 'current').map((x: { rate: string; grade: string | null }) => `${x.grade ?? '*'}:${x.rate}`).sort())
-      .toEqual(['*:1200.00', 'L3:1500.00', 'null:9.50'.replace('null', '*')].sort());
+    expect(
+      list.items
+        .filter((x: { state: string }) => x.state === 'current')
+        .map((x: { rate: string; grade: string | null }) => `${x.grade ?? '*'}:${x.rate}`)
+        .sort(),
+    ).toEqual(['*:1200.00', 'L3:1500.00', 'null:9.50'.replace('null', '*')].sort());
     expect(list.items.find((x: { state: string }) => x.state === 'scheduled')).toMatchObject({ rate: '1400.00', note: 'Revised policy' });
   });
 
@@ -53,13 +68,15 @@ describe('allowance rates', () => {
     const claim = await newClaim();
     let r = await item(claim, { categoryId: cats.PERDIEM, quantity: 1.5, tier: 'METRO', description: 'Mumbai, client audit' });
     expect(r.statusCode).toBe(201);
-    expect(r.json()).toMatchObject({ amount: '2250.00', rate: '1500.00', allowance: '2250.00' });   // L3 rate beats the general one
+    expect(r.json()).toMatchObject({ amount: '2250.00', rate: '1500.00', allowance: '2250.00' }); // L3 rate beats the general one
     r = await item(claim, { categoryId: cats.MILEAGE, quantity: 42.5, vehicle: 'car', amount: 300, description: 'Lab to Taloja MIDC and back' });
     expect(r.json()).toMatchObject({ amount: '300.00', allowance: '403.75' });
-    expect(problem((await item(claim, { categoryId: cats.MILEAGE, quantity: 10, vehicle: 'car', amount: 100, description: 'Too much' }))).detail).toMatch(/At most 95.00/);
-    expect(problem((await item(claim, { categoryId: cats.MILEAGE, quantity: 10, vehicle: 'two_wheeler', description: 'Scooter' }))).detail).toMatch(/no mileage rate for a two-wheeler/);
-    expect(problem((await item(claim, { categoryId: cats.PERDIEM, quantity: 1.25, tier: 'METRO', description: 'Odd' }))).detail).toMatch(/half days/);
-    expect(problem((await item(claim, { categoryId: cats.PERDIEM, tier: 'METRO', description: 'No days' }))).detail).toMatch(/number of days/);
+    expect(problem(await item(claim, { categoryId: cats.MILEAGE, quantity: 10, vehicle: 'car', amount: 100, description: 'Too much' })).detail).toMatch(/At most 95.00/);
+    expect(problem(await item(claim, { categoryId: cats.MILEAGE, quantity: 10, vehicle: 'two_wheeler', description: 'Scooter' })).detail).toMatch(
+      /no mileage rate for a two-wheeler/,
+    );
+    expect(problem(await item(claim, { categoryId: cats.PERDIEM, quantity: 1.25, tier: 'METRO', description: 'Odd' })).detail).toMatch(/half days/);
+    expect(problem(await item(claim, { categoryId: cats.PERDIEM, tier: 'METRO', description: 'No days' })).detail).toMatch(/number of days/);
 
     const detail = (await emp.get(`/api/v1/expenses/claims/${claim}`)).json();
     expect(detail.total).toBe('2550.00');
@@ -71,8 +88,15 @@ describe('allowance rates', () => {
   });
 
   it("per diem on a trip's claim stays within the trip's days", async () => {
-    const t = await emp.post('/api/v1/travel/requests', { purpose: 'Audit at the Mumbai branch', origin: 'Pune', destination: 'Mumbai', travelMode: 'rail',
-      startDate: today, endDate: plus(1), estimate: { travel: 800, meals: 3000 } });
+    const t = await emp.post('/api/v1/travel/requests', {
+      purpose: 'Audit at the Mumbai branch',
+      origin: 'Pune',
+      destination: 'Mumbai',
+      travelMode: 'rail',
+      startDate: today,
+      endDate: plus(1),
+      estimate: { travel: 800, meals: 3000 },
+    });
     expect(t.statusCode, t.body).toBe(201);
     const inbox = (await mgr.get('/api/v1/approvals/inbox')).json().items.find((x: { entity_id: string }) => x.entity_id === t.json().id);
     expect((await mgr.post(`/api/v1/approvals/${inbox.id}/act`, { action: 'approve' })).statusCode).toBe(200);
@@ -80,8 +104,10 @@ describe('allowance rates', () => {
     expect(c.statusCode, c.body).toBe(201);
     const claim = c.json().id;
     expect((await item(claim, { categoryId: cats.PERDIEM, quantity: 2, tier: 'METRO', description: 'Mumbai, two days' })).statusCode).toBe(201);
-    expect(problem((await item(claim, { categoryId: cats.PERDIEM, quantity: 0.5, tier: 'METRO', description: 'One more' }))).detail).toMatch(/lasts 2 day\(s\); 2.00 already claimed/);
-    expect(problem((await item(claim, { categoryId: cats.PERDIEM, quantity: 1, tier: 'METRO', expenseDate: plus(-1), description: 'Before' }))).detail).toMatch(/must fall between/);
+    expect(problem(await item(claim, { categoryId: cats.PERDIEM, quantity: 0.5, tier: 'METRO', description: 'One more' })).detail).toMatch(
+      /lasts 2 day\(s\); 2.00 already claimed/,
+    );
+    expect(problem(await item(claim, { categoryId: cats.PERDIEM, quantity: 1, tier: 'METRO', expenseDate: plus(-1), description: 'Before' })).detail).toMatch(/must fall between/);
   });
 
   it('only a rate not yet in force can be withdrawn', async () => {

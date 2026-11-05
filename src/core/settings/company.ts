@@ -21,12 +21,31 @@ export interface CompanyProfile {
 }
 
 export interface CompanyRow {
-  legal_name: string | null; gstin: string | null; pan_enc: string | null; pan_last4: string | null; tan: string | null; cin: string | null; registered_address: string | null;
-  pf_registration: string | null; esi_registration: string | null; pt_registration: string | null;
-  bank_account_holder: string | null; bank_name: string | null; bank_ifsc: string | null; bank_account_enc: string | null; bank_account_last4: string | null;
-  signatory_name: string | null; signatory_designation: string | null;
-  signature_key: string | null; signature_type: string | null; signature_sha256: string | null; stamp_key: string | null; stamp_type: string | null; stamp_sha256: string | null;
-  version: number; updated_at: Date | null;
+  legal_name: string | null;
+  gstin: string | null;
+  pan_enc: string | null;
+  pan_last4: string | null;
+  tan: string | null;
+  cin: string | null;
+  registered_address: string | null;
+  pf_registration: string | null;
+  esi_registration: string | null;
+  pt_registration: string | null;
+  bank_account_holder: string | null;
+  bank_name: string | null;
+  bank_ifsc: string | null;
+  bank_account_enc: string | null;
+  bank_account_last4: string | null;
+  signatory_name: string | null;
+  signatory_designation: string | null;
+  signature_key: string | null;
+  signature_type: string | null;
+  signature_sha256: string | null;
+  stamp_key: string | null;
+  stamp_type: string | null;
+  stamp_sha256: string | null;
+  version: number;
+  updated_at: Date | null;
 }
 
 export async function companyRow(db: Db, tenantId: string, lock = false): Promise<CompanyRow | undefined> {
@@ -35,8 +54,12 @@ export async function companyRow(db: Db, tenantId: string, lock = false): Promis
 
 /** The organization's first active legal entity: what name, GSTIN and CIN fall back to until the company settings say otherwise. */
 export async function legalEntityFallback(db: Db, tenantId: string) {
-  return (await db.query<{ name: string; cin: string | null; gstin: string | null }>(
-    `SELECT name, cin, gstin FROM legal_entities WHERE tenant_id=$1 AND status='active' ORDER BY created_at LIMIT 1`, [tenantId])).rows[0];
+  return (
+    await db.query<{ name: string; cin: string | null; gstin: string | null }>(
+      `SELECT name, cin, gstin FROM legal_entities WHERE tenant_id=$1 AND status='active' ORDER BY created_at LIMIT 1`,
+      [tenantId],
+    )
+  ).rows[0];
 }
 
 /**
@@ -54,9 +77,9 @@ export async function loadCompanyProfile(db: Db, tenantId: string): Promise<Comp
     tan: c?.tan ?? null,
     cin: c?.cin ?? le?.cin ?? null,
     registeredAddress: c?.registered_address ?? null,
-    pfRegistration: payrollOff ? null : c?.pf_registration ?? null,
-    esiRegistration: payrollOff ? null : c?.esi_registration ?? null,
-    ptRegistration: payrollOff ? null : c?.pt_registration ?? null,
+    pfRegistration: payrollOff ? null : (c?.pf_registration ?? null),
+    esiRegistration: payrollOff ? null : (c?.esi_registration ?? null),
+    ptRegistration: payrollOff ? null : (c?.pt_registration ?? null),
     signatoryName: c?.signatory_name ?? null,
     signatoryDesignation: c?.signatory_designation ?? null,
     signatureKey: c?.signature_key ?? null,

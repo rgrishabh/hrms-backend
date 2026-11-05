@@ -3,12 +3,26 @@ import { xlsx } from '../src/core/http/xlsx.js';
 import { readXlsx } from './helpers.js';
 
 describe('xlsx writer', () => {
-  const book = readXlsx(xlsx([{
-    name: 'Headcount: by dept/branch [2026]',
-    columns: [{ label: 'Code', type: 'text' }, { label: 'Note', type: 'text' }, { label: 'Joined', type: 'date' }, { label: 'Salary', type: 'money' }, { label: 'Att %', type: 'percent' }, { label: 'Any' }],
-    rows: [['0042', '=HYPERLINK("http://x")', '2024-03-15', '52500.50', 97.5, '12.5'], ['E2', 'A & B <c>\u0007', null, 1000, null, 'n/a']],
-    totals: ['Total', null, null, 53500.5, null, null],
-  }]));
+  const book = readXlsx(
+    xlsx([
+      {
+        name: 'Headcount: by dept/branch [2026]',
+        columns: [
+          { label: 'Code', type: 'text' },
+          { label: 'Note', type: 'text' },
+          { label: 'Joined', type: 'date' },
+          { label: 'Salary', type: 'money' },
+          { label: 'Att %', type: 'percent' },
+          { label: 'Any' },
+        ],
+        rows: [
+          ['0042', '=HYPERLINK("http://x")', '2024-03-15', '52500.50', 97.5, '12.5'],
+          ['E2', 'A & B <c>\u0007', null, 1000, null, 'n/a'],
+        ],
+        totals: ['Total', null, null, 53500.5, null, null],
+      },
+    ]),
+  );
   const sheet = book['xl/worksheets/sheet1.xml']!;
 
   it('is a complete package with a valid sheet name', () => {
@@ -22,7 +36,7 @@ describe('xlsx writer', () => {
     expect(sheet).toContain('A &amp; B &lt;c&gt;</t>');
   });
   it('types numbers, money, percentages and dates; totals are bold', () => {
-    expect(sheet).toContain('<c r="C2" s="5"><v>45366</v></c>');      // 15 March 2024 as an Excel date serial
+    expect(sheet).toContain('<c r="C2" s="5"><v>45366</v></c>'); // 15 March 2024 as an Excel date serial
     expect(sheet).toContain('<c r="D2" s="3"><v>52500.5</v></c>');
     expect(sheet).toContain('<c r="E2" s="4"><v>97.5</v></c>');
     expect(sheet).toContain('<c r="F2"><v>12.5</v></c>');

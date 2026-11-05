@@ -10,7 +10,10 @@ const LABEL: Record<TitleKind, string> = { grades: 'grade', designations: 'desig
  * ones, by code or name, in any case. What someone already holds stays valid: only a change is checked.
  */
 async function unknownTo(db: Db, tenantId: string, kind: TitleKind, value: string): Promise<{ known: boolean; hasMaster: boolean }> {
-  const r = await db.query<{ total: string; hit: string }>(`SELECT count(*) AS total, count(*) FILTER (WHERE status='active' AND (lower(name)=lower($2) OR lower(code)=lower($2))) AS hit FROM ${kind} WHERE tenant_id=$1`, [tenantId, value.trim()]);
+  const r = await db.query<{ total: string; hit: string }>(
+    `SELECT count(*) AS total, count(*) FILTER (WHERE status='active' AND (lower(name)=lower($2) OR lower(code)=lower($2))) AS hit FROM ${kind} WHERE tenant_id=$1`,
+    [tenantId, value.trim()],
+  );
   return { hasMaster: Number(r.rows[0]!.total) > 0, known: Number(r.rows[0]!.hit) > 0 };
 }
 

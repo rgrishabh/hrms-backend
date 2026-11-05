@@ -3,27 +3,35 @@ import type { FastifyInstance } from 'fastify';
 import { Client, createTenant, makeApp, ownerQuery, type TenantFixture } from './helpers.js';
 
 /** "No one can set someone else's level equal to or above their own." A role grant is one way of setting a level (D40). */
-let app: FastifyInstance; let T: TenantFixture;
-let owner: Client; let admin: Client; let itAdmin: Client;
+let app: FastifyInstance;
+let T: TenantFixture;
+let owner: Client;
+let admin: Client;
+let itAdmin: Client;
 const uid = (k: string) => T.users[k]!.id;
 
 beforeAll(async () => {
   app = await makeApp();
   T = await createTenant();
-  const [u] = await ownerQuery<{ id: string }>(`INSERT INTO users (tenant_id, email, display_name, password_hash) SELECT tenant_id, $2, 'Owner', password_hash FROM users WHERE id=$1 RETURNING id`, [uid('admin'), `owner@${T.host}`]);
+  const [u] = await ownerQuery<{ id: string }>(
+    `INSERT INTO users (tenant_id, email, display_name, password_hash) SELECT tenant_id, $2, 'Owner', password_hash FROM users WHERE id=$1 RETURNING id`,
+    [uid('admin'), `owner@${T.host}`],
+  );
   await ownerQuery(`INSERT INTO user_roles (user_id, tenant_id, role_key) VALUES ($1,$2,'owner')`, [u!.id, T.id]);
   T.users.owner = { id: u!.id, email: `owner@${T.host}` };
   owner = await Client.login(app, T.host, `owner@${T.host}`);
   admin = await Client.login(app, T.host, T.users.admin!.email);
   itAdmin = await Client.login(app, T.host, T.users.it!.email);
 });
-afterAll(async () => { await app.close(); });
+afterAll(async () => {
+  await app.close();
+});
 
 describe('role grants against the salary hierarchy', () => {
   it('an administrator cannot appoint a peer administrator', async () => {
     const r = await admin.patch(`/api/v1/tenant/users/${uid('other')}`, { roles: ['tenant_admin', 'employee'] });
     expect(r.statusCode, r.body).toBe(403);
-    expect((await ownerQuery(`SELECT 1 FROM user_roles WHERE user_id=$1 AND role_key='tenant_admin'`, [uid('other')]))).toHaveLength(0);
+    expect(await ownerQuery(`SELECT 1 FROM user_roles WHERE user_id=$1 AND role_key='tenant_admin'`, [uid('other')])).toHaveLength(0);
   });
 
   it('a new account cannot be created at or above the creator', async () => {
@@ -62,7 +70,10 @@ describe('role grants against the salary hierarchy', () => {
 
   it('nobody changes the roles or status of someone at or above them', async () => {
     const peer = await createTenant();
-    const [p] = await ownerQuery<{ id: string }>(`INSERT INTO users (tenant_id, email, display_name, password_hash) SELECT tenant_id, $2, 'Second', password_hash FROM users WHERE id=$1 RETURNING id`, [peer.users.admin!.id, `second@${peer.host}`]);
+    const [p] = await ownerQuery<{ id: string }>(
+      `INSERT INTO users (tenant_id, email, display_name, password_hash) SELECT tenant_id, $2, 'Second', password_hash FROM users WHERE id=$1 RETURNING id`,
+      [peer.users.admin!.id, `second@${peer.host}`],
+    );
     await ownerQuery(`INSERT INTO user_roles (user_id, tenant_id, role_key) VALUES ($1,$2,'tenant_admin')`, [p!.id, peer.id]);
     const a = await Client.login(app, peer.host, peer.users.admin!.email);
     for (const body of [{ status: 'disabled' }, { roles: ['employee'] }, { resetMfa: true }]) {
@@ -78,7 +89,7 @@ describe('nobody is locked out', () => {
     const r = await owner.patch(`/api/v1/tenant/users/${uid('owner')}`, { roles: ['employee'] });
     expect(r.statusCode).toBe(409);
     expect((await owner.patch(`/api/v1/tenant/users/${uid('owner')}`, { status: 'disabled' })).statusCode).toBe(409);
-    expect((await ownerQuery(`SELECT 1 FROM user_roles WHERE user_id=$1 AND role_key='owner'`, [uid('owner')]))).toHaveLength(1);
+    expect(await ownerQuery(`SELECT 1 FROM user_roles WHERE user_id=$1 AND role_key='owner'`, [uid('owner')])).toHaveLength(1);
   });
 
   it('with only administrators in a legacy installation, the last of them stays', async () => {
@@ -89,7 +100,10 @@ describe('nobody is locked out', () => {
 
   it('ending the access of the last owner keeps the installation reachable', async () => {
     const X = await createTenant();
-    const [u] = await ownerQuery<{ id: string }>(`INSERT INTO users (tenant_id, email, display_name, password_hash) SELECT tenant_id, $2, 'Owner', password_hash FROM users WHERE id=$1 RETURNING id`, [X.users.admin!.id, `owner@${X.host}`]);
+    const [u] = await ownerQuery<{ id: string }>(
+      `INSERT INTO users (tenant_id, email, display_name, password_hash) SELECT tenant_id, $2, 'Owner', password_hash FROM users WHERE id=$1 RETURNING id`,
+      [X.users.admin!.id, `owner@${X.host}`],
+    );
     await ownerQuery(`INSERT INTO user_roles (user_id, tenant_id, role_key) VALUES ($1,$2,'owner')`, [u!.id, X.id]);
     await ownerQuery(`UPDATE employees SET user_id=$1 WHERE tenant_id=$2 AND id=$3`, [u!.id, X.id, X.users.other!.employeeId]);
     const { endAccess } = await import('../src/modules/lifecycle/service.js');

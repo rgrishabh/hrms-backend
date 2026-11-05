@@ -2,13 +2,17 @@
  * Identify uploads by their CONTENT (magic bytes), not by the client's content type
  * or file name. Only formats needed for HR documents are accepted.
  */
-export interface Detected { contentType: string; ext: string }
+export interface Detected {
+  contentType: string;
+  ext: string;
+}
 
 const starts = (b: Buffer, sig: number[], at = 0) => sig.every((v, i) => b[at + i] === v);
 
 export function detectFile(buf: Buffer, fileName: string): Detected | { error: string } {
-  const ext = (fileName.toLowerCase().match(/\.([a-z0-9]{1,5})$/)?.[1]) ?? '';
-  if (starts(buf, [0x25, 0x50, 0x44, 0x46, 0x2d])) { // %PDF-
+  const ext = fileName.toLowerCase().match(/\.([a-z0-9]{1,5})$/)?.[1] ?? '';
+  if (starts(buf, [0x25, 0x50, 0x44, 0x46, 0x2d])) {
+    // %PDF-
     const text = buf.toString('latin1');
     // Active content has no place in HR documents.
     if (/\/(JavaScript|JS|Launch|EmbeddedFile|RichMedia)\b/.test(text)) return { error: 'PDF files with scripts, launch actions or embedded files are not accepted' };
@@ -26,7 +30,15 @@ export function detectFile(buf: Buffer, fileName: string): Detected | { error: s
 
 /** Download name: letters, digits, space, dot, dash, underscore only; keeps the detected extension. */
 export function safeFileName(original: string, ext: string) {
-  const base = original.replace(/\.[^.]*$/, '').normalize('NFKD').replace(/[^\w .-]+/g, '').replace(/\.{2,}/g, '.').replace(/^[.\s-]+/, '')
-    .replace(/\s+/g, ' ').trim().slice(0, 80) || 'document';
+  const base =
+    original
+      .replace(/\.[^.]*$/, '')
+      .normalize('NFKD')
+      .replace(/[^\w .-]+/g, '')
+      .replace(/\.{2,}/g, '.')
+      .replace(/^[.\s-]+/, '')
+      .replace(/\s+/g, ' ')
+      .trim()
+      .slice(0, 80) || 'document';
   return `${base}.${ext}`;
 }

@@ -42,7 +42,7 @@ export const CALC_VERSION = 5;
 export interface ShiftPolicy {
   id: string;
   code: string;
-  startTime: string;   // 'HH:MM[:SS]'
+  startTime: string; // 'HH:MM[:SS]'
   endTime: string;
   breakMinutes: number;
   graceMinutes: number;
@@ -53,9 +53,12 @@ export interface ShiftPolicy {
 }
 
 export interface Punch {
-  id: string; time: Date; direction: 'in' | 'out' | 'unknown';
+  id: string;
+  time: Date;
+  direction: 'in' | 'out' | 'unknown';
   /** An approved correction, and when it was recorded (later ones win). */
-  source?: 'regularization'; seq?: number;
+  source?: 'regularization';
+  seq?: number;
 }
 
 export interface DayInput {
@@ -64,7 +67,7 @@ export interface DayInput {
   shift: ShiftPolicy | null;
   dayType: 'working' | 'weekly_off' | 'holiday';
   employment: { joiningDate: string; exitDate: string | null };
-  punches: Punch[];            // may include punches outside the window; filtered here
+  punches: Punch[]; // may include punches outside the window; filtered here
   minGapSeconds: number;
   overtimeEnabled: boolean;
   /** Approved leave covering this date (fraction 0.5 or 1). */
@@ -107,29 +110,44 @@ function applyCorrections(punches: Punch[]): Punch[] {
   const corrections = punches.filter((p) => p.source === 'regularization');
   if (!corrections.length) return punches;
   const latest = (dir: 'in' | 'out') => corrections.filter((c) => c.direction === dir).sort((a, b) => (b.seq ?? 0) - (a.seq ?? 0))[0];
-  const correctedIn = latest('in'); const correctedOut = latest('out');
+  const correctedIn = latest('in');
+  const correctedOut = latest('out');
   const originals = punches.filter((p) => p.source !== 'regularization');
   if (correctedIn && originals[0] && originals[0].direction !== 'out') originals.shift();
   const last = originals[originals.length - 1];
   if (correctedOut && last && (last.direction === 'out' || (last.direction === 'unknown' && originals.length % 2 === 0))) originals.pop();
-  return [...originals, ...(correctedIn ? [correctedIn] : []), ...(correctedOut ? [correctedOut] : [])]
-    .sort((a, b) => a.time.getTime() - b.time.getTime() || a.id.localeCompare(b.id));
+  return [...originals, ...(correctedIn ? [correctedIn] : []), ...(correctedOut ? [correctedOut] : [])].sort(
+    (a, b) => a.time.getTime() - b.time.getTime() || a.id.localeCompare(b.id),
+  );
 }
 
 export function calculateDay(input: DayInput): DayResult {
   const { workDate, shift, dayType } = input;
   const base: DayResult = {
-    workDate, shiftId: shift?.id ?? null, dayType, status: 'absent', firstIn: null, lastOut: null, punchCount: 0,
-    workedMinutes: 0, lateMinutes: 0, earlyExitMinutes: 0, overtimeMinutes: 0, exceptions: [], usedPunchIds: [],
-    leaveFraction: 0, leaveTypeCode: null, dutyFraction: 0,
+    workDate,
+    shiftId: shift?.id ?? null,
+    dayType,
+    status: 'absent',
+    firstIn: null,
+    lastOut: null,
+    punchCount: 0,
+    workedMinutes: 0,
+    lateMinutes: 0,
+    earlyExitMinutes: 0,
+    overtimeMinutes: 0,
+    exceptions: [],
+    usedPunchIds: [],
+    leaveFraction: 0,
+    leaveTypeCode: null,
+    dutyFraction: 0,
   };
   if (workDate < input.employment.joiningDate || (input.employment.exitDate && workDate > input.employment.exitDate)) {
     return { ...base, status: 'not_joined' };
   }
   const win = shiftWindow(workDate, input.timezone, shift);
-  const inWindow = applyCorrections(input.punches
-    .filter((p) => p.time >= win.start && p.time < win.end)
-    .sort((a, b) => a.time.getTime() - b.time.getTime() || a.id.localeCompare(b.id)));
+  const inWindow = applyCorrections(
+    input.punches.filter((p) => p.time >= win.start && p.time < win.end).sort((a, b) => a.time.getTime() - b.time.getTime() || a.id.localeCompare(b.id)),
+  );
 
   // Drop accidental repeats.
   const kept: Punch[] = [];
@@ -148,15 +166,25 @@ export function calculateDay(input: DayInput): DayResult {
   for (const p of kept) {
     const dir = p.direction === 'unknown' ? (open ? 'out' : 'in') : p.direction;
     if (dir === 'in') {
-      if (open) { unmatched = true; exceptions.push('consecutive_in_punches'); }
+      if (open) {
+        unmatched = true;
+        exceptions.push('consecutive_in_punches');
+      }
       open = p.time;
     } else {
-      if (!open) { unmatched = true; exceptions.push('out_without_in'); continue; }
+      if (!open) {
+        unmatched = true;
+        exceptions.push('out_without_in');
+        continue;
+      }
       sessions.push({ in: open, out: p.time });
       open = null;
     }
   }
-  if (open) { unmatched = true; exceptions.push('missing_out_punch'); }
+  if (open) {
+    unmatched = true;
+    exceptions.push('missing_out_punch');
+  }
 
   const firstIn = sessions[0]?.in ?? (kept[0] && kept[0].direction !== 'out' ? kept[0].time : null);
   const lastOut = sessions.length ? sessions[sessions.length - 1]!.out : null;
@@ -172,7 +200,10 @@ export function calculateDay(input: DayInput): DayResult {
   if (dayType !== 'working') {
     result.status = dayType;
     // Leave over a weekly off / holiday does not change the day; only unpaid leave that counts the day is recorded on it.
-    if (input.leave?.chargedOnOffDay && input.leave.fraction > 0) { result.leaveFraction = input.leave.fraction >= 1 ? 1 : 0.5; result.leaveTypeCode = input.leave.code; }
+    if (input.leave?.chargedOnOffDay && input.leave.fraction > 0) {
+      result.leaveFraction = input.leave.fraction >= 1 ? 1 : 0.5;
+      result.leaveTypeCode = input.leave.code;
+    }
     if (kept.length) {
       exceptions.push('worked_on_' + dayType);
       if (input.overtimeEnabled) result.overtimeMinutes = worked;
@@ -180,7 +211,10 @@ export function calculateDay(input: DayInput): DayResult {
     return result;
   }
   const leave = input.leave && input.leave.fraction > 0 ? input.leave : null;
-  if (leave) { result.leaveFraction = leave.fraction >= 1 ? 1 : 0.5; result.leaveTypeCode = leave.code; }
+  if (leave) {
+    result.leaveFraction = leave.fraction >= 1 ? 1 : 0.5;
+    result.leaveTypeCode = leave.code;
+  }
   if (leave && result.leaveFraction === 1) {
     result.status = 'on_leave';
     if (kept.length) exceptions.push('worked_on_leave');
@@ -194,26 +228,45 @@ export function calculateDay(input: DayInput): DayResult {
     if (kept.length) overtimeOverShift();
     return result;
   }
-  if (!kept.length) { result.status = covered > 0 ? 'half_day' : 'absent'; return result; }
+  if (!kept.length) {
+    result.status = covered > 0 ? 'half_day' : 'absent';
+    return result;
+  }
 
   if (shift && win.shiftStart && win.shiftEnd && !duty) {
     if (firstIn) {
       const late = minutesBetween(win.shiftStart, firstIn);
-      if (late > shift.graceMinutes) { result.lateMinutes = late; exceptions.push('late_arrival'); }
+      if (late > shift.graceMinutes) {
+        result.lateMinutes = late;
+        exceptions.push('late_arrival');
+      }
     }
     if (lastOut) {
       const early = minutesBetween(lastOut, win.shiftEnd);
-      if (early > shift.earlyExitGraceMinutes) { result.earlyExitMinutes = early; exceptions.push('early_exit'); }
+      if (early > shift.earlyExitGraceMinutes) {
+        result.earlyExitMinutes = early;
+        exceptions.push('early_exit');
+      }
     }
   }
   overtimeOverShift();
-  if (unmatched) { result.status = 'missing_punch'; return result; }
+  if (unmatched) {
+    result.status = 'missing_punch';
+    return result;
+  }
   const half = shift?.halfDayMinMinutes ?? 240;
   // With half-day leave or field duty, working the other half (≥ half-day minimum) completes the day.
-  const full = covered > 0 ? half : shift?.fullDayMinMinutes ?? 480;
+  const full = covered > 0 ? half : (shift?.fullDayMinMinutes ?? 480);
   if (worked >= full) result.status = 'present';
-  else if (worked >= half) { result.status = 'half_day'; exceptions.push('short_hours'); }
-  else if (covered > 0) { result.status = 'half_day'; exceptions.push('insufficient_hours'); }
-  else { result.status = 'absent'; exceptions.push('insufficient_hours'); }
+  else if (worked >= half) {
+    result.status = 'half_day';
+    exceptions.push('short_hours');
+  } else if (covered > 0) {
+    result.status = 'half_day';
+    exceptions.push('insufficient_hours');
+  } else {
+    result.status = 'absent';
+    exceptions.push('insufficient_hours');
+  }
   return result;
 }

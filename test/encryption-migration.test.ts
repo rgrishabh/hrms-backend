@@ -16,26 +16,63 @@ const cipher = new FieldCipher(KEY);
 const STEP = '043_encrypt_l4_data.code';
 const URL_ = TEST_SINGLE_B_OWNER_URL;
 
-async function client() { const c = new pg.Client({ connectionString: URL_ }); await c.connect(); return c; }
-async function reset() { const c = await client(); await c.query('DROP SCHEMA IF EXISTS public CASCADE'); await c.query('CREATE SCHEMA public'); await c.end(); }
+async function client() {
+  const c = new pg.Client({ connectionString: URL_ });
+  await c.connect();
+  return c;
+}
+async function reset() {
+  const c = await client();
+  await c.query('DROP SCHEMA IF EXISTS public CASCADE');
+  await c.query('CREATE SCHEMA public');
+  await c.end();
+}
 
 /** Plaintext rows as the previous release wrote them, including a finalized run, whose guard must not stop the move. */
 async function seed(c: pg.Client, n: number) {
   const t = (await c.query<{ id: string }>(`INSERT INTO tenants (slug, name) VALUES ('seeded','S') RETURNING id`)).rows[0]!.id;
   const le = (await c.query<{ id: string }>(`INSERT INTO legal_entities (tenant_id, name) VALUES ($1,'LE') RETURNING id`, [t])).rows[0]!.id;
-  const br = (await c.query<{ id: string }>(`INSERT INTO branches (tenant_id, legal_entity_id, code, name, state) VALUES ($1,$2,'HQ','HQ','MH') RETURNING id`, [t, le])).rows[0]!.id;
+  const br = (await c.query<{ id: string }>(`INSERT INTO branches (tenant_id, legal_entity_id, code, name, state) VALUES ($1,$2,'HQ','HQ','MH') RETURNING id`, [t, le])).rows[0]!
+    .id;
   const u = (await c.query<{ id: string }>(`INSERT INTO users (tenant_id, email, display_name) VALUES ($1,'a@s.test','A') RETURNING id`, [t])).rows[0]!.id;
-  const run = (await c.query<{ id: string }>(`INSERT INTO payroll_runs (tenant_id, legal_entity_id, period, created_by, totals) VALUES ($1,$2,'2026-01',$3,'{"gross":1,"net":1}') RETURNING id`, [t, le, u])).rows[0]!.id;
+  const run = (
+    await c.query<{ id: string }>(
+      `INSERT INTO payroll_runs (tenant_id, legal_entity_id, period, created_by, totals) VALUES ($1,$2,'2026-01',$3,'{"gross":1,"net":1}') RETURNING id`,
+      [t, le, u],
+    )
+  ).rows[0]!.id;
   for (let i = 0; i < n; i++) {
-    const e = (await c.query<{ id: string }>(`INSERT INTO employees (tenant_id, employee_code, first_name, legal_entity_id, branch_id, date_of_joining) VALUES ($1,$2,'E',$3,$4,'2024-01-01') RETURNING id`, [t, `E${i}`, le, br])).rows[0]!.id;
-    await c.query(`INSERT INTO employee_salaries (tenant_id, employee_id, effective_from, amounts, annual_ctc, reason, status, created_by) VALUES ($1,$2,'2025-01-01',$3,$4,'r','active',$5)`, [t, e, JSON.stringify({ BASIC: 10000 + i }), 120000 + i, u]);
-    await c.query(`INSERT INTO payroll_items (tenant_id, run_id, employee_id, days_in_period, employed_days, paid_days, lines, gross, deductions, net, employer_cost, warnings, calc_version) VALUES ($1,$2,$3,31,31,31,$4,$5,0,$5,$5,$6,6)`,
-      [t, run, e, JSON.stringify([{ code: 'BASIC', amount: 10000 + i }]), 10000 + i, JSON.stringify(['short by ₹5'])]);
-    await c.query(`INSERT INTO payroll_adjustments (tenant_id, run_id, employee_id, kind, label, amount, note, created_by) VALUES ($1,$2,$3,'earning','Arrears',$4,'note',$5)`, [t, run, e, 50 + i, u]);
+    const e = (
+      await c.query<{ id: string }>(
+        `INSERT INTO employees (tenant_id, employee_code, first_name, legal_entity_id, branch_id, date_of_joining) VALUES ($1,$2,'E',$3,$4,'2024-01-01') RETURNING id`,
+        [t, `E${i}`, le, br],
+      )
+    ).rows[0]!.id;
+    await c.query(
+      `INSERT INTO employee_salaries (tenant_id, employee_id, effective_from, amounts, annual_ctc, reason, status, created_by) VALUES ($1,$2,'2025-01-01',$3,$4,'r','active',$5)`,
+      [t, e, JSON.stringify({ BASIC: 10000 + i }), 120000 + i, u],
+    );
+    await c.query(
+      `INSERT INTO payroll_items (tenant_id, run_id, employee_id, days_in_period, employed_days, paid_days, lines, gross, deductions, net, employer_cost, warnings, calc_version) VALUES ($1,$2,$3,31,31,31,$4,$5,0,$5,$5,$6,6)`,
+      [t, run, e, JSON.stringify([{ code: 'BASIC', amount: 10000 + i }]), 10000 + i, JSON.stringify(['short by ₹5'])],
+    );
+    await c.query(`INSERT INTO payroll_adjustments (tenant_id, run_id, employee_id, kind, label, amount, note, created_by) VALUES ($1,$2,$3,'earning','Arrears',$4,'note',$5)`, [
+      t,
+      run,
+      e,
+      50 + i,
+      u,
+    ]);
   }
   await c.query(`UPDATE payroll_runs SET status='finalized' WHERE id=$1`, [run]);
-  await c.query(`INSERT INTO accounting_exports (tenant_id, source_type, source_id, format, voucher_date, total, exported_by) VALUES ($1,'payroll_run',$2,'csv','2026-01-31',500,$3)`, [t, run, u]);
-  await c.query(`INSERT INTO report_snapshots (tenant_id, owner_id, report_key, name, params, scope, columns, rows, totals, row_count, recipient_ids, expires_at) VALUES ($1,$3,'payroll_cost','x','{}','all','[]','[{"net":999}]','{"net":999}',1,$2, now()+interval '1 day'), ($1,$3,'leave_taken','y','{}','all','[]','[{"days":2}]',NULL,1,$2, now()+interval '1 day')`, [t, [u], u]);
+  await c.query(
+    `INSERT INTO accounting_exports (tenant_id, source_type, source_id, format, voucher_date, total, exported_by) VALUES ($1,'payroll_run',$2,'csv','2026-01-31',500,$3)`,
+    [t, run, u],
+  );
+  await c.query(
+    `INSERT INTO report_snapshots (tenant_id, owner_id, report_key, name, params, scope, columns, rows, totals, row_count, recipient_ids, expires_at) VALUES ($1,$3,'payroll_cost','x','{}','all','[]','[{"net":999}]','{"net":999}',1,$2, now()+interval '1 day'), ($1,$3,'leave_taken','y','{}','all','[]','[{"days":2}]',NULL,1,$2, now()+interval '1 day')`,
+    [t, [u], u],
+  );
   await c.query(`INSERT INTO audit_logs (tenant_id, action, change_metadata) VALUES ($1,'payroll.run_computed','{"gross":1234567,"warnings":2}')`, [t]);
   await c.query(`INSERT INTO notifications (tenant_id, user_id, kind, title, body) VALUES ($1,$2,'loans.disbursed','Loan paid: ₹60,000','From March')`, [t, u]);
   return t;
@@ -44,7 +81,10 @@ async function seed(c: pg.Client, n: number) {
 const stage = (until: string, cipherOverride = cipher) => migrate(URL_, () => undefined, { until, cipher: cipherOverride });
 
 describe('code migration: encrypting pay', () => {
-  afterAll(async () => { await reset(); await migrate(URL_, () => undefined); });
+  afterAll(async () => {
+    await reset();
+    await migrate(URL_, () => undefined);
+  });
 
   it('runs through the runner on a seeded database, resumes after an interruption, then the plaintext goes', async () => {
     await reset();
@@ -54,7 +94,10 @@ describe('code migration: encrypting pay', () => {
     // Interrupted partway: the second batch of items fails on a key that cannot be used.
     const flaky = Object.create(cipher) as FieldCipher;
     let calls = 0;
-    flaky.encrypt = (p: string) => { if (++calls > 1000) throw new Error('interrupted'); return cipher.encrypt(p); };
+    flaky.encrypt = (p: string) => {
+      if (++calls > 1000) throw new Error('interrupted');
+      return cipher.encrypt(p);
+    };
     await expect(migrate(URL_, () => undefined, { until: STEP, cipher: flaky })).rejects.toThrow(/interrupted/);
     const applied = await c.query(`SELECT 1 FROM schema_migrations WHERE name=$1`, [STEP]);
     expect(applied.rowCount).toBe(0);
@@ -76,9 +119,15 @@ describe('code migration: encrypting pay', () => {
     const down = CODE_MIGRATIONS.find((m) => m.name === STEP)!;
     await c.query(`UPDATE payroll_items SET gross=0, net=0`).catch(() => undefined);
     await down.down({ client: c, log: () => undefined, cipher: async () => cipher });
-    const back = (await c.query<{ gross: string; net: string; data_enc: string | null; warnings: string[] }>(`SELECT gross, net, data_enc, warnings FROM payroll_items ORDER BY gross LIMIT 1`)).rows[0]!;
+    const back = (
+      await c.query<{ gross: string; net: string; data_enc: string | null; warnings: string[] }>(`SELECT gross, net, data_enc, warnings FROM payroll_items ORDER BY gross LIMIT 1`)
+    ).rows[0]!;
     expect(back).toMatchObject({ gross: '10000.00', net: '10000.00', data_enc: null, warnings: ['short by ₹5'] });
-    const sal = (await c.query<{ amounts: object; annual_ctc: string; amounts_enc: string | null }>(`SELECT amounts, annual_ctc, amounts_enc FROM employee_salaries ORDER BY annual_ctc LIMIT 1`)).rows[0]!;
+    const sal = (
+      await c.query<{ amounts: object; annual_ctc: string; amounts_enc: string | null }>(
+        `SELECT amounts, annual_ctc, amounts_enc FROM employee_salaries ORDER BY annual_ctc LIMIT 1`,
+      )
+    ).rows[0]!;
     expect(sal).toMatchObject({ amounts: { BASIC: 10000 }, annual_ctc: '120000.00', amounts_enc: null });
     // And up again: nothing is lost going round.
     await down.up({ client: c, log: () => undefined, cipher: async () => cipher });
@@ -101,12 +150,24 @@ describe('code migration: encrypting pay', () => {
     const c = await client();
     const t = (await c.query<{ id: string }>(`INSERT INTO tenants (slug, name) VALUES ('rotated','R') RETURNING id`)).rows[0]!.id;
     const le = (await c.query<{ id: string }>(`INSERT INTO legal_entities (tenant_id, name) VALUES ($1,'LE') RETURNING id`, [t])).rows[0]!.id;
-    const br = (await c.query<{ id: string }>(`INSERT INTO branches (tenant_id, legal_entity_id, code, name, state) VALUES ($1,$2,'HQ','HQ','MH') RETURNING id`, [t, le])).rows[0]!.id;
+    const br = (await c.query<{ id: string }>(`INSERT INTO branches (tenant_id, legal_entity_id, code, name, state) VALUES ($1,$2,'HQ','HQ','MH') RETURNING id`, [t, le])).rows[0]!
+      .id;
     const u = (await c.query<{ id: string }>(`INSERT INTO users (tenant_id, email, display_name) VALUES ($1,'a@r.test','A') RETURNING id`, [t])).rows[0]!.id;
-    const e = (await c.query<{ id: string }>(`INSERT INTO employees (tenant_id, employee_code, first_name, legal_entity_id, branch_id, date_of_joining) VALUES ($1,'E','E',$2,$3,'2024-01-01') RETURNING id`, [t, le, br])).rows[0]!.id;
-    const run = (await c.query<{ id: string }>(`INSERT INTO payroll_runs (tenant_id, legal_entity_id, period, created_by) VALUES ($1,$2,'2026-01',$3) RETURNING id`, [t, le, u])).rows[0]!.id;
+    const e = (
+      await c.query<{ id: string }>(
+        `INSERT INTO employees (tenant_id, employee_code, first_name, legal_entity_id, branch_id, date_of_joining) VALUES ($1,'E','E',$2,$3,'2024-01-01') RETURNING id`,
+        [t, le, br],
+      )
+    ).rows[0]!.id;
+    const run = (await c.query<{ id: string }>(`INSERT INTO payroll_runs (tenant_id, legal_entity_id, period, created_by) VALUES ($1,$2,'2026-01',$3) RETURNING id`, [t, le, u]))
+      .rows[0]!.id;
     const old = new FieldCipher(KEY);
-    await c.query(`INSERT INTO payroll_items (tenant_id, run_id, employee_id, days_in_period, employed_days, paid_days, data_enc, calc_version) VALUES ($1,$2,$3,31,31,31,$4,6)`, [t, run, e, old.encrypt('{"net":1}')]);
+    await c.query(`INSERT INTO payroll_items (tenant_id, run_id, employee_id, days_in_period, employed_days, paid_days, data_enc, calc_version) VALUES ($1,$2,$3,31,31,31,$4,6)`, [
+      t,
+      run,
+      e,
+      old.encrypt('{"net":1}'),
+    ]);
     await c.query(`UPDATE payroll_runs SET status='paid' WHERE id=$1`, [run]);
     // A value from before key ids existed.
     const iv = randomBytes(12);
@@ -115,7 +176,10 @@ describe('code migration: encrypting pay', () => {
     const enc = nodeCrypto.createCipheriv('aes-256-gcm', k, iv);
     const data = Buffer.concat([enc.update('123456789012', 'utf8'), enc.final()]);
     const v1 = ['v1', iv.toString('base64'), enc.getAuthTag().toString('base64'), data.toString('base64')].join('.');
-    await c.query(`INSERT INTO employee_bank_accounts (employee_id, tenant_id, account_holder, account_number_enc, account_last4, ifsc) VALUES ($1,$2,'H',$3,'9012','HDFC0001234')`, [e, t, v1]);
+    await c.query(
+      `INSERT INTO employee_bank_accounts (employee_id, tenant_id, account_holder, account_number_enc, account_last4, ifsc) VALUES ($1,$2,'H',$3,'9012','HDFC0001234')`,
+      [e, t, v1],
+    );
 
     const NEW = Buffer.alloc(32, 11).toString('base64');
     const next = new FieldCipher(NEW, [KEY]);
@@ -139,7 +203,11 @@ describe('key provider', () => {
   const key = Buffer.alloc(32, 3).toString('base64');
   it('KMS takes priority, unwraps once at startup, and the cipher is synchronous afterwards', async () => {
     let unwraps = 0;
-    const c = await loadFieldCipher({ KMS_KEY_ID: 'k', DATA_KEY_CIPHERTEXT: 'wrapped', DATA_ENCRYPTION_KEY: Buffer.alloc(32, 4).toString('base64') }, async (ct, id) => { unwraps++; expect([ct, id]).toEqual(['wrapped', 'k']); return key; });
+    const c = await loadFieldCipher({ KMS_KEY_ID: 'k', DATA_KEY_CIPHERTEXT: 'wrapped', DATA_ENCRYPTION_KEY: Buffer.alloc(32, 4).toString('base64') }, async (ct, id) => {
+      unwraps++;
+      expect([ct, id]).toEqual(['wrapped', 'k']);
+      return key;
+    });
     const t = c.encrypt('x');
     expect(c.decrypt(t)).toBe('x');
     expect(t.startsWith(`v2.${keyIdOf(Buffer.from(key, 'base64'))}.`)).toBe(true);

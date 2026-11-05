@@ -2,8 +2,22 @@ import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import type { FastifyInstance } from 'fastify';
 import { Client, createTenant, makeApp, ownerQuery, problem, type TenantFixture } from './helpers.js';
 
-let app: FastifyInstance; let T: TenantFixture; let hr: Client; let emp: Client;
-const base = (code: string, extra: Record<string, unknown> = {}) => ({ employee: { employeeCode: code, firstName: 'New', lastName: code, legalEntityId: T.legalEntityId, branchId: T.branchId, departmentId: T.deptId, dateOfJoining: '2025-01-01', ...extra } });
+let app: FastifyInstance;
+let T: TenantFixture;
+let hr: Client;
+let emp: Client;
+const base = (code: string, extra: Record<string, unknown> = {}) => ({
+  employee: {
+    employeeCode: code,
+    firstName: 'New',
+    lastName: code,
+    legalEntityId: T.legalEntityId,
+    branchId: T.branchId,
+    departmentId: T.deptId,
+    dateOfJoining: '2025-01-01',
+    ...extra,
+  },
+});
 
 beforeAll(async () => {
   app = await makeApp();
@@ -11,7 +25,9 @@ beforeAll(async () => {
   hr = await Client.login(app, T.host, T.users.hr!.email);
   emp = await Client.login(app, T.host, T.users.employee!.email);
 });
-afterAll(async () => { await app.close(); });
+afterAll(async () => {
+  await app.close();
+});
 
 describe('grades and designations', () => {
   it('with no masters, free text works as before', async () => {
@@ -29,7 +45,10 @@ describe('grades and designations', () => {
     expect(org.grades).toEqual([expect.objectContaining({ code: 'L1', name: 'Level 1', status: 'active' })]);
     expect(org.designations).toEqual([expect.objectContaining({ code: 'CHEM', name: 'Senior Chemist' })]);
     expect((await emp.get('/api/v1/org')).json().grades).toHaveLength(1); // the directory filters read these too
-    const logs = await ownerQuery<{ action: string; change_metadata: Record<string, unknown> }>(`SELECT action, change_metadata FROM audit_logs WHERE tenant_id=$1 AND action='org.designations_updated'`, [T.id]);
+    const logs = await ownerQuery<{ action: string; change_metadata: Record<string, unknown> }>(
+      `SELECT action, change_metadata FROM audit_logs WHERE tenant_id=$1 AND action='org.designations_updated'`,
+      [T.id],
+    );
     expect(logs[0]!.change_metadata).toMatchObject({ from: { name: 'Chemist' }, to: { name: 'Senior Chemist' } });
   });
 
@@ -67,7 +86,18 @@ describe('grades and designations', () => {
   });
 
   it('the import does not fail on a new title: it is added, reported and audited', async () => {
-    const row = { employeeCode: 'IM1', firstName: 'Imp', lastName: 'Orted', branchCode: 'HQ', departmentCode: 'LAB', dateOfJoining: '2025-02-01', employmentType: 'permanent', status: 'active', designation: 'Field Sampler', grade: 'L1' };
+    const row = {
+      employeeCode: 'IM1',
+      firstName: 'Imp',
+      lastName: 'Orted',
+      branchCode: 'HQ',
+      departmentCode: 'LAB',
+      dateOfJoining: '2025-02-01',
+      employmentType: 'permanent',
+      status: 'active',
+      designation: 'Field Sampler',
+      grade: 'L1',
+    };
     const dry = (await hr.post('/api/v1/employees/import', { rows: [row], dryRun: true })).json();
     expect(dry.committed).toBe(false);
     expect(dry.report[0].warnings).toEqual(["New designation 'Field Sampler' will be added to the list"]);
@@ -75,7 +105,10 @@ describe('grades and designations', () => {
     const done = (await hr.post('/api/v1/employees/import', { rows: [row], dryRun: false })).json();
     expect(done.committed).toBe(true);
     expect((await hr.get('/api/v1/org')).json().designations.map((d: { name: string }) => d.name)).toEqual(['Field Sampler', 'Senior Chemist']);
-    const [log] = await ownerQuery<{ change_metadata: { addedToLists: unknown } }>(`SELECT change_metadata FROM audit_logs WHERE tenant_id=$1 AND action='employee.bulk_imported'`, [T.id]);
+    const [log] = await ownerQuery<{ change_metadata: { addedToLists: unknown } }>(
+      `SELECT change_metadata FROM audit_logs WHERE tenant_id=$1 AND action='employee.bulk_imported'`,
+      [T.id],
+    );
     expect(log!.change_metadata.addedToLists).toEqual([{ list: 'designations', name: 'Field Sampler' }]);
   });
 });

@@ -11,9 +11,19 @@ import { notFoundProblem } from './problem.js';
  * impossible by construction.
  */
 const TYPES: Record<string, string> = {
-  '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.css': 'text/css; charset=utf-8',
-  '.svg': 'image/svg+xml', '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.webp': 'image/webp',
-  '.ico': 'image/x-icon', '.json': 'application/json', '.txt': 'text/plain; charset=utf-8', '.woff2': 'font/woff2', '.map': 'application/json',
+  '.html': 'text/html; charset=utf-8',
+  '.js': 'text/javascript; charset=utf-8',
+  '.css': 'text/css; charset=utf-8',
+  '.svg': 'image/svg+xml',
+  '.png': 'image/png',
+  '.jpg': 'image/jpeg',
+  '.jpeg': 'image/jpeg',
+  '.webp': 'image/webp',
+  '.ico': 'image/x-icon',
+  '.json': 'application/json',
+  '.txt': 'text/plain; charset=utf-8',
+  '.woff2': 'font/woff2',
+  '.map': 'application/json',
 };
 const BRAND_EXT = new Set(['.svg', '.png', '.jpg', '.jpeg', '.webp', '.ico']);
 const MAX_BRAND_BYTES = 2 * 1024 * 1024;
@@ -25,8 +35,10 @@ export const ASSET_CSP = "default-src 'none'; style-src 'unsafe-inline'; img-src
 /** SPA policy; an https logo/favicon host is added to img-src. Inline styles are needed by React style attributes. */
 export function spaCsp(assetUrls: (string | null | undefined)[]): string {
   const origins = [...new Set(assetUrls.filter((u): u is string => !!u && u.startsWith('https://')).map((u) => new URL(u).origin))];
-  return `default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:${origins.map((o) => ' ' + o).join('')}; ` +
-    "connect-src 'self'; font-src 'self'; object-src 'none'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'";
+  return (
+    `default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:${origins.map((o) => ' ' + o).join('')}; ` +
+    "connect-src 'self'; font-src 'self'; object-src 'none'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'"
+  );
 }
 
 function walk(dir: string, base = dir, out = new Map<string, Buffer>()) {
@@ -48,7 +60,9 @@ export function renderIndex(template: string, cfg: PublicConfig): string {
     `<meta name="application-name" content="${esc(cfg.product.name)}" />`,
     `<meta name="theme-color" content="${esc(cfg.brand.primaryColor)}" />`,
     cfg.brand.faviconUrl ? `<link rel="icon" href="${esc(cfg.brand.faviconUrl)}" />` : '',
-  ].filter(Boolean).join('\n    ');
+  ]
+    .filter(Boolean)
+    .join('\n    ');
   return template.replace(/<title>[\s\S]*?<\/title>/, head);
 }
 

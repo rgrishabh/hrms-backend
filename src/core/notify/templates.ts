@@ -2,7 +2,15 @@
  * Branded transactional email. Content is a short summary and a link into the app —
  * never salary, bank, identity or other sensitive data.
  */
-export interface EmailBrand { brandName: string; productName: string; primaryColor: string; supportEmail: string | null; appUrl: string; locale?: string; logoUrl?: string | null }
+export interface EmailBrand {
+  brandName: string;
+  productName: string;
+  primaryColor: string;
+  supportEmail: string | null;
+  appUrl: string;
+  locale?: string;
+  logoUrl?: string | null;
+}
 
 const esc = (s: string) => s.replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]!);
 
@@ -12,8 +20,19 @@ export function renderEmail(brand: EmailBrand, msg: { title: string; body?: stri
   const subject = `${msg.title} · ${brand.brandName}`;
   // A security notice goes out whatever someone's preference, so the footer does not offer what it cannot do.
   const footer = msg.mandatory ? 'This is a security notice and cannot be turned off.' : 'You can turn off email notifications under My account.';
-  const text = [msg.title, '', msg.body ?? '', '', `${action}: ${url}`, '', `— ${brand.brandName} (${brand.productName})`,
-    brand.supportEmail ? `Need help? ${brand.supportEmail}` : '', footer].filter((l, i, a) => !(l === '' && a[i - 1] === '')).join('\n');
+  const text = [
+    msg.title,
+    '',
+    msg.body ?? '',
+    '',
+    `${action}: ${url}`,
+    '',
+    `— ${brand.brandName} (${brand.productName})`,
+    brand.supportEmail ? `Need help? ${brand.supportEmail}` : '',
+    footer,
+  ]
+    .filter((l, i, a) => !(l === '' && a[i - 1] === ''))
+    .join('\n');
   const html = `<!doctype html><html lang="${esc(brand.locale ?? 'en')}"><body style="margin:0;background:#f6f7f9;font-family:Segoe UI,Roboto,Arial,sans-serif;color:#1c2430">
 <table role="presentation" width="100%" cellpadding="0" cellspacing="0"><tr><td align="center" style="padding:24px 12px">
 <table role="presentation" width="560" cellpadding="0" cellspacing="0" style="max-width:560px;background:#ffffff;border:1px solid #dde2e8;border-radius:8px">

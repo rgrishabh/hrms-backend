@@ -12,12 +12,32 @@ import { withTenant } from '../src/db/tx.js';
 import { hashPassword } from '../src/core/crypto/index.js';
 
 const GSTIN = '27AAPFU0939F1ZV'; // the example in GST documentation
-const PAN = 'BBBPU1234K'; const ACCOUNT = '000123456789012';
-const VALID = { legalName: 'Verdantis Analytical Labs Pvt Ltd', gstin: GSTIN, pan: PAN, tan: 'PNEV01234F', cin: 'U74999MH2019PTC123456', registeredAddress: '12 Fictional Road, Pune 411001',
-  pfRegistration: 'MH/PUN/0012345/000', esiRegistration: '12345678901234567', ptRegistration: 'PT-27-0099', bankAccountHolder: 'Verdantis Analytical Labs', bankName: 'Fictional Bank', bankIfsc: 'ZZZZ0000001', bankAccountNumber: ACCOUNT,
-  signatoryName: 'Asha Fictional', signatoryDesignation: 'Director' };
+const PAN = 'BBBPU1234K';
+const ACCOUNT = '000123456789012';
+const VALID = {
+  legalName: 'Verdantis Analytical Labs Pvt Ltd',
+  gstin: GSTIN,
+  pan: PAN,
+  tan: 'PNEV01234F',
+  cin: 'U74999MH2019PTC123456',
+  registeredAddress: '12 Fictional Road, Pune 411001',
+  pfRegistration: 'MH/PUN/0012345/000',
+  esiRegistration: '12345678901234567',
+  ptRegistration: 'PT-27-0099',
+  bankAccountHolder: 'Verdantis Analytical Labs',
+  bankName: 'Fictional Bank',
+  bankIfsc: 'ZZZZ0000001',
+  bankAccountNumber: ACCOUNT,
+  signatoryName: 'Asha Fictional',
+  signatoryDesignation: 'Director',
+};
 
-let app: FastifyInstance; let T: TenantFixture; let admin: Client; let hr: Client; let emp: Client; let root: string;
+let app: FastifyInstance;
+let T: TenantFixture;
+let admin: Client;
+let hr: Client;
+let emp: Client;
+let root: string;
 beforeAll(async () => {
   root = await mkdtemp(path.join(tmpdir(), 'hrms-company-'));
   setStore(new LocalStore(root));
@@ -27,7 +47,10 @@ beforeAll(async () => {
   hr = await Client.login(app, T.host, T.users.hr!.email);
   emp = await Client.login(app, T.host, T.users.employee!.email);
 });
-afterAll(async () => { await app.close(); await rm(root, { recursive: true, force: true }); });
+afterAll(async () => {
+  await app.close();
+  await rm(root, { recursive: true, force: true });
+});
 
 describe('formats', () => {
   it('the GSTIN check digit is the published algorithm', () => {
@@ -37,7 +60,16 @@ describe('formats', () => {
     expect(isValidGstin('27AAPFU0939F0ZV')).toBe(false); // the entity digit cannot be 0
   });
 
-  it.each([['gstin', '27AAPFU0939F1ZA'], ['gstin', 'nonsense'], ['pan', 'AAPFU0939'], ['tan', 'AAPF01234'], ['cin', 'U74999MH2019PTC12345'], ['bankIfsc', 'ABCD1000001'], ['bankAccountNumber', '12AB'], ['esiRegistration', '123']])('refuses %s %s', async (field, value) => {
+  it.each([
+    ['gstin', '27AAPFU0939F1ZA'],
+    ['gstin', 'nonsense'],
+    ['pan', 'AAPFU0939'],
+    ['tan', 'AAPF01234'],
+    ['cin', 'U74999MH2019PTC12345'],
+    ['bankIfsc', 'ABCD1000001'],
+    ['bankAccountNumber', '12AB'],
+    ['esiRegistration', '123'],
+  ])('refuses %s %s', async (field, value) => {
     const r = await admin.put('/api/v1/tenant/company', { [field]: value });
     expect(r.statusCode).toBe(400);
     expect(JSON.stringify(problem(r))).not.toContain(value);
@@ -71,11 +103,22 @@ describe('editing', () => {
 
   it('audits old to new for what is not sensitive, and names only for what is, saying so', async () => {
     await admin.put('/api/v1/tenant/company', { tan: 'PNEV09999F', pan: 'BBBPU1234L', bankAccountNumber: '999988887777' });
-    const [log] = await ownerQuery<{ change_metadata: Record<string, unknown>; category: string }>(`SELECT change_metadata, category FROM audit_logs WHERE tenant_id=$1 AND action='company.updated' ORDER BY created_at DESC LIMIT 1`, [T.id]);
+    const [log] = await ownerQuery<{ change_metadata: Record<string, unknown>; category: string }>(
+      `SELECT change_metadata, category FROM audit_logs WHERE tenant_id=$1 AND action='company.updated' ORDER BY created_at DESC LIMIT 1`,
+      [T.id],
+    );
     expect(log!.category).toBe('configuration');
-    expect(log!.change_metadata).toMatchObject({ changes: { tan: { from: 'PNEV01234F', to: 'PNEV09999F' } }, sensitiveFields: expect.arrayContaining(['pan', 'bankAccountNumber']), note: expect.stringMatching(/without their values/) });
+    expect(log!.change_metadata).toMatchObject({
+      changes: { tan: { from: 'PNEV01234F', to: 'PNEV09999F' } },
+      sensitiveFields: expect.arrayContaining(['pan', 'bankAccountNumber']),
+      note: expect.stringMatching(/without their values/),
+    });
     const all = await ownerQuery<{ m: string }>(`SELECT change_metadata::text AS m FROM audit_logs WHERE tenant_id=$1`, [T.id]);
-    for (const secret of ['BBBPU1234L', PAN, ACCOUNT, '999988887777', '7777']) expect(all.some((x) => x.m.includes(secret)), secret).toBe(false);
+    for (const secret of ['BBBPU1234L', PAN, ACCOUNT, '999988887777', '7777'])
+      expect(
+        all.some((x) => x.m.includes(secret)),
+        secret,
+      ).toBe(false);
   });
 
   it('an unchanged sealed value is not a change', async () => {
@@ -106,13 +149,27 @@ describe('reading', () => {
     const g = (await admin.get('/api/v1/tenant/company?reveal=1')).json();
     expect(g.bankAccountNumber).toBe('999988887777');
     expect(JSON.stringify(g)).not.toContain('BBBPU1234L');
-    const rows = await ownerQuery<{ change_metadata: { fields: string[] }; category: string; actor_id: string }>(`SELECT change_metadata, category, actor_id FROM audit_logs WHERE tenant_id=$1 AND action='company.reveal'`, [T.id]);
+    const rows = await ownerQuery<{ change_metadata: { fields: string[] }; category: string; actor_id: string }>(
+      `SELECT change_metadata, category, actor_id FROM audit_logs WHERE tenant_id=$1 AND action='company.reveal'`,
+      [T.id],
+    );
     expect(rows).toEqual([expect.objectContaining({ category: 'access', actor_id: T.users.admin!.id, change_metadata: { fields: ['bankAccountNumber'] } })]);
   });
 
   it('loadCompanyProfile gives documents the settings, with the whole PAN', async () => {
     const p = await inApp(app, () => withTenant(app.deps.pool, T.id, (db) => loadCompanyProfile(db, T.id)));
-    expect(p).toMatchObject({ legalName: VALID.legalName, gstin: GSTIN, pan: 'BBBPU1234L', tan: 'PNEV09999F', cin: VALID.cin, registeredAddress: VALID.registeredAddress, pfRegistration: VALID.pfRegistration, esiRegistration: VALID.esiRegistration, signatoryName: 'Asha Fictional', signatureKey: null });
+    expect(p).toMatchObject({
+      legalName: VALID.legalName,
+      gstin: GSTIN,
+      pan: 'BBBPU1234L',
+      tan: 'PNEV09999F',
+      cin: VALID.cin,
+      registeredAddress: VALID.registeredAddress,
+      pfRegistration: VALID.pfRegistration,
+      esiRegistration: VALID.esiRegistration,
+      signatoryName: 'Asha Fictional',
+      signatureKey: null,
+    });
   });
 
   it('with nothing set, the legal entity gives name, GSTIN and CIN', async () => {
@@ -126,7 +183,10 @@ describe('reading', () => {
 });
 
 describe('signature and stamp', () => {
-  const up = (c: Client, kind: string, file: { name: string; content: Buffer }) => { const m = multipart({}, file); return c.req('POST', `/api/v1/tenant/company/images/${kind}`, m.body, m.headers); };
+  const up = (c: Client, kind: string, file: { name: string; content: Buffer }) => {
+    const m = multipart({}, file);
+    return c.req('POST', `/api/v1/tenant/company/images/${kind}`, m.body, m.headers);
+  };
 
   it('role protected', async () => {
     expect((await up(hr, 'signature', { name: 'a.png', content: TINY_PNG })).statusCode).toBe(403);
@@ -152,16 +212,22 @@ describe('signature and stamp', () => {
     expect(g.headers['content-type']).toBe('image/png');
     expect(g.headers['cache-control']).toContain('no-store');
     expect(g.rawPayload.equals(stored)).toBe(true);
-    const actions = (await ownerQuery<{ action: string }>(`SELECT action FROM audit_logs WHERE tenant_id=$1 AND action LIKE 'company.image%' ORDER BY created_at`, [T.id])).map((x) => x.action);
+    const actions = (await ownerQuery<{ action: string }>(`SELECT action FROM audit_logs WHERE tenant_id=$1 AND action LIKE 'company.image%' ORDER BY created_at`, [T.id])).map(
+      (x) => x.action,
+    );
     expect(actions).toEqual(['company.image_uploaded', 'company.image_viewed']);
     expect((await admin.get('/api/v1/tenant/company')).json().hasSignature).toBe(true);
   });
 
   it('a replacement deletes the old file; removing clears it', async () => {
-    const [{ signature_key: first }] = (await ownerQuery<{ signature_key: string }>(`SELECT signature_key FROM company_profile WHERE tenant_id=$1`, [T.id])) as [{ signature_key: string }];
+    const [{ signature_key: first }] = (await ownerQuery<{ signature_key: string }>(`SELECT signature_key FROM company_profile WHERE tenant_id=$1`, [T.id])) as [
+      { signature_key: string },
+    ];
     expect((await up(admin, 'signature', { name: 'sig.jpg', content: TINY_JPEG })).statusCode).toBe(201);
     await expect(getStore()!.get(first)).rejects.toThrow();
-    const [{ signature_key: second }] = (await ownerQuery<{ signature_key: string }>(`SELECT signature_key FROM company_profile WHERE tenant_id=$1`, [T.id])) as [{ signature_key: string }];
+    const [{ signature_key: second }] = (await ownerQuery<{ signature_key: string }>(`SELECT signature_key FROM company_profile WHERE tenant_id=$1`, [T.id])) as [
+      { signature_key: string },
+    ];
     expect((await admin.del('/api/v1/tenant/company/images/signature')).statusCode).toBe(200);
     await expect(getStore()!.get(second)).rejects.toThrow();
     expect((await admin.get('/api/v1/tenant/company/images/signature')).statusCode).toBe(404);

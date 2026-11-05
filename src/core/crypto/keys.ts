@@ -2,8 +2,12 @@ import { DecryptCommand, KMSClient } from '@aws-sdk/client-kms';
 import { FieldCipher } from './index.js';
 
 export interface KeySource {
-  DATA_ENCRYPTION_KEY?: string; DATA_ENCRYPTION_KEY_PREVIOUS?: readonly string[];
-  KMS_KEY_ID?: string; DATA_KEY_CIPHERTEXT?: string; DATA_KEY_CIPHERTEXT_PREVIOUS?: readonly string[]; AWS_REGION?: string;
+  DATA_ENCRYPTION_KEY?: string;
+  DATA_ENCRYPTION_KEY_PREVIOUS?: readonly string[];
+  KMS_KEY_ID?: string;
+  DATA_KEY_CIPHERTEXT?: string;
+  DATA_KEY_CIPHERTEXT_PREVIOUS?: readonly string[];
+  AWS_REGION?: string;
 }
 
 /** Unwraps a data key. The real one is KMS; tests supply their own. */
@@ -35,7 +39,17 @@ export async function loadFieldCipher(source: KeySource, unwrap?: Unwrap): Promi
 
 /** From raw process variables, for commands that do not load the whole deployment configuration. */
 export function loadFieldCipherFromProcess(env: NodeJS.ProcessEnv = process.env): Promise<FieldCipher> {
-  const list = (v?: string) => (v ?? '').split(',').map((x) => x.trim()).filter(Boolean);
-  return loadFieldCipher({ DATA_ENCRYPTION_KEY: env.DATA_ENCRYPTION_KEY || undefined, DATA_ENCRYPTION_KEY_PREVIOUS: list(env.DATA_ENCRYPTION_KEY_PREVIOUS),
-    KMS_KEY_ID: env.KMS_KEY_ID || undefined, DATA_KEY_CIPHERTEXT: env.DATA_KEY_CIPHERTEXT || undefined, DATA_KEY_CIPHERTEXT_PREVIOUS: list(env.DATA_KEY_CIPHERTEXT_PREVIOUS), AWS_REGION: env.AWS_REGION || undefined });
+  const list = (v?: string) =>
+    (v ?? '')
+      .split(',')
+      .map((x) => x.trim())
+      .filter(Boolean);
+  return loadFieldCipher({
+    DATA_ENCRYPTION_KEY: env.DATA_ENCRYPTION_KEY || undefined,
+    DATA_ENCRYPTION_KEY_PREVIOUS: list(env.DATA_ENCRYPTION_KEY_PREVIOUS),
+    KMS_KEY_ID: env.KMS_KEY_ID || undefined,
+    DATA_KEY_CIPHERTEXT: env.DATA_KEY_CIPHERTEXT || undefined,
+    DATA_KEY_CIPHERTEXT_PREVIOUS: list(env.DATA_KEY_CIPHERTEXT_PREVIOUS),
+    AWS_REGION: env.AWS_REGION || undefined,
+  });
 }

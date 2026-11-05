@@ -21,7 +21,10 @@ function exifOrientation(seg: Buffer): number | null {
   for (let i = 0; i < n; i++) {
     const e = ifd + 2 + i * 12;
     if (e + 12 > seg.length) return null;
-    if (u16(e) === 0x0112) { const v = u16(e + 8); return v >= 1 && v <= 8 ? v : null; }
+    if (u16(e) === 0x0112) {
+      const v = u16(e + 8);
+      return v >= 1 && v <= 8 ? v : null;
+    }
   }
   return null;
 }
@@ -45,8 +48,13 @@ function orientationSegment(value: number): Buffer {
 
 export function stripJpeg(buf: Buffer): Buffer {
   const out: Buffer[] = [buf.subarray(0, 2)];
-  let at = 2; let orientation: number | null = null; let placed = false;
-  const placeOrientation = () => { if (!placed && orientation) out.push(orientationSegment(orientation)); placed = true; };
+  let at = 2;
+  let orientation: number | null = null;
+  let placed = false;
+  const placeOrientation = () => {
+    if (!placed && orientation) out.push(orientationSegment(orientation));
+    placed = true;
+  };
   for (;;) {
     if (at + 2 > buf.length) throw bad('JPEG');
     if (buf[at] !== 0xff) throw bad('JPEG');
@@ -54,7 +62,11 @@ export function stripJpeg(buf: Buffer): Buffer {
     while (buf[m] === 0xff && m < buf.length) m++; // fill bytes
     const marker = buf[m];
     if (marker === undefined) throw bad('JPEG');
-    if (marker === 0xd9) { placeOrientation(); out.push(Buffer.from([0xff, 0xd9])); return Buffer.concat(out); }
+    if (marker === 0xd9) {
+      placeOrientation();
+      out.push(Buffer.from([0xff, 0xd9]));
+      return Buffer.concat(out);
+    }
     if (marker === 0xda) {
       // Entropy-coded data, which may hold more scans. Everything up to the last end-of-image marker is image; anything after it is not.
       const end = buf.lastIndexOf(Buffer.from([0xff, 0xd9]));
@@ -68,11 +80,14 @@ export function stripJpeg(buf: Buffer): Buffer {
     if (len < 2 || m + 1 + len > buf.length) throw bad('JPEG');
     const seg = buf.subarray(m + 3, m + 1 + len);
     const keep = (() => {
-      if (marker === 0xe0) return true;                                     // JFIF
-      if (marker === 0xe1) { orientation ??= exifOrientation(seg); return false; } // Exif, XMP
-      if (marker === 0xe2) return asciiAt(seg, 0, 'ICC_PROFILE\0');         // colour, nothing about anyone
-      if (marker >= 0xe3 && marker <= 0xef) return false;                   // maker notes, IPTC, Adobe
-      if (marker === 0xfe) return false;                                    // comment
+      if (marker === 0xe0) return true; // JFIF
+      if (marker === 0xe1) {
+        orientation ??= exifOrientation(seg);
+        return false;
+      } // Exif, XMP
+      if (marker === 0xe2) return asciiAt(seg, 0, 'ICC_PROFILE\0'); // colour, nothing about anyone
+      if (marker >= 0xe3 && marker <= 0xef) return false; // maker notes, IPTC, Adobe
+      if (marker === 0xfe) return false; // comment
       return true;
     })();
     if (keep) {
@@ -98,7 +113,8 @@ export function stripPng(buf: Buffer): Buffer {
   }
 }
 
-const VP8X_XMP = 0x04; const VP8X_EXIF = 0x08;
+const VP8X_XMP = 0x04;
+const VP8X_EXIF = 0x08;
 export function stripWebp(buf: Buffer): Buffer {
   if (buf.length < 12) throw bad('WebP');
   const riffEnd = 8 + buf.readUInt32LE(4);

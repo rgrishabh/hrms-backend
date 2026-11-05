@@ -9,22 +9,44 @@ describe('RFC 7807', () => {
   let app: FastifyInstance;
   beforeAll(async () => {
     app = await makeApp({ RATE_LIMIT_PER_MINUTE: '3000' });
-    app.get('/api/v1/__boom', async () => { throw Object.assign(new Error(SECRET_SQL), { detail: 'Key (pan)=(ABCDE1234F)', where: SECRET_SQL }); });
-    app.get('/api/v1/__dup', async () => { throw Object.assign(new Error('duplicate key value violates unique constraint "tenant_settings_uq"'), { code: '23505', constraint: 'tenant_settings_uq', detail: 'Key (tenant_id, key)=(1, x) already exists.' }); });
-    app.get('/api/v1/__ext', async () => { throw new AppError(409, 'needs_confirm', 'Confirm first', { confirmable: true, status: 200, code: 'forged' }); });
-    app.get('/api/v1/__list', async () => { throw new AppError(400, 'bad_request', 'Invalid', ['a message']); });
+    app.get('/api/v1/__boom', async () => {
+      throw Object.assign(new Error(SECRET_SQL), { detail: 'Key (pan)=(ABCDE1234F)', where: SECRET_SQL });
+    });
+    app.get('/api/v1/__dup', async () => {
+      throw Object.assign(new Error('duplicate key value violates unique constraint "tenant_settings_uq"'), {
+        code: '23505',
+        constraint: 'tenant_settings_uq',
+        detail: 'Key (tenant_id, key)=(1, x) already exists.',
+      });
+    });
+    app.get('/api/v1/__ext', async () => {
+      throw new AppError(409, 'needs_confirm', 'Confirm first', { confirmable: true, status: 200, code: 'forged' });
+    });
+    app.get('/api/v1/__list', async () => {
+      throw new AppError(400, 'bad_request', 'Invalid', ['a message']);
+    });
     app.post('/api/v1/__json', async () => ({ ok: true }));
     await app.ready();
   });
   afterAll(() => app.close());
 
-  const leaks = (body: string) => { for (const s of [/SELECT/, /employee_salaries/, /\/srv\//, /\.js:\d+/, /ABCDE1234F/, /tenant_settings_uq/, /stack/]) expect(body).not.toMatch(s); };
+  const leaks = (body: string) => {
+    for (const s of [/SELECT/, /employee_salaries/, /\/srv\//, /\.js:\d+/, /ABCDE1234F/, /tenant_settings_uq/, /stack/]) expect(body).not.toMatch(s);
+  };
 
   it('every member, on an address that does not exist', async () => {
     const r = await app.inject({ url: '/api/v1/nowhere?secret=1' });
     const p = problem(r);
     expect(r.headers['content-type']).toMatch(/^application\/problem\+json/);
-    expect(p).toEqual({ type: 'urn:hrms:problem:not_found', title: 'Not found', status: 404, detail: 'Not found', instance: `urn:uuid:${p.instance.replace('urn:uuid:', '')}`, code: 'not_found', errors: [] });
+    expect(p).toEqual({
+      type: 'urn:hrms:problem:not_found',
+      title: 'Not found',
+      status: 404,
+      detail: 'Not found',
+      instance: `urn:uuid:${p.instance.replace('urn:uuid:', '')}`,
+      code: 'not_found',
+      errors: [],
+    });
     expect(p.instance).toMatch(/^urn:uuid:[0-9a-f-]{36}$/);
   });
 
@@ -51,7 +73,12 @@ describe('RFC 7807', () => {
   it('a type nobody parses, and a body too large, keep their status', async () => {
     const t = await app.inject({ method: 'POST', url: '/api/v1/__json', headers: { 'content-type': 'text/x-nothing' }, payload: 'x' });
     expect([t.statusCode, problem(t).code]).toEqual([415, 'unsupported_media_type']);
-    const big = await app.inject({ method: 'POST', url: '/api/v1/__json', headers: { 'content-type': 'application/json' }, payload: JSON.stringify({ a: 'x'.repeat(1024 * 1024 + 1) }) });
+    const big = await app.inject({
+      method: 'POST',
+      url: '/api/v1/__json',
+      headers: { 'content-type': 'application/json' },
+      payload: JSON.stringify({ a: 'x'.repeat(1024 * 1024 + 1) }),
+    });
     expect([big.statusCode, problem(big).code]).toEqual([413, 'payload_too_large']);
   });
 
@@ -68,11 +95,14 @@ describe('RFC 7807', () => {
   it('rate limiting answers the same way, with its header', async () => {
     const small = await makeApp({ AUTH_RATE_LIMIT_PER_MINUTE: '1' });
     try {
-      const login = () => small.inject({ method: 'POST', url: '/api/v1/auth/login', headers: { 'content-type': 'application/json' }, payload: { email: 'a@b.test', password: 'x' } });
+      const login = () =>
+        small.inject({ method: 'POST', url: '/api/v1/auth/login', headers: { 'content-type': 'application/json' }, payload: { email: 'a@b.test', password: 'x' } });
       await login();
       const r = await login();
       expect([r.statusCode, problem(r).code]).toEqual([429, 'rate_limited']);
       expect(r.headers['retry-after']).toBeTruthy();
-    } finally { await small.close(); }
+    } finally {
+      await small.close();
+    }
   });
 });

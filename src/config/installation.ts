@@ -12,10 +12,26 @@ import { FEATURE_BY_ENV } from '../core/features/registry.js';
 export interface PublicConfig {
   product: { name: string };
   brand: {
-    name: string; legalName: string; logoUrl: string | null; logoDarkUrl: string | null; faviconUrl: string | null;
-    primaryColor: string; secondaryColor: string | null; accentColor: string | null; fontFamily: string | null;
-    supportEmail: string; supportPhone: string | null; helpUrl: string | null; loginMessage: string | null;
-    domain: string; locale: string; timezone: string; currency: string; dateFormat: string; financialYearStart: string; country: string;
+    name: string;
+    legalName: string;
+    logoUrl: string | null;
+    logoDarkUrl: string | null;
+    faviconUrl: string | null;
+    primaryColor: string;
+    secondaryColor: string | null;
+    accentColor: string | null;
+    fontFamily: string | null;
+    supportEmail: string;
+    supportPhone: string | null;
+    helpUrl: string | null;
+    loginMessage: string | null;
+    domain: string;
+    locale: string;
+    timezone: string;
+    currency: string;
+    dateFormat: string;
+    financialYearStart: string;
+    country: string;
   };
   /** Every flag of the registry; one that is off is false. */
   features: Record<string, boolean>;
@@ -71,18 +87,22 @@ export async function reconcileInstallation(db: Db, env: InstallationEnv): Promi
   if (t.rowCount! > 1) throw new Error(`this installation contains ${t.rowCount} organizations; exactly one is allowed`);
   const tenantId = t.rows[0]?.id;
   if (!tenantId) return null;
-  await db.query(`UPDATE tenants SET name=$2, timezone=$3, updated_at=now() WHERE id=$1 AND (name<>$2 OR timezone<>$3)`,
-    [tenantId, organizationName(env), env.BRAND_TIMEZONE]);
+  await db.query(`UPDATE tenants SET name=$2, timezone=$3, updated_at=now() WHERE id=$1 AND (name<>$2 OR timezone<>$3)`, [tenantId, organizationName(env), env.BRAND_TIMEZONE]);
   const domains = deploymentDomains(env);
   for (const [i, h] of domains.entries()) {
     const other = await db.query<{ tenant_id: string }>('SELECT tenant_id FROM tenant_domains WHERE hostname=$1', [h]);
     if (other.rows[0] && other.rows[0].tenant_id !== tenantId) throw new Error(`hostname ${h} belongs to another organization`);
-    await db.query(`INSERT INTO tenant_domains (tenant_id, hostname, verification_token, verification_status, verified_at, activation_status, tls_status, is_primary)
+    await db.query(
+      `INSERT INTO tenant_domains (tenant_id, hostname, verification_token, verification_status, verified_at, activation_status, tls_status, is_primary)
         VALUES ($1,$2,'deployment-config','verified',now(),'active',$3,$4)
       ON CONFLICT (hostname) DO UPDATE SET verification_status='verified', activation_status='active', tls_status=$3, is_primary=$4, last_error=NULL, updated_at=now()`,
-      [tenantId, h, appUrl(env).startsWith('https://') ? 'issued' : 'not_requested', i === 0]);
+      [tenantId, h, appUrl(env).startsWith('https://') ? 'issued' : 'not_requested', i === 0],
+    );
   }
-  await db.query(`UPDATE tenant_domains SET activation_status='inactive', is_primary=false, updated_at=now()
-    WHERE tenant_id=$1 AND NOT (hostname = ANY($2)) AND activation_status='active'`, [tenantId, domains]);
+  await db.query(
+    `UPDATE tenant_domains SET activation_status='inactive', is_primary=false, updated_at=now()
+    WHERE tenant_id=$1 AND NOT (hostname = ANY($2)) AND activation_status='active'`,
+    [tenantId, domains],
+  );
   return { tenantId, domains };
 }

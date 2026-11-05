@@ -56,12 +56,17 @@ export const JOBS: readonly JobDefinition[] = [
     runPermission: 'attendance.recalculate',
     async run(db, tenantId, ctx) {
       const day = addDays(ctx.period.length === 10 ? ctx.period : ctx.localDate, -1);
-      const emps = await db.query<{ id: string }>(`SELECT id FROM employees WHERE tenant_id=$1 AND date_of_joining <= $2
-        AND (exit_date IS NULL OR exit_date >= $2) AND status IN ('active','on_notice','exited')`, [tenantId, day]);
-      let calculated = 0; let locked = 0;
+      const emps = await db.query<{ id: string }>(
+        `SELECT id FROM employees WHERE tenant_id=$1 AND date_of_joining <= $2
+        AND (exit_date IS NULL OR exit_date >= $2) AND status IN ('active','on_notice','exited')`,
+        [tenantId, day],
+      );
+      let calculated = 0;
+      let locked = 0;
       for (const e of emps.rows) {
         const r = await recalculateRange(db, tenantId, e.id, day, day);
-        calculated += r.results.length; locked += r.skippedLocked.length;
+        calculated += r.results.length;
+        locked += r.skippedLocked.length;
       }
       return { date: day, employees: emps.rowCount, daysCalculated: calculated, lockedSkipped: locked };
     },
@@ -90,18 +95,41 @@ export const JOBS: readonly JobDefinition[] = [
     async run(db, tenantId, ctx) {
       const days = await getSettingValue<number>(db, tenantId, 'notifications.approval_reminder_days');
       if (days === 0) return { skipped: 'reminders turned off' };
-      const pending = await db.query<{ id: string; entity_type: string; summary: string; approver_kind: string; approver_user_id: string | null; approver_permission: string | null;
-        escalated_to: string | null; escalated_permission: string | null; age_days: number }>(
+      const pending = await db.query<{
+        id: string;
+        entity_type: string;
+        summary: string;
+        approver_kind: string;
+        approver_user_id: string | null;
+        approver_permission: string | null;
+        escalated_to: string | null;
+        escalated_permission: string | null;
+        age_days: number;
+      }>(
         `SELECT r.id, r.entity_type, r.summary, s.approver_kind, s.approver_user_id, s.approver_permission, s.escalated_to, s.escalated_permission,
                 extract(day FROM now() - r.created_at)::int AS age_days
            FROM approval_requests r JOIN approval_steps s ON s.tenant_id=r.tenant_id AND s.request_id=r.id AND s.status='active'
-          WHERE r.tenant_id=$1 AND r.status='pending' AND r.created_at < now() - make_interval(days => $2) AND NOT (r.entity_type = ANY($3))`, [tenantId, days, offEntityTypes()]);
+          WHERE r.tenant_id=$1 AND r.status='pending' AND r.created_at < now() - make_interval(days => $2) AND NOT (r.entity_type = ANY($3))`,
+        [tenantId, days, offEntityTypes()],
+      );
       let notified = 0;
       for (const p of pending.rows) {
         const { direct, delegates } = await stepRecipients(db, tenantId, p, ctx.localDate);
         const blocked = await blockedUsers(db, tenantId, p.id);
-        const r = await notifyUsers(db, tenantId, [...direct, ...delegates.keys()].filter((u) => !blocked.has(u)), { kind: 'approval.reminder', feature: handlerFeature(p.entity_type), title: `Waiting ${p.age_days} day(s) for your approval`,
-          body: p.summary, link: '/approvals', actionLabel: 'Review', dedupeKey: `reminder:${p.id}:${ctx.localDate}` });
+        const r = await notifyUsers(
+          db,
+          tenantId,
+          [...direct, ...delegates.keys()].filter((u) => !blocked.has(u)),
+          {
+            kind: 'approval.reminder',
+            feature: handlerFeature(p.entity_type),
+            title: `Waiting ${p.age_days} day(s) for your approval`,
+            body: p.summary,
+            link: '/approvals',
+            actionLabel: 'Review',
+            dedupeKey: `reminder:${p.id}:${ctx.localDate}`,
+          },
+        );
         notified += r.inApp;
       }
       return { pendingOverdue: pending.rowCount, notificationsCreated: notified };
@@ -131,15 +159,22 @@ export const JOBS: readonly JobDefinition[] = [
       const docs = await db.query<{ id: string; title: string; expires_on: string; employee_id: string | null; user_id: string | null; name: string | null; days: number }>(
         `SELECT d.id, d.title, d.expires_on, d.employee_id, e.user_id, trim(e.first_name||' '||coalesce(e.last_name,'')) AS name, (d.expires_on - $2::date) AS days
            FROM documents d LEFT JOIN employees e ON e.tenant_id=d.tenant_id AND e.id=d.employee_id
-          WHERE d.tenant_id=$1 AND d.status='active' AND d.expires_on IS NOT NULL AND d.expires_on - $2::date IN (30, 7, 0)`, [tenantId, ctx.localDate]);
+          WHERE d.tenant_id=$1 AND d.status='active' AND d.expires_on IS NOT NULL AND d.expires_on - $2::date IN (30, 7, 0)`,
+        [tenantId, ctx.localDate],
+      );
       const managers = docs.rowCount ? await usersWithPermission(db, tenantId, 'documents.manage') : [];
       let notified = 0;
       for (const d of docs.rows) {
         const when = d.days === 0 ? 'expires today' : `expires in ${d.days} days`;
         const recipients = [...managers, ...(d.user_id ? [d.user_id] : [])];
-        const r = await notifyUsers(db, tenantId, recipients, { kind: 'documents.expiring', title: `${d.title}${d.name ? ` (${d.name})` : ''} ${when}`,
-          body: `Expiry date: ${d.expires_on}. Upload a renewed document before it lapses.`, link: d.employee_id ? `/employees/${d.employee_id}?tab=documents` : '/documents',
-          actionLabel: 'Open', dedupeKey: `doc-expiry:${d.id}:${d.days}` });
+        const r = await notifyUsers(db, tenantId, recipients, {
+          kind: 'documents.expiring',
+          title: `${d.title}${d.name ? ` (${d.name})` : ''} ${when}`,
+          body: `Expiry date: ${d.expires_on}. Upload a renewed document before it lapses.`,
+          link: d.employee_id ? `/employees/${d.employee_id}?tab=documents` : '/documents',
+          actionLabel: 'Open',
+          dedupeKey: `doc-expiry:${d.id}:${d.days}`,
+        });
         notified += r.inApp;
       }
       return { documents: docs.rowCount, notificationsCreated: notified };
@@ -191,8 +226,11 @@ export const JOBS: readonly JobDefinition[] = [
     retention: true,
     runPermission: 'attendance.configure',
     async run(db, tenantId) {
-      const due = await db.query<{ id: string; storage_key: string }>(`SELECT id, storage_key FROM attendance_selfies WHERE tenant_id=$1 AND erased_at IS NULL AND storage_key IS NOT NULL
-        AND (retain_until <= now() OR (event_id IS NULL AND created_at < now() - interval '1 day')) ORDER BY retain_until LIMIT 2000 FOR UPDATE SKIP LOCKED`, [tenantId]);
+      const due = await db.query<{ id: string; storage_key: string }>(
+        `SELECT id, storage_key FROM attendance_selfies WHERE tenant_id=$1 AND erased_at IS NULL AND storage_key IS NOT NULL
+        AND (retain_until <= now() OR (event_id IS NULL AND created_at < now() - interval '1 day')) ORDER BY retain_until LIMIT 2000 FOR UPDATE SKIP LOCKED`,
+        [tenantId],
+      );
       if (!due.rowCount) return { erased: 0 };
       const store = getStore();
       if (!store) throw new Error('Selfies are due for erasure but no storage is configured');
@@ -206,7 +244,8 @@ export const JOBS: readonly JobDefinition[] = [
   {
     key: 'retention.operational',
     name: 'Notifications, outbox and job history retention',
-    description: 'Deletes old notifications, sent and failed email and push records, finished job runs and expired report copies, by the periods in Settings. The audit log is never touched.',
+    description:
+      'Deletes old notifications, sent and failed email and push records, finished job runs and expired report copies, by the periods in Settings. The audit log is never touched.',
     schedule: { kind: 'daily', at: '04:30' },
     retention: true,
     runPermission: 'settings.manage',
@@ -242,7 +281,8 @@ export const JOBS: readonly JobDefinition[] = [
   {
     key: 'cases.deadlines',
     name: 'POSH and grievance timelines',
-    description: 'Reminds the Internal Committee 7 days before POSH inquiry/report deadlines, on the day and weekly after; reminds handlers of grievances past their response target.',
+    description:
+      'Reminds the Internal Committee 7 days before POSH inquiry/report deadlines, on the day and weekly after; reminds handlers of grievances past their response target.',
     schedule: { kind: 'daily', at: '09:00' },
     feature: ['posh', 'grievance'],
     runPermission: 'grievance.manage',
@@ -260,7 +300,8 @@ export const JOBS: readonly JobDefinition[] = [
   {
     key: 'reports.scheduled',
     name: 'Scheduled reports',
-    description: 'Runs saved reports that are due, as their owners, and tells the recipients the report is ready in the app (no report data goes by email). Removes copies older than 90 days.',
+    description:
+      'Runs saved reports that are due, as their owners, and tells the recipients the report is ready in the app (no report data goes by email). Removes copies older than 90 days.',
     schedule: { kind: 'daily', at: '06:30' },
     feature: 'reports.advanced',
     runPermission: 'settings.manage',

@@ -9,13 +9,39 @@ import type { Db } from '../src/db/tx.js';
 
 const today = localDate(new Date(), 'Asia/Kolkata');
 let app: FastifyInstance;
-beforeAll(async () => { app = await makeApp({ ...flags('default,recruitment,posh,grievance') }); });
-afterAll(async () => { await app.close(); });
+beforeAll(async () => {
+  app = await makeApp({ ...flags('default,recruitment,posh,grievance') });
+});
+afterAll(async () => {
+  await app.close();
+});
 
 describe('recruitment requisition checks', () => {
-  let T: TenantFixture; let hr: Client; let mgr: Client; let reqId: string; let appId: string; let candId: string;
-  const REQ = () => ({ title: 'Chemist', legalEntityId: T.legalEntityId, branchId: T.branchId, departmentId: T.deptId, designation: 'Chemist', positions: 2, justification: 'Fixture headcount need', hiringManagerId: T.users.manager!.employeeId });
-  const offer = () => ({ designation: 'Chemist', legalEntityId: T.legalEntityId, branchId: T.branchId, departmentId: T.deptId, employmentType: 'permanent', annualCtc: 500000, joiningDate: addDays(today, 30) });
+  let T: TenantFixture;
+  let hr: Client;
+  let mgr: Client;
+  let reqId: string;
+  let appId: string;
+  let candId: string;
+  const REQ = () => ({
+    title: 'Chemist',
+    legalEntityId: T.legalEntityId,
+    branchId: T.branchId,
+    departmentId: T.deptId,
+    designation: 'Chemist',
+    positions: 2,
+    justification: 'Fixture headcount need',
+    hiringManagerId: T.users.manager!.employeeId,
+  });
+  const offer = () => ({
+    designation: 'Chemist',
+    legalEntityId: T.legalEntityId,
+    branchId: T.branchId,
+    departmentId: T.deptId,
+    employmentType: 'permanent',
+    annualCtc: 500000,
+    joiningDate: addDays(today, 30),
+  });
   const setReq = (status: string) => ownerQuery(`UPDATE job_requisitions SET status=$2 WHERE id=$1`, [reqId, status]);
 
   beforeAll(async () => {
@@ -28,7 +54,7 @@ describe('recruitment requisition checks', () => {
   });
 
   it('only the requester or HR can submit a requisition, as with editing', async () => {
-    const r = await mgr.post(`/api/v1/recruitment/requisitions/${reqId}/submit`);   // the named hiring manager, not its author
+    const r = await mgr.post(`/api/v1/recruitment/requisitions/${reqId}/submit`); // the named hiring manager, not its author
     expect(r.statusCode).toBe(403);
   });
 
@@ -58,7 +84,8 @@ describe('recruitment requisition checks', () => {
 
 describe('cases: anonymity and respondents', () => {
   const DESC = 'Repeated unfair treatment in shift allocation over several months, with examples.';
-  const noticesFor = (T: TenantFixture, userId: string, kind: string) => ownerQuery(`SELECT 1 FROM notifications WHERE tenant_id=$1 AND user_id=$2 AND kind=$3`, [T.id, userId, kind]);
+  const noticesFor = (T: TenantFixture, userId: string, kind: string) =>
+    ownerQuery(`SELECT 1 FROM notifications WHERE tenant_id=$1 AND user_id=$2 AND kind=$3`, [T.id, userId, kind]);
 
   it('assigning the complainant of an anonymous grievance gives no hint of who filed it', async () => {
     const T = await createTenant();

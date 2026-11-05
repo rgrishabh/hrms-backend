@@ -17,7 +17,12 @@ const setting = async (c: Client, key: string) => (await c.get('/api/v1/tenant/s
 const KEY = 'attendance.min_punch_gap_seconds';
 
 describe.skipIf(!REDIS)('with Redis', () => {
-  let a: FastifyInstance; let b: FastifyInstance; let T: TenantFixture; let adminA: Client; let adminB: Client; let raw: Redis;
+  let a: FastifyInstance;
+  let b: FastifyInstance;
+  let T: TenantFixture;
+  let adminA: Client;
+  let adminB: Client;
+  let raw: Redis;
   beforeAll(async () => {
     raw = new Redis(REDIS!);
     await raw.flushdb();
@@ -28,7 +33,11 @@ describe.skipIf(!REDIS)('with Redis', () => {
     adminB = await Client.login(b, T.host, T.users.admin!.email);
     await new Promise((r) => setTimeout(r, 200)); // both apps' clients have connected
   });
-  afterAll(async () => { await a.close(); await b.close(); raw.disconnect(); });
+  afterAll(async () => {
+    await a.close();
+    await b.close();
+    raw.disconnect();
+  });
 
   it('a setting is read from the cache after the first read', async () => {
     expect((await setting(adminA, KEY)).effective).toBe(60);
@@ -59,10 +68,12 @@ describe.skipIf(!REDIS)('with Redis', () => {
     });
     expect((await withTenant(pool, T.id, (db) => resolveSetting(db, T.id, KEY))).value).toBe(200);
 
-    await expect(withTenant(pool, T.id, async (db) => {
-      await writeSetting(db, T.id, { key: KEY, value: 300, scope: 'tenant' }, T.users.admin!.id);
-      throw new Error('rolled back');
-    })).rejects.toThrow('rolled back');
+    await expect(
+      withTenant(pool, T.id, async (db) => {
+        await writeSetting(db, T.id, { key: KEY, value: 300, scope: 'tenant' }, T.users.admin!.id);
+        throw new Error('rolled back');
+      }),
+    ).rejects.toThrow('rolled back');
     expect((await withTenant(pool, T.id, (db) => resolveSetting(db, T.id, KEY))).value).toBe(200);
     // The connection goes back to the pool clean: its next transaction uses the cache again.
     await withTenant(pool, T.id, (db) => db.query(`DELETE FROM tenant_settings WHERE tenant_id=$1 AND setting_key=$2`, [T.id, KEY]));
@@ -73,7 +84,9 @@ describe.skipIf(!REDIS)('with Redis', () => {
     const seen = await withTenant(pool, T.id, async (db) => {
       const gate = cached(db, T.id, 'org', 'race', async () => {
         // The load is under way when another transaction commits a change.
-        await withTenant(pool, T.id, async (w) => { invalidate(w, T.id, 'org'); });
+        await withTenant(pool, T.id, async (w) => {
+          invalidate(w, T.id, 'org');
+        });
         return 'old';
       });
       return gate;
@@ -90,7 +103,12 @@ describe.skipIf(!REDIS)('with Redis', () => {
     await ownerQuery(`INSERT INTO departments (tenant_id, code, name) VALUES ($1,'SNEAK','Sneaked in')`, [T.id]);
     expect((await adminA.get('/api/v1/org')).json().departments).toHaveLength(1);
     expect((await adminA.post('/api/v1/org/departments', { code: 'QA', name: 'Quality' })).statusCode).toBe(201);
-    expect((await adminB.get('/api/v1/org')).json().departments.map((d: { code: string }) => d.code).sort()).toEqual(['LAB', 'QA', 'SNEAK']);
+    expect(
+      (await adminB.get('/api/v1/org'))
+        .json()
+        .departments.map((d: { code: string }) => d.code)
+        .sort(),
+    ).toEqual(['LAB', 'QA', 'SNEAK']);
   });
 
   it('keys are per organization', async () => {
