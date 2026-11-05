@@ -451,3 +451,43 @@ So drawing the largest report allowed costs under a second of CPU, and yielding 
 **Decision.** `load/seed.ts` writes a session per person directly. `mixed.js` adds a small steady rate of real sign-ins as its own scenario. It refuses any database not named `hrms_load`.
 
 **Reason.** Numbers about the API, with sign-in reported on its own. Think time of 1 to 3 seconds per user, so 1000 users is about 500 requests a second, which is what 1000 people at work would be at their busiest and well beyond what one customer of this product has.
+
+## D67 — Response schemas for every JSON route, from what the suite saw and where each value came from
+
+**Context.** D59 covered 76 of 385 routes, so the frontend wrote types by hand for the rest. Its generator had two weaknesses: a field only ever seen as null was `unknown`, and a nullable column that tests happened to fill looked as if it could never be null.
+
+**Options.** Write them by hand from the SQL, which D59 already rejected as guessing; run D59's generator again; record more.
+
+**Decision.** Record more. The whole suite ran with a recorder that kept, per route and status, the shape of each answer and, by the result metadata of `pg`, which table column each value came from, matched on name and value. A value from a nullable column is nullable although no test saw it null. A field seen only as null takes its column's type. A value from a JSON column is a loose object, since the column can hold more than was seen. What the old document said stays: its fields, its optional and its nullable. `test/contract/remaining-routes.test.ts` takes the 40 odd routes no suite reached to a 2xx, so nothing is described from the code alone. A test now fails on any route without a response. Files are declared with `R.file(...)` where the path does not end in an extension. The recorder was a throwaway, as the last generator was; `registerResponseCheck` is what keeps these true.
+
+**Reason.** The check holds for the paths tests reach, and only those: D59's limit stands. A column of an outer join can be null with `NOT NULL` on the column, and a value built in code has no column, so a branch no test takes can still answer null where the schema says otherwise. Over-declaring nullable costs the frontend a check; under-declaring costs a crash, so widening is the right way to err.
+
+## D68 — `AUTH_RATE_LIMIT_PER_MINUTE` defaults to 300
+
+**Context.** It was 20 per address, and F-128 kept sign-in per address. An office behind one NAT with 100 people arriving at nine is refused from the 21st on, each person for up to a minute, and the refusal looks like the system being down.
+
+**What each guard does.** The limit counts every attempt, right or wrong, in the memory of one process. The back-off of D44 counts only failures, in the database: 50 from an address, 30 on an account from anywhere, and `security.max_failed_logins` for the pair, then blocks with waits doubling from 30 seconds to 15 minutes, before any password work. The counter forgets after 30 quiet minutes, so the patient attacker's budget is 49 guesses, a wait, and 49 more: about 2,300 a day per address, across all accounts. That number does not depend on this limit as long as it is above 2 a minute: at 20 the 49 take 150 seconds, at 300 they take 10, and either way the wait is what sets the rate.
+
+**Options.** Keep 20 and tell sites to raise it: the failure arrives on a real morning, at a site that did not read the page. Raise it to just above the scenario, 120: no margin for retries, an office of 1000 with a tenth arriving in one minute, or a `TRUST_PROXY` mistake, which makes everyone one address. Count failures only in this limit: the plugin cannot, and the database already does. Remove it: nothing would bound the hashing a burst can start before its first failures are recorded.
+
+**Decision.** 300. Three times the scenario. About 5 hashes a second per address, against 31 a second measured for one process on the laptop, with libuv's four threads and the suite running beside it: one address can take a sixth of that. Tested at the defaults: 100 people in one minute from one address all sign in, and a sprayer from one address is refused after 50 wrong passwords.
+
+**Second factor.** The same office met the same wall one step later: 10 verifications a minute per address, 5 email codes. Those now use this limit as well. The per-user limits and the lock after 10 wrong codes are what guard a code, and neither is shared with colleagues. Recovery codes and turning MFA off stay at 5, as nobody does those in a crowd. `POST /auth/password` stays at 5 per address too, which an office whose accounts were all created that morning can reach; it clears in a minute.
+
+**Limits.** The limit is per process (D27), so N instances allow N times this. The back-off counter of 50 is shared by everyone behind an address and is a constant: a large office having a bad morning can reach it. Not changed, because it is the guard, and no measurement says what a real office's failure rate is. Someone with many addresses gets 50 guesses at each: the per-account counters are what meets that, not this limit. Not measured against a real NAT or on production hardware.
+
+## D69 — `PUBLIC_URL`: links keep the address people use
+
+**Context.** Links in mail were built from `BRAND_DOMAIN`, a hostname by contract. A stack on `localhost:8088` mailed `http://localhost/reset-password`, where nothing listens. The deployment repository worked around it for one link by editing the setup URL in `bin/stack-up`.
+
+**Options.** Read the request's `Host`: an attacker chooses it, and a password reset link is the classic place to do so; jobs have no request either. Let `BRAND_DOMAIN` carry a port: it is also the tenant lookup and the CORS origin. Add a variable.
+
+**Decision.** Optional `PUBLIC_URL`, scheme, host and port only. `appUrl` uses it when set, so all mail, the setup link and the demo output follow; left out, nothing changes. Startup refuses a path, a query, credentials, a host outside `BRAND_DOMAIN` and `BRAND_EXTRA_DOMAINS`, or `http` in production, since a mistaken value would send people's reset tokens elsewhere.
+
+## D70 — The address is read as the request arrives
+
+**Context.** `@fastify/rate-limit` threw in `normalizeIP` on aborted requests. `req.ip` reads the socket, whose address is gone once the client has hung up, unless Node has cached it because something read it earlier. The rate limit hook runs after the host and session lookups, which wait on the database.
+
+**Decision.** The first hook, before anything waits, keeps `req.clientAddress`; limits, sessions and the audit trail read that. If it is already gone, which leaves nobody to answer, the request counts in one shared budget, `no-address`. Addresses go through the plugin's `normalizeIP`.
+
+**Reason.** A dropped request is not an error, and hanging up must not be a way to spend no budget. Since `limitKey` replaced the plugin's own generator it had also stopped normalizing, so an IPv6 client had a new budget per address of its network: restored here.

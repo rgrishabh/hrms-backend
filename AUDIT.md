@@ -6,7 +6,7 @@ Branch `feature/hrms-revamp` at `030af9c` (release 1.1.0). Audit date 2026-11-05
 
 - **Read in full:** app bootstrap, config, all of `src/core`, auth, MFA, payroll, loans, leave, overtime, attendance (calc, service, routes, device ingest, roster logic), employees, tenant admin, reports, dashboard, accounting, documents, and the migrations for those areas.
 - **Read in part:** expenses (flows and exports), lifecycle (approvals, separation, daily job).
-- **Delegated, then spot-checked:** recruitment, cases, policies, competency, performance, assets, travel, field duty, org, notifications, SMS routes. A second reader went through these in full. I re-read a sample against the code (cases `:245`, recruitment `:212`, competency service, performance review steps). Findings from this group are tagged `[delegated]`.
+- **Delegated, then spot-checked:** recruitment, cases, policies, competency, performance, assets, travel, field duty, org, notifications. A second reader went through these in full. I re-read a sample against the code (cases `:245`, recruitment `:212`, competency service, performance review steps). Findings from this group are tagged `[delegated]`.
 - **Not read closely:** `attendance/roster-routes.ts`, `expenses/allowances.ts`, `core/http/xlsx.ts`, `db/demo.ts`.
 - **Executed:**
   - `tsc --noEmit`: clean.
@@ -90,7 +90,6 @@ The handler then calls `tenantActor(req, ...perms)` (`core/http/context.ts:42`) 
 | Cases (POSH, grievance) | `posh`, `grievance` | Partial | `[delegated]` anonymity leak, confidentiality gaps in notifications |
 | Documents | `core.documents` | Complete | Minor visibility gaps in section 4 |
 | Notifications | always on | Complete | No outbox purge possible |
-| SMS | `notifications.sms` | Complete | Removal candidate, see impact map (d) |
 | Reports | per report; `reports.advanced` | Complete | Snapshot leak (F-10) |
 | Dashboard | always on | Complete | No salary figures shown |
 | Approvals engine | always on | **Partial** | Stuck requests (F-14), `feature` unused |
@@ -245,7 +244,7 @@ Statutory items checked with no defect: February uses calendar days consistently
 - `recruitment/routes.ts:212`: submit lacks the ownership check that edit has.
 - `recruitment/routes.ts:563,566,650-651`: offer and hire do not check requisition status.
 - `recruitment/routes.ts:627,458,388`: an accepted offer has no decline path, a dead end if the candidate reneges.
-- `recruitment/routes.ts:680-683`: anonymization leaves notes and event text; `sms_outbox.text` keeps the name.
+- `recruitment/routes.ts:680-683`: anonymization leaves notes and event text.
 - `recruitment/routes.ts:260`: `avg_rating` bypasses blind panel feedback.
 - `performance/routes.ts:66-68,178-179`: reviewer status is unchecked and the manager step waits on the self-review, so a leaver blocks cycle close.
 - `performance/routes.ts:126`: `agree` has no status check and can revive a dropped goal.
@@ -286,7 +285,7 @@ No cross-tenant IDOR was found. Every query examined filters on `tenant_id`, wit
 
 **A09 Logging.** Exports, bank views and own payslip views are audited, but L4 **reads** by staff are not, see impact map (b). Logs redact cookies and tokens (`app.ts:73`).
 
-**A10 SSRF.** Only `SMS_HTTP_URL` from env. None found.
+**A10 SSRF.** None found.
 
 **Secrets.** None found in tracked code; `DEV_PASSWORD` at `db/seed.ts:16` is dev-only, guarded at `:19,23`. gitleaks runs in CI.
 
@@ -299,7 +298,7 @@ No cross-tenant IDOR was found. Every query examined filters on `tenant_id`, wit
 **Per-request overhead, no caching (CONFIRMED).**
 - `resolveHost` is 1 transaction per request (`core/tenancy/resolve.ts:33`).
 - `loadSession` runs session, roles, employee and settings queries (`session.ts:48-69`), about 6 statements plus BEGIN, `set_config`, COMMIT.
-- `gateFeatures` calls `evaluateFeatures` in a new transaction (`context.ts:77`). Each `resolveSetting` costs 2 queries (`settings/service.ts:33-34`), plus biometric, overtime and SMS checks.
+- `gateFeatures` calls `evaluateFeatures` in a new transaction (`context.ts:77`). Each `resolveSetting` costs 2 queries (`settings/service.ts:33-34`), plus biometric and overtime checks.
 - Most routes then call `requireFeature`, which evaluates everything again (`state.ts:147`).
 - `featureOn` is the same full evaluation; `computeRun` calls it 4 times (`payroll/service.ts:58-61`).
 - A typical gated route costs an estimated 20-30 statements before business logic (counted from code, not measured). The comment at `settings/service.ts:26-29` chooses no cache on purpose. A short TTL or per-request memo would remove most of this.
@@ -334,7 +333,7 @@ No cross-tenant IDOR was found. Every query examined filters on `tenant_id`, wit
 - Uploads and downloads are fully buffered (`documents/routes.ts:122,175`, `storage/index.ts:62`).
 - Jobs run in the API process, and "Run now" runs synchronously inside the request (`tenant/routes.ts:126`).
 
-**Unbounded growth.** `email_outbox`, `sms_outbox`, `notifications` have DELETE revoked from the runtime role with no purge job. `audit_logs` is append-only without retention. `job_runs` is not purged.
+**Unbounded growth.** `email_outbox`, `notifications` have DELETE revoked from the runtime role with no purge job. `audit_logs` is append-only without retention. `job_runs` is not purged.
 
 ---
 
@@ -419,7 +418,7 @@ No cross-tenant IDOR was found. Every query examined filters on `tenant_id`, wit
    - `overtime`, unusable until setting `attendance.overtime_enabled` (`state.ts:88-91`)
    - `attendance.biometric`, unusable until a device exists; device registration special-cases this at `attendance/routes.ts:366-368`
    - `core.documents`, needs storage (`state.ts:75`)
-   - `notifications.email`, `notifications.sms`, need transports
+   - `notifications.email`, needs a transport
 
    Decide what those return: keep `requireFeature`, change its status or code.
 2. **Approval handlers register inside route plugins.** 15 calls to `registerApprovalHandler` at the top of plugin bodies: `salary_change`, `payroll_run` (`payroll/routes.ts:40,52`), `leave_request` (`leave/routes.ts:101`), `attendance_regularization` (`attendance/routes.ts:40`), `employee_loan` (`loans/routes.ts:57`), `overtime_claim` (`overtime/routes.ts:73`), `expense_claim` (`expenses/routes.ts:60`), `separation`, `probation_review` (`lifecycle/routes.ts:41,56`), `employee_profile_change` (`employees/profile.ts:135`), `job_requisition`, `job_offer` (`recruitment/routes.ts:119,130`), `lab_authorization` (`competency/routes.ts:51`), `travel_request` (`travel/routes.ts:105`), `field_duty` (`field-duty/routes.ts:59`).
@@ -442,14 +441,14 @@ No cross-tenant IDOR was found. Every query examined filters on `tenant_id`, wit
 | Module routes | Yes, 403 | 18 `gateFeatures` plugins |
 | Ungated plugins | No gate | auth, mfa, tenant, org, employees, approvals, notifications, reports (per report), dashboard (per block) |
 | Device ingest | Yes | `attendance/device-routes.ts:54` |
-| Jobs | Yes, `usable` | `core/jobs/scheduler.ts:61`, `registry.ts:228`. Retention **skips** when off, so PII outlives `retain_until` `[delegated]` |
+| Jobs | Yes, `usable` | `core/jobs/scheduler.ts:61`, `registry.ts:228`. Retention **skips** when off, so PII outlives `retain_until` `[delegated]`. **Corrected 2026-11-05:** no longer so. A job marked `retention: true` runs with its module off (`core/jobs/registry.ts`, `core/jobs/scheduler.ts`); `test/feature-off.test.ts` covers it |
 | Manual job run | Yes | `tenant/routes.ts:120-124` |
 | Reports | Yes | `reports/service.ts:29`, `routes.ts:59`; `department_overview` per block |
 | Report snapshots | **No** | `reports/routes.ts:178-186`, checks `reports.advanced` only |
 | Report exports | Yes | through `runReport` |
 | Payroll, accounting, expense exports | Yes | inside gated plugins |
 | Dashboard | Yes | `usable()` per block |
-| In-app notifications | **No** | `notifyUsers` always writes (`core/notify/service.ts:35`). Email and SMS check `isModuleEnabled` |
+| In-app notifications | **No** | `notifyUsers` always writes (`core/notify/service.ts:35`). Email checks `isModuleEnabled` |
 | `/auth/me` capabilities | Reports state | `auth.ts:119` |
 | `/public/config` modules | Enabled only | `installation.ts:53` |
 | `/tenant/settings` | **Lists all** with `featureEnabled` | `tenant/routes.ts:33` |
@@ -502,7 +501,7 @@ No cross-tenant IDOR was found. Every query examined filters on `tenant_id`, wit
 | Recruitment `recruitment/routes.ts:151,253,264,348,356,437,440` | budget, expected and offered CTC | redacted without recruitment.compensation | No `[delegated]` |
 | `GET /tenant/audit` `tenant/routes.ts:345`; `GET /employees/:id/history` `employees/routes.ts:169` | metadata below | audit.read; employees.read | No |
 | `GET /approvals/inbox`, `/:id` `core/workflow/routes.ts` | summary text; loan amounts | step approvers | No |
-| Notifications, email, SMS | see below | recipient | n/a |
+| Notifications, email | see below | recipient | n/a |
 
 **Audit metadata carrying L4, not caught by `REDACT_KEYS` (`core/audit/audit.ts:17`):**
 - `payroll.run_computed` totals (`payroll/routes.ts:284`).
@@ -513,7 +512,7 @@ No cross-tenant IDOR was found. Every query examined filters on `tenant_id`, wit
 - `audit.read` is held by tenant_admin, hr_admin and auditor, so tenant_admin sees these without `payroll.read`.
 
 **Notifications carrying L4 despite `templates.ts:2-4`:**
-- Loan approval summary with ₹ amount (`loans/routes.ts:107`), which `notifyActiveApprovers` puts in the body (`engine.ts:101`). It goes to `notifications`, `email_outbox`, and if templated `sms_outbox`, all plaintext.
+- Loan approval summary with ₹ amount (`loans/routes.ts:107`), which `notifyActiveApprovers` puts in the body (`engine.ts:101`). It goes to `notifications`, `email_outbox`, all plaintext.
 - `loans.disbursed` title with amount (`loans/routes.ts:168`).
 - Trip estimates (`travel/routes.ts:156,243`) `[delegated]`.
 - Salary and payroll summaries are clean (`payroll/routes.ts:131-133,372`). Payslip notice has no figure (`:391`).
@@ -542,7 +541,7 @@ No cross-tenant IDOR was found. Every query examined filters on `tenant_id`, wit
 | Payroll results | Plaintext | `payroll_items.gross, deductions, net, employer_cost, lines, warnings`; `payroll_runs.totals`; `payroll_adjustments.amount` |
 | Loans | Plaintext | `employee_loans.amount, installment_amount`; `loan_recoveries.amount` |
 | Candidate CTC | Plaintext | `job_requisitions.budget_ctc_max`, `candidates.expected_ctc`, `job_offers.annual_ctc` |
-| Derived copies | Plaintext | `report_snapshots.rows/totals`, `accounting_exports.total`, `audit_logs.change_metadata`, `notifications.body`, `email_outbox.*`, `sms_outbox.text`, `approval_requests.summary` |
+| Derived copies | Plaintext | `report_snapshots.rows/totals`, `accounting_exports.total`, `audit_logs.change_metadata`, `notifications.body`, `email_outbox.*`, `approval_requests.summary` |
 
 **Queries that break under application-level encryption of amounts**
 
@@ -580,43 +579,19 @@ Not affected: dashboard, leave, attendance. Expense sums are not on your L4 list
 - **New-device alerts: none.** `sessions.ip` and `user_agent` are stored (`session.ts:38`) and never compared. Security notices exist for password change, MFA on/off and recovery code use (`auth.ts:139`, `mfa.ts:61,105,132`), and users can opt out of the email for them through `email_notifications`.
 - **Exit:** `endAccess` (`lifecycle/routes.ts:30`) via the daily job. Access ends after the last working day only for approved separations.
 
-### d) SMS
+### d) A second notification channel
 
-- **Migration 025:**
-  - `users.sms_notifications`
-  - `sms_templates(tenant_id, kind, dlt_template_id, text, enabled, updated_by, updated_at)`
-  - `sms_outbox(id, tenant_id, to_user_id, to_phone, kind, dlt_template_id, text, dedupe_key, status, attempts, next_attempt_at, last_error, provider_ref, created_at, sent_at)`
-  - Indexes `sms_outbox_due_idx`, `sms_outbox_tenant_idx`, `sms_outbox_dedupe_uq`
-  - RLS on both tables; DELETE revoked on `sms_outbox`.
-- **Code:**
-  - `core/notify/sms.ts` (sender, `normalizePhone`, `maskPhone`, `renderSms`)
-  - `core/notify/service.ts:7,29,49-61` (queueing), `:109-142` `deliverSmsOutbox`
-  - `core/jobs/scheduler.ts:7,107`
-  - `core/features/state.ts:70-71,83-87`
-  - `core/features/registry.ts:83`
-  - `core/http/context.ts:23` (`smsOverride`)
-  - `config/env.ts:55-62,137-139`
-  - `app.ts:40,48-49,82-83,195`
-  - `modules/auth.ts:102,104,117,148,150-151` (preference)
-  - `modules/sms/routes.ts`: `GET /templates`, `PUT`/`DELETE /templates/:kind`, `GET /outbox`, `POST /test`, all `settings.manage`, 14 `SMS_KINDS`
-- **Permissions:** no `sms.*`; none to remove.
-- **Other repos and docs:**
-  - Tests: `test/sms.test.ts`, `test/helpers.ts`, `test/features-settings.test.ts`
-  - Docs: `docs/SMS.md`, `docs/API.md`, `docs/NOTIFICATIONS.md`
-  - Frontend: `src/pages/SmsSettings.tsx`, `Settings.tsx`, `auth.tsx`, `main.tsx`
-  - Deployment: `environments/dev/docker-compose.yml`, `.env.example`, `terraform/modules/hrms-stack/{compute,database,variables}.tf`, `tests/stack.tftest.hcl`, `terraform/envs/customer/*`, `terraform/customers/_template.tfvars`
-- **Phone OTP: none.** `grep -i otp` matches only TOTP. Removal touches no authentication code.
-- **Removal order:** forward migration only (or new down file) since 025 is checksummed. Dropping `sms_outbox` needs the owner role. `employees.phone` is general data and stays.
+**Corrected 2026-11-05:** this section mapped a channel for removal. It is gone: migration 039 and `CHANGELOG.md`.
 
 ### e) Notifications and jobs
 
-**Outbox.** `notifyUsers` (`core/notify/service.ts:32`) writes in the caller's transaction: `notifications` always, `email_outbox` if `msg.email !== false && getMailer() && isModuleEnabled(...)` and the user opted in; `sms_outbox` similarly with a template per kind. Rendered bodies are stored. Note the mailer condition is evaluated in **the process that enqueues**, not the one that sends.
+**Outbox.** `notifyUsers` (`core/notify/service.ts:32`) writes in the caller's transaction: `notifications` always, `email_outbox` if `msg.email !== false && getMailer() && isModuleEnabled(...)` and the user opted in. Rendered bodies are stored. Note the mailer condition is evaluated in **the process that enqueues**, not the one that sends.
 
-**Templates.** One generic `renderEmail` layout (`core/notify/templates.ts:9`) with per-message title and body. No per-kind templates, no i18n. SMS templates live in DB per kind.
+**Templates.** One generic `renderEmail` layout (`core/notify/templates.ts:9`) with per-message title and body. No per-kind templates, no i18n.
 
-**Retries.** `deliverOutbox` (`service.ts:81`): claim 50 per pass with `SKIP LOCKED`, 5 attempts, backoff 2^attempts minutes. Stuck `sending` older than 10 minutes requeues, so delivery is at-least-once and a stuck row can exceed 5 attempts (`:85`). No dead-letter handling beyond `failed`. SMS: same, invalid numbers fail immediately (`:125-128`).
+**Retries.** `deliverOutbox` (`service.ts:81`): claim 50 per pass with `SKIP LOCKED`, 5 attempts, backoff 2^attempts minutes. Stuck `sending` older than 10 minutes requeues, so delivery is at-least-once and a stuck row can exceed 5 attempts (`:85`). No dead-letter handling beyond `failed`.
 
-**Scheduler.** `core/jobs/scheduler.ts`. `Scheduler` runs in the API process (`server.ts:46-47`, gated by `JOBS_ENABLED`, every `JOBS_INTERVAL_SECONDS`): `tick` then `deliverOutbox` then `deliverSmsOutbox`, serially. Claims are DB-backed: `job_runs` unique `(tenant, job, period)` with `ON CONFLICT DO NOTHING`, so multiple instances are safe. Retries: 3 attempts, 5 min × attempts; timed-out `running` rows after 60 min. 14 jobs (`core/jobs/registry.ts:44`). Each job runs in one transaction (`scheduler.ts:31`). `statement_timeout` 30 s per statement applies (`db/pool.ts:13`).
+**Scheduler.** `core/jobs/scheduler.ts`. `Scheduler` runs in the API process (`server.ts:46-47`, gated by `JOBS_ENABLED`, every `JOBS_INTERVAL_SECONDS`): `tick` then `deliverOutbox`, serially. Claims are DB-backed: `job_runs` unique `(tenant, job, period)` with `ON CONFLICT DO NOTHING`, so multiple instances are safe. Retries: 3 attempts, 5 min × attempts; timed-out `running` rows after 60 min. 14 jobs (`core/jobs/registry.ts:44`). Each job runs in one transaction (`scheduler.ts:31`). `statement_timeout` 30 s per statement applies (`db/pool.ts:13`).
 
 **A separate worker: `core/jobs/cli.ts` is not enough.** It only reads `DATABASE_URL` and calls `tick`, not outbox delivery, and none of these process globals are initialized:
 
@@ -627,9 +602,8 @@ Not affected: dashboard, leave, attendance. Expense sums are not on your L4 list
 | `setDeploymentLimits` (`app.ts:60`) | Default ceiling |
 | `setEmailBrand` (`app.ts:64`) | Jobs render emails as "HRMS" with links to `http://localhost` |
 | `setMailer` (`app.ts:80`) | Jobs enqueue **no email at all**; `deliverOutbox` exits at once |
-| `setSmsSender` (`app.ts:82`) | No SMS |
 | `setStore` (`app.ts:84`) | Retention cannot delete resumes |
-| `setEmailTransportConfigured`, `setStorageConfigured`, `setSmsTransportConfigured` | `usable` wrong for email, documents, SMS, which changes `core.documents` jobs |
+| `setEmailTransportConfigured`, `setStorageConfigured` | `usable` wrong for email, documents, which changes `core.documents` jobs |
 | `registerApprovalHandler` (route plugins) | Escalation labels fall back to "Request" (`engine.ts:296`). `onApproved` is not called from jobs, so otherwise safe |
 
 **What a worker needs**
@@ -683,7 +657,7 @@ Multipart routes: `documents`, `expenses` items (also accepts JSON, `expenses/ro
 4. `docker/entrypoint.sh:8-11` add `migrate-down`. `package.json` scripts. `app.ts:107-108` documents the current rollback as image-only with expand/contract migrations; `hrms-deployment/.github/workflows/rollback-prod.yml` exists and was not read.
 5. A down file must restore grants, since `hrms_app` revocations are per-migration (`migrations/016:158`, `023:61`, `025:48`). It must also deal with `ALTER DEFAULT PRIVILEGES` (`003`), RLS policies and triggers.
 6. `CREATE INDEX CONCURRENTLY` is unusable in this runner, up or down, as each file is in a transaction. This matters for adding the indexes in section 5 on large tables.
-7. Data loss policy: dropping tables like `sms_outbox`, or encrypting columns in place, cannot be reversed by SQL alone. An encryption migration needs the app key and must run as a script, not a `.sql` file. **The runner has no code-migration support.**
+7. Data loss policy: dropping tables, or encrypting columns in place, cannot be reversed by SQL alone. An encryption migration needs the app key and must run as a script, not a `.sql` file. **The runner has no code-migration support.**
 8. `test/global-setup.ts` should run up, down, up in CI to prove them.
 
 ### h) Approval engine

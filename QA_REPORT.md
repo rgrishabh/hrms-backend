@@ -135,7 +135,9 @@ Every row was reproduced by a failing test over real HTTP first. Severity is the
 
 ### Load
 
-k6 v2.3.0, `load/mixed.js`, `load/seed.ts`: 1000 employees of the demo generator, each with a login and a ready session, on its own database. **This is a MacBook Air (8 cores, 8 GB) with PostgreSQL's default `shared_buffers` of 128 MB, one Node process, k6 on the same machine, and a frontend agent and a deployment agent working at the same time. It is not production sizing and it does not predict one.** It finds what breaks first and what is out of proportion.
+**The table below is the best of the batch's clean runs, on a quiet machine, after the fixes.** It is not a typical run on this laptop: the paragraph under it gives what the same mix did on a busy one.
+
+k6 v2.3.0, `load/mixed.js`, `load/seed.ts`: 1000 employees of the demo generator, each with a login and a ready session, on its own database. **This is a MacBook Air (8 cores, 8 GB) with PostgreSQL's default `shared_buffers` of 128 MB, one Node process, k6 on the same machine, and a frontend agent and a deployment agent at work on it during the batch, though not during the runs in the table. It is not production sizing and it does not predict one.** It finds what breaks first and what is out of proportion.
 
 Mix: 85% reads (unread count, session, dashboard, attendance, balances, leave, directory search, inbox), 15% writes (punch, leave request then cancel, read-all), one person in twenty doing HR lists and reports, 1 to 3 seconds between actions, and a steady few real sign-ins. Ramp 30 s, hold 2 min, ramp down 15 s. Times in ms.
 
@@ -171,3 +173,16 @@ Not measured: more than one process, a real network, PDF generation, payroll com
 ### Accepted
 
 See A-1 to A-5 in `SECURITY_REPORT.md`.
+
+## Batch G: finishing the backend
+
+G-1 to G-4 were reported by other batches, G-5 came up while fixing G-4, and G-6 is the sign-in limit of D68. Each has a test that failed first.
+
+| ID | Module | Sev | Steps to reproduce | Root cause | Fix | Test |
+|---|---|---|---|---|---|---|
+| G-1 | Health | Medium | `curl /health`: `{"status":"ok"}`, so `k8s-wait-release.sh` cannot see a backend-only release and waits a fixed 10 minutes | `APP_VERSION` is set by the Dockerfile and read by nothing | `/health` and `/health/live` answer `version`, the image tag, in the compact form the script's `sed` reads. A version is all it adds. `/ready` is unchanged | `test/health.test.ts` |
+| G-2 | Email | High | `POST /auth/password/forgot` on a stack at `localhost:8088` mails `http://localhost/reset-password` | The app URL is built from `BRAND_DOMAIN`, a hostname, and nothing else knows the port. Not a bug in link building: nothing configured held the whole URL | `PUBLIC_URL` (D69), for all mail, the setup link and tool output. **A stack must set it**: until the deployment repository passes it, the link has no port | `test/public-url.test.ts` |
+| G-3 | Demo | Low | Demo generator on an HTTP stack prints `https://localhost` | The banner hard-coded `https://` | Prints `appUrl` | `test/public-url.test.ts` |
+| G-4 | HTTP | Medium | A client hangs up while its request waits on the host lookup. Before 122806c, with `LOG_LEVEL` above `info`: `Cannot read properties of undefined (reading 'toLowerCase')`, an error per request. Cause confirmed: reproduced over a real socket by holding the database connection until the client had gone. The `info` line for an incoming request reads the address, and Node then caches it, so at `info` it does not reproduce in this test; the 130 errors of the frontend run were not re-run, so whether that stack ran above `info` or hit it some other way is not known. **On this branch it no longer throws:** 122806c replaced the plugin's generator with `limitKey`, which does not call `normalizeIP`, but the key became `undefined`, so hung-up requests shared one budget apart from the address they came from | `req.ip` reads the socket | The address is kept as the request arrives (D70), and a request with none counts in one fixed budget. No error, and the budget spent is the sender's | `test/rate-limit-abort.test.ts` |
+| G-5 | HTTP | Medium | Since 122806c, an IPv6 client gets a new budget for each address of its network, and `::ffff:1.2.3.4` counts apart from `1.2.3.4` | `limitKey` replaced the plugin's generator and its normalizing | `normalizeIP` again | `test/rate-limit-abort.test.ts` |
+| G-6 | Auth | High | 21 people sign in within a minute from one office address, on the defaults: 429. With MFA, the eleventh person's code | `AUTH_RATE_LIMIT_PER_MINUTE` of 20, and 10 for MFA, per address | Default 300, and MFA follows it; failure back-off unchanged (D68) | `test/security/shared-address.test.ts` |

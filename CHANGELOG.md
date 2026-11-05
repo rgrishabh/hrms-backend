@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+### Contract changes in batch G
+
+No route or field was renamed or removed.
+
+* `GET /health`, `GET /health/live`: new field `version`, the image tag; `dev` outside an image.
+* Every JSON route now has a response schema in `openapi.json`. Existing ones are corrected where they said less than the app answers: fields a column can leave null are nullable, and a field once `unknown` has its column's type.
+* New optional variable `PUBLIC_URL`: the address for links, with its port. `APP_VERSION` is now read.
+* `AUTH_RATE_LIMIT_PER_MINUTE` defaults to 300, was 20. The per-address limits on MFA verify, enable, email enrolment and sending a code follow it.
+
 ### Contract changes in batch F
 
 Each is a security fix or a correction to what the document said. No route or field was renamed or removed.
