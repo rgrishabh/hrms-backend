@@ -1,5 +1,6 @@
 name: CI
-# Pull requests: lint, tests (PostgreSQL), image build (no push), Trivy, gitleaks, PR comment.
+# Pull requests: lint, typecheck, tests (PostgreSQL), coverage gate, build, image build (no push), Trivy, gitleaks, PR comment.
+# Static and dynamic security scans are in security.yml. Not yet run on GitHub: these files were validated with actionlint only.
 on:
   pull_request:
     branches: [develop, main]
@@ -13,10 +14,12 @@ jobs:
     permissions:
       contents: read
       pull-requests: write
-    uses: rgrishabh/hrms-deployment/.github/workflows/_app-ci.yml@main
+    uses: rgrishabh/hrms-deployment/.github/workflows/_app-ci.yml@92fef0b227c3606731442c7ead25d0253d519857 # main
     with:
       app: backend
       postgres: true
+      # The reusable default is 22, which has no crypto.argon2: the suite cannot pass on it.
+      node-version: '24'
   openapi:
     name: OpenAPI document
     runs-on: ubuntu-latest
@@ -33,6 +36,8 @@ jobs:
       - run: npm ci --no-audit --no-fund
       # No database. Exits non-zero if any route has no schema; test/openapi.test.ts checks the detail.
       - run: npm run openapi
+      - name: The committed document is what the code generates
+        run: git diff --exit-code -- openapi.json
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: openapi
@@ -42,8 +47,6 @@ jobs:
     name: Coverage thresholds
     runs-on: ubuntu-latest
     timeout-minutes: 25
-    # Reports without blocking merges while branch coverage of the business rules is short of its 100% threshold: TESTING.md has the gap. Remove this line when it closes.
-    continue-on-error: true
     permissions:
       contents: read
     services:

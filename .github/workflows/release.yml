@@ -38,7 +38,7 @@ jobs:
       contents: read
       packages: write
       id-token: write
-    uses: rgrishabh/hrms-deployment/.github/workflows/_app-publish.yml@main
+    uses: rgrishabh/hrms-deployment/.github/workflows/_app-publish.yml@92fef0b227c3606731442c7ead25d0253d519857 # main
     with:
       app: backend
       mode: release

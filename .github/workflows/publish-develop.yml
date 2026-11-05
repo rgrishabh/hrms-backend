@@ -15,18 +15,21 @@ jobs:
     permissions:
       contents: read
       pull-requests: write
-    uses: rgrishabh/hrms-deployment/.github/workflows/_app-ci.yml@main
+    uses: rgrishabh/hrms-deployment/.github/workflows/_app-ci.yml@92fef0b227c3606731442c7ead25d0253d519857 # main
     with:
       app: backend
       postgres: true
+      node-version: '24'
   publish:
     needs: ci
     permissions:
       contents: read
       packages: write
       id-token: write
-    uses: rgrishabh/hrms-deployment/.github/workflows/_app-publish.yml@main
+    uses: rgrishabh/hrms-deployment/.github/workflows/_app-publish.yml@92fef0b227c3606731442c7ead25d0253d519857 # main
     with:
       app: backend
       mode: develop
+      # Same image on both architectures from the first push; the reusable default for develop is amd64 only.
+      platforms: linux/amd64,linux/arm64
     secrets: inherit
