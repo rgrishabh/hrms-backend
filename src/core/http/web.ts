@@ -1,4 +1,4 @@
-import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs';
+import { closeSync, existsSync, fstatSync, openSync, readdirSync, readFileSync } from 'node:fs';
 import path from 'node:path';
 import type { FastifyInstance } from 'fastify';
 import type { PublicConfig } from '../../config/installation.js';
@@ -44,8 +44,14 @@ export function spaCsp(assetUrls: (string | null | undefined)[]): string {
 function walk(dir: string, base = dir, out = new Map<string, Buffer>()) {
   for (const name of readdirSync(dir)) {
     const full = path.join(dir, name);
-    if (statSync(full).isDirectory()) walk(full, base, out);
-    else out.set('/' + path.relative(base, full).split(path.sep).join('/'), readFileSync(full));
+    // One handle for the check and the read, so both are about the same file, whatever happens to the name in between.
+    const fd = openSync(full, 'r');
+    try {
+      if (fstatSync(fd).isDirectory()) walk(full, base, out);
+      else out.set('/' + path.relative(base, full).split(path.sep).join('/'), readFileSync(fd));
+    } finally {
+      closeSync(fd);
+    }
   }
   return out;
 }
