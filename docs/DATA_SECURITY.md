@@ -94,6 +94,10 @@ Changes to L3 and L4 record field names, not values.
 
 A table owner can still disable the triggers. The chain then shows the change, unless they also rewrite every later hash and the head.
 
+## Data rights
+
+Export, erasure on request, and retention periods are in `docs/DATA_RIGHTS.md`. Erasure leaves `audit_logs` as it is. "Field names, not values" above is about L3 and L4: old and new L1 and L2 values, such as a changed name, are in the log and stay.
+
 ## Logs
 
 `core/logging.ts`: classified fields are redacted by name, logged URLs have no query string, and database error detail is dropped because it quotes rows. Pino's wildcards reach two levels, so a test covers top-level and one-level-nested objects. Error messages no longer contain balances. No route or query parameter carries L3 or L4, which a test checks.
@@ -113,6 +117,8 @@ AES-256-GCM at application level. Each token names its key: `v2.<keyId>.<iv>.<ta
 | Journal total | `accounting_exports.total_enc` |
 | Report rows and totals | `report_snapshots.data_enc` |
 | Codes and links in mail not yet sent | `email_outbox.secret_enc`, cleared after sending |
+| The employer's PAN and payroll bank account | `company_profile.pan_enc`, `bank_account_enc` |
+| Identity kept for statutory records after an erasure | `erasure_requests.retained_identity_enc`, cleared when the period ends |
 
 F&F is held in the same run and item tables. Loans stay plaintext under access control. Candidate CTC, UAN, PF and ESI numbers also stay plaintext.
 

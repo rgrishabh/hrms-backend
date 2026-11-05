@@ -9,6 +9,12 @@
 
 ### Added
 
+* Company details (Layer 3): `GET` and `PUT /tenant/company`, signature and stamp under `/tenant/company/images/:kind`, permission `company.manage`. GSTIN (with its check digit), PAN, TAN, CIN, IFSC and bank account formats are checked. PAN and the bank account number are sealed. `loadCompanyProfile` reads them.
+* Grades and designations: `POST` and `PUT /org/grades`, `/org/designations`, listed in `GET /org`, seeded from values in use. Once a list has entries, a new value must be on it. An import adds what is new and says so.
+* Data rights (`docs/DATA_RIGHTS.md`): `GET /tenant/data-rights/employees/:id/export`, `/candidates/:id/export`, `/retention`, and `/erasure-requests` with `execute` and `reject`. Permissions `data_rights.manage`, `data_rights.execute`.
+* Retention settings in a new `retention` group, and jobs `retention.operational`, `retention.documents_after_exit`, `data_rights.erasure_followup`, all running with modules off. **Their first run deletes what is already past its date**: notifications over 365 days, sent or failed mail over 90 days, finished job runs over 365 days, and documents of people who left over 36 months ago. Change the periods first if that is not wanted.
+* `src/db/factories.ts`: deterministic organizations for each mode. `npm run demo` now creates 100 people (63 before) with an invented company, masters and company details, and no real organization's name.
+
 * PDF documents, branded from Layer 2 and Settings, Company (D52): `GET /payroll/payslips/:id/payslip.pdf`; `GET /lifecycle/employees/:id/letters/appointment.pdf`, `experience.pdf`, `relieving.pdf`; `GET /reports/:key/export.pdf` and `/reports/snapshots/:id/export.pdf`. All audited, and counted as exports for the rate limit. Amounts print with the ISO currency code. Adds `pdfkit`.
 
 * `npm run openapi` writes `openapi.json` from the code with no database. CI publishes it as an artifact. Every route declares its input, permission and feature metadata.

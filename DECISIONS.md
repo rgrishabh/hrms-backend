@@ -338,7 +338,7 @@ So drawing the largest report allowed costs under a second of CPU, and yielding 
 
 **Decision.** `erasure_requests` with its own rule: whoever raised it cannot carry it out, except an Owner in the smaller modes, audited. Employee data is anonymized at once. Carve-out rows stay, without a name on them, with the identity sealed on the request until the payroll period ends. Then statutory and bank details and remaining files go, the code is replaced, and figures stay as nobody's.
 
-**Reason.** The engine's handlers apply a decision on approval and route by requester and manager. Here the requester may be gone, a person may have no manager or account, and the executor needs an answer with a report. The rule took a few lines. Deleting payroll items was ruled out: a finalized run is immutable (D38 and its trigger), and its sealed totals must keep adding up.
+**Reason.** The engine's handlers apply a decision on approval and route by requester and manager. Here the requester may be gone, a person may have no manager or account, and the executor needs an answer with a report. The rule took a few lines. Deleting payroll items was ruled out: a finalized run is immutable (the `payroll_guard_finalized` trigger), and its sealed totals must keep adding up.
 
 **Periods** are settings in financial years: payroll 8, attendance 5, disputes 3. See `docs/DATA_RIGHTS.md`, which says they are not legal advice.
 
