@@ -39,7 +39,7 @@ One image for every environment and customer; configuration comes from the envir
 | `provision` | Create or rotate the database roles (needs admin credentials) |
 | `bootstrap` | Create the organization and first administrator (one-time setup link) |
 
-Health: `GET /health` (liveness) and `GET /ready` (database reachable, migrations current, organization bootstrapped).
+Health: `GET /health` (liveness, with the running `version`, so a deployment can see that a release is live) and `GET /ready` (database reachable, migrations current, organization bootstrapped).
 `/health/live` and `/health/ready` are the same two checks. All four stay because `hrms-deployment` uses them: `/health` in the Compose and ECS health checks, `/health/ready` for the load balancers, `/ready` in routing and smoke tests. None is rate limited. `GET /metrics`: see `METRICS_TOKEN` (D57).
 
 ### Rolling back migrations

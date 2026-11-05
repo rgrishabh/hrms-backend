@@ -138,7 +138,7 @@ export async function deviceIngestRoutes(app: FastifyInstance) {
         targetId: dev.id,
         metadata: { received: body.events.length, accepted, duplicates, unmapped, rejected, driftSec },
         requestId: req.id,
-        ip: req.ip,
+        ip: req.clientAddress,
       });
       return { accepted, duplicates, unmapped, rejected, clockDriftSeconds: driftSec, warning: driftError };
     });

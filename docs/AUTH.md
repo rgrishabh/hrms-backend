@@ -134,15 +134,20 @@ These go out whatever `email_notifications` says, and say they cannot be turned 
 
 ## Rate limits
 
-Per process (D27), on top of the database counters above. Everything else counts a signed-in person as themselves and an anonymous request by address, because an office is one address: 12 punches a minute per address stopped a whole office at the door (F-127). Sign-in and exports stay per address, so that a session buys no extra guesses.
+Per process (D27), on top of the database counters above. Everything else counts a signed-in person as themselves and an anonymous request by address, because an office is one address: 12 punches a minute per address stopped a whole office at the door (F-127). Sign-in and exports stay per address, so that a session buys no extra guesses. A client that hangs up before its request is served still counts against the address it came from; one with no address at all shares a single budget (D70).
 
-**Sign-in behind a shared address.** `AUTH_RATE_LIMIT_PER_MINUTE` defaults to 20 per address. A site where more than 20 people sign in within a minute from one address needs it raised, and `TRUST_PROXY` set correctly. A browser that has signed in before is exempt from the per-account limit, not from this one.
+**Sign-in behind a shared address.** `AUTH_RATE_LIMIT_PER_MINUTE` defaults to 300 per address, because an office is one address and 100 people may sign in within a minute at nine (D68). It counts every attempt, right or wrong, so it does not stop guessing on its own and is not meant to: it bounds the hashing one address can ask for, about 5 a second against the 31 a second one process managed on a laptop. What stops guessing is the failure counters above, which count only wrong passwords, in the database, whatever this limit is: 50 failures from one address, 30 on one account from anywhere, and the setting `security.max_failed_logins` for one account from one address. Set `TRUST_PROXY` correctly, or everyone is one address. A browser that has signed in before is exempt from the per-account limit, not from this one.
+
+The second factor is limited the same way, by address, at this same number. What guards a code is the limit per user, which is not shared with colleagues, and the lock after 10 wrong ones.
+
+A site where more than 50 sign-ins fail within one window, from one address, backs off for everyone behind it. At 100 people that means half of them mistyping. An office of several hundred with a hard morning can reach it: the counter is a constant, and clearing it takes 30 quiet minutes.
 
 | Path | Per address | Per user or account |
 |---|---|---|
-| Sign-in | `AUTH_RATE_LIMIT_PER_MINUTE`, default 20 | `AUTH_ACCOUNT_RATE_LIMIT_PER_MINUTE`, default 10 |
-| MFA verify, enable | 10 | 10 |
-| Email code, recovery codes, MFA off | 5 | 5 |
+| Sign-in | `AUTH_RATE_LIMIT_PER_MINUTE`, default 300 | `AUTH_ACCOUNT_RATE_LIMIT_PER_MINUTE`, default 10 |
+| MFA verify, enable | `AUTH_RATE_LIMIT_PER_MINUTE` | 10 |
+| Sending an email code, enrolling by email | `AUTH_RATE_LIMIT_PER_MINUTE` | 5 |
+| Recovery codes, MFA off | 5 | 5 |
 | Forgot password | 5 | 3 links an hour, silently |
 | Finishing a link | 10 | |
 | Change password | 5 | 5 |

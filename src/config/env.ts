@@ -32,6 +32,17 @@ const hostname = z
   .trim()
   .toLowerCase()
   .regex(/^(?=.{1,253}$)[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?(\.[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)*$/, 'must be a hostname, without scheme, port or path');
+const publicUrl = z
+  .string()
+  .trim()
+  .transform((v, ctx) => {
+    const u = URL.canParse(v) ? new URL(v) : null;
+    if (!u || !['http:', 'https:'].includes(u.protocol) || u.pathname !== '/' || u.search || u.hash || u.username || u.password) {
+      ctx.addIssue({ code: 'custom', message: 'must be http(s)://host[:port], without path, query or credentials' });
+      return z.NEVER;
+    }
+    return u.origin;
+  });
 const timezone = z.string().refine((tz) => {
   try {
     new Intl.DateTimeFormat('en-IN', { timeZone: tz });
@@ -76,7 +87,7 @@ const schema = z.object({
   // Per client IP across the whole API. A lab's staff often share one office NAT address, so keep this generous;
   // sign-in and password endpoints have their own strict limits (AUTH_RATE_LIMIT_PER_MINUTE).
   RATE_LIMIT_PER_MINUTE: z.coerce.number().int().min(60).max(100000).default(3000),
-  AUTH_RATE_LIMIT_PER_MINUTE: z.coerce.number().int().min(1).max(10000).default(20),
+  AUTH_RATE_LIMIT_PER_MINUTE: z.coerce.number().int().min(1).max(10000).default(300),
   // Sign-in attempts on one account per minute, whatever address they come from.
   AUTH_ACCOUNT_RATE_LIMIT_PER_MINUTE: z.coerce.number().int().min(1).max(10000).default(10),
   // CSV, Excel and journal exports per user per minute. Per address, four times this.
@@ -88,6 +99,11 @@ const schema = z.object({
     .max(24 * 30)
     .default(12),
   COOKIE_SECURE: bool('true'),
+  /** The image tag, set at build by the Dockerfile. `GET /health` answers it, so a deployment can see that a release is live. */
+  APP_VERSION: z
+    .string()
+    .regex(/^[A-Za-z0-9][A-Za-z0-9._+-]{0,127}$/, 'must be a version or image tag')
+    .default('dev'),
   // Whose X-Forwarded-For to believe: false, a number of proxy hops in front of the app, or comma-separated proxy
   // addresses/CIDRs. Trusting every hop would let a client choose its own address, so `true` means one hop.
   TRUST_PROXY: z
@@ -188,6 +204,8 @@ const schema = z.object({
   BRAND_LOGIN_MESSAGE: z.string().trim().max(300).optional(),
   /** The app's hostname. Sets the app URL and the only allowed CORS origin. */
   BRAND_DOMAIN: hostname,
+  /** The whole address people reach the app at, for links: needed when that has a port, as a local stack does. Left out, it follows from BRAND_DOMAIN. */
+  PUBLIC_URL: publicUrl.optional(),
   /** Other hostnames that serve this installation (comma separated). */
   BRAND_EXTRA_DOMAINS: z
     .string()
@@ -251,6 +269,7 @@ export function loadEnv(source: NodeJS.ProcessEnv = process.env): Env {
   const mfaAvailable = MFA_AVAILABLE === undefined ? prod : MFA_AVAILABLE === 'true';
   const env: Env = { ...rest, MFA_AVAILABLE: mfaAvailable, enabledFeatures: flags.features, MFA_METHODS: rest.MFA_METHODS.length ? rest.MFA_METHODS : ['totp', 'email'] };
   const problems: string[] = [...early];
+  problems.push(...publicUrlProblems(env));
   if (!!env.KMS_KEY_ID !== !!env.DATA_KEY_CIPHERTEXT) problems.push('Set both KMS_KEY_ID and DATA_KEY_CIPHERTEXT, or neither');
   if (!env.KMS_KEY_ID && !env.DATA_ENCRYPTION_KEY) problems.push('DATA_ENCRYPTION_KEY: set it, or KMS_KEY_ID and DATA_KEY_CIPHERTEXT (generate a key: openssl rand -base64 32)');
   if (env.MFA_ENFORCED && !env.MFA_AVAILABLE) problems.push('MFA_ENFORCED=true is invalid with MFA_AVAILABLE=false');
@@ -282,8 +301,19 @@ export function deploymentDomains(env: Pick<Env, 'BRAND_DOMAIN' | 'BRAND_EXTRA_D
 
 const isLocalHost = (h: string) => h === 'localhost' || h.endsWith('.localhost') || h === '127.0.0.1';
 
-/** The app's URL. BRAND_DOMAIN is a hostname, so the scheme follows: https in production, and elsewhere unless cookies are plain or it is this machine. */
-export function appUrl(env: Pick<Env, 'NODE_ENV' | 'COOKIE_SECURE' | 'BRAND_DOMAIN'>): string {
+/** A link must lead to this installation, and a production one is on https. */
+function publicUrlProblems(env: Pick<Env, 'NODE_ENV' | 'PUBLIC_URL' | 'BRAND_DOMAIN' | 'BRAND_EXTRA_DOMAINS'>): string[] {
+  if (!env.PUBLIC_URL) return [];
+  const u = new URL(env.PUBLIC_URL);
+  return [
+    ...(deploymentDomains(env).includes(u.hostname) ? [] : [`PUBLIC_URL: ${u.hostname} is not BRAND_DOMAIN or one of BRAND_EXTRA_DOMAINS`]),
+    ...(env.NODE_ENV === 'production' && u.protocol !== 'https:' ? ['PUBLIC_URL must be https in production'] : []),
+  ];
+}
+
+/** The app's URL: PUBLIC_URL when set. Otherwise BRAND_DOMAIN, a hostname, so the scheme follows: https in production, and elsewhere unless cookies are plain or it is this machine. */
+export function appUrl(env: Pick<Env, 'NODE_ENV' | 'COOKIE_SECURE' | 'BRAND_DOMAIN' | 'PUBLIC_URL'>): string {
+  if (env.PUBLIC_URL) return env.PUBLIC_URL;
   const https = env.NODE_ENV === 'production' || (env.COOKIE_SECURE && !isLocalHost(env.BRAND_DOMAIN));
   return `${https ? 'https' : 'http'}://${env.BRAND_DOMAIN}`;
 }
@@ -309,6 +339,7 @@ export const installationSchema = schema.pick({
   NODE_ENV: true,
   COOKIE_SECURE: true,
   BRAND_DOMAIN: true,
+  PUBLIC_URL: true,
   BRAND_EXTRA_DOMAINS: true,
   BRAND_NAME: true,
   BRAND_LEGAL_NAME: true,
@@ -318,5 +349,18 @@ export type InstallationEnv = z.infer<typeof installationSchema>;
 export function loadInstallationEnv(source: NodeJS.ProcessEnv = process.env): InstallationEnv {
   const parsed = installationSchema.safeParse(nonEmpty(source));
   if (!parsed.success) throw new Error(`Invalid deployment configuration:\n${parsed.error.issues.map((i) => `  - ${i.path.join('.')}: ${i.message}`).join('\n')}`);
+  const problems = publicUrlProblems(parsed.data);
+  if (problems.length) throw new Error(`Invalid deployment configuration:\n${problems.map((p) => `  - ${p}`).join('\n')}`);
   return parsed.data;
+}
+
+/** The app's URL for a tool that runs with whatever the environment has, and no full configuration to load: the demo generator. */
+export function appUrlFromProcess(source: NodeJS.ProcessEnv, fallbackDomain: string): string {
+  const v = nonEmpty(source);
+  return appUrl({
+    NODE_ENV: (v.NODE_ENV ?? 'development') as Env['NODE_ENV'],
+    COOKIE_SECURE: v.COOKIE_SECURE !== 'false',
+    BRAND_DOMAIN: v.BRAND_DOMAIN ?? fallbackDomain,
+    PUBLIC_URL: v.PUBLIC_URL,
+  });
 }

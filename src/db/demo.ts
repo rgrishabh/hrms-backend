@@ -1,3 +1,4 @@
+import { appUrlFromProcess } from '../config/env.js';
 import pg from 'pg';
 import { resolveFeatures } from '../core/features/registry.js';
 import { currentFeatures } from '../core/features/state.js';
@@ -1271,6 +1272,14 @@ export async function generateDemo(
   return { domain, logins: PERSONAS.map((p) => ({ login: `${p.key}@${domain}`, name: `${p.first} ${p.last}`, role: p.designation })) };
 }
 
+/** What the operator is told at the end: where to go, on what this installation is configured to answer. */
+export function demoLoginBanner(source: NodeJS.ProcessEnv, domain: string, password: string, logins: readonly { login: string; name: string; role: string }[]): string {
+  return (
+    `HRMS demo logins (synthetic data) — ${appUrlFromProcess(source, domain)}\nPassword for all demo logins: ${password}\n` +
+    `Privileged roles must set up two-factor authentication at first sign-in.\n\n${logins.map((l) => `${l.login.padEnd(36)} ${l.name.padEnd(18)} ${l.role}`).join('\n')}\n`
+  );
+}
+
 if (process.argv[1] && fileURLToPath(import.meta.url) === path.resolve(process.argv[1])) {
   (async () => {
     if (process.env.DEMO_DATA_ALLOWED !== 'true') throw new Error('Refusing: set DEMO_DATA_ALLOWED=true (dev/demo installations only)');
@@ -1289,10 +1298,7 @@ if (process.argv[1] && fileURLToPath(import.meta.url) === path.resolve(process.a
       const mode = (['single', 'single_hr', 'multi'] as const).find((m) => m === process.env.ORG_MANAGEMENT_MODE) ?? 'multi';
       const r = await withMode(mode, () => generateDemo(c, { password, today, features: flags.features, mode, cipher, headcount: DEMO_HEADCOUNT }));
       if (!r) return;
-      process.stdout.write(
-        `HRMS demo logins (synthetic data) — https://${process.env.BRAND_DOMAIN ?? r.domain}\nPassword for all demo logins: ${password}\n` +
-          `Privileged roles must set up two-factor authentication at first sign-in.\n\n${r.logins.map((l) => `${l.login.padEnd(36)} ${l.name.padEnd(18)} ${l.role}`).join('\n')}\n`,
-      );
+      process.stdout.write(demoLoginBanner(process.env, r.domain, password, r.logins));
       say('done');
     } catch (e) {
       await c.query('ROLLBACK').catch(() => undefined);

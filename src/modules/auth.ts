@@ -102,7 +102,7 @@ export async function authRoutes(app: FastifyInstance, opts: { publicConfig: Pub
       const body = LoginBody.parse(req.body);
       const tenant = requireTenantHost(req);
       const tenantId = tenant.id;
-      const keys = loginKeys(tenantId, body.email, req.ip);
+      const keys = loginKeys(tenantId, body.email, req.clientAddress);
       const deviceToken = req.cookies[DEVICE_COOKIE];
       const gate = await withPlatformBypass(pool, async (db) => {
         const known =
@@ -158,7 +158,7 @@ export async function authRoutes(app: FastifyInstance, opts: { publicConfig: Pub
               backingOff: !!(await loginBlockedFor(db, tenantId, keys, false)),
             },
             requestId: req.id,
-            ip: req.ip,
+            ip: req.clientAddress,
           });
           return null;
         }
@@ -168,8 +168,17 @@ export async function authRoutes(app: FastifyInstance, opts: { publicConfig: Pub
         if (upgraded) await db.query('UPDATE users SET password_hash=$2 WHERE id=$1 AND password_hash=$3', [u.id, upgraded, u.password_hash]);
         // Signing in replaces whatever session this browser came with, so a token planted before sign-in is worth nothing after it.
         if (req.ctx.user) await revokeSession(db, req.ctx.user.sessionId);
-        const s = await createSession(db, u.id, tenantId, await sessionLimits(db, tenantId), req.ip, req.headers['user-agent']);
-        await audit(db, { tenantId, actorId: u.id, action: 'auth.login', category: 'auth', targetType: 'session', targetId: s.sessionId, requestId: req.id, ip: req.ip });
+        const s = await createSession(db, u.id, tenantId, await sessionLimits(db, tenantId), req.clientAddress, req.headers['user-agent']);
+        await audit(db, {
+          tenantId,
+          actorId: u.id,
+          action: 'auth.login',
+          category: 'auth',
+          targetType: 'session',
+          targetId: s.sessionId,
+          requestId: req.id,
+          ip: req.clientAddress,
+        });
         const { isNew } = await rememberDevice(db, tenantId, u.id, sha256(device));
         if (isNew) {
           await audit(db, {
@@ -180,13 +189,13 @@ export async function authRoutes(app: FastifyInstance, opts: { publicConfig: Pub
             targetType: 'session',
             targetId: s.sessionId,
             requestId: req.id,
-            ip: req.ip,
+            ip: req.clientAddress,
             userAgent: req.headers['user-agent'],
           });
           await notifyUsers(db, tenantId, [u.id], {
             kind: 'security.new_device',
             title: 'New sign-in to your account',
-            body: `From a browser we have not seen for this account, at address ${req.ip}${req.headers['user-agent'] ? ` (${req.headers['user-agent'].replace(/[^\x20-\x7e]/g, '').slice(0, 120)})` : ''}. If this was not you, change your password now and sign out your other sessions.`,
+            body: `From a browser we have not seen for this account, at address ${req.clientAddress}${req.headers['user-agent'] ? ` (${req.headers['user-agent'].replace(/[^\x20-\x7e]/g, '').slice(0, 120)})` : ''}. If this was not you, change your password now and sign out your other sessions.`,
             link: '/account',
             actionLabel: 'Review account',
           });
@@ -216,7 +225,7 @@ export async function authRoutes(app: FastifyInstance, opts: { publicConfig: Pub
     if (u) {
       await withPlatformBypass(pool, async (db) => {
         await revokeSession(db, u.sessionId);
-        await audit(db, { tenantId: u.tenantId, actorId: u.userId, action: 'auth.logout', category: 'auth', requestId: req.id, ip: req.ip });
+        await audit(db, { tenantId: u.tenantId, actorId: u.userId, action: 'auth.logout', category: 'auth', requestId: req.id, ip: req.clientAddress });
       });
     }
     reply.clearCookie(SESSION_COOKIE, { path: '/' });
@@ -302,7 +311,7 @@ export async function authRoutes(app: FastifyInstance, opts: { publicConfig: Pub
         await revokeOtherSessions(db, u.userId, u.sessionId);
         // A link still in a mailbox would undo this.
         await db.query('UPDATE admin_setup_tokens SET used_at=now() WHERE user_id=$1 AND used_at IS NULL', [u.userId]);
-        await audit(db, { tenantId: u.tenantId, actorId: u.userId, action: 'auth.password_changed', category: 'security', requestId: req.id, ip: req.ip });
+        await audit(db, { tenantId: u.tenantId, actorId: u.userId, action: 'auth.password_changed', category: 'security', requestId: req.id, ip: req.clientAddress });
         await notifyUsers(db, u.tenantId!, [u.userId], {
           kind: 'security.password_changed',
           title: 'Your password was changed',
@@ -327,7 +336,7 @@ export async function authRoutes(app: FastifyInstance, opts: { publicConfig: Pub
         u.userId,
         body.emailNotifications ?? null,
       ]);
-      await audit(db, { tenantId: u.tenantId, actorId: u.userId, action: 'user.preferences_updated', category: 'data', metadata: body, requestId: req.id, ip: req.ip });
+      await audit(db, { tenantId: u.tenantId, actorId: u.userId, action: 'user.preferences_updated', category: 'data', metadata: body, requestId: req.id, ip: req.clientAddress });
     });
     return { ok: true };
   });
@@ -338,7 +347,7 @@ export async function authRoutes(app: FastifyInstance, opts: { publicConfig: Pub
     const reject = async () => {
       // Recorded on its own: the failed attempt is never rolled back out of the audit log.
       await withTenant(pool, tenant.id, (db) =>
-        audit(db, { tenantId: tenant.id, actorId: null, action: 'auth.setup_link_rejected', category: 'security', requestId: req.id, ip: req.ip }),
+        audit(db, { tenantId: tenant.id, actorId: null, action: 'auth.setup_link_rejected', category: 'security', requestId: req.id, ip: req.clientAddress }),
       );
       return invalid;
     };
@@ -364,7 +373,7 @@ export async function authRoutes(app: FastifyInstance, opts: { publicConfig: Pub
         targetType: 'user',
         targetId: link.user_id,
         requestId: req.id,
-        ip: req.ip,
+        ip: req.clientAddress,
       });
       if (link.purpose === 'reset')
         await notifyUsers(db, tenant.id, [link.user_id], {
@@ -422,7 +431,7 @@ export async function authRoutes(app: FastifyInstance, opts: { publicConfig: Pub
             category: 'security',
             metadata: { result: result ?? 'no_account' },
             requestId: req.id,
-            ip: req.ip,
+            ip: req.clientAddress,
           });
         });
       } catch (e) {
@@ -465,7 +474,7 @@ export async function authRoutes(app: FastifyInstance, opts: { publicConfig: Pub
         targetType: 'session',
         targetId: id,
         requestId: req.id,
-        ip: req.ip,
+        ip: req.clientAddress,
       });
     });
     if (id === u.sessionId) reply.clearCookie(SESSION_COOKIE, { path: '/' });
@@ -478,7 +487,7 @@ export async function authRoutes(app: FastifyInstance, opts: { publicConfig: Pub
     if (!u) throw unauthorized();
     await withPlatformBypass(pool, async (db) => {
       await revokeAllSessionsForUser(db, u.userId);
-      await audit(db, { tenantId: u.tenantId, actorId: u.userId, action: 'auth.sessions_revoked', category: 'security', requestId: req.id, ip: req.ip });
+      await audit(db, { tenantId: u.tenantId, actorId: u.userId, action: 'auth.sessions_revoked', category: 'security', requestId: req.id, ip: req.clientAddress });
     });
     reply.clearCookie(SESSION_COOKIE, { path: '/' });
     return { ok: true };

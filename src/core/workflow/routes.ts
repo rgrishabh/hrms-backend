@@ -76,7 +76,7 @@ export async function approvalRoutes(app: FastifyInstance) {
     const { id } = IdParams.parse(req.params);
     const b = ReassignBody.parse(req.body);
     return a.tx(async (db) => {
-      await reassignRequest(db, a.tenantId, id, a.user.userId, b.userId, b.reason, { requestId: req.id, ip: req.ip }, { onlyIfStuck: !a.has(ESCALATION_PERMISSION) });
+      await reassignRequest(db, a.tenantId, id, a.user.userId, b.userId, b.reason, { requestId: req.id, ip: req.clientAddress }, { onlyIfStuck: !a.has(ESCALATION_PERMISSION) });
       return { ok: true };
     });
   });

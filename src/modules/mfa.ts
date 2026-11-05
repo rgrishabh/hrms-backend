@@ -100,7 +100,11 @@ export async function mfaRoutes(app: FastifyInstance, opts: { publicConfig: Publ
 
   app.post(
     '/verify',
-    { schema: { response: { 200: R.PostAuthMfaVerify200 }, body: VerifyBody }, config: { rateLimit: { max: 10, timeWindow: '1 minute' } }, preHandler: guesses },
+    {
+      schema: { response: { 200: R.PostAuthMfaVerify200 }, body: VerifyBody },
+      config: { rateLimit: { max: env.AUTH_RATE_LIMIT_PER_MINUTE, timeWindow: '1 minute' } },
+      preHandler: guesses,
+    },
     async (req, reply) => {
       const { u, tenantId, base } = actor(req);
       const { code } = VerifyBody.parse(req.body);
@@ -196,7 +200,11 @@ export async function mfaRoutes(app: FastifyInstance, opts: { publicConfig: Publ
 
     app.post(
       '/enable',
-      { schema: { response: { 200: R.PostAuthMfaEnable200 }, body: VerifyBody }, config: { rateLimit: { max: 10, timeWindow: '1 minute' } }, preHandler: guesses },
+      {
+        schema: { response: { 200: R.PostAuthMfaEnable200 }, body: VerifyBody },
+        config: { rateLimit: { max: env.AUTH_RATE_LIMIT_PER_MINUTE, timeWindow: '1 minute' } },
+        preHandler: guesses,
+      },
       async (req, reply) => {
         const { u, tenantId, base } = actor(req);
         const { code } = VerifyBody.parse(req.body);
@@ -219,7 +227,7 @@ export async function mfaRoutes(app: FastifyInstance, opts: { publicConfig: Publ
     /** Sends a code to the account's address, to prove it receives mail before relying on it. */
     app.post(
       '/email/setup',
-      { schema: { response: { 200: R.PostAuthMfaEmailSetup200 } }, config: { rateLimit: { max: 5, timeWindow: '1 minute' } }, preHandler: sends },
+      { schema: { response: { 200: R.PostAuthMfaEmailSetup200 } }, config: { rateLimit: { max: env.AUTH_RATE_LIMIT_PER_MINUTE, timeWindow: '1 minute' } }, preHandler: sends },
       async (req, reply) => {
         const { u, tenantId, base } = actor(req);
         const s = await withPlatformBypass(pool, async (db) => {
@@ -235,7 +243,11 @@ export async function mfaRoutes(app: FastifyInstance, opts: { publicConfig: Publ
 
     app.post(
       '/email/enable',
-      { schema: { response: { 200: R.PostAuthMfaEmailEnable200 }, body: VerifyBody }, config: { rateLimit: { max: 10, timeWindow: '1 minute' } }, preHandler: guesses },
+      {
+        schema: { response: { 200: R.PostAuthMfaEmailEnable200 }, body: VerifyBody },
+        config: { rateLimit: { max: env.AUTH_RATE_LIMIT_PER_MINUTE, timeWindow: '1 minute' } },
+        preHandler: guesses,
+      },
       async (req, reply) => {
         const { u, tenantId, base } = actor(req);
         const { code } = VerifyBody.parse(req.body);
@@ -252,7 +264,7 @@ export async function mfaRoutes(app: FastifyInstance, opts: { publicConfig: Publ
     );
 
     /** Another code, for a sign-in in progress or for turning this off. */
-    app.post('/email/send', { schema: {}, config: { rateLimit: { max: 5, timeWindow: '1 minute' } }, preHandler: sends }, async (req, reply) => {
+    app.post('/email/send', { schema: {}, config: { rateLimit: { max: env.AUTH_RATE_LIMIT_PER_MINUTE, timeWindow: '1 minute' } }, preHandler: sends }, async (req, reply) => {
       const { u, tenantId } = actor(req);
       if (u.mfaMethod !== 'email') throw conflict('This account does not use email codes');
       waitOr(reply, await withPlatformBypass(pool, (db) => sendEmailOtp(db, cipher, tenantId, u.userId, 'login')));

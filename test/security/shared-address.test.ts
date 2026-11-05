@@ -1,5 +1,7 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import type { FastifyInstance } from 'fastify';
+import { loadEnv } from '../../src/config/env.js';
+import { TEST_BRAND } from '../env.js';
 import { createTenant, person, serve, WireClient, type TenantFixture } from './wire.js';
 
 /** An office is one address. Found by the load test: 12 punches a minute per address stopped everyone after the twelfth person in, on a working morning. */
@@ -43,6 +45,55 @@ describe('people behind one address', () => {
     for (let i = 0; i < 65; i++) last = (await staff[5]!.get('/api/v1/notifications/unread-count')).statusCode;
     expect(last).toBe(429);
   });
+
+  it('a hundred people sign in within a minute from one address, on the default limits', async () => {
+    const office = await serve({ AUTH_RATE_LIMIT_PER_MINUTE: '', AUTH_ACCOUNT_RATE_LIMIT_PER_MINUTE: '' });
+    const O = await createTenant();
+    const people = [];
+    for (let i = 0; i < 100; i++) people.push(await person(O, `nine${i}`, ['employee']));
+    const started = Date.now();
+    const signedIn = [];
+    for (const p of people) signedIn.push(await WireClient.signIn(office.app, O.host, p.email));
+    expect(signedIn).toHaveLength(100);
+    // A minute would reset the budget and prove nothing.
+    expect(Date.now() - started).toBeLessThan(60000);
+    await office.app.close();
+  }, 120000);
+
+  it('the default limit still stops a guesser: fifty wrong passwords from one address, then back-off', async () => {
+    const office = await serve({ AUTH_RATE_LIMIT_PER_MINUTE: '', AUTH_ACCOUNT_RATE_LIMIT_PER_MINUTE: '' });
+    const O = await createTenant();
+    const c = new WireClient(office.app, O.host);
+    const codes = [];
+    for (let i = 0; i < 53; i++) codes.push((await c.post('/api/v1/auth/login', { email: `spray${i}@${O.host}`, password: 'Winter-Password-1' })).statusCode);
+    expect(codes.slice(0, 50).every((x) => x === 401)).toBe(true);
+    expect(codes.slice(51).every((x) => x === 429)).toBe(true);
+    await office.app.close();
+  }, 120000);
+
+  it('the default limit bounds the hashing a flood can ask for', () => {
+    expect(
+      loadEnv({ ...TEST_BRAND, DATABASE_URL: 'postgres://x@127.0.0.1/x', DATA_ENCRYPTION_KEY: Buffer.alloc(32, 7).toString('base64'), COOKIE_SECURE: 'false' })
+        .AUTH_RATE_LIMIT_PER_MINUTE,
+    ).toBe(300);
+  });
+
+  it('a second factor behind one address: an office gets through, and one person is still limited', async () => {
+    const office = await serve({ AUTH_RATE_LIMIT_PER_MINUTE: '', MFA_AVAILABLE: 'true', MFA_METHODS: 'totp' });
+    const O = await createTenant();
+    const codes = [];
+    for (let i = 0; i < 15; i++) {
+      const p = await person(O, `mfa${i}`, ['employee']);
+      const c = await WireClient.signIn(office.app, O.host, p.email);
+      codes.push((await c.post('/api/v1/auth/mfa/enable', { code: '000000' })).statusCode);
+    }
+    expect(codes).not.toContain(429);
+    const one = await WireClient.signIn(office.app, O.host, O.users.employee!.email);
+    const own = [];
+    for (let i = 0; i < 12; i++) own.push((await one.post('/api/v1/auth/mfa/enable', { code: '000000' })).statusCode);
+    expect(own).toContain(429);
+    await office.app.close();
+  }, 60000);
 
   it('sign-in stays limited by address: a valid session does not buy another budget', async () => {
     const limited = await serve({ AUTH_RATE_LIMIT_PER_MINUTE: '3' });

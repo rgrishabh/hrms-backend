@@ -94,7 +94,7 @@ describe('health', () => {
   it('liveness asks nothing of the database', async () => {
     const dead = await makeApp({ DATABASE_URL: 'postgres://x:y@127.0.0.1:1/none' });
     try {
-      expect((await dead.inject({ url: '/health/live' })).json()).toEqual({ status: 'ok' });
+      expect((await dead.inject({ url: '/health/live' })).json()).toEqual({ status: 'ok', version: 'dev' });
       const r = await dead.inject({ url: '/health/ready' });
       expect(r.statusCode).toBe(503);
       expect(r.json()).toEqual({ status: 'unavailable' });

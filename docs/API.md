@@ -20,7 +20,7 @@ Base path `/api/v1`. JSON in and out. Each installation serves one organization;
 | Method & path | Permission | Purpose |
 |---|---|---|
 | **Health** | | |
-| GET `/health/live`, `/health/ready` | none | Liveness / readiness (DB reachable, migrations current, installation bootstrapped) |
+| GET `/health/live`, `/health/ready` | none | Liveness, with `version`, the image tag / readiness (DB reachable, migrations current, installation bootstrapped) |
 | **Auth & self** | | |
 | GET `/config/public` | none | `{product, brand, features, mode, mfa, auth}`: brand, every `FEATURE_*` flag (off is `false`), mode, MFA and whether reset by email can work. No secrets |
 | POST `/auth/setup` | one-time token | Complete an administrator setup link `{token, newPassword}` |

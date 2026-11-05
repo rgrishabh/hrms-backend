@@ -19,6 +19,13 @@ export interface RequestContext {
 }
 
 declare module 'fastify' {
+  interface FastifyRequest {
+    /**
+     * The client's address, kept as the request arrives. `req.ip` reads the socket, which has none once the client has hung up. Typed as Fastify types `req.ip`; empty only if that happened before
+     * the first hook, when there is nobody left to answer. The audit and session rows store it as null then, and `limitKey` gives it a budget of its own.
+     */
+    clientAddress: string;
+  }
   /** What a route needs, for the OpenAPI document. The handler still enforces it; a test keeps the two the same. */
   interface FastifyContextConfig {
     /** Every one of these permissions. */

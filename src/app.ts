@@ -101,7 +101,10 @@ export async function buildApp(deps: AppDeps): Promise<FastifyInstance> {
     return m;
   };
   const inScope = (req: object, done: () => void) => withMemo(memoOf(req), () => withFeatures(features, () => withMode(env.ORG_MANAGEMENT_MODE, done)));
+  // Before anything waits: see `clientAddress`.
+  app.decorateRequest('clientAddress', '');
   app.addHook('onRequest', (req, _reply, done) => {
+    req.clientAddress = req.ip;
     inScope(req, done);
   });
   app.addHook('preValidation', (req, _reply, done) => {
@@ -171,7 +174,7 @@ export async function buildApp(deps: AppDeps): Promise<FastifyInstance> {
   registerMetrics(app, env.METRICS_TOKEN, deps.pool);
   registerTelemetry(app, env.OTEL_EXPORTER_OTLP_ENDPOINT, env.BRAND_PRODUCT_NAME, app.log);
   if (deps.verifyResponses) registerResponseCheck(app);
-  const live = async () => ({ status: 'ok' });
+  const live = async () => ({ status: 'ok', version: env.APP_VERSION });
   let warnedNewerSchema = false;
   app.get('/health/live', noLimit, live);
   app.get('/health', noLimit, live);
@@ -210,15 +213,15 @@ export async function buildApp(deps: AppDeps): Promise<FastifyInstance> {
 
   app.addHook('onRequest', async (req) => {
     if (req.url.startsWith('/health') || req.url === '/ready' || req.url === '/metrics') {
-      req.ctx = { requestId: req.id, ip: req.ip, host: { kind: 'unknown', host: '' }, user: null };
+      req.ctx = { requestId: req.id, ip: req.clientAddress, host: { kind: 'unknown', host: '' }, user: null };
       return;
     }
     if (!req.url.startsWith('/api/')) {
-      req.ctx = { requestId: req.id, ip: req.ip, host: { kind: 'unknown', host: '' }, user: null };
+      req.ctx = { requestId: req.id, ip: req.clientAddress, host: { kind: 'unknown', host: '' }, user: null };
       return;
     }
     const host = await resolveHost(deps.pool, req.headers.host);
-    req.ctx = { requestId: req.id, ip: req.ip, host, user: null };
+    req.ctx = { requestId: req.id, ip: req.clientAddress, host, user: null };
     const token = req.cookies[SESSION_COOKIE];
     if (token && host.kind === 'tenant') {
       // A browser left open polls for notifications. That is not someone using it, and must not keep the session from idling out.
