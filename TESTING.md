@@ -167,3 +167,22 @@ The Stryker scores of batch F were not run again: `payroll/calc.ts` and `leave/s
 | `contract/remaining-routes` | 20 | The routes no other suite took to a success, and lists that only ever came back empty, so that their schemas are proved |
 | `public-url` | 17 | `PUBLIC_URL` accepted and refused; reset, invitation and every other mail keep the port; what the demo prints |
 | `rate-limit-abort` | 4 | A client hanging up over a real socket: no error logged, counted against its address; no address shares one budget; IPv6 by network |
+
+## Batch H: closing the revamp
+
+Run: 2026-11-05, macOS, Node 26.5, PostgreSQL 17.11, with a private Redis so that nothing is skipped. `npm run test:coverage` at b93865b; the commits after it are documentation:
+
+| Tests | Files | Duration | Exit |
+|---|---|---|---|
+| 1838 passed (1838) | 101 passed (101) | 409.57 s | 0 |
+
+| Measure | Result | Threshold |
+|---|---|---|
+| Statements, all of `src` | 91.73% | none |
+| Lines, all of `src` | 94.96% | 85% |
+| Branches, all of `src` | 84.48% | none |
+
+`npm run lint`: clean. `npm run openapi`: 386 routes, 359 with response schemas, 27 file responses, 0 with none.
+
+No suite was added: H-1 and H-2 extend `lifecycle`, `recruitment` and `security/privilege-abuse`.
+
