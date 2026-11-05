@@ -324,7 +324,7 @@ describe('email codes', () => {
   const sent: OutgoingMail[] = [];
   const deliver = async () => { await deliverOutbox(app.deps.pool, SILENT); };
   /** The newest code in the mail, as the person would read it. */
-  const lastCode = async () => { await deliver(); const m = /Your code is (\d{6})/.exec(sent[sent.length - 1]?.text ?? ''); if (!m) throw new Error('no code in the mail'); return m[1]!; };
+  const lastCode = async () => { await deliver(); const m = sent.map((x) => /Your code is (\d{6})/.exec(x.text)).filter(Boolean).at(-1); if (!m) throw new Error('no code in the mail'); return m[1]!; };
   beforeAll(async () => {
     setMailer({ send: async (m) => { sent.push(m); } }, 'test@test');
     app = await fresh(ON, { mailerOverride: true });

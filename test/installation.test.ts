@@ -125,6 +125,22 @@ describe('bootstrap: first administrator via one-time setup link', () => {
     await q(A.owner, `DELETE FROM users WHERE email='next@acme-labs.test'`);
   });
 
+  it('--issue-link prints a one-time link for an existing user and changes nothing else', async () => {
+    const [t] = await q(A.owner, `SELECT id FROM tenants`) as { id: string }[];
+    await q(A.owner, `INSERT INTO users (tenant_id, email, display_name) VALUES ($1,'nomail@acme-labs.test','No Mail')`, [t!.id]);
+    const r = await boot(A, envA, { issueLink: true, admin: { email: 'nomail@acme-labs.test', displayName: 'x' } });
+    expect(r.admin).toBe('unchanged');
+    expect(await q(A.owner, `SELECT 1 FROM user_roles r JOIN users u ON u.id=r.user_id WHERE u.email='nomail@acme-labs.test'`)).toHaveLength(0);
+    const res = await new Client(appA, A.host).post('/api/v1/auth/setup', { token: tokenOf(r.setupUrl!), newPassword: 'marble kettle orbit lantern' });
+    expect(res.statusCode, res.body).toBe(200);
+    await Client.login(appA, A.host, 'nomail@acme-labs.test', 'marble kettle orbit lantern');
+    await expect(boot(A, envA, { issueLink: true, admin: { email: 'ghost@acme-labs.test', displayName: 'G' } })).rejects.toThrow(/no user ghost@/);
+    await q(A.owner, `DELETE FROM sessions WHERE user_id IN (SELECT id FROM users WHERE email='nomail@acme-labs.test')`);
+    await q(A.owner, `DELETE FROM user_devices WHERE user_id IN (SELECT id FROM users WHERE email='nomail@acme-labs.test')`);
+    await q(A.owner, `DELETE FROM admin_setup_tokens WHERE user_id IN (SELECT id FROM users WHERE email='nomail@acme-labs.test')`);
+    await q(A.owner, `DELETE FROM users WHERE email='nomail@acme-labs.test'`);
+  });
+
   it('refuses a database that holds more than one organization', async () => {
     await q(A.owner, `INSERT INTO tenants (slug, name) VALUES ('intruder','Intruder')`);
     await expect(boot(A, envA)).rejects.toThrow(/more than one organization/);

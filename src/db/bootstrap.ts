@@ -26,6 +26,8 @@ import { reconcileInstallation, SINGLE_ORG_SLUG } from '../config/installation.j
  *     administrator role, and issues new credentials (as per mode). They also
  *     become an owner when no other active owner exists, or with --make-owner,
  *     which is how ownership is handed over: nobody in the app is above an owner.
+ *  4. --issue-link <email>: a one-time link for an existing user, nothing else. For an
+ *     installation without email, where an invitation cannot reach them.
  */
 export interface BootstrapOptions {
   admin: { email: string; displayName: string };
@@ -34,6 +36,8 @@ export interface BootstrapOptions {
   resetAdmin?: boolean;
   /** With resetAdmin: this person also becomes an owner. The only way to appoint one, since nobody in the app is above an owner. */
   makeOwner?: boolean;
+  /** Prints an invitation link for an existing user, changing nothing else. For an installation without email, where nothing else can reach them. */
+  issueLink?: boolean;
   linkHours?: number;
 }
 
@@ -106,6 +110,15 @@ export async function bootstrapInstallation(client: pg.Client | pg.PoolClient, e
     }
 
     let setupUrl: string | undefined; let setupExpiresAt: string | undefined;
+    if (o.issueLink && !o.resetAdmin) {
+      if (!user) throw new Error(`no user ${email} in this installation; create them in the app first`);
+      await client.query(`UPDATE admin_setup_tokens SET used_at=now() WHERE user_id=$1 AND used_at IS NULL`, [user.id]);
+      const token = randomToken(32);
+      const exp = await client.query<{ expires_at: Date }>(`INSERT INTO admin_setup_tokens (tenant_id, user_id, token_hash, expires_at, purpose)
+        VALUES ($1,$2,$3, now() + make_interval(hours => $4), 'invite') RETURNING expires_at`, [tenantId, user.id, sha256(token), linkHours]);
+      setupUrl = `${appUrl(env)}/setup#token=${token}`;
+      setupExpiresAt = exp.rows[0]!.expires_at.toISOString();
+    }
     if (userId) {
       if (o.mode === 'password') {
         await client.query('UPDATE users SET password_hash=$2, must_change_password=true WHERE id=$1', [userId, await hashPassword(o.password!)]);
@@ -137,7 +150,7 @@ export function parseBootstrapArgs(argv: string[], env: NodeJS.ProcessEnv): Boot
     if (!a.startsWith('--')) throw new Error(`unexpected argument ${a}`);
     const key = a.slice(2);
     if (key === 'admin-password' || key === 'password') throw new Error('passwords are not accepted as flags; set BOOTSTRAP_ADMIN_PASSWORD from a secret store, or use the default setup-link mode');
-    if (key === 'reset-admin' || key === 'make-owner') { bools.add(key); continue; }
+    if (key === 'reset-admin' || key === 'make-owner' || key === 'issue-link') { bools.add(key); continue; }
     const v = argv[++i];
     if (v === undefined) throw new Error(`missing value for ${a}`);
     flags.set(key, v);
@@ -149,7 +162,7 @@ export function parseBootstrapArgs(argv: string[], env: NodeJS.ProcessEnv): Boot
   if (!['setup-link', 'password'].includes(mode)) throw new Error("--mode must be 'setup-link' or 'password'");
   return {
     admin: { email, displayName: get('admin-name') ?? 'Administrator' }, mode,
-    password: env.BOOTSTRAP_ADMIN_PASSWORD, resetAdmin: bools.has('reset-admin') || env.BOOTSTRAP_RESET_ADMIN === 'true', makeOwner: bools.has('make-owner') || env.BOOTSTRAP_MAKE_OWNER === 'true',
+    password: env.BOOTSTRAP_ADMIN_PASSWORD, resetAdmin: bools.has('reset-admin') || env.BOOTSTRAP_RESET_ADMIN === 'true', makeOwner: bools.has('make-owner') || env.BOOTSTRAP_MAKE_OWNER === 'true', issueLink: bools.has('issue-link'),
     linkHours: get('link-hours') ? Number(get('link-hours')) : undefined,
   };
 }
@@ -167,7 +180,7 @@ if (process.argv[1] && fileURLToPath(import.meta.url) === path.resolve(process.a
       console.log(JSON.stringify({ ok: true, ...r }));
       if (setupUrl) {
         // Printed for the operator only (single use, expires). Do not paste it into tickets or chat.
-        process.stdout.write(`\nOne-time administrator setup link (valid until ${r.setupExpiresAt}):\n${setupUrl}\n\n`);
+        process.stdout.write(`\nOne-time setup link (valid until ${r.setupExpiresAt}):\n${setupUrl}\n\n`);
       }
     } finally { await c.end(); }
   })().catch((e) => { console.error(JSON.stringify({ ok: false, error: (e as Error).message })); process.exit(1); });

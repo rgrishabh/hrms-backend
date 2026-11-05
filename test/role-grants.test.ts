@@ -27,8 +27,8 @@ describe('role grants against the salary hierarchy', () => {
   });
 
   it('a new account cannot be created at or above the creator', async () => {
-    expect((await admin.post('/api/v1/tenant/users', { email: `peer@${T.host}`, displayName: 'Peer', initialPassword: 'Initial-Password-123', roles: ['tenant_admin'] })).statusCode).toBe(403);
-    expect((await itAdmin.post('/api/v1/tenant/users', { email: `itpeer@${T.host}`, displayName: 'Peer', initialPassword: 'Initial-Password-123', roles: ['it_admin'] })).statusCode).toBe(403);
+    expect((await admin.post('/api/v1/tenant/users', { email: `peer@${T.host}`, displayName: 'Peer', roles: ['tenant_admin'] })).statusCode).toBe(403);
+    expect((await itAdmin.post('/api/v1/tenant/users', { email: `itpeer@${T.host}`, displayName: 'Peer', roles: ['it_admin'] })).statusCode).toBe(403);
   });
 
   it('nobody appoints an equal: an owner cannot appoint another owner in the app', async () => {

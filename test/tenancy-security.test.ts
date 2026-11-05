@@ -135,7 +135,7 @@ describe('authentication & session security', () => {
     const T = await createTenant();
     const it = T.users.it!; // IT administrator: has users.manage, not HR or payroll permissions
     const itAdmin = await Client.login(app, T.host, it.email);
-    const user = (email: string, roles: string[]) => itAdmin.post('/api/v1/tenant/users', { email, displayName: 'New Person', initialPassword: 'Initial-Password-123', roles });
+    const user = (email: string, roles: string[]) => itAdmin.post('/api/v1/tenant/users', { email, displayName: 'New Person', roles });
     // not to themselves, not to a new account, not by removing someone else's
     for (const roles of [['it_admin', 'hr_admin'], ['it_admin', 'tenant_admin'], ['it_admin', 'payroll_manager']])
       expect((await itAdmin.patch(`/api/v1/tenant/users/${it!.id}`, { roles })).statusCode).toBe(403);
@@ -163,15 +163,6 @@ describe('authentication & session security', () => {
     // Nobody grants a role at or above their own level, an administrator included (D40).
     expect(await grantable(admin)).toContain('hr_admin');
     expect(await grantable(admin)).not.toContain('tenant_admin');
-  });
-
-  it('an account created by an administrator must change its initial password at first sign-in', async () => {
-    const T = await createTenant();
-    const admin = await Client.login(app, T.host, T.users.admin!.email);
-    const r = await admin.post('/api/v1/tenant/users', { email: `new@${T.host}`, displayName: 'New Person', initialPassword: 'Initial-Password-123', roles: ['employee'] });
-    expect(r.statusCode).toBe(201);
-    const login = await new Client(app, T.host).post('/api/v1/auth/login', { email: `new@${T.host}`, password: 'Initial-Password-123' });
-    expect(login.json().passwordChangeRequired).toBe(true);
   });
 
   it('never returns password hashes or session tokens in user listings', async () => {

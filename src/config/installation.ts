@@ -21,6 +21,8 @@ export interface PublicConfig {
   features: Record<string, boolean>;
   mode: 'single' | 'single_hr' | 'multi';
   mfa: { available: boolean; enforced: boolean; methods: string[] };
+  /** Whether "forgot password" can work: it needs email. */
+  auth: { resetByEmail: boolean };
 }
 
 export function buildPublicConfig(env: Env): PublicConfig {
@@ -51,6 +53,7 @@ export function buildPublicConfig(env: Env): PublicConfig {
     features: Object.fromEntries([...FEATURE_BY_ENV].map(([name, d]) => [name, env.enabledFeatures.has(d.key)])),
     mode: env.ORG_MANAGEMENT_MODE,
     mfa: { available: env.MFA_AVAILABLE, enforced: env.MFA_ENFORCED, methods: env.MFA_AVAILABLE ? env.MFA_METHODS : [] },
+    auth: { resetByEmail: !!env.SMTP_HOST && env.enabledFeatures.has('notifications.email') },
   };
 }
 

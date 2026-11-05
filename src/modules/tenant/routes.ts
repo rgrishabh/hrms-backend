@@ -1,5 +1,5 @@
 import { reassignStepsOf } from '../../core/workflow/engine.js';
-import type { FastifyInstance } from 'fastify';
+import type { FastifyInstance, FastifyRequest } from 'fastify';
 import { z } from 'zod';
 import { tenantActor, tenantActorAny, requireFeature } from '../../core/http/context.js';
 import { JOBS, JOB_MAP, nextRun, jobActive } from '../../core/jobs/registry.js';
@@ -9,14 +9,14 @@ import { resolveSetting, writeSetting, clearSetting } from '../../core/settings/
 import { allOff, evaluateFeatures, isModuleEnabled } from '../../core/features/state.js';
 import { FEATURE_MAP, dependentsOf } from '../../core/features/registry.js';
 import { audit } from '../../core/audit/audit.js';
-import { badRequest, conflict, forbidden, notFound } from '../../core/http/errors.js';
+import { AppError, badRequest, conflict, forbidden, notFound } from '../../core/http/errors.js';
 import { PageQuery, offsetOf, paged, Uuid } from '../../core/http/pagination.js';
 import type { PublicConfig } from '../../config/installation.js';
 import { SYSTEM_ROLES, SYSTEM_ROLE_MAP, PERMISSIONS, permissionFeature, roleGroup, assignableRoles, isOwnerRole, OWNER_ROLE_KEYS } from '../../core/auth/permissions.js';
 import { currentMode, isCollapsedMode } from '../../core/policy/mode.js';
 import { anotherActiveOwner, effectiveLevel, roleFloor, SALARY_LEVEL_MAX } from '../../core/policy/levels.js';
 import { redact } from '../../core/audit/audit.js';
-import { hashPassword } from '../../core/crypto/index.js';
+import { emailLink } from '../../core/auth/links.js';
 import { getSettingValue } from '../../core/settings/service.js';
 import { notifyUsers } from '../../core/notify/service.js';
 import { revokeAllSessionsForUser } from '../../core/auth/session.js';
@@ -249,7 +249,7 @@ export async function tenantAdminRoutes(app: FastifyInstance, opts: { publicConf
     return a.tx(async (db) => {
       const where = `u.tenant_id=$1 AND ($2::text IS NULL OR u.email ILIKE '%'||$2||'%' OR u.display_name ILIKE '%'||$2||'%')`;
       const total = Number((await db.query<{ n: string }>(`SELECT count(*) AS n FROM users u WHERE ${where}`, [a.tenantId, q.search ?? null])).rows[0]!.n);
-      const rows = await db.query<{ salary_access_level: number; roles: string[] } & Record<string, unknown>>(`SELECT u.id, u.email, u.display_name, u.status, u.salary_access_level, u.last_login_at, EXISTS (SELECT 1 FROM auth_throttle th WHERE th.tenant_id=u.tenant_id AND th.subject_hash=encode(sha256(convert_to(u.tenant_id::text||'|'||u.email,'UTF8')),'hex') AND th.blocked_until > now()) AS locked, u.mfa_enabled_at IS NOT NULL AS mfa_enabled,
+      const rows = await db.query<{ salary_access_level: number; roles: string[] } & Record<string, unknown>>(`SELECT u.id, u.email, u.display_name, u.status, u.salary_access_level, u.last_login_at, u.password_hash IS NULL AS invite_pending, EXISTS (SELECT 1 FROM auth_throttle th WHERE th.tenant_id=u.tenant_id AND th.subject_hash=encode(sha256(convert_to(u.tenant_id::text||'|'||u.email,'UTF8')),'hex') AND th.blocked_until > now()) AS locked, u.mfa_enabled_at IS NOT NULL AS mfa_enabled,
           coalesce(array_agg(r.role_key ORDER BY r.role_key) FILTER (WHERE r.role_key IS NOT NULL), '{}') AS roles,
           e.id AS employee_id, e.employee_code
         FROM users u LEFT JOIN user_roles r ON r.user_id=u.id AND r.tenant_id=u.tenant_id
@@ -323,30 +323,51 @@ export async function tenantAdminRoutes(app: FastifyInstance, opts: { publicConf
     if (targetRoles.includes('tenant_admin') || beyond.length) throw forbidden('Only an administrator can change this account');
   };
 
+  /** A person gets an invitation by email and chooses their own password. Nobody else ever knows it. Without mail: `bootstrap --issue-link` prints one for the operator. */
   app.post('/users', async (req, reply) => {
     const a = tenantActor(req, 'users.manage');
+    if (req.body && typeof req.body === 'object' && 'initialPassword' in req.body) throw badRequest('Initial passwords are gone: people choose their own from an invitation sent by email. Leave this out.');
     const body = z.object({ email: z.string().trim().toLowerCase().pipe(z.email()), displayName: z.string().trim().min(2).max(120),
-      initialPassword: z.string().min(1).max(256), roles: RoleKeys, employeeId: Uuid.optional() }).parse(req.body);
+      roles: RoleKeys, employeeId: Uuid.optional() }).parse(req.body);
     return a.tx(async (db) => {
-      const minLen = await getSettingValue<number>(db, a.tenantId, 'security.password_min_length');
-      if (body.initialPassword.length < minLen) throw badRequest(`Password must be at least ${minLen} characters`);
       await assertTenantRoles(db, a.tenantId, body.roles);
       await assertMayGrant(db, a, body.roles);
       await assertRolesAllowed(db, a, null, body.roles, []);
-      // The administrator chose the initial password, so the person must replace it at first sign-in.
-      const u = await db.query<{ id: string }>(`INSERT INTO users (tenant_id, email, display_name, password_hash, must_change_password) VALUES ($1,$2,$3,$4,true) RETURNING id`,
-        [a.tenantId, body.email, body.displayName, await hashPassword(body.initialPassword)]);
+      const u = await db.query<{ id: string }>(`INSERT INTO users (tenant_id, email, display_name, password_hash) VALUES ($1,$2,$3,NULL) RETURNING id`, [a.tenantId, body.email, body.displayName]);
       const userId = u.rows[0]!.id;
       for (const role of body.roles) await db.query(`INSERT INTO user_roles (user_id, tenant_id, role_key, granted_by) VALUES ($1,$2,$3,$4)`, [userId, a.tenantId, role, a.user.userId]);
       if (body.employeeId) {
         const e = await db.query(`UPDATE employees SET user_id=$3, updated_at=now() WHERE tenant_id=$1 AND id=$2 AND user_id IS NULL`, [a.tenantId, body.employeeId, userId]);
         if (!e.rowCount) throw conflict('Employee not found or already linked to a user');
       }
+      const invite = await emailLink(db, a.tenantId, userId, 'invite');
       await audit(db, { ...a.auditBase, action: 'user.created', category: 'security', targetType: 'user', targetId: userId,
-        metadata: { email: body.email, roles: body.roles, employeeId: body.employeeId } });
-      reply.code(201); return { id: userId };
+        metadata: { email: body.email, roles: body.roles, employeeId: body.employeeId, invite } });
+      reply.code(201); return { id: userId, inviteSent: invite === 'sent' };
     });
   });
+
+  /** Sends a link to someone: a fresh invitation to a person who has not accepted one, or a reset to anyone else below the sender. */
+  const sendLink = (purpose: 'invite' | 'reset') => async (req: FastifyRequest) => {
+    const a = tenantActor(req, 'users.manage');
+    const { id } = z.object({ id: Uuid }).parse(req.params);
+    return a.tx(async (db) => {
+      const u = (await db.query<{ status: string; accepted: boolean }>('SELECT status, password_hash IS NOT NULL AS accepted FROM users WHERE tenant_id=$1 AND id=$2', [a.tenantId, id])).rows[0];
+      if (!u) throw notFound('User not found');
+      if (u.status !== 'active') throw conflict('This account is disabled');
+      if (purpose === 'invite' && u.accepted) throw conflict('This person has already accepted their invitation. Send a password reset instead.');
+      const roles = (await db.query<{ role_key: string }>('SELECT role_key FROM user_roles WHERE tenant_id=$1 AND user_id=$2', [a.tenantId, id])).rows.map((r) => r.role_key);
+      await assertMayManage(db, a, roles);
+      await assertBelowActor(db, a, id, roles);
+      const result = await emailLink(db, a.tenantId, id, purpose);
+      if (result === 'unavailable') throw new AppError(409, 'feature_not_configured', 'Email is not set up on this installation.');
+      if (result === 'limited') throw new AppError(429, 'rate_limited', 'Too many links sent to this person. Try again later.');
+      await audit(db, { ...a.auditBase, action: `user.${purpose}_sent`, category: 'security', targetType: 'user', targetId: id });
+      return { ok: true };
+    });
+  };
+  app.post('/users/:id/invite', { config: { rateLimit: { max: 10, timeWindow: '1 minute' } } }, sendLink('invite'));
+  app.post('/users/:id/password-reset', { config: { rateLimit: { max: 10, timeWindow: '1 minute' } } }, sendLink('reset'));
 
   app.patch('/users/:id', async (req) => {
     const a = tenantActor(req, 'users.manage');

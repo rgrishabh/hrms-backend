@@ -16,11 +16,13 @@ import { currentMode } from '../core/policy/mode.js';
 import { holdsL4 } from '../core/policy/salary.js';
 import { effectiveMethod, mfaPolicyOf } from '../core/auth/mfa.js';
 import { sendEmailOtp, type OtpSend } from '../core/auth/email-otp.js';
+import { emailLink, findLink, takeLink } from '../core/auth/links.js';
 import type { PublicConfig } from '../config/installation.js';
 import { notifyUsers } from '../core/notify/service.js';
 
 const LoginBody = z.object({ email: z.string().trim().toLowerCase().pipe(z.email()), password: z.string().min(1).max(256) });
 const DEVICE_COOKIE_DAYS = 400;
+const FORGOT_MIN_MS = 250;
 const INVALID = 'Invalid email or password';
 
 /** Paths a user with a pending forced password change may still call. */
@@ -102,7 +104,11 @@ export async function authRoutes(app: FastifyInstance, opts: { publicConfig: Pub
       const s = await createSession(db, u.id, tenantId, await sessionLimits(db, tenantId), req.ip, req.headers['user-agent']);
       await audit(db, { tenantId, actorId: u.id, action: 'auth.login', category: 'auth', targetType: 'session', targetId: s.sessionId, requestId: req.id, ip: req.ip });
       const { isNew } = await rememberDevice(db, tenantId, u.id, sha256(device));
-      if (isNew) await audit(db, { tenantId, actorId: u.id, action: 'auth.new_device', category: 'security', targetType: 'session', targetId: s.sessionId, requestId: req.id, ip: req.ip, userAgent: req.headers['user-agent'] });
+      if (isNew) {
+        await audit(db, { tenantId, actorId: u.id, action: 'auth.new_device', category: 'security', targetType: 'session', targetId: s.sessionId, requestId: req.id, ip: req.ip, userAgent: req.headers['user-agent'] });
+        await notifyUsers(db, tenantId, [u.id], { kind: 'security.new_device', title: 'New sign-in to your account',
+          body: `From a browser we have not seen for this account, at address ${req.ip}${req.headers['user-agent'] ? ` (${req.headers['user-agent'].slice(0, 120)})` : ''}. If this was not you, change your password now and sign out your other sessions.`, link: '/account', actionLabel: 'Review account' });
+      }
       const method = effectiveMethod(mfaPolicy, u.mfa_on, u.mfa_method);
       // Email codes go out now, so the person has one by the time the next screen asks. An old one still pending is left alone by the resend limit.
       const delivery: OtpSend | null = method === 'email' ? await sendEmailOtp(db, cipher, tenantId, u.id, 'login') : null;
@@ -198,35 +204,62 @@ export async function authRoutes(app: FastifyInstance, opts: { publicConfig: Pub
     return { ok: true };
   });
 
-  /**
-   * Complete a one-time administrator setup link (issued only by the bootstrap
-   * command). Single use, expiring, stored hashed. Does not sign the user in.
-   */
-  const SetupBody = z.object({ token: z.string().min(20).max(200), newPassword: z.string().min(1).max(256) });
-  app.post('/auth/setup', { config: { rateLimit: { max: Math.min(10, env.AUTH_RATE_LIMIT_PER_MINUTE), timeWindow: '1 minute' } } }, async (req) => {
+  /** Finishes a link: the password policy, then the hash with no transaction open, then one statement decides who gets the link. Does not sign the user in. */
+  const finishLink = async (req: FastifyRequest, body: { token: string; newPassword: string }, purposes: readonly string[], invalid: AppError) => {
     const tenant = requireTenantHost(req);
-    const body = SetupBody.parse(req.body);
-    const accepted = await withTenant(pool, tenant.id, async (db) => {
-      const t = await db.query<{ id: string; user_id: string; email: string }>(
-        `SELECT t.id, t.user_id, u.email FROM admin_setup_tokens t JOIN users u ON u.id = t.user_id
-          WHERE t.tenant_id = $1 AND t.token_hash = $2 AND t.used_at IS NULL AND t.expires_at > now() FOR UPDATE OF t`, [tenant.id, sha256(body.token)]);
-      const row = t.rows[0];
-      if (!row) return false;
-      const minLen = await passwordMinLength(db, tenant.id);
-      assertStrongPassword(body.newPassword, { minLength: minLen, email: row.email });
-      await db.query('UPDATE admin_setup_tokens SET used_at = now() WHERE id = $1', [row.id]);
-      await db.query(`UPDATE users SET password_hash = $2, must_change_password = false, failed_logins = 0, locked_until = NULL, updated_at = now()
-        WHERE tenant_id = $1 AND id = $3`, [tenant.id, await hashPassword(body.newPassword), row.user_id]);
-      await revokeAllSessionsForUser(db, row.user_id);
-      await clearLoginAccount(db, tenant.id, row.email);
-      await audit(db, { tenantId: tenant.id, actorId: row.user_id, action: 'auth.setup_completed', category: 'security', targetType: 'user', targetId: row.user_id, requestId: req.id, ip: req.ip });
+    const reject = async () => {
+      // Recorded on its own: the failed attempt is never rolled back out of the audit log.
+      await withTenant(pool, tenant.id, (db) => audit(db, { tenantId: tenant.id, actorId: null, action: 'auth.setup_link_rejected', category: 'security', requestId: req.id, ip: req.ip }));
+      return invalid;
+    };
+    const found = await withTenant(pool, tenant.id, async (db) => {
+      const link = await findLink(db, tenant.id, body.token, purposes);
+      return link && { link, minLength: await passwordMinLength(db, tenant.id) };
+    });
+    if (!found) throw await reject();
+    const { link, minLength } = found;
+    assertStrongPassword(body.newPassword, { minLength, email: link.email, displayName: link.display_name });
+    const hash = await hashPassword(body.newPassword);
+    const taken = await withTenant(pool, tenant.id, async (db) => {
+      if (!(await takeLink(db, link.id))) return false;
+      await db.query(`UPDATE users SET password_hash = $2, must_change_password = false, updated_at = now() WHERE tenant_id = $1 AND id = $3`, [tenant.id, hash, link.user_id]);
+      await revokeAllSessionsForUser(db, link.user_id);
+      await clearLoginAccount(db, tenant.id, link.email);
+      await audit(db, { tenantId: tenant.id, actorId: link.user_id, action: link.purpose === 'reset' ? 'auth.password_reset' : 'auth.setup_completed', category: 'security', targetType: 'user', targetId: link.user_id, requestId: req.id, ip: req.ip });
+      if (link.purpose === 'reset') await notifyUsers(db, tenant.id, [link.user_id], { kind: 'security.password_changed', title: 'Your password was changed', body: 'It was reset with a link sent to this address. All your sessions were signed out. If this was not you, contact your administrator immediately.', link: '/account', actionLabel: 'Review account' });
       return true;
     });
-    if (!accepted) {
-      // Recorded in its own transaction so the failed attempt is never rolled back out of the audit log.
-      await withTenant(pool, tenant.id, (db) => audit(db, { tenantId: tenant.id, actorId: null, action: 'auth.setup_link_rejected', category: 'security', requestId: req.id, ip: req.ip }));
-      throw new AppError(400, 'setup_link_invalid', 'This setup link is invalid, already used or expired. Ask your system operator for a new one.');
-    }
+    if (!taken) throw await reject();
+    return { ok: true };
+  };
+
+  const LinkBody = z.object({ token: z.string().min(20).max(200), newPassword: z.string().min(1).max(256) });
+  const linkLimit = { rateLimit: { max: Math.min(10, env.AUTH_RATE_LIMIT_PER_MINUTE), timeWindow: '1 minute' } };
+
+  /** A one-time setup link from the bootstrap command, or an invitation. */
+  app.post('/auth/setup', { config: linkLimit }, async (req) => finishLink(req, LinkBody.parse(req.body), ['setup', 'invite'],
+    new AppError(400, 'setup_link_invalid', 'This setup link is invalid, already used or expired. Ask for a new one.')));
+
+  app.post('/auth/password/reset', { config: linkLimit }, async (req) => finishLink(req, LinkBody.parse(req.body), ['reset'],
+    new AppError(400, 'reset_link_invalid', 'This link is invalid, already used or expired. Ask for a new one.')));
+
+  /**
+   * Always the same answer in about the same time, whether or not the address has an account: the response is held to a fixed minimum, which covers
+   * the work of queueing a mail. Sends nothing to a disabled account, past the hourly limit, or without a mail transport, and says nothing about that either.
+   */
+  app.post('/auth/password/forgot', { config: { rateLimit: { max: Math.min(5, env.AUTH_RATE_LIMIT_PER_MINUTE), timeWindow: '1 minute' } } }, async (req) => {
+    const started = performance.now();
+    const { email } = z.object({ email: z.string().trim().toLowerCase().pipe(z.email()) }).parse(req.body);
+    const tenant = requireTenantHost(req);
+    try {
+      await withTenant(pool, tenant.id, async (db) => {
+        const u = (await db.query<{ id: string }>(`SELECT id FROM users WHERE tenant_id=$1 AND email=$2 AND status='active'`, [tenant.id, email])).rows[0];
+        const result = u ? await emailLink(db, tenant.id, u.id, 'reset') : null;
+        await audit(db, { tenantId: tenant.id, actorId: u?.id ?? null, action: 'auth.password_reset_requested', category: 'security', metadata: { result: result ?? 'no_account' }, requestId: req.id, ip: req.ip });
+      });
+    } catch (e) { req.log.error({ err: (e as Error).message }, 'password reset request failed'); }
+    const wait = FORGOT_MIN_MS - (performance.now() - started);
+    if (wait > 0) await new Promise((r) => setTimeout(r, wait));
     return { ok: true };
   });
 
