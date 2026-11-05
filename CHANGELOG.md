@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+### Added after batch G
+
+* `PUT /api/v1/recruitment/candidates/{id}/resume` (`recruitment.manage`): add or replace the resume of an active candidate, audited as `recruitment.resume_replaced`. The replaced file is deleted from storage.
+
 ### Contract changes in batch G
 
 No route or field was renamed or removed.

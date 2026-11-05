@@ -3384,6 +3384,8 @@ export const PostRecruitmentApplicationsByIdOffers201 = z.strictObject({ aboveBu
 
 export const PostRecruitmentCandidates201 = z.strictObject({ id: z.string() });
 
+export const PutRecruitmentCandidatesByIdResume200 = z.strictObject({ ok: z.boolean(), resumeName: z.string() });
+
 export const PostRecruitmentCandidatesByIdAnonymize200 = z.strictObject({ ok: z.boolean() });
 
 export const PostRecruitmentInterviewsByIdCancel200 = z.strictObject({ ok: z.boolean() });

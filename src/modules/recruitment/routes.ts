@@ -702,6 +702,54 @@ export async function recruitmentRoutes(app: FastifyInstance) {
     });
   });
 
+  /** Adds or replaces the resume of an active candidate. Same checks as at creation; the replaced file is deleted, because retention can no longer reach it. */
+  app.put(
+    '/candidates/:id/resume',
+    {
+      schema: { response: { 200: R.PutRecruitmentCandidatesByIdResume200 }, params: IdParams, consumes: ['multipart/form-data'] },
+      config: { perm: ['recruitment.manage'], feature: [FEATURE], rateLimit: { max: 30, timeWindow: '1 minute' } },
+    },
+    async (req) => {
+      const a = tenantActor(req, 'recruitment.manage');
+      const { id } = IdParams.parse(req.params);
+      if (!req.isMultipart()) throw badRequest('Upload as multipart/form-data');
+      const { file } = await readMultipart(req, maxBytes);
+      if (!file) throw badRequest('Choose a resume file');
+      if (file.buf.length > maxBytes) throw new AppError(413, 'file_too_large', `Files are limited to ${app.deps.env.STORAGE_MAX_FILE_MB} MB`);
+      const upload = await prepareUpload(req, a, file.buf, file.name);
+      const store = getStore();
+      if (!store) throw new AppError(503, 'storage_unavailable', 'File storage is not configured');
+      const key = newKey(a.tenantId, null, 'recruitment');
+      const name = safeFileName(file.name, upload.ext);
+      let previous: string | null = null;
+      await store.put(key, upload.bytes, upload.contentType);
+      try {
+        await a.tx(async (db) => {
+          await requireFeature(db, a.tenantId, FEATURE);
+          const c = (await db.query<{ resume_key: string | null; status: string }>('SELECT resume_key, status FROM candidates WHERE tenant_id=$1 AND id=$2 FOR UPDATE', [a.tenantId, id])).rows[0];
+          if (!c) throw notFound('Candidate not found');
+          if (c.status !== 'active') throw conflict('This candidate has been anonymized');
+          previous = c.resume_key;
+          await db.query('UPDATE candidates SET resume_key=$3, resume_name=$4, resume_type=$5, resume_sha256=$6 WHERE tenant_id=$1 AND id=$2', [
+            a.tenantId,
+            id,
+            key,
+            name,
+            upload.contentType,
+            createHash('sha256').update(upload.bytes).digest('hex'),
+          ]);
+          await audit(db, { ...a.auditBase, action: 'recruitment.resume_replaced', category: 'data', targetType: 'candidate', targetId: id, metadata: { replaced: previous !== null } });
+        });
+      } catch (e) {
+        await store.delete(key).catch((err: unknown) => req.log.warn({ err, key }, 'could not remove an unused resume upload'));
+        throw e;
+      }
+      // After commit: failing here leaves an unreferenced file, and that is logged rather than undoing a saved change.
+      if (previous) await store.delete(previous).catch((err: unknown) => req.log.error({ err, key: previous }, 'replaced resume was not deleted from storage'));
+      return { ok: true, resumeName: name };
+    },
+  );
+
   app.get('/candidates/:id/resume', { schema: { response: { 200: R.file('*/*') }, params: IdParams }, config: { feature: [FEATURE] } }, async (req, reply) => {
     const a = tenantActor(req);
     const { id } = IdParams.parse(req.params);

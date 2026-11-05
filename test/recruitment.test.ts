@@ -275,6 +275,63 @@ describe('hiring approver', () => {
   });
 });
 
+describe('replacing a resume on an existing candidate', () => {
+  const PDF2 = Buffer.concat([PDF, Buffer.from('\n% second version')]);
+  const put = (c: Client, id: string, content?: Buffer, name = 'updated.pdf') => {
+    const m = multipart({}, content ? { name, content } : undefined);
+    return c.req('PUT', `/api/v1/recruitment/candidates/${id}/resume`, m.body, m.headers);
+  };
+  const fresh = async (email: string, resume?: Buffer) => (await addCandidate(hr, { firstName: 'Later', email, phone: '' }, resume)).json().id as string;
+
+  it('adds one to a candidate saved without a resume, and records it', async () => {
+    const id = await fresh('later.add@mail.example');
+    expect((await hr.get(`/api/v1/recruitment/candidates/${id}/resume`)).statusCode).toBe(404);
+    const r = await put(hr, id, PDF);
+    expect(r.statusCode).toBe(200);
+    expect(r.json()).toEqual({ ok: true, resumeName: 'updated.pdf' });
+    const seen = (await hr.get(`/api/v1/recruitment/candidates/${id}`)).json();
+    expect(seen).toMatchObject({ has_resume: true, resume_name: 'updated.pdf' });
+    expect((await hr.get(`/api/v1/recruitment/candidates/${id}/resume`)).rawPayload.equals(PDF)).toBe(true);
+    const [a] = await ownerQuery<{ change_metadata: { replaced: boolean } }>(`SELECT change_metadata FROM audit_logs WHERE tenant_id=$1 AND action='recruitment.resume_replaced' AND target_id=$2`, [T.id, id]);
+    expect(a!.change_metadata.replaced).toBe(false);
+  });
+  it('replaces one: the new file downloads, and the old file is gone from storage', async () => {
+    const id = await fresh('later.replace@mail.example', PDF);
+    const [before] = await ownerQuery<{ resume_key: string }>(`SELECT resume_key FROM candidates WHERE id=$1`, [id]);
+    const oldFile = path.join(storeDir, before!.resume_key);
+    expect(existsSync(oldFile)).toBe(true);
+    expect((await put(hr, id, PDF2)).statusCode).toBe(200);
+    expect(existsSync(oldFile)).toBe(false);
+    expect((await hr.get(`/api/v1/recruitment/candidates/${id}/resume`)).rawPayload.equals(PDF2)).toBe(true);
+    const [a] = await ownerQuery<{ change_metadata: { replaced: boolean } }>(`SELECT change_metadata FROM audit_logs WHERE tenant_id=$1 AND action='recruitment.resume_replaced' AND target_id=$2`, [T.id, id]);
+    expect(a!.change_metadata.replaced).toBe(true);
+  });
+  it('a refused file leaves the current resume in place', async () => {
+    const id = await fresh('later.refused@mail.example', PDF);
+    const [before] = await ownerQuery<{ resume_key: string }>(`SELECT resume_key FROM candidates WHERE id=$1`, [id]);
+    expect((await put(hr, id, Buffer.from('MZ\x90\x00 binary'), 'cv.exe')).statusCode).toBe(415);
+    const [after] = await ownerQuery<{ resume_key: string }>(`SELECT resume_key FROM candidates WHERE id=$1`, [id]);
+    expect(after!.resume_key).toBe(before!.resume_key);
+    expect(existsSync(path.join(storeDir, before!.resume_key))).toBe(true);
+  });
+  it('asks for a file when none is sent', async () => {
+    const id = await fresh('later.none@mail.example');
+    expect((await put(hr, id)).statusCode).toBe(400);
+  });
+  it('needs recruitment.manage, and an unknown id is a 404', async () => {
+    const id = await fresh('later.perm@mail.example');
+    expect((await put(emp, id, PDF)).statusCode).toBe(403);
+    expect((await put(hr, '00000000-0000-4000-8000-000000000000', PDF)).statusCode).toBe(404);
+  });
+  it('an anonymized candidate cannot get a resume back', async () => {
+    const id = await fresh('later.gone@mail.example');
+    expect((await hr.post(`/api/v1/recruitment/candidates/${id}/anonymize`, { reason: 'Candidate asked us to delete their data' })).statusCode).toBe(200);
+    expect((await put(hr, id, PDF)).statusCode).toBe(409);
+    const [row] = await ownerQuery<{ resume_key: string | null }>(`SELECT resume_key FROM candidates WHERE id=$1`, [id]);
+    expect(row!.resume_key).toBeNull();
+  });
+});
+
 describe('retention and erasure', () => {
   it('anonymizes expired candidates, deletes their resume, and keeps hired ones', async () => {
     const c = await addCandidate(hr, { firstName: 'Old', email: 'old@mail.example', phone: '' }, PDF);
