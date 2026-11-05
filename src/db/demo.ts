@@ -16,9 +16,10 @@ import { recalculateRange } from '../modules/attendance/service.js';
 import { countDays, nonWorkingDates } from '../modules/leave/service.js';
 import { contentHash } from '../modules/policies/routes.js';
 import type { Db } from './tx.js';
+import { companyFactory, createRng, insertCompanyProfile, insertMasters } from './factories.js';
 
 /**
- * DEV/DEMO data generator: a realistic, entirely SYNTHETIC 60-person testing laboratory for an
+ * DEV/DEMO data generator: a realistic, entirely SYNTHETIC testing laboratory, about 100 people from the command line, for an
  * already bootstrapped installation (dev, demos, training). Guards:
  *   - runs only with DEMO_DATA_ALLOWED=true (set on the dev "demo" one-off service only);
  *   - refuses when the organization already has employees that are not demo employees (DM-…);
@@ -77,12 +78,17 @@ export const demoRoles = (roles: readonly string[], mode: ManagementMode) => {
   return kept.includes('employee') ? kept : [...kept, 'employee'];
 };
 
-export async function generateDemo(c: pg.Client | pg.PoolClient, opts: { password: string; today: string; tenantId?: string; features?: ReadonlySet<string>; mode?: ManagementMode; cipher?: FieldCipher }) {
+/** What the command line creates. The function's default stays the smaller set the module tests were written against. */
+export const DEMO_HEADCOUNT = 100;
+const SMALL_HEADCOUNT = 63;
+
+export async function generateDemo(c: pg.Client | pg.PoolClient, opts: { password: string; today: string; tenantId?: string; features?: ReadonlySet<string>; mode?: ManagementMode; cipher?: FieldCipher; headcount?: number }) {
   const db = c as unknown as Db;
   // Every run from the same start, so a mode can be seeded again and come out the same.
   seed = SEED;
   const mode = opts.mode ?? currentMode();
   const cipher = opts.cipher ?? dataCipher();
+  const headcount = opts.headcount ?? SMALL_HEADCOUNT;
   // A module that is off gets no demo data, just as it has no routes.
   const features = opts.features ?? currentFeatures();
   const on = (...keys: string[]) => keys.some((k) => features.has(k));
@@ -105,9 +111,10 @@ export async function generateDemo(c: pg.Client | pg.PoolClient, opts: { passwor
   const today = opts.today;
   const pw = await hashPassword(opts.password);
 
-  // ---- organization
+  // ---- organization. An invented company, whatever the installation is branded as.
+  const company = companyFactory(createRng(SEED));
   let le = (await q<{ id: string }>('SELECT id FROM legal_entities WHERE tenant_id=$1 ORDER BY created_at LIMIT 1', [tid])).rows[0]?.id;
-  if (!le) le = (await q<{ id: string }>(`INSERT INTO legal_entities (tenant_id, name, state_code) VALUES ($1,$2,'27') RETURNING id`, [tid, `${tenants[0]!.name} Pvt Ltd (demo)`])).rows[0]!.id;
+  if (!le) le = (await q<{ id: string }>(`INSERT INTO legal_entities (tenant_id, name, state_code) VALUES ($1,$2,'27') RETURNING id`, [tid, company.legalName])).rows[0]!.id;
   const branch: Record<string, string> = {};
   for (const b of BRANCHES) branch[b.code] = (await q<{ id: string }>(`INSERT INTO branches (tenant_id, legal_entity_id, code, name, state, city) VALUES ($1,$2,$3,$4,$5,$6)
     ON CONFLICT (tenant_id, code) DO UPDATE SET name=EXCLUDED.name RETURNING id`, [tid, le, b.code, b.name, b.state, b.city])).rows[0]!.id;
@@ -149,12 +156,15 @@ export async function generateDemo(c: pg.Client | pg.PoolClient, opts: { passwor
     const female = rnd() < 0.45;
     heads[d.code] = (await mkEmp(female ? pick(FIRST_F) : pick(FIRST_M), pick(LAST), d.code, `Head — ${d.name}`, 'L5', personas.director!.id, pick(['PUN', 'NMB', 'BLR']), addDays(today, -int(900, 3000)))).id;
   }
-  for (const d of DEPTS) for (let i = 0; i < d.n && emps.length < 62; i++) {
+  const addStaff = async (d: typeof DEPTS[number]) => {
     const female = rnd() < 0.45; const grade = pick(['L1', 'L2', 'L2', 'L3', 'L3', 'L4']);
     const recent = rnd() < 0.12;
     await mkEmp(female ? pick(FIRST_F) : pick(FIRST_M), pick(LAST), d.code, pick(d.roles), grade, heads[d.code]!, pick(['PUN', 'PUN', 'NMB', 'BLR']),
       recent ? addDays(today, -int(20, 150)) : addDays(today, -int(200, 3200)), recent ? 'probation' : 'permanent');
-  }
+  };
+  // One place stays free for the joiner below.
+  for (const d of DEPTS) for (let i = 0; i < d.n && emps.length < Math.min(62, headcount - 1); i++) await addStaff(d);
+  for (let i = 0; emps.length < headcount - 1; i++) await addStaff(DEPTS[i % DEPTS.length]!);
   // one joiner next month (pre-joining) for the onboarding demo
   const joiner = await mkEmp('Isha', 'Kamath', 'MICRO', 'Microbiologist', 'L2', heads.MICRO!, 'BLR', addDays(today, 18), 'probation');
   await q(`UPDATE employees SET status='pre_joining' WHERE id=$1`, [joiner.id]);
@@ -191,9 +201,9 @@ export async function generateDemo(c: pg.Client | pg.PoolClient, opts: { passwor
   if (on('field_duty')) {
     // writes it; attendance then shows those days as on duty. The sampler has a two-day trip, a visit not yet reported on, and is out today.
     const SITES: [string, string | null, string][] = [
-      ['Chakan MIDC — STP outlet', 'Kiran Auto Components Pvt Ltd', 'field_sampling'], ['Taloja MIDC — ETP', 'Shreeji Dyes & Intermediates', 'field_sampling'],
-      ['Hinjewadi Phase 2 — DG stacks', 'Megapolis IT Park', 'field_sampling'], ['Ranjangaon — borewells', 'Ranjangaon Industrial Association', 'field_sampling'],
-      ['Vashi — client office', 'Navi Mumbai Municipal Corporation', 'client_visit'], ['Pirangut — ambient air stations', null, 'field_sampling'],
+      ['Sahyadri Estate — STP outlet', 'Sahyadri Auto Parts (fictional)', 'field_sampling'], ['Konkan Estate — ETP', 'Tungabhadra Dyes (fictional)', 'field_sampling'],
+      ['Tech Park — DG stacks', 'Fictional IT Park', 'field_sampling'], ['Plateau Estate — borewells', 'Fictional Industrial Association', 'field_sampling'],
+      ['Harbour District — client office', 'Fictional Municipal Office', 'client_visit'], ['Hill Road — ambient air stations', null, 'field_sampling'],
     ];
     const isSunday = (d: string) => new Date(`${d}T00:00:00Z`).getUTCDay() === 0;
     const freeDay = (e: Emp, d: string) => !isSunday(d) && !onLeave.has(`${e.id}:${d}`) && !onDuty.has(`${e.id}:${d}`) && d >= e.joined;
@@ -323,7 +333,7 @@ export async function generateDemo(c: pg.Client | pg.PoolClient, opts: { passwor
       cat[code] = (await q<{ id: string }>(`INSERT INTO expense_categories (tenant_id, code, name, requires_receipt, max_amount, gst_applicable) VALUES ($1,$2,$3,$4,$5,$6)
         ON CONFLICT (tenant_id, code) DO UPDATE SET name=EXCLUDED.name RETURNING id`, [tid, code, name, receipt, max, gst])).rows[0]!.id;
     for (const [k, title, items] of [['sampler', 'STP sampling trip — Chakan MIDC', [['LOCAL_TRAVEL', 640, 'Auto + bus to Chakan'], ['MEALS', 320, 'Lunch at site']]],
-      ['analyst', 'Training at NABL assessor workshop', [['LOCAL_TRAVEL', 480, 'Cab to venue']]]] as const) {
+      ['analyst', 'Training at accreditation assessor workshop', [['LOCAL_TRAVEL', 480, 'Cab to venue']]]] as const) {
       const cid = (await q<{ id: string }>(`INSERT INTO expense_claims (tenant_id, employee_id, title, purpose, created_by) VALUES ($1,$2,$3,'Demo claim — business travel',$4) RETURNING id`, [tid, personas[k]!.id, title, uid(k)])).rows[0]!.id;
       for (const [c2, amt, desc] of items) await q(`INSERT INTO expense_items (tenant_id, claim_id, category_id, expense_date, amount, description) VALUES ($1,$2,$3,$4,$5,$6)`, [tid, cid, cat[c2], addDays(today, -int(2, 10)), amt, desc]);
       await q(`UPDATE expense_claims SET total=(SELECT sum(amount) FROM expense_items WHERE claim_id=$1) WHERE id=$1`, [cid]);
@@ -347,16 +357,16 @@ export async function generateDemo(c: pg.Client | pg.PoolClient, opts: { passwor
       let w = addDays(today, -14); while (new Date(`${w}T00:00:00Z`).getUTCDay() === 0) w = addDays(w, -1);
       const past = (await q<{ id: string }>(`INSERT INTO travel_requests (tenant_id, employee_id, purpose, trip_type, origin, destination, start_date, end_date, travel_mode, accommodation,
           estimate_travel, estimate_meals, estimate_local, advance_requested, mark_on_duty, status, decided_at, advance_paid_amount, advance_paid_at, advance_paid_by, advance_reference, completed_at, created_by)
-        VALUES ($1,$2,'NABL assessor workshop on ISO/IEC 17025:2017','domestic','Pune','Mumbai — NABL regional office',$3,$3,'rail',false,1200,600,800,1500,false,'completed',now(),1500,now(),$4,'NEFT-DEMO-ADV-01',now(),$5) RETURNING id`,
+        VALUES ($1,$2,'Accreditation assessor workshop on ISO/IEC 17025:2017','domestic','Pune','Mumbai — accreditation body regional office',$3,$3,'rail',false,1200,600,800,1500,false,'completed',now(),1500,now(),$4,'NEFT-DEMO-ADV-01',now(),$5) RETURNING id`,
         [tid, a.id, w, uid('finance'), uid('analyst')])).rows[0]!.id;
-      await q(`UPDATE expense_claims SET travel_request_id=$2 WHERE tenant_id=$1 AND employee_id=$3 AND title='Training at NABL assessor workshop'`, [tid, past, a.id]);
+      await q(`UPDATE expense_claims SET travel_request_id=$2 WHERE tenant_id=$1 AND employee_id=$3 AND title='Training at accreditation assessor workshop'`, [tid, past, a.id]);
       let n = addDays(today, 7); while ([n, addDays(n, 1)].some((d) => new Date(`${d}T00:00:00Z`).getUTCDay() === 0)) n = addDays(n, 1);
       const next = (await q<{ id: string }>(`INSERT INTO travel_requests (tenant_id, employee_id, purpose, trip_type, origin, destination, start_date, end_date, travel_mode, accommodation, project,
           estimate_travel, estimate_stay, estimate_meals, advance_requested, status, decided_at, created_by)
-        VALUES ($1,$2,'Quarterly stack and ambient air monitoring for the client plant','domestic','Navi Mumbai','Aurangabad — Waluj MIDC',$3,$4,'road',true,'WO-AUR-0412',
+        VALUES ($1,$2,'Quarterly stack and ambient air monitoring for the client plant','domestic','Navi Mumbai','Aurangabad — Fictional Estate',$3,$4,'road',true,'WO-AUR-0412',
           2800,3200,1200,5000,'approved',now(),$5) RETURNING id`, [tid, s.id, n, addDays(n, 1), uid('sampler')])).rows[0]!.id;
       await q(`INSERT INTO field_duty_requests (tenant_id, employee_id, start_date, end_date, purpose, place, reference, reason, status, created_by, decided_at, travel_request_id)
-        VALUES ($1,$2,$3,$4,'official_work','Aurangabad — Waluj MIDC','Travel','Quarterly stack and ambient air monitoring for the client plant','approved',$5,now(),$6)`, [tid, s.id, n, addDays(n, 1), uid('sampler'), next]);
+        VALUES ($1,$2,$3,$4,'official_work','Aurangabad — Fictional Estate','Travel','Quarterly stack and ambient air monitoring for the client plant','approved',$5,now(),$6)`, [tid, s.id, n, addDays(n, 1), uid('sampler'), next]);
       say('travel: a completed trip with its advance (claim in draft), an approved trip awaiting its advance');
     }
   }
@@ -368,7 +378,7 @@ export async function generateDemo(c: pg.Client | pg.PoolClient, opts: { passwor
       const [y, m] = month.split('-').map(Number) as [number, number];
       const prev = new Date(Date.UTC(y, m - 2, 1)).toISOString().slice(0, 7);
       for (const [k, kind, amount, n, first, purpose] of [['analyst', 'salary_advance', 15000, 3, month, 'Advance for my sister\'s wedding expenses'],
-        ['it', 'loan', 60000, 12, prev, 'Two-wheeler purchase for commuting to the Bhosari site']] as const) {
+        ['it', 'loan', 60000, 12, prev, 'Two-wheeler purchase for commuting to the site']] as const) {
         const inst = Math.ceil(amount / n);
         const lid = (await q<{ id: string }>(`INSERT INTO employee_loans (tenant_id, employee_id, kind, amount, installments, installment_amount, first_period, purpose, status, decided_at, disbursed_at, disbursed_by, disbursement_reference, created_by)
           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,'disbursed',now(),now(),$9,$10,$11) RETURNING id`, [tid, personas[k]!.id, kind, amount, n, inst, first, purpose, uid('payroll'), `NEFT-DEMO-${k.toUpperCase()}`, uid(k)])).rows[0]!.id;
@@ -386,11 +396,11 @@ export async function generateDemo(c: pg.Client | pg.PoolClient, opts: { passwor
       ['Kochi', 'Kerala', '682016'], ['Lucknow', 'Uttar Pradesh', '226010'], ['Nashik', 'Maharashtra', '422005'], ['Hubballi', 'Karnataka', '580020']] as const;
     const PIN: Record<string, string> = { PUN: '411045', NMB: '400703', BLR: '560037' };
     const LEVEL_BY_DEPT: Record<string, [string, string, string]> = {
-      WATER: ['postgraduate', 'M.Sc. Analytical Chemistry', 'Savitribai Phule Pune University'], AIR: ['graduate', 'B.E. Environmental Engineering', 'Visvesvaraya Technological University'],
-      SOIL: ['postgraduate', 'M.Sc. Agricultural Chemistry', 'Mahatma Phule Krishi Vidyapeeth'], FOOD: ['postgraduate', 'M.Sc. Food Technology', 'University of Mumbai'],
-      MICRO: ['postgraduate', 'M.Sc. Microbiology', 'Bangalore University'], INST: ['graduate', 'B.Tech. Instrumentation', 'University of Mumbai'],
-      FIELD: ['diploma', 'Diploma in Chemical Technology', 'MSBTE'], QA: ['postgraduate', 'M.Sc. Chemistry', 'Savitribai Phule Pune University'],
-      HR: ['postgraduate', 'MBA (Human Resources)', 'Symbiosis International University'], FIN: ['graduate', 'B.Com.', 'University of Mumbai'], IT: ['graduate', 'B.E. Computer Engineering', 'Savitribai Phule Pune University'],
+      WATER: ['postgraduate', 'M.Sc. Analytical Chemistry', 'Sahyadri State University (fictional)'], AIR: ['graduate', 'B.E. Environmental Engineering', 'Deccan Technical University (fictional)'],
+      SOIL: ['postgraduate', 'M.Sc. Agricultural Chemistry', 'Plateau Agricultural University (fictional)'], FOOD: ['postgraduate', 'M.Sc. Food Technology', 'Konkan University (fictional)'],
+      MICRO: ['postgraduate', 'M.Sc. Microbiology', 'Tungabhadra University (fictional)'], INST: ['graduate', 'B.Tech. Instrumentation', 'Konkan University (fictional)'],
+      FIELD: ['diploma', 'Diploma in Chemical Technology', 'State Technical Board (fictional)'], QA: ['postgraduate', 'M.Sc. Chemistry', 'Sahyadri State University (fictional)'],
+      HR: ['postgraduate', 'MBA (Human Resources)', 'Western Institute of Management (fictional)'], FIN: ['graduate', 'B.Com.', 'Konkan University (fictional)'], IT: ['graduate', 'B.E. Computer Engineering', 'Sahyadri State University (fictional)'],
     };
     let done = 0;
     for (const e of emps) {
@@ -405,7 +415,7 @@ export async function generateDemo(c: pg.Client | pg.PoolClient, opts: { passwor
           b.city, b.state, PIN[e.branch], `${int(2, 180)}, ${pick(['Shivaji', 'Gandhi', 'Nehru', 'Tilak'])} Nagar`, hc, hs, hp]);
       const [level, qual, uni] = LEVEL_BY_DEPT[e.dept]!;
       await q(`INSERT INTO employee_education (tenant_id, employee_id, level, qualification, institution, university, year_of_passing, score) VALUES ($1,$2,$3,$4,$5,$6,$7,$8)`,
-        [tid, e.id, level, qual, `${pick(['Fergusson', 'Ruia', 'St. Joseph\'s', 'Modern', 'Wadia'])} College`, uni, Number(e.joined.slice(0, 4)) - int(1, 4), `${int(62, 84)}%`]);
+        [tid, e.id, level, qual, `${pick(['Lakeside', 'Riverside', 'Hillview', 'Modern', 'Parkland'])} College`, uni, Number(e.joined.slice(0, 4)) - int(1, 4), `${int(62, 84)}%`]);
       if (e !== personas.analyst) await q(`INSERT INTO employee_nominees (tenant_id, employee_id, purpose, name, relationship, share_percent) VALUES ($1,$2,'pf',$3,'Spouse',100),($1,$2,'gratuity',$3,'Spouse',100)`, [tid, e.id, spouse]);
       done++;
     }
@@ -416,7 +426,7 @@ export async function generateDemo(c: pg.Client | pg.PoolClient, opts: { passwor
   // requests left with one person for 3 days also go to that person's manager (or HR).
   await q(`INSERT INTO tenant_settings (tenant_id, setting_key, setting_value, updated_by) VALUES ($1,'approvals.escalate_after_days','3',$2) ON CONFLICT DO NOTHING`, [tid, adminId]);
   await q(`INSERT INTO approval_delegations (tenant_id, delegator_id, delegate_id, starts_on, ends_on, note, created_by) VALUES ($1,$2,$3,$4,$5,$6,$2)`,
-    [tid, uid('lab.manager'), uid('quality'), today, addDays(today, 4), 'At the NABL assessor training in Bengaluru']);
+    [tid, uid('lab.manager'), uid('quality'), today, addDays(today, 4), 'At the accreditation assessor training in Bengaluru']);
   say('approvals: lab manager away, quality manager covering; escalation after 3 days');
 
   // ---- rosters: from next Monday the instrument room runs two shifts on a 14-day rotation (5 mornings, 2 off,
@@ -510,11 +520,11 @@ export async function generateDemo(c: pg.Client | pg.PoolClient, opts: { passwor
       const cid = (await q<{ id: string }>(`INSERT INTO candidates (tenant_id, first_name, last_name, email, phone, source, current_company, current_designation, experience_months, notice_days, qualification, location,
           consent_at, consent_note, retain_until, created_by) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12, now(), 'Demo data — synthetic candidate', $13, $14) RETURNING id`,
         [tid, first, last, `${first}.${last}.${i}@mail.example`.toLowerCase(), `+91 8${int(100000000, 999999999)}`, pick(['job_portal', 'referral', 'campus', 'agency']),
-          pick(['Envirocare Labs', 'AquaTest Analytics', 'GreenEarth Testing', 'Precision Analytical']), pick(['Chemist', 'Analyst', 'Microbiologist', 'Technician']), int(6, 96), pick([15, 30, 60, 90]),
+          pick(['Fictional Labs One', 'Fictional Analytics Two', 'Fictional Testing Three', 'Fictional Analytical Four']), pick(['Chemist', 'Analyst', 'Microbiologist', 'Technician']), int(6, 96), pick([15, 30, 60, 90]),
           pick(['M.Sc. Chemistry', 'M.Sc. Microbiology', 'B.Sc. Chemistry', 'B.Tech Environmental Engg.']), pick(['Pune', 'Mumbai', 'Bengaluru', 'Nashik']), addDays(today, 365), uid('hr.exec')])).rows[0]!.id;
       const st = stages[i % stages.length]!;
       const ap = (await q<{ id: string }>(`INSERT INTO job_applications (tenant_id, requisition_id, candidate_id, stage, rejection_reason, created_by) VALUES ($1,$2,$3,$4,$5,$6) RETURNING id`,
-        [tid, reqs[i % reqs.length], cid, st, st === 'rejected' ? 'Experience below the requirement for NABL-scope methods' : null, uid('hr.exec')])).rows[0]!.id;
+        [tid, reqs[i % reqs.length], cid, st, st === 'rejected' ? 'Experience below the requirement for accredited methods' : null, uid('hr.exec')])).rows[0]!.id;
       await q(`INSERT INTO job_application_events (tenant_id, application_id, from_stage, to_stage, actor_id) VALUES ($1,$2,NULL,'applied',$3)`, [tid, ap, uid('hr.exec')]);
     }
     say('recruitment: 3 approved requisitions, 10 candidates across the pipeline');
@@ -564,7 +574,7 @@ export async function generateDemo(c: pg.Client | pg.PoolClient, opts: { passwor
     for (let i = 1; i <= 4; i++) await mkAsset(`INS-PH-${String(i).padStart(2, '0')}`, 'pH meter (bench)', 'lab_instrument', `PHB-${int(1000, 9999)}`, addDays(today, [-3, 6, 25, 120][i - 1]!), null);
     await mkAsset('INS-ICP-01', 'ICP-OES spectrometer', 'lab_instrument', `ICP-${int(10000, 99999)}`, addDays(today, 40), null);
     await mkAsset('INS-BAL-01', 'Analytical balance 0.1 mg', 'lab_instrument', `BAL-${int(1000, 9999)}`, addDays(today, 12), null);
-    for (let i = 1; i <= 12; i++) await mkAsset(`IT-LAP-${String(i).padStart(3, '0')}`, pick(['Dell Latitude 5440', 'Lenovo ThinkPad E14', 'HP ProBook 440']), 'it', `SN${int(100000, 999999)}`, null, holders[int(0, holders.length - 1)]!);
+    for (let i = 1; i <= 12; i++) await mkAsset(`IT-LAP-${String(i).padStart(3, '0')}`, pick(['Laptop 14-inch A', 'Laptop 14-inch B', 'Laptop 15-inch C']), 'it', `SN${int(100000, 999999)}`, null, holders[int(0, holders.length - 1)]!);
     for (let i = 1; i <= 6; i++) await mkAsset(`PPE-HH-${String(i).padStart(3, '0')}`, 'Safety helmet + harness (stack sampling)', 'ppe', `HH-${int(100, 999)}`, null, holders.filter((e) => e.dept === 'AIR' || e.dept === 'FIELD')[i % 6] ?? null);
     say(`assets: ${assets} (instruments with calibration dates, laptops, PPE)`);
   }
@@ -586,9 +596,16 @@ export async function generateDemo(c: pg.Client | pg.PoolClient, opts: { passwor
   // ---- POSH Internal Committee (no cases)
   if (on('posh')) {
     await q(`INSERT INTO posh_committee_members (tenant_id, user_id, role, added_by) VALUES ($1,$2,'presiding_officer',$4), ($1,$3,'member',$4) ON CONFLICT DO NOTHING`, [tid, uid('hr.head'), uid('quality'), adminId]);
-    await q(`INSERT INTO posh_external_members (tenant_id, name, organization, since) VALUES ($1,'Adv. Kavita Deshpande (demo)','Stree Adhar Kendra (demo NGO)',$2)`, [tid, `${year}-01-01`]);
+    await q(`INSERT INTO posh_external_members (tenant_id, name, organization, since) VALUES ($1,'Adv. Fictional Member (demo)','Fictional Support Centre (demo NGO)',$2)`, [tid, `${year}-01-01`]);
     say('POSH: Internal Committee (presiding officer Ananya Iyer, member Arjun Rao, external member)');
   }
+
+  // ---- the masters people's titles come from, and the company's own details
+  await insertMasters(c, tid,
+    [...new Set(emps.map((e) => e.grade))].sort().map((g) => ({ code: g, name: g })),
+    (await q<{ d: string }>(`SELECT DISTINCT designation AS d FROM employees WHERE tenant_id=$1 AND designation IS NOT NULL ORDER BY 1`, [tid])).rows.map((r, i) => ({ code: `D${String(i + 1).padStart(3, '0')}`, name: r.d })));
+  await insertCompanyProfile(c, tid, company, cipher, on('payroll'));
+  say('company: legal details, registration numbers and masters');
 
   await q('COMMIT');
   return { domain, logins: PERSONAS.map((p) => ({ login: `${p.key}@${domain}`, name: `${p.first} ${p.last}`, role: p.designation })) };
@@ -610,7 +627,7 @@ if (process.argv[1] && fileURLToPath(import.meta.url) === path.resolve(process.a
       const cipher = await loadFieldCipherFromProcess();
       setDataCipher(cipher);
       const mode = (['single', 'single_hr', 'multi'] as const).find((m) => m === process.env.ORG_MANAGEMENT_MODE) ?? 'multi';
-      const r = await withMode(mode, () => generateDemo(c, { password, today, features: flags.features, mode, cipher }));
+      const r = await withMode(mode, () => generateDemo(c, { password, today, features: flags.features, mode, cipher, headcount: DEMO_HEADCOUNT }));
       if (!r) return;
       process.stdout.write(`HRMS demo logins (synthetic data) — https://${process.env.BRAND_DOMAIN ?? r.domain}\nPassword for all demo logins: ${password}\n` +
         `Privileged roles must set up two-factor authentication at first sign-in.\n\n${r.logins.map((l) => `${l.login.padEnd(36)} ${l.name.padEnd(18)} ${l.role}`).join('\n')}\n`);
