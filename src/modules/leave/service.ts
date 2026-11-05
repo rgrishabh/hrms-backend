@@ -169,15 +169,14 @@ export async function approvedLeaveByDate(db: Db, tenantId: string, employeeId: 
   const map = new Map<string, { fraction: number; code: string; chargedOnOffDay: boolean }>();
   for (const req of r.rows) {
     for (const d of dateRange(req.start_date > from ? req.start_date : from, req.end_date < to ? req.end_date : to)) {
+      // Never zero: `leave_requests_check1` refuses a one-day request made of its own two halves, the only way a date in range could count for nothing.
       const f = dateFraction(d, req);
-      if (f > 0) {
-        const prev = map.get(d);
-        map.set(d, {
-          fraction: Math.min(1, (prev?.fraction ?? 0) + f),
-          code: prev && prev.code !== req.code ? `${prev.code}+${req.code}` : req.code,
-          chargedOnOffDay: req.charged_off,
-        });
-      }
+      const prev = map.get(d);
+      map.set(d, {
+        fraction: Math.min(1, (prev?.fraction ?? 0) + f),
+        code: prev && prev.code !== req.code ? `${prev.code}+${req.code}` : req.code,
+        chargedOnOffDay: req.charged_off,
+      });
     }
   }
   return map;

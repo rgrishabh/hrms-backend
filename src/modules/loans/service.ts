@@ -17,6 +17,9 @@ export const installmentOf = (amount: number, n: number) => Math.ceil(amount / n
  * of those, what is final (repayments, and deductions in finalized or paid runs where the pay is not held: until held
  * pay is released the employee has not had it, so the deduction stays in progress and the loan stays open).
  */
+/** Run statuses after which a recovery has really happened. `loan_recoveries_check` gives every payroll recovery a run, so only a repayment reads null here, and it has already counted. */
+const FINAL_RUN: ReadonlySet<string | null> = new Set(['finalized', 'paid']);
+
 export async function balanceOf(db: Db, tenantId: string, loanId: string, opts: { excludeRunId?: string } = {}) {
   const loan = (await db.query<{ amount: string }>(`SELECT amount::text FROM employee_loans WHERE tenant_id=$1 AND id=$2`, [tenantId, loanId])).rows[0];
   if (!loan) return { amount: '0.00', outstanding: '0.00', recovered: '0.00', inProgress: '0.00' };
@@ -32,7 +35,7 @@ export async function balanceOf(db: Db, tenantId: string, loanId: string, opts: 
   let final = new Decimal(0);
   for (const x of rows) {
     if (x.source === 'repayment' || (x.run_status !== 'cancelled' && x.payroll_run_id !== (opts.excludeRunId ?? null))) committed = committed.plus(x.amount);
-    if (x.source === 'repayment' || (['finalized', 'paid'].includes(x.run_status ?? '') && !x.hold)) final = final.plus(x.amount);
+    if (x.source === 'repayment' || (FINAL_RUN.has(x.run_status) && !x.hold)) final = final.plus(x.amount);
   }
   const outstanding = Decimal.max(0, new Decimal(loan.amount).minus(committed));
   return { amount: loan.amount, outstanding: outstanding.toFixed(2), recovered: final.toFixed(2), inProgress: committed.minus(final).toFixed(2) };
