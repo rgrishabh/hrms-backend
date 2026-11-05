@@ -494,10 +494,19 @@ export async function cancelRequest(
 export async function inbox(db: Db, tenantId: string, actor: Actor, today?: string, page?: { page: number; pageSize: number }) {
   today ??= await orgToday(db, tenantId);
   const coveringHr = await coveringHrStep(db, tenantId, actor.userId, today);
+  const covering = (
+    await db.query<{ delegator_id: string }>(
+      `SELECT delegator_id FROM approval_delegations WHERE tenant_id=$1 AND delegate_id=$2 AND revoked_at IS NULL AND $3::date BETWEEN starts_on AND ends_on`,
+      [tenantId, actor.userId, today],
+    )
+  ).rows.map((d) => d.delegator_id);
+  // The steps that could be this person's are picked first. Otherwise every inbox, also an empty one, joins every pending request in the organization: 33 ms at 7,000 of them.
   const sql = `SELECT r.id, r.entity_type, r.entity_id, r.summary, r.created_at, r.current_step, u.display_name AS requester_name,
       s.approver_kind, s.approver_permission, s.approver_user_id, s.escalated_to, s.escalated_permission, s.escalated_at, au.display_name AS approver_name,
       dl.delegator_id AS delegated_by, du.display_name AS delegated_by_name
-    FROM approval_requests r JOIN approval_steps s ON s.tenant_id=r.tenant_id AND s.request_id=r.id AND s.status='active'
+    FROM approval_requests r JOIN (SELECT * FROM approval_steps c WHERE c.tenant_id=$1 AND c.status='active' AND (
+        c.approver_user_id=$2 OR c.escalated_to=$2 OR c.approver_user_id = ANY($7::uuid[]) OR c.escalated_to = ANY($7::uuid[])
+        OR c.approver_permission = ANY($3) OR c.escalated_permission = ANY($3) OR ($6 AND c.approver_permission = '${HR_STEP_PERMISSION}'))) s ON s.tenant_id=r.tenant_id AND s.request_id=r.id
     JOIN users u ON u.id=r.requester_id
     LEFT JOIN users au ON au.id=s.approver_user_id
     LEFT JOIN LATERAL (SELECT d.delegator_id FROM approval_delegations d WHERE d.tenant_id=r.tenant_id AND d.delegate_id=$2 AND d.revoked_at IS NULL
@@ -511,7 +520,7 @@ export async function inbox(db: Db, tenantId: string, actor: Actor, today?: stri
       AND NOT EXISTS (SELECT 1 FROM approval_steps p WHERE p.tenant_id=r.tenant_id AND p.request_id=r.id AND p.acted_by IS NOT NULL
         AND (p.acted_by=$2 OR p.acted_for=$2 OR (dl.delegator_id IS NOT NULL AND s.approver_user_id IS DISTINCT FROM $2 AND p.acted_by=dl.delegator_id)))
     ORDER BY r.created_at`;
-  const args = [tenantId, actor.userId, [...actor.permissions], today, offEntityTypes(), coveringHr];
+  const args = [tenantId, actor.userId, [...actor.permissions], today, offEntityTypes(), coveringHr, covering];
   type Row = {
     id: string;
     approver_kind: string;

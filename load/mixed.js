@@ -59,7 +59,7 @@ const get = (s, path, trend, name) => {
   return r;
 };
 const post = (s, path, body, name) => {
-  const r = http.post(`${BASE}/api/v1${path}`, JSON.stringify(body), { headers: headers(s), tags: { name: name || path } });
+  const r = http.post(`${BASE}/api/v1${path}`, JSON.stringify(body), { headers: headers(s), tags: { name: name || path }, responseType: 'text' });
   write.add(r.timings.duration);
   refused.add(r.status >= 400 && r.status !== 409);
   if (DEBUG && r.status >= 400) console.log(r.status, name || path, r.body);
@@ -83,7 +83,7 @@ function hrWork(s) {
   if (n < 30) get(s, '/employees?pageSize=100', report, '/employees full');
   else if (n < 50) get(s, '/reports/headcount', report, '/reports/headcount');
   else if (n < 65) get(s, `/reports/attendance_summary?from=${day(-30)}&to=${day(0)}`, report, '/reports/attendance_summary');
-  else if (n < 80) get(s, '/tenant/audit', report, '/tenant/audit');
+  else if (n < 80) get(s, '/lifecycle/separations?scope=all', report, '/lifecycle/separations');
   else if (n < 90) get(s, '/reports/headcount/export.xlsx', report, '/reports/headcount/export.xlsx');
   else get(s, '/approvals/inbox', report, '/approvals/inbox hr');
 }
