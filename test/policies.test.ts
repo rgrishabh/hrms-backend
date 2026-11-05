@@ -3,7 +3,7 @@ import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import type { FastifyInstance } from 'fastify';
-import { makeApp, createTenant, Client, ownerQuery, multipart, PASSWORD, type TenantFixture } from './helpers.js';
+import { problem, makeApp, createTenant, Client, ownerQuery, multipart, PASSWORD, type TenantFixture, flags } from './helpers.js';
 import { readXlsx } from './helpers.js';
 import { LocalStore, setStore } from '../src/core/storage/index.js';
 import { hashPassword } from '../src/core/crypto/index.js';
@@ -11,7 +11,12 @@ import { localDate } from '../src/modules/attendance/time.js';
 
 const PDF = Buffer.from('%PDF-1.7\n1 0 obj << /Type /Catalog >> endobj\n%%EOF\n');
 const today = localDate(new Date(), 'Asia/Kolkata');
-let app: FastifyInstance; let T: TenantFixture; let hr: Client; let qm: Client; let emp: Client; let other: Client;
+let app: FastifyInstance;
+let T: TenantFixture;
+let hr: Client;
+let qm: Client;
+let emp: Client;
+let other: Client;
 let policyId: string;
 
 const draft = (c: Client, id: string, f: Record<string, string>, file?: Buffer) => {
@@ -25,25 +30,33 @@ const ack = async (c: Client, versionId: string) => {
 
 beforeAll(async () => {
   setStore(new LocalStore(mkdtempSync(path.join(tmpdir(), 'hrms-pol-'))));
-  app = await makeApp({ ENABLED_MODULES: 'default,core.policies' }, { storeOverride: true });
+  app = await makeApp({ ...flags('default,core.policies') }, { storeOverride: true });
   T = await createTenant();
   hr = await Client.login(app, T.host, T.users.hr!.email);
   emp = await Client.login(app, T.host, T.users.employee!.email);
   other = await Client.login(app, T.host, T.users.other!.email);
-  const [u] = await ownerQuery<{ id: string }>(`INSERT INTO users (tenant_id, email, display_name, password_hash) VALUES ($1,$2,'Quality',$3) RETURNING id`, [T.id, `qm@${T.host}`, await hashPassword(PASSWORD)]);
+  const [u] = await ownerQuery<{ id: string }>(`INSERT INTO users (tenant_id, email, display_name, password_hash) VALUES ($1,$2,'Quality',$3) RETURNING id`, [
+    T.id,
+    `qm@${T.host}`,
+    await hashPassword(PASSWORD),
+  ]);
   await ownerQuery(`INSERT INTO user_roles (user_id, tenant_id, role_key) VALUES ($1,$2,'quality_manager')`, [u!.id, T.id]);
   qm = await Client.login(app, T.host, `qm@${T.host}`);
 });
-afterAll(async () => { await app.close(); setStore(null); });
+afterAll(async () => {
+  await app.close();
+  setStore(null);
+});
 
 describe('policies', () => {
-  let v1: string; let v2: string;
+  let v1: string;
+  let v2: string;
   it('drafts need content; only PDFs; one draft at a time; employees cannot manage', async () => {
     expect((await emp.post('/api/v1/policies', { code: 'COC', title: 'Code of conduct', category: 'code_of_conduct' })).statusCode).toBe(403);
     const p = await hr.post('/api/v1/policies', { code: 'coc', title: 'Code of conduct', category: 'code_of_conduct', owner: 'HR' });
     expect(p.statusCode).toBe(201);
     policyId = p.json().id;
-    expect((await draft(hr, policyId, {})).json().error.message).toMatch(/text, a PDF/);
+    expect(problem(await draft(hr, policyId, {})).detail).toMatch(/text, a PDF/);
     expect((await draft(hr, policyId, {}, Buffer.from('MZ\x90\x00 not a pdf'))).statusCode).toBe(415);
     const d = await draft(hr, policyId, { body: 'Be honest. Report conflicts of interest.' }, PDF);
     expect(d.statusCode).toBe(201);
@@ -69,7 +82,7 @@ describe('policies', () => {
   });
 
   it('acknowledgement is bound to the content shown, once, and is reported', async () => {
-    expect((await emp.post(`/api/v1/policies/versions/${v1}/acknowledge`, { contentSha256: '0'.repeat(64) })).json().error.message).toMatch(/changed since you opened/);
+    expect(problem(await emp.post(`/api/v1/policies/versions/${v1}/acknowledge`, { contentSha256: '0'.repeat(64) })).detail).toMatch(/changed since you opened/);
     const r = await ack(emp, v1);
     expect(r.json()).toMatchObject({ ok: true, alreadyAcknowledged: false });
     expect((await ack(emp, v1)).json().alreadyAcknowledged).toBe(true);
@@ -92,7 +105,7 @@ describe('policies', () => {
     const before = (await emp.get(`/api/v1/policies/versions/${v1}`)).json();
     v2 = (await draft(hr, policyId, { changeSummary: 'Added gifts section', body: 'Be honest. No gifts above ₹1000.' })).json().id;
     await qm.post(`/api/v1/policies/versions/${v2}/publish`);
-    expect((await emp.post(`/api/v1/policies/versions/${v1}/acknowledge`, { contentSha256: before.contentSha256 })).json().error.message).toMatch(/no longer current/);
+    expect(problem(await emp.post(`/api/v1/policies/versions/${v1}/acknowledge`, { contentSha256: before.contentSha256 })).detail).toMatch(/no longer current/);
     expect((await emp.get(`/api/v1/policies/versions/${v1}`)).statusCode).toBe(200); // still readable: they acknowledged it
     expect((await other.get(`/api/v1/policies/versions/${v1}`)).statusCode).toBe(404); // superseded and never acknowledged
     const mine = (await emp.get('/api/v1/policies/mine')).json();
@@ -117,8 +130,8 @@ describe('policies', () => {
 
   it('overdue reminders go out once a week; retiring removes the policy from staff lists', async () => {
     await ownerQuery(`UPDATE policy_versions SET published_at = now() - interval '20 days' WHERE id=$1`, [v2]);
-    await qm.post('/api/v1/tenant/jobs/policies.ack_reminder/run');
-    await qm.post('/api/v1/tenant/jobs/policies.ack_reminder/run');
+    await qm.runJob('policies.ack_reminder');
+    await qm.runJob('policies.ack_reminder');
     expect((await ownerQuery(`SELECT 1 FROM notifications WHERE tenant_id=$1 AND user_id=$2 AND kind='policies.ack_overdue'`, [T.id, T.users.employee!.id])).length).toBe(1);
     expect((await emp.get('/api/v1/policies/mine')).json().overdue).toBe(1);
     expect((await emp.post(`/api/v1/policies/${policyId}/retire`, { reason: 'Replaced' })).statusCode).toBe(403); // publishers only
@@ -127,8 +140,11 @@ describe('policies', () => {
   });
 
   it('is unavailable when the module is off', async () => {
-    const off = await makeApp({ ENABLED_MODULES: 'default' });
-    try { expect((await (await Client.login(off, T.host, T.users.hr!.email)).get('/api/v1/policies')).json().error.code).toBe('feature_unavailable'); }
-    finally { await off.close(); }
+    const off = await makeApp({ ...flags('default') });
+    try {
+      expect(problem(await (await Client.login(off, T.host, T.users.hr!.email)).get('/api/v1/policies')).code).toBe('not_found');
+    } finally {
+      await off.close();
+    }
   });
 });

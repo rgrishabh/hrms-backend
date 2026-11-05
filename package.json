@@ -8,32 +8,54 @@
     "dev": "tsx watch --env-file-if-exists=.env src/server.ts",
     "build": "tsc -p tsconfig.build.json",
     "start": "node dist/src/server.js",
+    "worker": "tsx --env-file-if-exists=.env src/worker.ts",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "vitest run",
+    "test:coverage": "vitest run --coverage",
+    "test:mutation": "stryker run tools/stryker.config.json",
     "migrate": "tsx --env-file-if-exists=.env src/db/migrate.ts",
     "seed": "tsx --env-file-if-exists=.env src/db/seed.ts",
     "demo": "tsx --env-file-if-exists=.env src/db/demo.ts",
     "bootstrap": "tsx --env-file-if-exists=.env src/db/bootstrap.ts",
-    "lint": "tsc -p tsconfig.json --noEmit",
-    "migrate:status": "tsx --env-file-if-exists=.env src/db/migrate.ts --status"
+    "lint": "tsc -p tsconfig.json --noEmit && npm run lint:eslint",
+    "lint:eslint": "test -d tools/lint/node_modules || npm --prefix tools/lint ci --no-audit --no-fund; tools/lint/node_modules/.bin/eslint -c tools/lint/eslint.config.mjs src test scripts vitest.config.ts --max-warnings 0",
+    "format": "tools/lint/node_modules/.bin/prettier --write src test scripts",
+    "format:check": "tools/lint/node_modules/.bin/prettier --check src test scripts",
+    "prepare": "git config core.hooksPath .githooks 2>/dev/null || true",
+    "migrate:status": "tsx --env-file-if-exists=.env src/db/migrate.ts --status",
+    "migrate:down": "tsx --env-file-if-exists=.env src/db/migrate.ts --rollback",
+    "openapi": "tsx scripts/openapi.ts",
+    "rotate-keys": "tsx --env-file-if-exists=.env src/db/rotate-keys.ts"
   },
   "type": "module",
   "dependencies": {
+    "@aws-sdk/client-kms": "^3.1162.0",
     "@aws-sdk/client-s3": "^3.1161.0",
     "@fastify/cookie": "^11.1.5",
+    "@fastify/cors": "^11.4.0",
     "@fastify/helmet": "^13.2.0",
     "@fastify/multipart": "^10.1.7",
     "@fastify/rate-limit": "^11.2.2",
     "decimal.js": "^10.6.0",
     "fastify": "^5.12.8",
+    "ioredis": "^6.0.0",
     "nodemailer": "^10.3.1",
+    "pdfkit": "^0.20.2",
     "pg": "^8.23.1",
+    "pino": "^10.4.0",
     "zod": "^4.6.7"
   },
   "devDependencies": {
+    "@fastify/swagger": "^9.9.3",
+    "@stryker-mutator/core": "^10.1.1",
+    "@stryker-mutator/vitest-runner": "^10.1.1",
     "@types/node": "^26.6.6",
     "@types/nodemailer": "^8.0.2",
+    "@types/pdfkit": "^0.17.7",
     "@types/pg": "^8.23.1",
+    "@vitest/coverage-v8": "^5.1.0",
+    "fast-check": "^4.10.2",
+    "pdfjs-dist": "^6.5.438",
     "tsx": "^4.23.15",
     "typescript": "^7.0.2",
     "vitest": "^5.1.0"
@@ -41,6 +63,6 @@
   "private": true,
   "description": "HRMS API (Fastify + PostgreSQL)",
   "engines": {
-    "node": ">=22"
+    "node": ">=24.7"
   }
 }

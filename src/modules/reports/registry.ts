@@ -9,6 +9,8 @@ import type { Db } from '../../db/tx.js';
 import { IsoDate } from '../../core/http/pagination.js';
 import { addDays, daysBetween } from '../attendance/time.js';
 import { leaveYearOf, yearStartMonth } from '../leave/service.js';
+import { l4RowFilter, type PolicyViewer } from '../../core/policy/salary.js';
+import { openItem } from '../payroll/sealed.js';
 
 export type ColType = 'text' | 'int' | 'number' | 'percent' | 'money' | 'date';
 export interface Column { key: string; label: string; type: ColType }
@@ -22,13 +24,18 @@ export interface ParamDef {
 }
 export type Params = Record<string, string | number>;
 export interface ReportCtx { db: Db; tenantId: string; today: string; /** null = whole organization */ team: string[] | null; has: (p: string) => boolean;
+  /** Who is asking, for the L4 row filter, and whether they asked for the figures (`?reveal=1`, an export, a scheduled copy). */ viewer: PolicyViewer; reveal: boolean;
   /** Whether a module is usable (cross-module reports leave out the parts that are not). */ usable: (f: string) => boolean }
-export interface ReportResult { columns: Column[]; rows: Row[]; totals: Row | null; notes: string[] }
+export interface ReportResult { columns: Column[]; rows: Row[]; totals: Row | null; notes: string[]; /** People left out because they are above the viewer. */ excluded?: number; /** Whose pay went into the figures shown: for the audit log, never sent to the client. */ subjects?: string[] }
 export interface ReportDef {
   key: string; name: string; description: string;
   category: 'People' | 'Time & leave' | 'Pay & expenses' | 'Training & competency' | 'Across modules';
   feature?: string;
+  /** Carries pay. Masked without reveal, and a scheduled copy is made for each recipient at their own level. */
+  l4?: boolean;
   access: { all: string[]; team?: string[] };
+  /** Columns needing more than the report itself: a stored snapshot shows them only to readers who pass, today. */
+  columnGuards?: Record<string, { permission: string; feature?: string }>;
   params: ParamDef[];
   check?: (p: Params) => string | null;
   run: (c: ReportCtx, p: Params) => Promise<ReportResult>;
@@ -159,7 +166,8 @@ const attrition: ReportDef = {
 const joinersLeavers: ReportDef = {
   key: 'joiners_leavers', name: 'Joiners and leavers', category: 'People',
   description: 'Everyone who joined or left in a period, with department, branch and (for HR) the type of separation.',
-  access: { all: ['employees.read'] },
+  access: { all: ['employees.read'] }, l4: true,
+  columnGuards: { separation: { permission: 'lifecycle.read' } },
   params: [fromDate((t) => monthStart(addDays(monthStart(t), -1))), toDate,
     { key: 'event', label: 'Show', type: 'select', default: () => 'all', options: [{ value: 'all', label: 'Joiners and leavers' }, { value: 'joined', label: 'Joiners' }, { value: 'left', label: 'Leavers' }] }],
   check: dateRange(3660),
@@ -296,11 +304,49 @@ const leaveBalances: ReportDef = {
   },
 };
 
+/** A group this small, with someone hidden, says too much next to a figure known from elsewhere: its amounts are withheld. */
+export const MIN_GROUP_WITH_HIDDEN = 3;
+const PAY_KEYS = ['gross', 'deductions', 'net', 'employerCost'] as const;
+interface PayGroup { grp: string; employees: Set<string>; hidden: Set<string>; lop: number; cents: Record<(typeof PAY_KEYS)[number], number> }
+
+/**
+ * Pay can only be added up here, now that the database holds it sealed. Reads in pages of MAX_ROWS: that cap limits what a report shows,
+ * and applying it to its input would silently understate the totals. People the viewer cannot see count towards `hidden`, never towards a sum.
+ */
+async function sumPay(c: ReportCtx, groupSql: string, joins: string, where: string, args: unknown[]) {
+  const groups = new Map<string, PayGroup>();
+  const n = args.length;
+  for (let after = '00000000-0000-0000-0000-000000000000'; ;) {
+    const rows = (await c.db.query<{ id: string; grp: string; employee_id: string; lop_days: string; data_enc: string; visible: boolean }>(
+      `SELECT pi.id, ${groupSql} AS grp, pi.employee_id, pi.lop_days, CASE WHEN ${l4RowFilter(c.viewer, 'e')} THEN pi.data_enc END AS data_enc, ${l4RowFilter(c.viewer, 'e')} AS visible
+       FROM payroll_items pi JOIN payroll_runs r ON r.tenant_id=pi.tenant_id AND r.id=pi.run_id JOIN employees e ON e.tenant_id=pi.tenant_id AND e.id=pi.employee_id ${joins}
+       WHERE ${where} AND pi.id > $${n + 1} ORDER BY pi.id LIMIT ${MAX_ROWS}`, [...args, after])).rows;
+    for (const r of rows) {
+      const g = groups.get(r.grp) ?? { grp: r.grp, employees: new Set<string>(), hidden: new Set<string>(), lop: 0, cents: { gross: 0, deductions: 0, net: 0, employerCost: 0 } };
+      groups.set(r.grp, g);
+      if (!r.visible) { g.hidden.add(r.employee_id); continue; }
+      g.employees.add(r.employee_id); g.lop += Number(r.lop_days);
+      if (c.reveal) { const d = openItem(r.data_enc); for (const k of PAY_KEYS) g.cents[k] += Math.round(d[k] * 100); }
+    }
+    if (rows.length < MAX_ROWS) break;
+    after = rows[rows.length - 1]!.id;
+  }
+  const hiddenAll = new Set([...groups.values()].flatMap((g) => [...g.hidden]));
+  const withheld = c.reveal ? [...groups.values()].filter((g) => g.hidden.size && g.employees.size < MIN_GROUP_WITH_HIDDEN).map((g) => g.grp) : [];
+  const notes: string[] = [];
+  if (hiddenAll.size) notes.push(`${hiddenAll.size} person(s) above your salary level are left out of these figures.`);
+  if (withheld.length) notes.push(`Amounts withheld for groups too small to show once those people are left out: ${withheld.join(', ')}.`);
+  // Nobody's figure was read in a masked answer, or in a group whose amounts are withheld.
+  const subjects = c.reveal ? [...new Set([...groups.values()].filter((g) => !withheld.includes(g.grp)).flatMap((g) => [...g.employees]))] : [];
+  return { groups, hidden: hiddenAll.size, withheld: new Set(withheld), notes, subjects };
+}
+const money2 = (cents: number) => cents / 100;
+
 const PAY_GROUPS: Record<string, [string, string]> = { period: ['Month', 'r.period'], department: ['Department', DEPT], branch: ['Branch', 'b.name'], legal_entity: ['Legal entity', 'rle.name'] };
 const payrollCost: ReportDef = {
   key: 'payroll_cost', name: 'Payroll cost', category: 'Pay & expenses', feature: 'payroll',
   description: 'Gross, deductions, net pay, employer cost and loss-of-pay days from approved payroll runs, by month, department, branch or legal entity.',
-  access: { all: ['payroll.read'] },
+  access: { all: ['payroll.read'] }, l4: true,
   params: [{ key: 'from', label: 'From month', type: 'month', default: (c) => addMonths(monthOf(c.today), -11) }, { key: 'to', label: 'To month', type: 'month', default: (c) => monthOf(c.today) },
     { key: 'groupBy', label: 'Group by', type: 'select', default: () => 'period', options: Object.entries(PAY_GROUPS).map(([value, [label]]) => ({ value, label })) }],
   check: monthRange(36),
@@ -309,15 +355,20 @@ const payrollCost: ReportDef = {
     const columns: Column[] = [{ key: 'grp', label, type: 'text' }, { key: 'employees', label: 'Employees', type: 'int' }, { key: 'gross', label: 'Gross', type: 'money' },
       { key: 'deductions', label: 'Deductions', type: 'money' }, { key: 'net', label: 'Net pay', type: 'money' }, { key: 'employer_cost', label: 'Employer cost', type: 'money' },
       { key: 'lop_days', label: 'Loss-of-pay days', type: 'number' }];
-    const raw = (await c.db.query(`SELECT ${g} AS grp, grouping(${g}) AS is_total, count(DISTINCT pi.employee_id)::int AS employees, sum(pi.gross) AS gross,
-        sum(pi.deductions) AS deductions, sum(pi.net) AS net, sum(pi.employer_cost) AS employer_cost, sum(pi.lop_days) AS lop_days
-      FROM payroll_items pi JOIN payroll_runs r ON r.tenant_id=pi.tenant_id AND r.id=pi.run_id
-      JOIN legal_entities rle ON rle.tenant_id=r.tenant_id AND rle.id=r.legal_entity_id
-      JOIN employees e ON e.tenant_id=pi.tenant_id AND e.id=pi.employee_id
-      LEFT JOIN departments d ON d.tenant_id=e.tenant_id AND d.id=e.department_id JOIN branches b ON b.tenant_id=e.tenant_id AND b.id=e.branch_id
-      WHERE pi.tenant_id=$1 AND r.status IN ('approved','finalized','paid') AND r.period BETWEEN $2 AND $3
-      GROUP BY GROUPING SETS ((${g}), ()) ORDER BY is_total, grp`, [c.tenantId, p.from, p.to])).rows;
-    return { columns, ...shape(columns, raw), notes: ['Approved, finalized and paid runs, including full and final settlements. Department and branch are each person’s current ones.'] };
+    const { groups, hidden, withheld, notes, subjects } = await sumPay(c, g, `JOIN legal_entities rle ON rle.tenant_id=r.tenant_id AND rle.id=r.legal_entity_id
+      LEFT JOIN departments d ON d.tenant_id=e.tenant_id AND d.id=e.department_id JOIN branches b ON b.tenant_id=e.tenant_id AND b.id=e.branch_id`,
+      `pi.tenant_id=$1 AND r.status IN ('approved','finalized','paid') AND r.period BETWEEN $2 AND $3`, [c.tenantId, p.from, p.to]);
+    const amounts = ['gross', 'deductions', 'net', 'employer_cost'];
+    const list = [...groups.values()].sort((a, b) => a.grp.localeCompare(b.grp));
+    const everyone = new Set(list.filter((x) => !withheld.has(x.grp)).flatMap((x) => [...x.employees]));
+    const sum = (k: (typeof PAY_KEYS)[number]) => list.filter((x) => !withheld.has(x.grp)).reduce((t, x) => t + x.cents[k], 0);
+    const row = (grp: unknown, employees: number, lop: number, v: { gross: number; deductions: number; net: number; employerCost: number } | null): Row =>
+      ({ grp, employees, gross: v?.gross ?? null, deductions: v?.deductions ?? null, net: v?.net ?? null, employer_cost: v?.employerCost ?? null, lop_days: lop, ...(v ? {} : { masked: true, maskedFields: amounts }) });
+    const cents = (x: PayGroup) => ({ gross: money2(x.cents.gross), deductions: money2(x.cents.deductions), net: money2(x.cents.net), employerCost: money2(x.cents.employerCost) });
+    const rows = list.filter((x) => x.employees.size).map((x) => row(x.grp, x.employees.size, x.lop, c.reveal && !withheld.has(x.grp) ? cents(x) : null));
+    const totals = list.length ? row(null, everyone.size, list.filter((x) => !withheld.has(x.grp)).reduce((t, x) => t + x.lop, 0),
+      c.reveal ? { gross: money2(sum('gross')), deductions: money2(sum('deductions')), net: money2(sum('net')), employerCost: money2(sum('employerCost')) } : null) : null;
+    return { columns, rows, totals, excluded: hidden, subjects, notes: [...notes, 'Approved, finalized and paid runs, including full and final settlements. Department and branch are each person’s current ones.'] };
   },
 };
 
@@ -405,7 +456,10 @@ const authorizationReviews: ReportDef = {
 const departmentOverview: ReportDef = {
   key: 'department_overview', name: 'Department overview', category: 'Across modules', feature: 'reports.advanced',
   description: 'Headcount, joiners and leavers, attendance, leave, overtime, expenses and payroll cost per department, for one period.',
-  access: { all: ['employees.read'] },
+  access: { all: ['employees.read'] }, l4: true,
+  columnGuards: { attendance_pct: { permission: 'attendance.read', feature: 'attendance' }, leave_days: { permission: 'leave.read', feature: 'leave' },
+    overtime_hours: { permission: 'overtime.read', feature: 'overtime' }, expenses: { permission: 'expenses.read', feature: 'expenses' },
+    payroll_gross: { permission: 'payroll.read', feature: 'payroll' }, employer_cost: { permission: 'payroll.read', feature: 'payroll' } },
   params: [fromDate(monthStart), toDate],
   check: dateRange(366),
   async run(c, p) {
@@ -435,18 +489,30 @@ const departmentOverview: ReportDef = {
       { on: c.usable('expenses') && c.has('expenses.read'), cols: [{ key: 'expenses', label: 'Expenses approved', type: 'money' }], keys: ['expenses'],
         sql: `SELECT ${DEPT} AS department, sum(x.total) AS expenses FROM expense_claims x JOIN employees e ON e.tenant_id=x.tenant_id AND e.id=x.employee_id ${EMP_JOINS}
           WHERE x.tenant_id=$1 AND x.status IN ('approved','paid') AND x.approved_at::date BETWEEN $2 AND $3 GROUP BY 1` },
-      { on: c.usable('payroll') && c.has('payroll.read'), cols: [{ key: 'payroll_gross', label: 'Payroll gross', type: 'money' }, { key: 'employer_cost', label: 'Employer cost', type: 'money' }],
-        keys: ['payroll_gross', 'employer_cost'],
-        sql: `SELECT ${DEPT} AS department, sum(pi.gross) AS payroll_gross, sum(pi.employer_cost) AS employer_cost
-          FROM payroll_items pi JOIN payroll_runs r ON r.tenant_id=pi.tenant_id AND r.id=pi.run_id JOIN employees e ON e.tenant_id=pi.tenant_id AND e.id=pi.employee_id ${EMP_JOINS}
-          WHERE pi.tenant_id=$1 AND r.status IN ('finalized','paid') AND r.period BETWEEN to_char($2::date,'YYYY-MM') AND to_char($3::date,'YYYY-MM') GROUP BY 1` },
     ];
     for (const b of blocks) {
       if (!b.on) continue;
       columns.push(...b.cols);
       merge((await c.db.query(b.sql, [c.tenantId, from, to])).rows, b.keys);
     }
-    const hidden = blocks.filter((b) => !b.on).flatMap((b) => b.cols.map((x) => x.label));
+    const payOn = c.usable('payroll') && c.has('payroll.read');
+    const payCols: Column[] = [{ key: 'payroll_gross', label: 'Payroll gross', type: 'money' }, { key: 'employer_cost', label: 'Employer cost', type: 'money' }];
+    let excluded = 0;
+    let subjects: string[] = [];
+    if (payOn) {
+      columns.push(...payCols);
+      const pay = await sumPay(c, DEPT, EMP_JOINS, `pi.tenant_id=$1 AND r.status IN ('finalized','paid') AND r.period BETWEEN to_char($2::date,'YYYY-MM') AND to_char($3::date,'YYYY-MM')`, [c.tenantId, from, to]);
+      excluded = pay.hidden;
+      subjects = pay.subjects;
+      notes.push(...pay.notes);
+      for (const g of pay.groups.values()) {
+        if (!g.employees.size) continue;
+        const r = row(g.grp);
+        if (c.reveal && !pay.withheld.has(g.grp)) { r.payroll_gross = money2(g.cents.gross); r.employer_cost = money2(g.cents.employerCost); }
+        else { r.payroll_gross = null; r.employer_cost = null; r.masked = true; r.maskedFields = ['payroll_gross', 'employer_cost']; }
+      }
+    }
+    const hidden = [...blocks.filter((b) => !b.on).flatMap((b) => b.cols.map((x) => x.label)), ...(payOn ? [] : payCols.map((x) => x.label))];
     if (hidden.length) notes.push(`Not shown (module not in use, or not visible to you): ${hidden.join(', ')}.`);
     notes.push('Departments are the employees\' current departments. Payroll covers finalized runs for the months in the period.');
     const out = [...rows.values()].filter((r) => Object.keys(r).length > 1).sort((a, b) => String(a.department).localeCompare(String(b.department)));
@@ -456,7 +522,8 @@ const departmentOverview: ReportDef = {
     }
     const totals: Row = { department: 'All departments' };
     for (const col of columns.slice(1)) if (col.type !== 'percent') totals[col.key] = sum(col.key);
-    return { columns, rows: out, totals, notes };
+    if (payOn && !c.reveal) { totals.payroll_gross = null; totals.employer_cost = null; totals.masked = true; totals.maskedFields = ['payroll_gross', 'employer_cost']; }
+    return { columns, rows: out, totals, notes, excluded, subjects };
   },
 };
 

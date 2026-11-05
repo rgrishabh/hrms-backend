@@ -1,18 +1,26 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import type { FastifyInstance } from 'fastify';
-import { makeApp, createTenant, Client, ownerQuery, type TenantFixture } from './helpers.js';
+import { makeApp, createTenant, Client, ownerQuery, flags, type TenantFixture } from './helpers.js';
 import { addDays, localDate, weekday } from '../src/modules/attendance/time.js';
 
 let app: FastifyInstance;
-beforeAll(async () => { app = await makeApp(); });
-afterAll(async () => { await app.close(); });
+beforeAll(async () => {
+  app = await makeApp({ ...flags('default,attendance.mobile,attendance.biometric,attendance.geofence') });
+});
+afterAll(async () => {
+  await app.close();
+});
 
 const TZ = 'Asia/Kolkata';
 const today = () => localDate(new Date(), TZ);
 /** An ISO timestamp with +05:30 offset for `date` at `hh:mm` IST. */
 const ist = (date: string, hhmm: string) => `${date}T${hhmm}:00+05:30`;
 /** Most recent Mon–Sat date at least `minAgo` days back (default weekly off is Sunday). */
-const workday = (minAgo: number) => { let x = addDays(today(), -minAgo); while (weekday(x) === 0) x = addDays(x, -1); return x; };
+const workday = (minAgo: number) => {
+  let x = addDays(today(), -minAgo);
+  while (weekday(x) === 0) x = addDays(x, -1);
+  return x;
+};
 
 describe('web punches', () => {
   it('is idempotent per client key and uses server time', async () => {
@@ -41,29 +49,37 @@ describe('web punches', () => {
 });
 
 describe('biometric ingestion', () => {
-  let T: TenantFixture; let key: string; let itc: Client;
+  let T: TenantFixture;
+  let key: string;
+  let itc: Client;
   beforeAll(async () => {
     T = await createTenant(); // biometric is enabled in the test deployment's ENABLED_MODULES
     itc = await Client.login(app, T.host, T.users.it!.email);
     key = (await itc.post('/api/v1/attendance/devices', { branchId: T.branchId, serialNumber: 'ZK-001', name: 'Main gate', adapterKey: 'generic_push_v1' })).json().apiKey;
     await itc.put('/api/v1/attendance/device-mappings/1001', { employeeId: T.users.employee!.employeeId });
   });
-  const push = (k: string, body: unknown) => app.inject({ method: 'POST', url: '/api/v1/devices/events', headers: { host: 'any.host', 'x-device-key': k }, payload: body as never });
+  const push = (k: string, body: unknown) =>
+    app.inject({ method: 'POST', url: '/api/v1/devices/events', headers: { host: 'any.host', 'x-device-key': k }, payload: body as never });
 
   it('rejects bad keys', async () => {
     expect((await push('dev_x.y', { deviceTime: new Date().toISOString(), events: [] })).statusCode).toBe(401);
-    expect((await push(key.replace(/.$/, 'Z'), { deviceTime: new Date().toISOString(), events: [{ eventId: '1', deviceUserId: '1', timestamp: new Date().toISOString() }] })).statusCode).toBe(401);
+    expect(
+      (await push(key.replace(/.$/, 'Z'), { deviceTime: new Date().toISOString(), events: [{ eventId: '1', deviceUserId: '1', timestamp: new Date().toISOString() }] })).statusCode,
+    ).toBe(401);
   });
 
   it('corrects clock drift, deduplicates retries, queues unmapped users and calculates the day', async () => {
     const d = workday(1);
     // Device clock runs 10 minutes fast: it reports 09:35 for a 09:25 real punch.
     const deviceNow = new Date(Date.now() + 10 * 60e3).toISOString();
-    const batch = { deviceTime: deviceNow, events: [
-      { eventId: 'e1', deviceUserId: '1001', timestamp: `${d}T09:35:00`, direction: 'in' },
-      { eventId: 'e2', deviceUserId: '1001', timestamp: `${d}T18:15:00`, direction: 'out' },
-      { eventId: 'e3', deviceUserId: '9999', timestamp: `${d}T09:40:00`, direction: 'in' },
-    ] };
+    const batch = {
+      deviceTime: deviceNow,
+      events: [
+        { eventId: 'e1', deviceUserId: '1001', timestamp: `${d}T09:35:00`, direction: 'in' },
+        { eventId: 'e2', deviceUserId: '1001', timestamp: `${d}T18:15:00`, direction: 'out' },
+        { eventId: 'e3', deviceUserId: '9999', timestamp: `${d}T09:40:00`, direction: 'in' },
+      ],
+    };
     const r1 = (await push(key, batch)).json();
     expect(r1).toMatchObject({ accepted: 2, duplicates: 0, unmapped: 1, rejected: 0 });
     expect(Math.abs(r1.clockDriftSeconds - 600)).toBeLessThanOrEqual(2);
@@ -92,12 +108,16 @@ describe('biometric ingestion', () => {
     expect((await push(key, { deviceTime: new Date().toISOString(), events: [{ eventId: 'f1', deviceUserId: '1001', timestamp: future }] })).json().rejected).toBe(1);
     const dev = (await itc.get('/api/v1/attendance/devices')).json().items[0];
     await itc.patch(`/api/v1/attendance/devices/${dev.id}`, { status: 'disabled' });
-    expect((await push(key, { deviceTime: new Date().toISOString(), events: [{ eventId: 'f2', deviceUserId: '1001', timestamp: new Date().toISOString() }] })).statusCode).toBe(403);
+    expect((await push(key, { deviceTime: new Date().toISOString(), events: [{ eventId: 'f2', deviceUserId: '1001', timestamp: new Date().toISOString() }] })).statusCode).toBe(
+      403,
+    );
   });
 });
 
 describe('regularization approval workflow and payroll lock', () => {
-  let T: TenantFixture; let emp: Client; let mgr: Client;
+  let T: TenantFixture;
+  let emp: Client;
+  let mgr: Client;
   const d = () => workday(2);
   beforeAll(async () => {
     T = await createTenant();
@@ -106,7 +126,12 @@ describe('regularization approval workflow and payroll lock', () => {
   });
 
   it('routes to the reporting manager; requester cannot self-approve; approval creates new events and recalculates', async () => {
-    const r = await emp.post('/api/v1/attendance/regularizations', { workDate: d(), requestedIn: ist(d(), '09:30'), requestedOut: ist(d(), '18:00'), reason: 'Biometric device was offline' });
+    const r = await emp.post('/api/v1/attendance/regularizations', {
+      workDate: d(),
+      requestedIn: ist(d(), '09:30'),
+      requestedOut: ist(d(), '18:00'),
+      reason: 'Biometric device was offline',
+    });
     expect(r.statusCode).toBe(201);
     const reqId = r.json().approvalRequestId;
     expect((await emp.get('/api/v1/approvals/inbox')).json().items).toHaveLength(0);
@@ -155,11 +180,17 @@ describe('regularization approval workflow and payroll lock', () => {
     const lock = await payroll.post('/api/v1/attendance/locks', { periodStart: day, periodEnd: d() });
     expect(lock.statusCode).toBe(201);
     expect((await emp.post('/api/v1/attendance/regularizations', { workDate: d(), requestedIn: ist(d(), '10:00'), reason: 'After lock' })).statusCode).toBe(409);
-    const before = await ownerQuery<{ status: string; calculated_at: Date }>(`SELECT status, calculated_at FROM attendance_daily WHERE tenant_id=$1 AND employee_id=$2 AND work_date=$3`, [T.id, T.users.employee!.employeeId, d()]);
+    const before = await ownerQuery<{ status: string; calculated_at: Date }>(
+      `SELECT status, calculated_at FROM attendance_daily WHERE tenant_id=$1 AND employee_id=$2 AND work_date=$3`,
+      [T.id, T.users.employee!.employeeId, d()],
+    );
     const hr = await Client.login(app, T.host, T.users.hr!.email);
     const re = (await hr.post('/api/v1/attendance/recalculate', { from: day, to: d() })).json();
     expect(re.lockedDaysSkipped).toBeGreaterThan(0);
-    const after = await ownerQuery<{ status: string; calculated_at: Date }>(`SELECT status, calculated_at FROM attendance_daily WHERE tenant_id=$1 AND employee_id=$2 AND work_date=$3`, [T.id, T.users.employee!.employeeId, d()]);
+    const after = await ownerQuery<{ status: string; calculated_at: Date }>(
+      `SELECT status, calculated_at FROM attendance_daily WHERE tenant_id=$1 AND employee_id=$2 AND work_date=$3`,
+      [T.id, T.users.employee!.employeeId, d()],
+    );
     expect(after[0]).toEqual(before[0]);
     expect((await payroll.post('/api/v1/attendance/locks', { periodStart: day, periodEnd: day })).statusCode).toBe(409);
   });
@@ -175,12 +206,23 @@ describe('shift assignment', () => {
     const T = await createTenant();
     const hr = await Client.login(app, T.host, T.users.hr!.email);
     const from = addDays(today(), -5);
-    expect((await hr.post('/api/v1/attendance/shift-assignments', { employeeIds: [T.users.employee!.employeeId], shiftId: T.nightShiftId, effectiveFrom: from })).statusCode).toBe(200);
-    const rows = await ownerQuery<{ effective_from: string; effective_to: string | null }>(`SELECT effective_from, effective_to FROM shift_assignments WHERE employee_id=$1 ORDER BY effective_from`, [T.users.employee!.employeeId]);
-    expect(rows).toEqual([{ effective_from: '2024-01-01', effective_to: addDays(from, -1) }, { effective_from: from, effective_to: null }]);
+    expect((await hr.post('/api/v1/attendance/shift-assignments', { employeeIds: [T.users.employee!.employeeId], shiftId: T.nightShiftId, effectiveFrom: from })).statusCode).toBe(
+      200,
+    );
+    const rows = await ownerQuery<{ effective_from: string; effective_to: string | null }>(
+      `SELECT effective_from, effective_to FROM shift_assignments WHERE employee_id=$1 ORDER BY effective_from`,
+      [T.users.employee!.employeeId],
+    );
+    expect(rows).toEqual([
+      { effective_from: '2024-01-01', effective_to: addDays(from, -1) },
+      { effective_from: from, effective_to: null },
+    ]);
     const r = (await hr.post('/api/v1/attendance/recalculate', { from, to: from, employeeId: T.users.employee!.employeeId })).json();
     expect(r.daysCalculated).toBe(1);
-    const [day] = await ownerQuery<{ shift: string }>(`SELECT s.code AS shift FROM attendance_daily d JOIN shifts s ON s.id=d.shift_id WHERE d.employee_id=$1 AND d.work_date=$2`, [T.users.employee!.employeeId, from]);
+    const [day] = await ownerQuery<{ shift: string }>(`SELECT s.code AS shift FROM attendance_daily d JOIN shifts s ON s.id=d.shift_id WHERE d.employee_id=$1 AND d.work_date=$2`, [
+      T.users.employee!.employeeId,
+      from,
+    ]);
     expect(day!.shift).toBe('NIGHT');
   });
 });

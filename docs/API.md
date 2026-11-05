@@ -1,19 +1,28 @@
 # API reference (v1)
 
-Base path `/api/v1`. JSON in and out. Each installation serves one organization; requests must use one of its configured hostnames (`APP_URL`/`APP_EXTRA_DOMAINS`), otherwise `404 unknown_tenant`.
+Base path `/api/v1`. JSON in and out. Each installation serves one organization; requests must use one of its configured hostnames (`BRAND_DOMAIN`/`BRAND_EXTRA_DOMAINS`), otherwise `404 unknown_tenant`.
 
 **Auth:** `POST /auth/login` sets an httpOnly session cookie and returns `csrfToken`. Every `POST/PUT/PATCH/DELETE` made with the cookie must send `x-csrf-token`. Device ingestion uses `X-Device-Key` instead.
 
-**Errors:** `{ "error": { "code": "...", "message": "...", "details": ... } }`. Codes include `validation_failed` (400, details = `[{path, message}]`), `setup_link_invalid` (400), `unauthorized` (401), `forbidden` (403), `feature_unavailable` (403), `password_change_required` (403), `csrf_failed` (403), `not_found` / `unknown_tenant` (404), `conflict` / `duplicate` (409), `rate_limited` (429).
+**Lists:** `?page=&pageSize=`, answered as `{ items, page, pageSize, total }`. Default 25, cap 100 on most. Attendance locks, shifts, device mappings, unmapped events, pay components, salaries, runs, `/approvals/mine`, cases and jobs: default 100, cap 500. The inbox and a run's items: default 200, cap 500. Over the cap is 400. Reports are capped at 5,000 rows with `truncated`.
+
+**Errors:** RFC 7807, `application/problem+json`, from one handler, including 404 and rate limits:
+
+```json
+{ "type": "urn:hrms:problem:validation_failed", "title": "Bad request", "status": 400, "detail": "Some fields are invalid",
+  "instance": "urn:uuid:<request id>", "code": "validation_failed", "errors": [{ "path": "employee.firstName", "message": "Required" }] }
+```
+
+`code` is what a client branches on. `errors` is always present, empty when no field is at fault. Some codes add members beside these, such as `duplicates` and `confirmable`, `problems` on `weak_password`, `hiddenSubjects` on `requires_higher_level`, `feature` and `reason` on `feature_not_configured`. No stack trace, SQL, constraint name, file path or quoted request body appears in any of it. Codes include `validation_failed` (400), `setup_link_invalid` (400), `unauthorized` (401), `forbidden` (403), `feature_not_configured` (409: the module is on but needs setting up; a module that is off has no routes and answers 404), `password_change_required` (403), `csrf_failed` (403), `not_found` / `unknown_tenant` (404), `conflict` / `duplicate` (409), `payload_too_large` (413), `unsupported_media_type` (415), `rate_limited` (429), `internal` (500).
 
 **Pagination:** `?page=1&pageSize=25` (max 100) → `{ items, page, pageSize, total }`.
 
 | Method & path | Permission | Purpose |
 |---|---|---|
 | **Health** | | |
-| GET `/health/live`, `/health/ready` | none | Liveness / readiness (DB reachable, migrations current, installation bootstrapped) |
+| GET `/health/live`, `/health/ready` | none | Liveness, with `version`, the image tag / readiness (DB reachable, migrations current, installation bootstrapped) |
 | **Auth & self** | | |
-| GET `/public/config` | none | Runtime branding, organization identity and enabled modules (no secrets) |
+| GET `/config/public` | none | `{product, brand, features, mode, mfa, auth}`: brand, every `FEATURE_*` flag (off is `false`), mode, MFA and whether reset by email can work. No secrets |
 | POST `/auth/setup` | one-time token | Complete an administrator setup link `{token, newPassword}` |
 | POST `/auth/login` · `/auth/logout` | none / session | Sign in / out |
 | GET `/auth/me` | session | User, roles, permissions, `capabilities` (module → usable), preferences, `passwordChangeRequired`, csrf |
@@ -23,7 +32,7 @@ Base path `/api/v1`. JSON in and out. Each installation serves one organization;
 | GET `/tenant/settings?branchId=` | `settings.read` | Effective values with source, default, inherited values, version |
 | PUT/DELETE `/tenant/settings/:key` | per-setting edit permission | Set (`{value, scope, branchId, expectedVersion}`) / reset to inherited |
 | GET `/tenant/installation` | settings.read | Read-only: branding, organization, domains, module states (supported/enabled/configured/usable + blockers) |
-| GET `/tenant/roles` | users.manage or settings.read | System + organization roles (each with `grantable` for the caller, `users` count; organization roles with `mfaRequired`), permission catalogue (`privileged` = needs 2FA), `canManage`, `maxPermissions` (null for an administrator) |
+| GET `/tenant/roles` | users.manage or settings.read | System + organization roles (each with `grantable` for the caller, `users` count), permission catalogue (`privileged` = needs 2FA), `canManage`, `maxPermissions` (null for an administrator) |
 | POST `/tenant/roles`, PATCH / DELETE `/tenant/roles/:key` | `users.manage` | `{name, description?, permissions[]}`; key `custom:<slug>`. Only permissions the caller holds (administrator: any). Changing permissions signs holders out (`holdersSignedOut`). Delete refused while anyone holds it. Built-in roles cannot be changed |
 | GET/POST `/tenant/users`, PATCH `/tenant/users/:id` | `users.manage` | Create, roles, disable, unlock |
 | GET `/tenant/audit` | `audit.read` | Filter by category/target/action |
@@ -37,7 +46,18 @@ Base path `/api/v1`. JSON in and out. Each installation serves one organization;
 | PATCH `/employees/:id` | employees.manage | `{changes, expectedVersion}` |
 | POST `/employees/import` | employees.manage | `{dryRun, rows[]}` (≤ 2000), all-or-nothing |
 | GET `/employees/:id/history` | employees.read | Field-level change history |
-| GET/PUT `/employees/:id/bank-account` | `employees.bank.read` (or self) / `employees.bank.manage` | Masked view (audited) / encrypted update |
+| GET/PUT `/employees/:id/bank-account` | `employees.bank.read` (or self) / `employees.bank.manage` | Masked view (audited) / proposes an encrypted change: 202, applied when someone with `employees.bank.approve` approves it. Not your own account |
+| GET `/employees/:id/bank-account/pending` | `employees.bank.read` or `employees.bank.approve` | The waiting change, masked (audited) |
+| POST `/payroll/runs/:id/reopen` | `payroll.manage` | Approved run back to draft |
+| POST `/payroll/runs/:id/items/:employeeId/release` | `payroll.approve` | Release held pay after finalize |
+| GET `/payroll/runs/:id/bank-released.csv` | `payroll.read` | Held pay released after finalize |
+| GET `/payroll/payslips/:id/payslip.pdf` | Own (`payslips.self`, final and not held), or a pay permission above them | Branded PDF, `payslip-<yyyy-mm>.pdf`; 404 otherwise, or with `payroll.payslips` off; audited `l4.export`; limited as an export |
+| GET `/lifecycle/employees/:id/letters/appointment.pdf` | `employees.manage`, above them | With `core.onboarding`. `?includePay=1` adds the annual CTC only for a pay permission above them (then `l4.export`); `x-pay-included` says whether it did. Audited `lifecycle.letter_issued` |
+| GET `/lifecycle/employees/:id/letters/experience.pdf` · `relieving.pdf` | `employees.manage` above them, or the person (`lifecycle.self`) | With `core.offboarding`. 409 before the last working day of an approved separation, and for a relieving letter before it is completed. Audited `lifecycle.letter_issued` |
+| GET `/employees/:id/id-card.pdf` · `/employees/:id/business-card.pdf` | `employees.manage` | One person's cards, audited as `employee.cards_printed`. The ID card has front and back side by side at bank-card size; the business card is a page of 10 fronts and a page of backs, to print double-sided on the long edge. Settings `cards.id_back_*` set the heading, terms, return text and whether branch and joining date show. The phone prints only if this reader may see it (L3). 409 for someone who has left |
+| GET `/employees/cards/id-cards.pdf` · `/employees/cards/business-cards.pdf` | `employees.manage` | Everyone active or on notice, up to 300 a file, `?branchId=` and `?departmentId=` to narrow. 404 if nobody matches, 400 over the limit |
+| PUT `/employees/:id/photo` | `employees.manage` | Multipart, JPEG or PNG up to 2 MB, for the ID card. Filed as a document in the `PHOTO` category, created on first use; a new photo archives the last |
+| POST `/approvals/:id/reassign` | `approvals.escalations`, or `users.manage` when nobody can act | Hand the active step to a named person |
 | GET `/employees/:id/profile` | profile.self (own) / employees.read | Personal details `{sections: {contacts, addresses, nominees, education, experience}, pending, missing, edit}`; see EMPLOYEE_RECORD.md |
 | PUT `/employees/:id/profile/:section` | employees.manage / profile.self (own) | Replace a section `{items, note?}`: applied (200), or for the employee's own nominees, education and employment history a change for HR approval (202 `{changeId, approvalId}`) |
 | GET `/employees/profile-changes/:id` · POST `/employees/profile-changes/:id/withdraw` | employee / profile.approve / employees.read · employee | Proposed change with the section as it is now · withdraw while pending |
@@ -89,14 +109,11 @@ Base path `/api/v1`. JSON in and out. Each installation serves one organization;
 | GET `/accounting/sources` | accounting.export | Finalized/paid runs and approved/paid batches with their last export |
 | GET `/accounting/payroll-runs/:id/journal` · `/reimbursement-batches/:id/journal` | accounting.export | Voucher preview with `missing` heads and `balanced` |
 | GET `/accounting/payroll-runs/:id/export?format=csv\|tally_xml` · `/reimbursement-batches/:id/export` | accounting.export | Download (refused while heads are unmapped); logged and audited |
-| **SMS** (module `notifications.sms`; see SMS.md) | | |
-| GET `/sms/templates` · PUT / DELETE `/sms/templates/:kind` | settings.manage | DLT templates per notification kind `{dltTemplateId, text, enabled}` |
-| GET `/sms/outbox?status` · POST `/sms/test {phone, kind}` | settings.manage | Recent SMS (numbers masked); send a template now to check the provider |
 | **Advanced reporting** (module `reports.advanced`; see REPORTS.md) | | |
 | GET / POST `/reports/saved` · DELETE `/reports/saved/:id` | can run the report | My saved reports `{reportKey, name, params}` |
 | GET `/reports/saved/:id/recipients` | owner | Who may receive it (organization-wide access) |
 | PUT / DELETE `/reports/saved/:id/schedule` | owner | `{frequency, weekday?, dayOfMonth?, period, recipientIds, enabled}`; recipients need organization-wide access |
-| GET `/reports/snapshots` · `/reports/snapshots/:id` · `/reports/snapshots/:id/export.csv` / `.xlsx` | recipient with access | Scheduled reports sent to me |
+| GET `/reports/snapshots` · `/reports/snapshots/:id` · `/reports/snapshots/:id/export.csv` / `.xlsx` / `.pdf` | recipient with access | Scheduled reports sent to me |
 | **Overtime** (module `overtime`; see OVERTIME.md) | | |
 | GET `/overtime/eligible` | overtime.self | My days with recorded overtime still to claim, and the payout options |
 | POST `/overtime/claims` | overtime.self | Claim `{workDate, minutes, payout, reason}` → manager, then HR approval |
@@ -112,4 +129,4 @@ Base path `/api/v1`. JSON in and out. Each installation serves one organization;
 | **Reports** (see REPORTS.md) | | |
 | GET `/reports` | session | Reports the caller may run (permission + module), with `scope` (`all` or `team`) and parameter definitions with defaults |
 | GET `/reports/:key?…params` | the report's permissions | `{columns, rows, totals, notes, scope, params, truncated}`; ≤ 5000 rows |
-| GET `/reports/:key/export.csv?…params` · `/reports/:key/export.xlsx?…params` | the report's permissions | Same data as CSV (UTF-8 BOM, formulas neutralized) or Excel (typed columns, totals; text never a formula); `no-store`; audited `reports.exported` with the format |
+| GET `/reports/:key/export.csv?…params` · `/reports/:key/export.xlsx?…params` · `/reports/:key/export.pdf?…params` | the report's permissions | Same data as CSV (UTF-8 BOM, formulas neutralized), Excel (typed columns, totals; text never a formula) or PDF (landscape, header on every page, long text cut with a note); `no-store`; audited `reports.exported` with the format |

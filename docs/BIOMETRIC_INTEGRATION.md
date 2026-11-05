@@ -39,7 +39,8 @@ Response `200`:
 |---|---|
 | 401 | Missing or invalid key |
 | 403 `device_inactive` | Device disabled or replaced |
-| 403 `feature_unavailable` | Tenant module not entitled, enabled or configured. Retry later; do not drop events |
+| 404 | `FEATURE_ATTENDANCE_BIOMETRIC` is off. Retry later; do not drop events |
+| 409 `feature_not_configured` | The feature is on but not set up yet. Retry later; do not drop events |
 | 400 | Payload invalid (whole batch rejected) |
 | 429 | More than 120 requests/minute from this IP |
 
@@ -53,4 +54,4 @@ Response `200`:
 
 ## Bridge guidance
 
-Poll the device or vendor cloud, keep a local cursor of the last pushed event ID, push in batches of ≤ 500, and retry with exponential backoff on network errors, 429 and 5xx. Never retry 400 without fixing the payload. Keep events queued while the API returns 403 `feature_unavailable`.
+Poll the device or vendor cloud, keep a local cursor of the last pushed event ID, push in batches of ≤ 500, and retry with exponential backoff on network errors, 429 and 5xx. Never retry 400 without fixing the payload. Keep events queued while the API returns 403 404 or `feature_not_configured`.

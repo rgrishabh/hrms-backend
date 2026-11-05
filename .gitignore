@@ -7,3 +7,7 @@ coverage/
 !.env.example
 *.log
 .DS_Store
+/reports/
+.stryker-tmp/
+load/.sessions.json
+load/.result-*.json

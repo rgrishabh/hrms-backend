@@ -2,6 +2,7 @@ name: Release
 # Push to main: release-please opens/updates the release PR (Conventional Commits).
 # Merging it tags vX.Y.Z; this workflow then publishes :vX.Y.Z and :latest (signed) and
 # asks hrms-deployment to open the production version PR. A manually pushed v* tag does the same.
+# Stay on _app-publish.yml@main: deploy-prod and rollback-prod verify the cosign identity of exactly that workflow and ref.
 on:
   push:
     branches: [main]

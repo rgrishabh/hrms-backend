@@ -1,19 +1,26 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import type { FastifyInstance } from 'fastify';
-import { makeApp, createTenant, Client, ownerQuery, PASSWORD, type TenantFixture } from './helpers.js';
+import { problem, makeApp, createTenant, Client, ownerQuery, PASSWORD, type TenantFixture } from './helpers.js';
 
 let app: FastifyInstance;
-let A: TenantFixture; let B: TenantFixture;
+let A: TenantFixture;
+let B: TenantFixture;
 
-beforeAll(async () => { app = await makeApp(); A = await createTenant(); B = await createTenant(); });
-afterAll(async () => { await app.close(); });
+beforeAll(async () => {
+  app = await makeApp();
+  A = await createTenant();
+  B = await createTenant();
+});
+afterAll(async () => {
+  await app.close();
+});
 
 describe('tenant resolution', () => {
   it('rejects requests for unknown hosts', async () => {
     const c = new Client(app, 'evil.example.com');
     const r = await c.post('/api/v1/auth/login', { email: A.users.admin!.email, password: PASSWORD });
     expect(r.statusCode).toBe(404);
-    expect(r.json().error.code).toBe('unknown_tenant');
+    expect(problem(r).code).toBe('unknown_tenant');
   });
 
   it('does not resolve a registered but unverified/inactive domain', async () => {
@@ -21,7 +28,6 @@ describe('tenant resolution', () => {
     const r = await new Client(app, `pending-${A.host}`).get('/api/v1/public/config');
     expect(r.statusCode).toBe(404);
   });
-
 
   it('rejects a malformed Host header', async () => {
     const r = await app.inject({ method: 'GET', url: '/api/v1/public/config', headers: { host: 'bad host!!' } });
@@ -38,7 +44,8 @@ describe('cross-tenant isolation', () => {
   it("rejects tenant A's session cookie replayed against tenant B's host", async () => {
     const a = await Client.login(app, A.host, A.users.hr!.email);
     const replay = new Client(app, B.host);
-    replay.cookie = a.cookie; replay.csrf = a.csrf;
+    replay.cookie = a.cookie;
+    replay.csrf = a.csrf;
     expect((await replay.get('/api/v1/employees')).statusCode).toBe(401);
     expect((await replay.get('/api/v1/auth/me')).statusCode).toBe(401);
   });
@@ -54,7 +61,9 @@ describe('cross-tenant isolation', () => {
 
   it("cannot reference another tenant's branch when creating an employee", async () => {
     const hrA = await Client.login(app, A.host, A.users.hr!.email);
-    const r = await hrA.post('/api/v1/employees', { employee: { employeeCode: 'X1', firstName: 'Cross', legalEntityId: B.legalEntityId, branchId: B.branchId, dateOfJoining: '2025-01-01' } });
+    const r = await hrA.post('/api/v1/employees', {
+      employee: { employeeCode: 'X1', firstName: 'Cross', legalEntityId: B.legalEntityId, branchId: B.branchId, dateOfJoining: '2025-01-01' },
+    });
     expect(r.statusCode).toBeGreaterThanOrEqual(400);
     expect(r.statusCode).toBeLessThan(500);
   });
@@ -65,8 +74,6 @@ describe('cross-tenant isolation', () => {
     const tenantIds = await ownerQuery<{ tenant_id: string }>(`SELECT DISTINCT tenant_id FROM audit_logs WHERE id = ANY($1)`, [r.items.map((x: { id: string }) => x.id)]);
     expect(tenantIds.every((t) => t.tenant_id === B.id)).toBe(true);
   });
-
-
 });
 
 describe('deployment-controlled configuration cannot be changed in the app', () => {
@@ -90,31 +97,31 @@ describe('deployment-controlled configuration cannot be changed in the app', () 
 describe('authentication & session security', () => {
   it('requires the CSRF token on state-changing requests', async () => {
     const c = await Client.login(app, A.host, A.users.admin!.email);
-    const csrf = c.csrf; c.csrf = '';
+    const csrf = c.csrf;
+    c.csrf = '';
     const r = await c.put('/api/v1/tenant/settings/general.date_format', { value: 'YYYY-MM-DD' });
     expect(r.statusCode).toBe(403);
-    expect(r.json().error.code).toBe('csrf_failed');
+    expect(problem(r).code).toBe('csrf_failed');
     c.csrf = csrf;
     expect((await c.put('/api/v1/tenant/settings/general.date_format', { value: 'YYYY-MM-DD' })).statusCode).toBe(200);
   });
 
-  it('locks the account after repeated failures and records audit events', async () => {
+  it('backs off after repeated failures from one address and records audit events', async () => {
     const T = await createTenant();
     const c = new Client(app, T.host);
     for (let i = 0; i < 5; i++) expect((await c.post('/api/v1/auth/login', { email: T.users.other!.email, password: 'wrong-password' })).statusCode).toBe(401);
-    // Correct password is refused while locked.
-    expect((await c.post('/api/v1/auth/login', { email: T.users.other!.email, password: PASSWORD })).statusCode).toBe(401);
-    const [u] = await ownerQuery<{ locked: boolean }>(`SELECT locked_until > now() AS locked FROM users WHERE id=$1`, [T.users.other!.id]);
-    expect(u!.locked).toBe(true);
+    // Correct password is refused from this address while it waits. test/sessions.test.ts covers everyone else getting in.
+    expect((await c.post('/api/v1/auth/login', { email: T.users.other!.email, password: PASSWORD })).statusCode).toBe(429);
     const logs = await ownerQuery(`SELECT 1 FROM audit_logs WHERE tenant_id=$1 AND action='auth.login_failed'`, [T.id]);
-    expect(logs.length).toBe(6);
+    expect(logs.length).toBe(5);
   });
 
   it('logout revokes the session server-side', async () => {
     const c = await Client.login(app, A.host, A.users.employee!.email);
     const cookie = c.cookie;
     await c.post('/api/v1/auth/logout');
-    const replay = new Client(app, A.host); replay.cookie = cookie;
+    const replay = new Client(app, A.host);
+    replay.cookie = cookie;
     expect((await replay.get('/api/v1/auth/me')).statusCode).toBe(401);
   });
 
@@ -137,9 +144,13 @@ describe('authentication & session security', () => {
     const T = await createTenant();
     const it = T.users.it!; // IT administrator: has users.manage, not HR or payroll permissions
     const itAdmin = await Client.login(app, T.host, it.email);
-    const user = (email: string, roles: string[]) => itAdmin.post('/api/v1/tenant/users', { email, displayName: 'New Person', initialPassword: 'Initial-Password-123', roles });
+    const user = (email: string, roles: string[]) => itAdmin.post('/api/v1/tenant/users', { email, displayName: 'New Person', roles });
     // not to themselves, not to a new account, not by removing someone else's
-    for (const roles of [['it_admin', 'hr_admin'], ['it_admin', 'tenant_admin'], ['it_admin', 'payroll_manager']])
+    for (const roles of [
+      ['it_admin', 'hr_admin'],
+      ['it_admin', 'tenant_admin'],
+      ['it_admin', 'payroll_manager'],
+    ])
       expect((await itAdmin.patch(`/api/v1/tenant/users/${it!.id}`, { roles })).statusCode).toBe(403);
     expect((await user(`x1@${T.host}`, ['hr_admin'])).statusCode).toBe(403);
     expect((await user(`x2@${T.host}`, ['tenant_admin'])).statusCode).toBe(403);
@@ -157,27 +168,24 @@ describe('authentication & session security', () => {
     const admin = await Client.login(app, T.host, T.users.admin!.email);
     expect((await admin.patch(`/api/v1/tenant/users/${ok.json().id}`, { roles: ['hr_admin'] })).statusCode).toBe(200);
     // the role list tells each of them which roles they may grant, matching what the server enforces
-    const grantable = async (c: Client) => (await c.get('/api/v1/tenant/roles')).json().system
-      .filter((r: { grantable: boolean }) => r.grantable).map((r: { key: string }) => r.key) as string[];
+    const grantable = async (c: Client) =>
+      (await c.get('/api/v1/tenant/roles'))
+        .json()
+        .system.filter((r: { grantable: boolean }) => r.grantable)
+        .map((r: { key: string }) => r.key) as string[];
     const itMay = await grantable(itAdmin);
-    expect(itMay).toEqual(expect.arrayContaining(['employee', 'it_admin']));
-    for (const k of ['hr_admin', 'tenant_admin', 'payroll_manager']) expect(itMay).not.toContain(k);
-    expect(await grantable(admin)).toContain('tenant_admin');
-  });
-
-  it('an account created by an administrator must change its initial password at first sign-in', async () => {
-    const T = await createTenant();
-    const admin = await Client.login(app, T.host, T.users.admin!.email);
-    const r = await admin.post('/api/v1/tenant/users', { email: `new@${T.host}`, displayName: 'New Person', initialPassword: 'Initial-Password-123', roles: ['employee'] });
-    expect(r.statusCode).toBe(201);
-    const login = await new Client(app, T.host).post('/api/v1/auth/login', { email: `new@${T.host}`, password: 'Initial-Password-123' });
-    expect(login.json().passwordChangeRequired).toBe(true);
+    expect(itMay).toEqual(expect.arrayContaining(['employee']));
+    for (const k of ['it_admin', 'hr_admin', 'tenant_admin', 'payroll_manager']) expect(itMay).not.toContain(k);
+    // Nobody grants a role at or above their own level, an administrator included (D40).
+    expect(await grantable(admin)).toContain('hr_admin');
+    expect(await grantable(admin)).not.toContain('tenant_admin');
   });
 
   it('never returns password hashes or session tokens in user listings', async () => {
     const admin = await Client.login(app, A.host, A.users.admin!.email);
     const body = (await admin.get('/api/v1/tenant/users')).body;
     expect(body).not.toContain('scrypt$');
+    expect(body).not.toContain('argon2id$');
     expect(body).not.toContain('password');
   });
 

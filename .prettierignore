@@ -1,0 +1,7 @@
+dist
+coverage
+reports
+node_modules
+tools
+migrations
+src/core/auth/breached-list.data.ts

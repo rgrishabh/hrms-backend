@@ -1,13 +1,19 @@
-import { createHmac, randomBytes, timingSafeEqual } from 'node:crypto';
+import { createHmac, randomBytes, randomInt, timingSafeEqual } from 'node:crypto';
 
 /** RFC 6238 TOTP (HMAC-SHA1, 30 s, 6 digits) and RFC 4648 base32 — Node crypto only. */
 const ALPHABET = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ234567';
 
 export function base32Encode(buf: Buffer): string {
-  let bits = 0; let value = 0; let out = '';
+  let bits = 0;
+  let value = 0;
+  let out = '';
   for (const byte of buf) {
-    value = (value << 8) | byte; bits += 8;
-    while (bits >= 5) { out += ALPHABET[(value >>> (bits - 5)) & 31]; bits -= 5; }
+    value = (value << 8) | byte;
+    bits += 8;
+    while (bits >= 5) {
+      out += ALPHABET[(value >>> (bits - 5)) & 31];
+      bits -= 5;
+    }
   }
   if (bits > 0) out += ALPHABET[(value << (5 - bits)) & 31];
   return out;
@@ -15,12 +21,18 @@ export function base32Encode(buf: Buffer): string {
 
 export function base32Decode(s: string): Buffer {
   const clean = s.toUpperCase().replace(/=+$/, '').replace(/\s/g, '');
-  let bits = 0; let value = 0; const out: number[] = [];
+  let bits = 0;
+  let value = 0;
+  const out: number[] = [];
   for (const ch of clean) {
     const idx = ALPHABET.indexOf(ch);
     if (idx < 0) throw new Error('invalid base32');
-    value = (value << 5) | idx; bits += 5;
-    if (bits >= 8) { out.push((value >>> (bits - 8)) & 255); bits -= 8; }
+    value = (value << 5) | idx;
+    bits += 5;
+    if (bits >= 8) {
+      out.push((value >>> (bits - 8)) & 255);
+      bits -= 8;
+    }
   }
   return Buffer.from(out);
 }
@@ -62,8 +74,7 @@ export function otpauthUri(secret: string, account: string, issuer: string) {
 export function newRecoveryCodes(n = 10): string[] {
   const alphabet = 'abcdefghjkmnpqrstuvwxyz23456789';
   return Array.from({ length: n }, () => {
-    const b = randomBytes(12);
-    const chars = [...b].map((x) => alphabet[x % alphabet.length]).join('');
+    const chars = Array.from({ length: 12 }, () => alphabet[randomInt(alphabet.length)]).join('');
     return `${chars.slice(0, 4)}-${chars.slice(4, 8)}-${chars.slice(8, 12)}`;
   });
 }

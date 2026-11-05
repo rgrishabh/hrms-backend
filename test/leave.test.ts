@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import type { FastifyInstance } from 'fastify';
-import { makeApp, createTenant, Client, ownerQuery, type TenantFixture } from './helpers.js';
+import { problem, makeApp, createTenant, Client, ownerQuery, type TenantFixture, flags } from './helpers.js';
 import { addDays, localDate, weekday } from '../src/modules/attendance/time.js';
 import { CALC_VERSION } from '../src/modules/attendance/calc.js';
 
@@ -18,10 +18,27 @@ function pastWorkday(minAgo: number) {
   return d;
 }
 
-let app: FastifyInstance; let T: TenantFixture; let hr: Client; let emp: Client; let mgr: Client;
+let app: FastifyInstance;
+let T: TenantFixture;
+let hr: Client;
+let emp: Client;
+let mgr: Client;
 const types: Record<string, string> = {};
-const typeBody = (o: Record<string, unknown>) => ({ paid: true, allowHalfDay: true, requiresBalance: true, accrualMethod: 'annual', annualEntitlement: 0,
-  carryForwardMax: 0, maxBalance: null, countNonWorkingDays: false, minNoticeDays: 0, maxConsecutiveDays: null, eligibleAfterDays: 0, applicableEmploymentTypes: [], ...o });
+const typeBody = (o: Record<string, unknown>) => ({
+  paid: true,
+  allowHalfDay: true,
+  requiresBalance: true,
+  accrualMethod: 'annual',
+  annualEntitlement: 0,
+  carryForwardMax: 0,
+  maxBalance: null,
+  countNonWorkingDays: false,
+  minNoticeDays: 0,
+  maxConsecutiveDays: null,
+  eligibleAfterDays: 0,
+  applicableEmploymentTypes: [],
+  ...o,
+});
 const balance = async (c: Client, code: string, year?: number, employeeId?: string) =>
   (await c.get(`/api/v1/leave/balances?${employeeId ? `employeeId=${employeeId}&` : ''}${year ? `year=${year}` : ''}`)).json().items.find((i: { code: string }) => i.code === code);
 
@@ -47,7 +64,9 @@ beforeAll(async () => {
   // Holiday on the Wednesday of the test week.
   await ownerQuery(`INSERT INTO holidays (tenant_id, holiday_date, name) VALUES ($1,$2,'Test Holiday')`, [T.id, addDays(MON, 2)]);
 });
-afterAll(async () => { await app.close(); });
+afterAll(async () => {
+  await app.close();
+});
 
 describe('leave types', () => {
   it('validates policy combinations and requires leave.manage', async () => {
@@ -69,11 +88,14 @@ describe('accruals', () => {
   });
 
   it('pro-rates the annual entitlement for a mid-year joiner (rounded down to half days)', async () => {
-    const [e] = await ownerQuery<{ id: string }>(`INSERT INTO employees (tenant_id, employee_code, first_name, legal_entity_id, branch_id, date_of_joining)
-      VALUES ($1,'J1','Joiner',$2,$3,$4) RETURNING id`, [T.id, T.legalEntityId, T.branchId, `${YEAR}-07-15`]);
+    const [e] = await ownerQuery<{ id: string }>(
+      `INSERT INTO employees (tenant_id, employee_code, first_name, legal_entity_id, branch_id, date_of_joining)
+      VALUES ($1,'J1','Joiner',$2,$3,$4) RETURNING id`,
+      [T.id, T.legalEntityId, T.branchId, `${YEAR}-07-15`],
+    );
     await hr.post('/api/v1/leave/accruals', { leaveYear: YEAR });
-    expect((await balance(hr, 'CL', YEAR, e!.id)).balance).toBe('6.00');   // Jul–Dec = 6 months
-    expect((await balance(hr, 'EL', YEAR, e!.id)).balance).toBe('9.00');   // 6 × 1.50
+    expect((await balance(hr, 'CL', YEAR, e!.id)).balance).toBe('6.00'); // Jul–Dec = 6 months
+    expect((await balance(hr, 'EL', YEAR, e!.id)).balance).toBe('9.00'); // 6 × 1.50
   });
 });
 
@@ -89,20 +111,26 @@ describe('requests: day counting and validation', () => {
   });
 
   it('supports half days at both ends', async () => {
-    const p = (await emp.post('/api/v1/leave/requests/preview', { leaveTypeId: types.CL, startDate: MON, endDate: addDays(MON, 1), startHalf: 'second_half', endHalf: 'first_half' })).json();
+    const p = (
+      await emp.post('/api/v1/leave/requests/preview', { leaveTypeId: types.CL, startDate: MON, endDate: addDays(MON, 1), startHalf: 'second_half', endHalf: 'first_half' })
+    ).json();
     expect(p.days).toBe('1.00');
-    expect((await emp.post('/api/v1/leave/requests/preview', { leaveTypeId: types.CL, startDate: MON, endDate: MON, startHalf: 'second_half', endHalf: 'first_half' })).statusCode).toBe(400);
+    expect(
+      (await emp.post('/api/v1/leave/requests/preview', { leaveTypeId: types.CL, startDate: MON, endDate: MON, startHalf: 'second_half', endHalf: 'first_half' })).statusCode,
+    ).toBe(400);
   });
 
   it('rejects a range with no working days, insufficient balance, and too-short notice', async () => {
-    expect((await emp.post('/api/v1/leave/requests/preview', { leaveTypeId: types.CL, startDate: addDays(MON, 2), endDate: addDays(MON, 2) })).json().error.message).toMatch(/no working days/);
+    expect(problem(await emp.post('/api/v1/leave/requests/preview', { leaveTypeId: types.CL, startDate: addDays(MON, 2), endDate: addDays(MON, 2) })).detail).toMatch(
+      /no working days/,
+    );
     const p = (await emp.post('/api/v1/leave/requests/preview', { leaveTypeId: types.CL, startDate: MON, endDate: addDays(MON, 20) })).json();
     expect(p.sufficient).toBe(false);
     const r = await emp.post('/api/v1/leave/requests', { leaveTypeId: types.CL, startDate: MON, endDate: addDays(MON, 20), reason: 'Long trip' });
     expect(r.statusCode).toBe(409);
     const soon = addDays(today(), 2);
     const n = await emp.post('/api/v1/leave/requests', { leaveTypeId: types.EL, startDate: soon, endDate: soon, reason: 'Short notice' });
-    if (weekday(soon) !== 0) expect(n.json().error.message).toMatch(/at least 7 day/);
+    if (weekday(soon) !== 0) expect(problem(n).detail).toMatch(/at least 7 day/);
   });
 
   it('allows leave without pay with no balance', async () => {
@@ -111,16 +139,20 @@ describe('requests: day counting and validation', () => {
   });
 
   it('employees cannot apply for colleagues', async () => {
-    expect((await emp.post('/api/v1/leave/requests', { leaveTypeId: types.CL, startDate: MON, endDate: MON, reason: 'x x x', employeeId: T.users.other!.employeeId })).statusCode).toBe(403);
+    expect(
+      (await emp.post('/api/v1/leave/requests', { leaveTypeId: types.CL, startDate: MON, endDate: MON, reason: 'x x x', employeeId: T.users.other!.employeeId })).statusCode,
+    ).toBe(403);
   });
 });
 
 describe('approval workflow, ledger and cancellation', () => {
-  let reqId = ''; let approvalId = '';
+  let reqId = '';
+  let approvalId = '';
   it('reserves pending days, routes to the manager, and blocks overlaps', async () => {
     const r = await emp.post('/api/v1/leave/requests', { leaveTypeId: types.CL, startDate: MON, endDate: addDays(MON, 1), reason: 'Family function' });
     expect(r.statusCode, r.body).toBe(201);
-    reqId = r.json().id; approvalId = r.json().approvalRequestId;
+    reqId = r.json().id;
+    approvalId = r.json().approvalRequestId;
     expect(await balance(emp, 'CL', YEAR)).toMatchObject({ balance: '12.00', pending: '2.00', available: '10.00' });
     expect((await emp.post('/api/v1/leave/requests', { leaveTypeId: types.LWP, startDate: addDays(MON, 1), endDate: addDays(MON, 1), reason: 'Overlap' })).statusCode).toBe(409);
     expect((await mgr.get('/api/v1/approvals/inbox')).json().items.map((x: { id: string }) => x.id)).toContain(approvalId);
@@ -155,21 +187,37 @@ describe('approval workflow, ledger and cancellation', () => {
 
 describe('attendance integration', () => {
   it('approved past leave makes the day on_leave; half-day leave needs only the other half worked', async () => {
-    const day1 = pastWorkday(3); const day2 = pastWorkday(10);
-    const y1 = Number(day1.slice(0, 4)); const y2 = Number(day2.slice(0, 4));
+    const day1 = pastWorkday(3);
+    const day2 = pastWorkday(10);
+    const y1 = Number(day1.slice(0, 4));
+    const y2 = Number(day2.slice(0, 4));
     for (const y of new Set([y1, y2])) await hr.post('/api/v1/leave/accruals', { leaveYear: y });
     // HR applies on behalf (backdated sick leave scenario); manager approves.
-    const full = (await hr.post('/api/v1/leave/requests', { leaveTypeId: types.CL, startDate: day1, endDate: day1, reason: 'Was unwell', employeeId: T.users.employee!.employeeId })).json();
+    const full = (
+      await hr.post('/api/v1/leave/requests', { leaveTypeId: types.CL, startDate: day1, endDate: day1, reason: 'Was unwell', employeeId: T.users.employee!.employeeId })
+    ).json();
     await mgr.post(`/api/v1/approvals/${full.approvalRequestId}/act`, { action: 'approve' });
-    const half = (await hr.post('/api/v1/leave/requests', { leaveTypeId: types.CL, startDate: day2, endDate: day2, endHalf: 'first_half', reason: 'Morning appointment', employeeId: T.users.employee!.employeeId })).json();
+    const half = (
+      await hr.post('/api/v1/leave/requests', {
+        leaveTypeId: types.CL,
+        startDate: day2,
+        endDate: day2,
+        endHalf: 'first_half',
+        reason: 'Morning appointment',
+        employeeId: T.users.employee!.employeeId,
+      })
+    ).json();
     // Worked 14:00–19:30 IST (5h30m ≥ 4h half-day minimum).
-    await ownerQuery(`INSERT INTO attendance_events (tenant_id, employee_id, source, source_ref, event_time, direction) VALUES
+    await ownerQuery(
+      `INSERT INTO attendance_events (tenant_id, employee_id, source, source_ref, event_time, direction) VALUES
       ($1,$2,'web','h-in',($3::date + time '14:00') AT TIME ZONE 'Asia/Kolkata','in'), ($1,$2,'web','h-out',($3::date + time '19:30') AT TIME ZONE 'Asia/Kolkata','out')`,
-      [T.id, T.users.employee!.employeeId, day2]);
+      [T.id, T.users.employee!.employeeId, day2],
+    );
     await mgr.post(`/api/v1/approvals/${half.approvalRequestId}/act`, { action: 'approve' });
     const rows = await ownerQuery<{ work_date: string; status: string; leave_fraction: string; leave_type_code: string; calc_version: number }>(
       `SELECT work_date, status, leave_fraction, leave_type_code, calc_version FROM attendance_daily WHERE employee_id=$1 AND work_date = ANY($2) ORDER BY work_date`,
-      [T.users.employee!.employeeId, [day1, day2]]);
+      [T.users.employee!.employeeId, [day1, day2]],
+    );
     const byDate = Object.fromEntries(rows.map((r) => [r.work_date, r]));
     expect(byDate[day1]).toMatchObject({ status: 'on_leave', leave_fraction: '1.00', leave_type_code: 'CL', calc_version: CALC_VERSION });
     expect(byDate[day2]).toMatchObject({ status: 'present', leave_fraction: '0.50' });
@@ -181,7 +229,7 @@ describe('attendance integration', () => {
     await hr.post('/api/v1/leave/accruals', { leaveYear: Number(d.slice(0, 4)) });
     const r = await hr.post('/api/v1/leave/requests', { leaveTypeId: types.LWP, startDate: d, endDate: d, reason: 'Late entry', employeeId: T.users.employee!.employeeId });
     expect(r.statusCode).toBe(409);
-    expect(r.json().error.message).toMatch(/locked for payroll/);
+    expect(problem(r).detail).toMatch(/locked for payroll/);
   });
 });
 
@@ -193,19 +241,32 @@ describe('year-end', () => {
     const el = (await hr2.post('/api/v1/leave/types', typeBody({ code: 'EL', name: 'Earned', annualEntitlement: 15, carryForwardMax: 10 }))).json().id;
     const Y = 2025;
     await hr2.post('/api/v1/leave/accruals', { leaveYear: Y });
-    const p = (await hr2.post('/api/v1/leave/requests', { leaveTypeId: el, startDate: '2025-06-02', endDate: '2025-06-03', reason: 'Old pending', employeeId: T2.users.employee!.employeeId })).json();
+    const p = (
+      await hr2.post('/api/v1/leave/requests', {
+        leaveTypeId: el,
+        startDate: '2025-06-02',
+        endDate: '2025-06-03',
+        reason: 'Old pending',
+        employeeId: T2.users.employee!.employeeId,
+      })
+    ).json();
     expect((await hr2.post('/api/v1/leave/year-end', { leaveYear: Y })).statusCode).toBe(409);
     await hr2.post(`/api/v1/leave/requests/${p.id}/cancel`);
     const r = (await hr2.post('/api/v1/leave/year-end', { leaveYear: Y })).json();
     expect(r.balancesProcessed).toBeGreaterThan(0);
-    expect((await balance(emp2, 'EL', Y)).balance).toBe('10.00');       // 15 − 5 lapsed
-    expect((await balance(emp2, 'EL', Y + 1)).balance).toBe('10.00');   // carried
+    expect((await balance(emp2, 'EL', Y)).balance).toBe('0.00'); // 15 − 5 lapsed − 10 carried out: nothing stays behind
+    expect((await balance(emp2, 'EL', Y + 1)).balance).toBe('10.00'); // carried
     expect((await hr2.post('/api/v1/leave/year-end', { leaveYear: Y })).json().balancesProcessed).toBe(0); // idempotent
   });
 
   it('balance adjustments are audited and leave.manage only', async () => {
-    expect((await emp.post('/api/v1/leave/adjustments', { employeeId: T.users.employee!.employeeId, leaveTypeId: types.CL, leaveYear: YEAR, days: 5, note: 'self grant' })).statusCode).toBe(403);
-    expect((await hr.post('/api/v1/leave/adjustments', { employeeId: T.users.employee!.employeeId, leaveTypeId: types.CL, leaveYear: YEAR, days: -1.5, note: 'Correction per HR memo' })).statusCode).toBe(201);
+    expect(
+      (await emp.post('/api/v1/leave/adjustments', { employeeId: T.users.employee!.employeeId, leaveTypeId: types.CL, leaveYear: YEAR, days: 5, note: 'self grant' })).statusCode,
+    ).toBe(403);
+    expect(
+      (await hr.post('/api/v1/leave/adjustments', { employeeId: T.users.employee!.employeeId, leaveTypeId: types.CL, leaveYear: YEAR, days: -1.5, note: 'Correction per HR memo' }))
+        .statusCode,
+    ).toBe(201);
     const [a] = await ownerQuery(`SELECT 1 FROM audit_logs WHERE tenant_id=$1 AND action='leave.balance_adjusted'`, [T.id]);
     expect(a).toBeTruthy();
     expect(await ownerQuery(`SELECT 1 FROM leave_ledger WHERE tenant_id=$1 AND entry_type='adjustment' AND days=-1.5`, [T.id])).toHaveLength(1);
@@ -214,12 +275,10 @@ describe('year-end', () => {
 
 describe('module disabled', () => {
   it('rejects leave APIs when leave is not in ENABLED_MODULES', async () => {
-    const off = await makeApp({ ENABLED_MODULES: 'attendance,attendance.web,attendance.regularization,shifts,holidays' });
+    const off = await makeApp({ ...flags('attendance,attendance.web,attendance.regularization,shifts,holidays') });
     const c = await Client.login(off, T.host, T.users.employee!.email);
     const r = await c.get('/api/v1/leave/types');
-    expect(r.statusCode).toBe(403);
-    expect(r.json().error.code).toBe('feature_unavailable');
+    expect(r.statusCode).toBe(404);
     await off.close();
-    await makeApp().then((x) => x.close()); // restore the default module set for this process
   });
 });

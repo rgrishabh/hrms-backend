@@ -31,7 +31,7 @@ An approver who will be away hands their approvals to a colleague for a period, 
 
 ## Escalation
 
-The setting **Escalate unanswered approvals after (days)** (`approvals.escalate_after_days`) controls escalation. It defaults to 0, which means off.
+The setting **Escalate unanswered approvals after (days)** (`approvals.escalate_after_days`) controls escalation. It defaults to 5 days; 0 turns it off.
 
 The `approvals.escalation` job runs daily at 10:00. When a step addressed to one person has been active for longer than the setting, the job sends it on:
 - to the approver's **reporting manager**, when they have an active account and may act on the request;
@@ -42,7 +42,16 @@ Escalation details:
 - The original approver can still decide it, and is told who it went to.
 - A delegate of the original approver, or of the person it escalated to, can act too.
 - The decision is recorded with `via: escalation`.
-- **Group steps are not escalated.** Their daily reminders (`notifications.approval_reminder_days`) keep going to the whole group.
+- **Group steps are not escalated on time.** Their daily reminders (`notifications.approval_reminder_days`) keep going to the whole group.
+
+## When nobody can act
+
+A request never waits on someone who cannot act:
+- A step for a **disabled** person goes to the fallback owner when the request is made. When an account is disabled, including at exit, its pending steps go to that person's manager, or the fallback owner.
+- A **group step with no eligible holder** (the only holder is the requester or an excluded person, or nobody holds it) goes to the fallback owner, at creation and in the daily `approvals.escalation` job.
+- The **fallback owner** is holders of `approvals.escalations` (HR Administrator).
+- If the fallback owner cannot act either, the request is still created. Administrators and the requester are notified (`approval.no_approver`) and it is audited.
+- Holders of `approvals.escalations` can **reassign** the active step to a named active person: `POST /approvals/:id/reassign {userId, reason}`. Holders of `users.manage` can do so only when nobody can act on the request. Not to themselves, the requester, or an excluded person.
 
 ## API
 
@@ -53,3 +62,21 @@ Escalation details:
 | POST `/approvals/delegations/:id/revoke` | the delegator, whoever set it up, the delegate, or HR | Ends it now |
 | GET `/approvals/delegates?q=` | `employees.directory` | Active accounts to choose from (never yourself) |
 | GET `/approvals/inbox` | session | Each item has `via` (null, delegation or escalation) and `on_behalf_of` |
+
+## Management modes
+
+`ORG_MANAGEMENT_MODE` decides the route when a request is created. It keeps those steps if the mode later moves up.
+
+| Mode | Route |
+|---|---|
+| `multi` | Manager, then the module's permission, as `buildSteps` sets out. Nobody decides their own |
+| `single_hr` | One step for HR or the Owner (`approvals.hr_step`). Anything HR raised or that concerns an HR person, and anything that moves money, goes to the Owner by name |
+| `single` | One step to the Owner by name |
+
+In the two smaller modes the Owner may decide their own request, and each such decision writes `approval.self_approved`.
+
+- A step addressed to the Owner keeps delegation and escalation.
+- The HR step can be delegated by any holder.
+- When the HR step is overdue it escalates to the Owner.
+- Reminders reach holders and delegates.
+

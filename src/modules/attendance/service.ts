@@ -1,6 +1,6 @@
 import type { Db } from '../../db/tx.js';
 import { getSettingValue } from '../../core/settings/service.js';
-import { calculateDay, CALC_VERSION, type ShiftPolicy, type Punch, type DayResult } from './calc.js';
+import { calculateDay, shiftWindow, CALC_VERSION, type ShiftPolicy, type Punch, type DayResult } from './calc.js';
 import { addDays, dateRange, localDate, weekday, zonedToInstant } from './time.js';
 import { notFound } from '../../core/http/errors.js';
 import { approvedLeaveByDate } from '../leave/service.js';
@@ -18,19 +18,43 @@ export interface EventInput {
   deviceUserId?: string | null;
   latitude?: number | null;
   longitude?: number | null;
+  outsideGeofence?: boolean | null;
   status?: 'accepted' | 'unmapped';
   createdBy?: string | null;
 }
 
 /** Idempotent insert keyed on (tenant, source, source_ref). Returns null when it was a duplicate. */
 export async function recordEvent(db: Db, tenantId: string, e: EventInput): Promise<{ id: string } | null> {
-  const r = await db.query<{ id: string }>(`INSERT INTO attendance_events (tenant_id, employee_id, source, source_ref, event_time, device_time,
-      direction, device_id, device_user_id, latitude, longitude, status, created_by)
-    VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)
+  const r = await db.query<{ id: string }>(
+    `INSERT INTO attendance_events (tenant_id, employee_id, source, source_ref, event_time, device_time,
+      direction, device_id, device_user_id, latitude, longitude, status, created_by, outside_geofence)
+    VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)
     ON CONFLICT (tenant_id, source, source_ref) DO NOTHING RETURNING id`,
-    [tenantId, e.employeeId, e.source, e.sourceRef, e.eventTime, e.deviceTime ?? null, e.direction ?? 'unknown', e.deviceId ?? null,
-     e.deviceUserId ?? null, e.latitude ?? null, e.longitude ?? null, e.status ?? 'accepted', e.createdBy ?? null]);
+    [
+      tenantId,
+      e.employeeId,
+      e.source,
+      e.sourceRef,
+      e.eventTime,
+      e.deviceTime ?? null,
+      e.direction ?? 'unknown',
+      e.deviceId ?? null,
+      e.deviceUserId ?? null,
+      e.latitude ?? null,
+      e.longitude ?? null,
+      e.status ?? 'accepted',
+      e.createdBy ?? null,
+      e.outsideGeofence ?? null,
+    ],
+  );
   return r.rows[0] ?? null;
+}
+
+/** Distance in metres between two points (haversine). */
+export function distanceMeters(lat1: number, lng1: number, lat2: number, lng2: number) {
+  const rad = (d: number) => (d * Math.PI) / 180;
+  const h = Math.sin(rad(lat2 - lat1) / 2) ** 2 + Math.cos(rad(lat1)) * Math.cos(rad(lat2)) * Math.sin(rad(lng2 - lng1) / 2) ** 2;
+  return 2 * 6_371_000 * Math.asin(Math.sqrt(h));
 }
 
 export async function employeeTimezone(db: Db, tenantId: string, employeeId: string): Promise<{ tz: string; branchId: string }> {
@@ -48,7 +72,9 @@ export function candidateDates(instant: Date, tz: string): string[] {
 
 export async function lockedDates(db: Db, tenantId: string, from: string, to: string): Promise<Set<string>> {
   const r = await db.query<{ period_start: string; period_end: string }>(
-    `SELECT period_start, period_end FROM attendance_period_locks WHERE tenant_id=$1 AND period_start <= $3 AND period_end >= $2`, [tenantId, from, to]);
+    `SELECT period_start, period_end FROM attendance_period_locks WHERE tenant_id=$1 AND period_start <= $3 AND period_end >= $2`,
+    [tenantId, from, to],
+  );
   const s = new Set<string>();
   for (const l of r.rows) for (const d of dateRange(l.period_start > from ? l.period_start : from, l.period_end < to ? l.period_end : to)) s.add(d);
   return s;
@@ -57,9 +83,15 @@ export async function lockedDates(db: Db, tenantId: string, from: string, to: st
 const SHIFT_COLS = `s.id, s.code, s.start_time::text AS start_time, s.end_time::text AS end_time, s.break_minutes, s.grace_minutes,
   s.early_exit_grace_minutes, s.half_day_min_minutes, s.full_day_min_minutes, s.overtime_after_minutes`;
 const toShift = (r: Record<string, unknown>): ShiftPolicy => ({
-  id: r.id as string, code: r.code as string, startTime: r.start_time as string, endTime: r.end_time as string,
-  breakMinutes: r.break_minutes as number, graceMinutes: r.grace_minutes as number, earlyExitGraceMinutes: r.early_exit_grace_minutes as number,
-  halfDayMinMinutes: r.half_day_min_minutes as number, fullDayMinMinutes: r.full_day_min_minutes as number,
+  id: r.id as string,
+  code: r.code as string,
+  startTime: r.start_time as string,
+  endTime: r.end_time as string,
+  breakMinutes: r.break_minutes as number,
+  graceMinutes: r.grace_minutes as number,
+  earlyExitGraceMinutes: r.early_exit_grace_minutes as number,
+  halfDayMinMinutes: r.half_day_min_minutes as number,
+  fullDayMinMinutes: r.full_day_min_minutes as number,
   overtimeAfterMinutes: r.overtime_after_minutes as number | null,
 });
 
@@ -69,7 +101,9 @@ const toShift = (r: Record<string, unknown>): ShiftPolicy => ({
  */
 export async function recalculateRange(db: Db, tenantId: string, employeeId: string, from: string, to: string) {
   const emp = await db.query<{ branch_id: string; date_of_joining: string; exit_date: string | null }>(
-    'SELECT branch_id, date_of_joining, exit_date FROM employees WHERE tenant_id=$1 AND id=$2', [tenantId, employeeId]);
+    'SELECT branch_id, date_of_joining, exit_date FROM employees WHERE tenant_id=$1 AND id=$2',
+    [tenantId, employeeId],
+  );
   const e = emp.rows[0];
   if (!e) throw notFound('Employee not found');
   const tz = await getSettingValue<string>(db, tenantId, 'general.timezone', e.branch_id);
@@ -80,17 +114,36 @@ export async function recalculateRange(db: Db, tenantId: string, employeeId: str
   // The day's shift and whether it is a day off: override → rotating roster → fixed assignment (see roster.ts).
   const plan = (await scheduleFor(db, tenantId, [employeeId], from, to)).get(employeeId)!;
   const shiftIds = [...new Set([...plan.values()].map((p) => p.shiftId).filter((x): x is string => !!x))];
-  const shifts = new Map((shiftIds.length ? (await db.query(`SELECT ${SHIFT_COLS} FROM shifts s WHERE s.tenant_id=$1 AND s.id = ANY($2)`, [tenantId, shiftIds])).rows : [])
-    .map((r) => [r.id as string, toShift(r)]));
-  const holidays = new Set((await db.query<{ holiday_date: string }>(`SELECT holiday_date FROM holidays WHERE tenant_id=$1
-      AND (branch_id IS NULL OR branch_id=$2) AND NOT optional AND holiday_date BETWEEN $3 AND $4`, [tenantId, e.branch_id, from, to])).rows.map((r) => r.holiday_date));
+  const shifts = new Map(
+    (shiftIds.length ? (await db.query(`SELECT ${SHIFT_COLS} FROM shifts s WHERE s.tenant_id=$1 AND s.id = ANY($2)`, [tenantId, shiftIds])).rows : []).map((r) => [
+      r.id as string,
+      toShift(r),
+    ]),
+  );
+  const holidays = new Set(
+    (
+      await db.query<{ holiday_date: string }>(
+        `SELECT holiday_date FROM holidays WHERE tenant_id=$1
+      AND (branch_id IS NULL OR branch_id=$2) AND NOT optional AND holiday_date BETWEEN $3 AND $4`,
+        [tenantId, e.branch_id, from, to],
+      )
+    ).rows.map((r) => r.holiday_date),
+  );
   // Events span from (from − 1 day) to (to + 2 days) to cover overnight windows.
   const evFrom = zonedToInstant(addDays(from, -1), '00:00', tz);
   const evTo = zonedToInstant(addDays(to, 2), '00:00', tz);
-  const punches: Punch[] = (await db.query<{ id: string; event_time: Date; direction: Punch['direction'] }>(
-    `SELECT id, event_time, direction FROM attendance_events WHERE tenant_id=$1 AND employee_id=$2 AND status='accepted'
-       AND event_time >= $3 AND event_time < $4 ORDER BY event_time`, [tenantId, employeeId, evFrom, evTo])).rows
-    .map((r) => ({ id: r.id, time: r.event_time, direction: r.direction }));
+  const punches: Punch[] = (
+    await db.query<{ id: string; event_time: Date; direction: Punch['direction']; source: string; received_at: Date }>(
+      `SELECT id, event_time, direction, source, received_at FROM attendance_events WHERE tenant_id=$1 AND employee_id=$2 AND status='accepted'
+       AND event_time >= $3 AND event_time < $4 ORDER BY event_time`,
+      [tenantId, employeeId, evFrom, evTo],
+    )
+  ).rows.map((r) => ({
+    id: r.id,
+    time: r.event_time,
+    direction: r.direction,
+    ...(r.source === 'regularization' ? { source: 'regularization' as const, seq: r.received_at.getTime() } : {}),
+  }));
   const locked = await lockedDates(db, tenantId, from, to);
   const leaves = await approvedLeaveByDate(db, tenantId, employeeId, from, to);
   const duties = await approvedDutyByDate(db, tenantId, employeeId, from, to);
@@ -98,17 +151,52 @@ export async function recalculateRange(db: Db, tenantId: string, employeeId: str
   const results: (DayResult & { locked: boolean })[] = [];
   const rows: unknown[][] = [];
   for (const date of dateRange(from, to)) {
-    if (locked.has(date)) { continue; }
+    if (locked.has(date)) {
+      continue;
+    }
     const p = plan.get(date)!;
-    const shift = p.shiftId ? shifts.get(p.shiftId) ?? null : null;
+    const shift = p.shiftId ? (shifts.get(p.shiftId) ?? null) : null;
     const off = p.off ?? weeklyOffs.includes(weekday(date));
     const dayType = holidays.has(date) ? 'holiday' : off ? 'weekly_off' : 'working';
-    const res = calculateDay({ workDate: date, timezone: tz, shift, dayType, punches, minGapSeconds: minGap, overtimeEnabled,
-      employment: { joiningDate: e.date_of_joining, exitDate: e.exit_date }, leave: leaves.get(date) ?? null, duty: duties.get(date) ?? null });
+    const res = calculateDay({
+      workDate: date,
+      timezone: tz,
+      shift,
+      dayType,
+      punches,
+      minGapSeconds: minGap,
+      overtimeEnabled,
+      employment: { joiningDate: e.date_of_joining, exitDate: e.exit_date },
+      leave: leaves.get(date) ?? null,
+      duty: duties.get(date) ?? null,
+    });
     results.push({ ...res, locked: false });
-    rows.push([date, res.shiftId, res.dayType, res.status, res.firstIn, res.lastOut, res.punchCount, res.workedMinutes, res.lateMinutes,
-      res.earlyExitMinutes, res.overtimeMinutes, res.exceptions,
-      JSON.stringify({ timezone: tz, weeklyOffs, minGapSeconds: minGap, overtimeEnabled, shift: shift?.code ?? null, schedule: p.source, ...(p.pattern ? { roster: p.pattern } : {}) }), res.leaveFraction, res.leaveTypeCode, res.dutyFraction]);
+    rows.push([
+      date,
+      res.shiftId,
+      res.dayType,
+      res.status,
+      res.firstIn,
+      res.lastOut,
+      res.punchCount,
+      res.workedMinutes,
+      res.lateMinutes,
+      res.earlyExitMinutes,
+      res.overtimeMinutes,
+      res.exceptions,
+      JSON.stringify({
+        timezone: tz,
+        weeklyOffs,
+        minGapSeconds: minGap,
+        overtimeEnabled,
+        shift: shift?.code ?? null,
+        schedule: p.source,
+        ...(p.pattern ? { roster: p.pattern } : {}),
+      }),
+      res.leaveFraction,
+      res.leaveTypeCode,
+      res.dutyFraction,
+    ]);
   }
   if (rows.length) {
     const values: unknown[] = [tenantId, employeeId, CALC_VERSION];
@@ -117,7 +205,8 @@ export async function recalculateRange(db: Db, tenantId: string, employeeId: str
       values.push(...r);
       return `($1,$2,${r.map((_, i) => `$${base + i + 1}`).join(',')},$3,now())`;
     });
-    await db.query(`INSERT INTO attendance_daily (tenant_id, employee_id, work_date, shift_id, day_type, status, first_in, last_out, punch_count,
+    await db.query(
+      `INSERT INTO attendance_daily (tenant_id, employee_id, work_date, shift_id, day_type, status, first_in, last_out, punch_count,
         worked_minutes, late_minutes, early_exit_minutes, overtime_minutes, exceptions, policy_snapshot, leave_fraction, leave_type_code, duty_fraction, calc_version, calculated_at)
       VALUES ${tuples.join(',')}
       ON CONFLICT (tenant_id, employee_id, work_date) DO UPDATE SET shift_id=EXCLUDED.shift_id, day_type=EXCLUDED.day_type, status=EXCLUDED.status,
@@ -125,23 +214,36 @@ export async function recalculateRange(db: Db, tenantId: string, employeeId: str
         late_minutes=EXCLUDED.late_minutes, early_exit_minutes=EXCLUDED.early_exit_minutes, overtime_minutes=EXCLUDED.overtime_minutes,
         exceptions=EXCLUDED.exceptions, policy_snapshot=EXCLUDED.policy_snapshot, leave_fraction=EXCLUDED.leave_fraction,
         leave_type_code=EXCLUDED.leave_type_code, duty_fraction=EXCLUDED.duty_fraction, calc_version=EXCLUDED.calc_version, calculated_at=now()
-      WHERE NOT attendance_daily.locked`, values);
+      WHERE NOT attendance_daily.locked`,
+      values,
+    );
   }
   return { results, skippedLocked: [...locked] };
 }
 
-/** After an event: recalc the dates whose windows may contain it, but never past today. */
+/**
+ * After an event: recalc the dates whose windows may contain it. That is its local date and the day before, plus the next
+ * day only if that day's shift starts soon enough that its window already holds this punch (a shift starting after
+ * midnight, punched into just before), so an ordinary evening punch does not create a row for tomorrow.
+ */
 export async function recalcForEvent(db: Db, tenantId: string, employeeId: string, eventTime: Date) {
   const { tz } = await employeeTimezone(db, tenantId, employeeId);
-  const [from, to] = candidateDates(eventTime, tz) as [string, string];
-  return recalculateRange(db, tenantId, employeeId, from, to);
+  const [from, today] = candidateDates(eventTime, tz) as [string, string];
+  const next = addDays(today, 1);
+  const plan = (await scheduleFor(db, tenantId, [employeeId], next, next)).get(employeeId)?.get(next);
+  const shift = plan?.shiftId ? (await db.query(`SELECT ${SHIFT_COLS} FROM shifts s WHERE s.tenant_id=$1 AND s.id=$2`, [tenantId, plan.shiftId])).rows[0] : undefined;
+  const reachesNext = shift ? shiftWindow(next, tz, toShift(shift)).start <= eventTime : false;
+  return recalculateRange(db, tenantId, employeeId, from, reachesNext ? next : today);
 }
 
 /** Employee ids visible to a manager: full recursive reporting subtree. */
 export async function teamEmployeeIds(db: Db, tenantId: string, managerEmployeeId: string): Promise<string[]> {
-  const r = await db.query<{ id: string }>(`WITH RECURSIVE sub AS (
+  const r = await db.query<{ id: string }>(
+    `WITH RECURSIVE sub AS (
       SELECT id FROM employees WHERE tenant_id=$1 AND reporting_manager_id=$2
       UNION SELECT e.id FROM employees e JOIN sub ON e.reporting_manager_id=sub.id WHERE e.tenant_id=$1)
-    SELECT id FROM sub`, [tenantId, managerEmployeeId]);
+    SELECT id FROM sub`,
+    [tenantId, managerEmployeeId],
+  );
   return r.rows.map((x) => x.id);
 }
