@@ -103,11 +103,16 @@ export function registerOvertimeApprovals() {
   registerApprovalHandler('overtime_comp_off', handler('comp_off'));
 }
 
+const ClaimsBody = z.object({ workDate: IsoDate, minutes: z.number().int().min(1).max(1440), payout: z.enum(['pay', 'comp_off']), reason: z.string().trim().min(3).max(1000) });
+const ClaimsQuery = PageQuery.extend({ scope: z.enum(['mine', 'team', 'all']).default('mine'), status: z.enum(['pending', 'approved', 'rejected', 'returned', 'cancelled']).optional(),
+      period: z.string().regex(/^\d{4}-(0[1-9]|1[0-2])$/).optional() });
+const IdParams = z.object({ id: Uuid });
+const ClaimsCancelBody = z.object({ reason: z.string().trim().min(3).max(500) });
 export async function overtimeRoutes(app: FastifyInstance) {
   gateFeatures(app, F);
 
   /** Days with recorded overtime the signed-in employee can still claim, and how they may take it. */
-  app.get('/eligible', async (req) => {
+  app.get('/eligible', { schema: {}, config: { perm: ['overtime.self'] } }, async (req) => {
     const a = tenantActor(req, 'overtime.self');
     if (!a.user.employeeId) throw badRequest('Your account is not linked to an employee record');
     return a.tx(async (db) => {
@@ -123,9 +128,9 @@ export async function overtimeRoutes(app: FastifyInstance) {
     });
   });
 
-  app.post('/claims', async (req, reply) => {
+  app.post('/claims', { schema: { body: ClaimsBody }, config: { perm: ['overtime.self'], feature: ['comp_off'] } }, async (req, reply) => {
     const a = tenantActor(req, 'overtime.self');
-    const b = z.object({ workDate: IsoDate, minutes: z.number().int().min(1).max(1440), payout: z.enum(['pay', 'comp_off']), reason: z.string().trim().min(3).max(1000) }).parse(req.body);
+    const b = ClaimsBody.parse(req.body);
     const empId = a.user.employeeId;
     if (!empId) throw badRequest('Your account is not linked to an employee record');
     return a.tx(async (db) => {
@@ -161,10 +166,9 @@ export async function overtimeRoutes(app: FastifyInstance) {
     });
   });
 
-  app.get('/claims', async (req) => {
+  app.get('/claims', { schema: { querystring: ClaimsQuery }, config: { permAny: ['overtime.self', 'overtime.team.read', 'overtime.read', 'overtime.approve', 'overtime.manage'] } }, async (req) => {
     const a = tenantActorAny(req, 'overtime.self', 'overtime.team.read', 'overtime.read', 'overtime.approve', 'overtime.manage');
-    const q = PageQuery.extend({ scope: z.enum(['mine', 'team', 'all']).default('mine'), status: z.enum(['pending', 'approved', 'rejected', 'returned', 'cancelled']).optional(),
-      period: z.string().regex(/^\d{4}-(0[1-9]|1[0-2])$/).optional() }).parse(req.query);
+    const q = ClaimsQuery.parse(req.query);
     return a.tx(async (db) => {
       let ids: string[] | null;
       if (q.scope === 'all') { if (!(a.has('overtime.read') || a.has('overtime.approve') || a.has('overtime.manage'))) throw forbidden(); ids = null; }
@@ -181,9 +185,9 @@ export async function overtimeRoutes(app: FastifyInstance) {
     });
   });
 
-  app.get('/claims/:id', async (req) => {
+  app.get('/claims/:id', { schema: { params: IdParams } }, async (req) => {
     const a = tenantActor(req);
-    const { id } = z.object({ id: Uuid }).parse(req.params);
+    const { id } = IdParams.parse(req.params);
     return a.tx(async (db) => {
       const c = await loadClaim(db, a, id);
       const decides = c.status === 'pending' && (
@@ -197,9 +201,9 @@ export async function overtimeRoutes(app: FastifyInstance) {
   });
 
   /** The claimant takes back a claim still awaiting approval. */
-  app.post('/claims/:id/withdraw', async (req) => {
+  app.post('/claims/:id/withdraw', { schema: { params: IdParams }, config: { perm: ['overtime.self'] } }, async (req) => {
     const a = tenantActor(req, 'overtime.self');
-    const { id } = z.object({ id: Uuid }).parse(req.params);
+    const { id } = IdParams.parse(req.params);
     return a.tx(async (db) => {
       const c = await loadClaim(db, a, id, true);
       if (c.employee_id !== a.user.employeeId) throw forbidden('Only the claimant can withdraw this claim');
@@ -216,10 +220,10 @@ export async function overtimeRoutes(app: FastifyInstance) {
    * HR cancels an approved claim (e.g. recorded in error). Paid overtime: only before its payroll run is submitted;
    * a computed run goes back to draft so it must be recomputed. Compensatory off: the days are taken back if unused.
    */
-  app.post('/claims/:id/cancel', async (req) => {
+  app.post('/claims/:id/cancel', { schema: { params: IdParams, body: ClaimsCancelBody }, config: { perm: ['overtime.manage'] } }, async (req) => {
     const a = tenantActor(req, 'overtime.manage');
-    const { id } = z.object({ id: Uuid }).parse(req.params);
-    const { reason } = z.object({ reason: z.string().trim().min(3).max(500) }).parse(req.body);
+    const { id } = IdParams.parse(req.params);
+    const { reason } = ClaimsCancelBody.parse(req.body);
     return a.tx(async (db) => {
       const c = await loadClaim(db, a, id, true);
       if (c.status !== 'approved') throw conflict(`Only approved claims can be cancelled here (this one is ${c.status})`);

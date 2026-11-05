@@ -17,6 +17,8 @@ const MAX_FAILURES = 5;
 const Code = z.string().trim().min(6).max(20);
 const NO_EMAIL = 'Email codes need email to be set up on this installation, and it is not. Ask your administrator, or use an authenticator app.';
 
+const VerifyBody = z.object({ code: Code });
+const DisableBody = z.object({ password: z.string().min(1), code: Code });
 /**
  * Two-factor authentication. Mounted only when MFA_AVAILABLE=true, so otherwise every address here is a 404. TOTP secrets are encrypted with
  * the installation's field key, and a code can't be replayed. Recovery codes are stored hashed and work once. Five wrong codes end the session,
@@ -72,16 +74,16 @@ export async function mfaRoutes(app: FastifyInstance, opts: { publicConfig: Publ
   const invalidCode = (hint = 'Check your code and try again.') => new AppError(400, 'mfa_invalid', `That code is not valid. ${hint}`);
 
   /** What this deployment offers, and whether each can be used right now: the enrolment screen says so before anyone tries. */
-  app.get('/methods', async (req) => {
+  app.get('/methods', { schema: {} }, async (req) => {
     const { u } = actor(req);
     const left = await withPlatformBypass(pool, async (db) => (await db.query<{ n: number }>('SELECT cardinality(mfa_recovery_hashes) AS n FROM users WHERE id=$1', [u.userId])).rows[0]!.n);
     return { enabled: u.mfaEnabled, method: u.mfaMethod, recoveryCodesLeft: u.mfaEnabled ? left : 0, enforced: policy.enforced,
       methods: policy.methods.map((method) => (method === 'email' && !getMailer() ? { method, usable: false, reason: NO_EMAIL } : { method, usable: true })) };
   });
 
-  app.post('/verify', { config: { rateLimit: { max: 10, timeWindow: '1 minute' } }, preHandler: guesses }, async (req, reply) => {
+  app.post('/verify', { schema: { body: VerifyBody }, config: { rateLimit: { max: 10, timeWindow: '1 minute' } }, preHandler: guesses }, async (req, reply) => {
     const { u, tenantId, base } = actor(req);
-    const { code } = z.object({ code: Code }).parse(req.body);
+    const { code } = VerifyBody.parse(req.body);
     if (!u.mfaPending) throw conflict('This session does not need a code');
     const result = await withPlatformBypass(pool, async (db) => {
       const m = await loadMfa(db, u.userId);
@@ -132,7 +134,7 @@ export async function mfaRoutes(app: FastifyInstance, opts: { publicConfig: Publ
   };
 
   if (offers('totp')) {
-    app.post('/setup', async (req) => {
+    app.post('/setup', { schema: {} }, async (req) => {
       const { u, base } = actor(req);
       return withPlatformBypass(pool, async (db) => {
         assertNotEnrolled(await loadMfa(db, u.userId));
@@ -143,9 +145,9 @@ export async function mfaRoutes(app: FastifyInstance, opts: { publicConfig: Publ
       });
     });
 
-    app.post('/enable', { config: { rateLimit: { max: 10, timeWindow: '1 minute' } }, preHandler: guesses }, async (req, reply) => {
+    app.post('/enable', { schema: { body: VerifyBody }, config: { rateLimit: { max: 10, timeWindow: '1 minute' } }, preHandler: guesses }, async (req, reply) => {
       const { u, tenantId, base } = actor(req);
-      const { code } = z.object({ code: Code }).parse(req.body);
+      const { code } = VerifyBody.parse(req.body);
       const { codes, rotated } = await withPlatformBypass(pool, async (db) => {
         assertNotEnrolled(await loadMfa(db, u.userId));
         const p = (await db.query<{ p: string | null }>('SELECT mfa_pending_secret_enc AS p FROM users WHERE id=$1', [u.userId])).rows[0]!.p;
@@ -162,7 +164,7 @@ export async function mfaRoutes(app: FastifyInstance, opts: { publicConfig: Publ
 
   if (offers('email')) {
     /** Sends a code to the account's address, to prove it receives mail before relying on it. */
-    app.post('/email/setup', { config: { rateLimit: { max: 5, timeWindow: '1 minute' } }, preHandler: sends }, async (req, reply) => {
+    app.post('/email/setup', { schema: {}, config: { rateLimit: { max: 5, timeWindow: '1 minute' } }, preHandler: sends }, async (req, reply) => {
       const { u, tenantId, base } = actor(req);
       const s = await withPlatformBypass(pool, async (db) => {
         assertNotEnrolled(await loadMfa(db, u.userId));
@@ -174,9 +176,9 @@ export async function mfaRoutes(app: FastifyInstance, opts: { publicConfig: Publ
       return { sent: true };
     });
 
-    app.post('/email/enable', { config: { rateLimit: { max: 10, timeWindow: '1 minute' } }, preHandler: guesses }, async (req, reply) => {
+    app.post('/email/enable', { schema: { body: VerifyBody }, config: { rateLimit: { max: 10, timeWindow: '1 minute' } }, preHandler: guesses }, async (req, reply) => {
       const { u, tenantId, base } = actor(req);
-      const { code } = z.object({ code: Code }).parse(req.body);
+      const { code } = VerifyBody.parse(req.body);
       // A wrong code is kept: the guess must count, so the answer comes after the commit.
       const out = await withPlatformBypass(pool, async (db) => {
         assertNotEnrolled(await loadMfa(db, u.userId));
@@ -189,7 +191,7 @@ export async function mfaRoutes(app: FastifyInstance, opts: { publicConfig: Publ
     });
 
     /** Another code, for a sign-in in progress or for turning this off. */
-    app.post('/email/send', { config: { rateLimit: { max: 5, timeWindow: '1 minute' } }, preHandler: sends }, async (req, reply) => {
+    app.post('/email/send', { schema: {}, config: { rateLimit: { max: 5, timeWindow: '1 minute' } }, preHandler: sends }, async (req, reply) => {
       const { u, tenantId } = actor(req);
       if (u.mfaMethod !== 'email') throw conflict('This account does not use email codes');
       waitOr(reply, await withPlatformBypass(pool, (db) => sendEmailOtp(db, cipher, tenantId, u.userId, 'login')));
@@ -197,9 +199,9 @@ export async function mfaRoutes(app: FastifyInstance, opts: { publicConfig: Publ
     });
   }
 
-  app.post('/recovery-codes', { config: { rateLimit: { max: 5, timeWindow: '1 minute' } }, preHandler: sends }, async (req) => {
+  app.post('/recovery-codes', { schema: { body: VerifyBody }, config: { rateLimit: { max: 5, timeWindow: '1 minute' } }, preHandler: sends }, async (req) => {
     const { u, base } = actor(req);
-    const { code } = z.object({ code: Code }).parse(req.body);
+    const { code } = VerifyBody.parse(req.body);
     const out = await withPlatformBypass(pool, async (db) => {
       const m = await loadMfa(db, u.userId);
       if (m.locked) return 'locked' as const;
@@ -216,9 +218,9 @@ export async function mfaRoutes(app: FastifyInstance, opts: { publicConfig: Publ
     return { recoveryCodes: out };
   });
 
-  app.post('/disable', { config: { rateLimit: { max: 5, timeWindow: '1 minute' } }, preHandler: sends }, async (req, reply) => {
+  app.post('/disable', { schema: { body: DisableBody }, config: { rateLimit: { max: 5, timeWindow: '1 minute' } }, preHandler: sends }, async (req, reply) => {
     const { u, tenantId, base } = actor(req);
-    const body = z.object({ password: z.string().min(1), code: Code }).parse(req.body);
+    const body = DisableBody.parse(req.body);
     if (policy.enforced) throw new AppError(403, 'mfa_required_by_deployment', 'Two-factor authentication is required on this installation; it cannot be turned off.');
     const hash = await withPlatformBypass(pool, async (db) => (await db.query<{ password_hash: string | null }>('SELECT password_hash FROM users WHERE id=$1', [u.userId])).rows[0]?.password_hash ?? null);
     if (!(await verifyPassword(body.password, hash))) throw badRequest('Password is incorrect');

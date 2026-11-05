@@ -61,6 +61,21 @@ export function registerAttendanceApprovals() {
   });
 }
 
+const IdParams = z.object({ id: Uuid });
+const GeofencesParams = z.object({ branchId: Uuid });
+const GeofencesBody = z.object({ latitude: z.number().min(-90).max(90), longitude: z.number().min(-180).max(180), radiusMeters: z.number().int().min(10).max(100000) });
+const DailyQuery = PageQuery.extend({ date: IsoDate, branchId: Uuid.optional(), status: z.string().max(20).optional(), exceptionsOnly: QueryBool.optional() });
+const RecalculateBody = z.object({ from: IsoDate, to: IsoDate, employeeId: Uuid.optional(), branchId: Uuid.optional() });
+const LocksBody = z.object({ periodStart: IsoDate, periodEnd: IsoDate });
+const RegularizationsQuery = PageQuery.extend({ scope: z.enum(['mine', 'all']).default('mine'), status: z.string().max(20).optional() });
+const ShiftAssignmentsBody = z.object({ employeeIds: z.array(Uuid).min(1).max(1000), shiftId: Uuid, effectiveFrom: IsoDate, effectiveTo: IsoDate.nullable().optional() });
+const HolidaysQuery = z.object({ year: z.coerce.number().int().min(2000).max(2100) });
+const HolidaysBody = z.object({ holidayDate: IsoDate, name: z.string().trim().min(2).max(120), branchId: Uuid.nullable().optional(), optional: z.boolean().default(false) });
+const DevicesBody = z.object({ branchId: Uuid, serialNumber: z.string().trim().min(3).max(64), name: z.string().trim().min(2).max(100),
+      adapterKey: z.enum(['generic_push_v1']) });
+const PatchDevicesBody = z.object({ status: z.enum(['active', 'disabled', 'replaced']).optional(), branchId: Uuid.optional(), name: z.string().trim().min(2).max(100).optional() });
+const DeviceMappingsParams = z.object({ deviceUserId: z.string().min(1).max(64) });
+const DeviceMappingsBody = z.object({ employeeId: Uuid });
 export async function attendanceRoutes(app: FastifyInstance) {
   gateFeatures(app, 'attendance');
   await rosterRoutes(app);
@@ -71,7 +86,7 @@ export async function attendanceRoutes(app: FastifyInstance) {
     idempotencyKey: z.string().min(8).max(100), latitude: z.number().min(-90).max(90).optional(), longitude: z.number().min(-180).max(180).optional(),
     selfieId: Uuid.optional(),
   });
-  only(app, 'attendance.web', 'attendance.mobile').post('/punch', { config: { rateLimit: { max: 12, timeWindow: '1 minute' } } }, async (req) => {
+  only(app, 'attendance.web', 'attendance.mobile').post('/punch', { schema: { body: PunchBody }, config: { perm: ['attendance.self'], rateLimit: { max: 12, timeWindow: '1 minute' } } }, async (req) => {
     const a = tenantActor(req, 'attendance.self');
     const body = PunchBody.parse(req.body);
     const employeeId = a.user.employeeId;
@@ -125,7 +140,7 @@ export async function attendanceRoutes(app: FastifyInstance) {
   // ------------------------------------------------------------ check-in selfie (feature attendance.selfie)
   const MAX_SELFIE_BYTES = 5 * 1024 * 1024;
   /** multipart/form-data, one image from the camera. Returns the id to send with the clock-in. Unused ones go at the next retention run. */
-  only(app, 'attendance.selfie').post('/selfies', { config: { rateLimit: { max: 12, timeWindow: '1 minute' } } }, async (req, reply) => {
+  only(app, 'attendance.selfie').post('/selfies', { schema: { consumes: ['multipart/form-data'] }, config: { perm: ['attendance.self'], feature: ['attendance.selfie'], rateLimit: { max: 12, timeWindow: '1 minute' } } }, async (req, reply) => {
     const a = tenantActor(req, 'attendance.self');
     const employeeId = a.user.employeeId;
     if (!employeeId) throw badRequest('Your account is not linked to an employee record');
@@ -156,9 +171,9 @@ export async function attendanceRoutes(app: FastifyInstance) {
   });
 
   /** The person themselves, or whoever may see their attendance. Looking at someone else's photo is audited. */
-  only(app, 'attendance.selfie').get('/selfies/:id', async (req, reply) => {
+  only(app, 'attendance.selfie').get('/selfies/:id', { schema: { params: IdParams }, config: { feature: ['attendance.selfie'] } }, async (req, reply) => {
     const a = tenantActor(req);
-    const { id } = z.object({ id: Uuid }).parse(req.params);
+    const { id } = IdParams.parse(req.params);
     const s = await a.tx(async (db) => {
       await requireFeature(db, a.tenantId, 'attendance.selfie');
       const row = (await db.query<{ employee_id: string; storage_key: string | null; content_type: string }>(
@@ -172,16 +187,16 @@ export async function attendanceRoutes(app: FastifyInstance) {
   });
 
   // ------------------------------------------------------------ geofences (feature attendance.geofence)
-  only(app, 'attendance.geofence').get('/geofences', async (req) => {
+  only(app, 'attendance.geofence').get('/geofences', { schema: {}, config: { permAny: ['attendance.configure', 'attendance.read'] } }, async (req) => {
     const a = tenantActorAny(req, 'attendance.configure', 'attendance.read');
     return a.tx(async (db) => ({ items: (await db.query(`SELECT g.branch_id, b.name AS branch_name, g.latitude, g.longitude, g.radius_m, g.updated_at
       FROM branch_geofences g JOIN branches b ON b.tenant_id=g.tenant_id AND b.id=g.branch_id WHERE g.tenant_id=$1 ORDER BY b.name`, [a.tenantId])).rows }));
   });
 
-  only(app, 'attendance.geofence').put('/geofences/:branchId', async (req) => {
+  only(app, 'attendance.geofence').put('/geofences/:branchId', { schema: { params: GeofencesParams, body: GeofencesBody }, config: { perm: ['attendance.configure'] } }, async (req) => {
     const a = tenantActor(req, 'attendance.configure');
-    const { branchId } = z.object({ branchId: Uuid }).parse(req.params);
-    const b = z.object({ latitude: z.number().min(-90).max(90), longitude: z.number().min(-180).max(180), radiusMeters: z.number().int().min(10).max(100000) }).parse(req.body);
+    const { branchId } = GeofencesParams.parse(req.params);
+    const b = GeofencesBody.parse(req.body);
     return a.tx(async (db) => {
       if (!(await db.query('SELECT 1 FROM branches WHERE tenant_id=$1 AND id=$2', [a.tenantId, branchId])).rowCount) throw notFound('Branch not found');
       await db.query(`INSERT INTO branch_geofences (tenant_id, branch_id, latitude, longitude, radius_m, updated_by) VALUES ($1,$2,$3,$4,$5,$6)
@@ -191,9 +206,9 @@ export async function attendanceRoutes(app: FastifyInstance) {
     });
   });
 
-  only(app, 'attendance.geofence').delete('/geofences/:branchId', async (req) => {
+  only(app, 'attendance.geofence').delete('/geofences/:branchId', { schema: { params: GeofencesParams }, config: { perm: ['attendance.configure'] } }, async (req) => {
     const a = tenantActor(req, 'attendance.configure');
-    const { branchId } = z.object({ branchId: Uuid }).parse(req.params);
+    const { branchId } = GeofencesParams.parse(req.params);
     return a.tx(async (db) => {
       const r = await db.query('DELETE FROM branch_geofences WHERE tenant_id=$1 AND branch_id=$2', [a.tenantId, branchId]);
       if (!r.rowCount) throw notFound('No geofence for this branch');
@@ -203,14 +218,14 @@ export async function attendanceRoutes(app: FastifyInstance) {
   });
 
   // ------------------------------------------------------------ views
-  app.get('/me', async (req) => {
+  app.get('/me', { schema: { querystring: Range }, config: { perm: ['attendance.self'] } }, async (req) => {
     const a = tenantActor(req, 'attendance.self');
     const q = Range.parse(req.query);
     if (!a.user.employeeId) throw badRequest('Your account is not linked to an employee record');
     return a.tx((db) => employeeAttendance(db, a.tenantId, a.user.employeeId!, q.from, q.to));
   });
 
-  app.get('/me/today', async (req) => {
+  app.get('/me/today', { schema: {}, config: { perm: ['attendance.self'] } }, async (req) => {
     const a = tenantActor(req, 'attendance.self');
     if (!a.user.employeeId) return { linked: false };
     return a.tx(async (db) => {
@@ -231,16 +246,16 @@ export async function attendanceRoutes(app: FastifyInstance) {
     });
   });
 
-  app.get('/employees/:id', async (req) => {
+  app.get('/employees/:id', { schema: { params: IdParams, querystring: Range }, config: { permAny: ['attendance.self', 'attendance.read', 'attendance.team.read'] } }, async (req) => {
     const a = tenantActorAny(req, 'attendance.self', 'attendance.read', 'attendance.team.read');
-    const { id } = z.object({ id: Uuid }).parse(req.params);
+    const { id } = IdParams.parse(req.params);
     const q = Range.parse(req.query);
     return a.tx(async (db) => { await assertCanViewEmployee(db, a, id); return employeeAttendance(db, a.tenantId, id, q.from, q.to); });
   });
 
-  app.get('/daily', async (req) => {
+  app.get('/daily', { schema: { querystring: DailyQuery }, config: { permAny: ['attendance.read', 'attendance.team.read'] } }, async (req) => {
     const a = tenantActorAny(req, 'attendance.read', 'attendance.team.read');
-    const q = PageQuery.extend({ date: IsoDate, branchId: Uuid.optional(), status: z.string().max(20).optional(), exceptionsOnly: QueryBool.optional() }).parse(req.query);
+    const q = DailyQuery.parse(req.query);
     return a.tx(async (db) => {
       let scope: string[] | null = null;
       if (!a.has('attendance.read')) scope = a.user.employeeId ? await teamEmployeeIds(db, a.tenantId, a.user.employeeId) : [];
@@ -264,9 +279,9 @@ export async function attendanceRoutes(app: FastifyInstance) {
   });
 
   // ------------------------------------------------------------ recalculation & locking
-  app.post('/recalculate', async (req) => {
+  app.post('/recalculate', { schema: { body: RecalculateBody }, config: { perm: ['attendance.recalculate'], feature: ['attendance'] } }, async (req) => {
     const a = tenantActor(req, 'attendance.recalculate');
-    const body = z.object({ from: IsoDate, to: IsoDate, employeeId: Uuid.optional(), branchId: Uuid.optional() }).parse(req.body);
+    const body = RecalculateBody.parse(req.body);
     Range.parse(body);
     return a.tx(async (db) => {
       await requireFeature(db, a.tenantId, 'attendance');
@@ -282,16 +297,16 @@ export async function attendanceRoutes(app: FastifyInstance) {
     });
   });
 
-  app.get('/locks', async (req) => {
+  app.get('/locks', { schema: {}, config: { permAny: ['attendance.read', 'attendance.lock'] } }, async (req) => {
     const a = tenantActorAny(req, 'attendance.read', 'attendance.lock');
     return a.tx(async (db) => ({ items: (await db.query(`SELECT l.id, l.period_start, l.period_end, l.locked_at, u.display_name AS locked_by
       FROM attendance_period_locks l JOIN users u ON u.id=l.locked_by WHERE l.tenant_id=$1 ORDER BY l.period_start DESC`, [a.tenantId])).rows }));
   });
 
   /** Freeze a period for payroll: calculate everything first, then lock. Corrections after this need an audited adjustment. */
-  app.post('/locks', async (req, reply) => {
+  app.post('/locks', { schema: { body: LocksBody }, config: { perm: ['attendance.lock'], feature: ['attendance'] } }, async (req, reply) => {
     const a = tenantActor(req, 'attendance.lock');
-    const body = z.object({ periodStart: IsoDate, periodEnd: IsoDate }).parse(req.body);
+    const body = LocksBody.parse(req.body);
     Range.parse({ from: body.periodStart, to: body.periodEnd });
     return a.tx(async (db) => {
       await requireFeature(db, a.tenantId, 'attendance');
@@ -318,7 +333,7 @@ export async function attendanceRoutes(app: FastifyInstance) {
   // ------------------------------------------------------------ regularization
   const RegBody = z.object({ workDate: IsoDate, requestedIn: z.iso.datetime({ offset: true }).optional(), requestedOut: z.iso.datetime({ offset: true }).optional(),
     reason: z.string().trim().min(5).max(1000) }).refine((b) => b.requestedIn || b.requestedOut, 'Provide an in time, an out time, or both');
-  only(app, 'attendance.regularization').post('/regularizations', async (req, reply) => {
+  only(app, 'attendance.regularization').post('/regularizations', { schema: { body: RegBody }, config: { perm: ['attendance.self'], feature: ['attendance.regularization'] } }, async (req, reply) => {
     const a = tenantActor(req, 'attendance.self');
     const body = RegBody.parse(req.body);
     const employeeId = a.user.employeeId;
@@ -349,9 +364,9 @@ export async function attendanceRoutes(app: FastifyInstance) {
     });
   });
 
-  only(app, 'attendance.regularization').get('/regularizations', async (req) => {
+  only(app, 'attendance.regularization').get('/regularizations', { schema: { querystring: RegularizationsQuery }, config: { permAny: ['attendance.self', 'attendance.read'] } }, async (req) => {
     const a = tenantActorAny(req, 'attendance.self', 'attendance.read');
-    const q = PageQuery.extend({ scope: z.enum(['mine', 'all']).default('mine'), status: z.string().max(20).optional() }).parse(req.query);
+    const q = RegularizationsQuery.parse(req.query);
     if (q.scope === 'all' && !a.has('attendance.read')) throw forbidden();
     return a.tx(async (db) => {
       const params = [a.tenantId, q.scope === 'mine' ? a.user.employeeId ?? '00000000-0000-0000-0000-000000000000' : null, q.status ?? null];
@@ -368,7 +383,7 @@ export async function attendanceRoutes(app: FastifyInstance) {
   });
 
   // ------------------------------------------------------------ shifts
-  only(app, 'shifts').get('/shifts', async (req) => {
+  only(app, 'shifts').get('/shifts', { schema: {}, config: { permAny: ['attendance.configure', 'attendance.read', 'attendance.self'], feature: ['shifts'] } }, async (req) => {
     const a = tenantActorAny(req, 'attendance.configure', 'attendance.read', 'attendance.self');
     return a.tx(async (db) => (await requireFeature(db, a.tenantId, 'shifts'), { items: (await db.query(`SELECT id, code, name, start_time::text, end_time::text, break_minutes, grace_minutes, early_exit_grace_minutes,
       half_day_min_minutes, full_day_min_minutes, overtime_after_minutes, status, end_time <= start_time AS overnight FROM shifts WHERE tenant_id=$1 ORDER BY code`, [a.tenantId])).rows }));
@@ -376,7 +391,7 @@ export async function attendanceRoutes(app: FastifyInstance) {
 
   const shiftCols = (s: z.infer<typeof ShiftBody>) => [s.code, s.name, s.startTime, s.endTime, s.breakMinutes, s.graceMinutes, s.earlyExitGraceMinutes,
     s.halfDayMinMinutes, s.fullDayMinMinutes, s.overtimeAfterMinutes, s.status];
-  only(app, 'shifts').post('/shifts', async (req, reply) => {
+  only(app, 'shifts').post('/shifts', { schema: { body: ShiftBody }, config: { perm: ['attendance.configure'], feature: ['shifts'] } }, async (req, reply) => {
     const a = tenantActor(req, 'attendance.configure');
     const body = ShiftBody.parse(req.body);
     return a.tx(async (db) => {
@@ -388,9 +403,9 @@ export async function attendanceRoutes(app: FastifyInstance) {
     });
   });
 
-  only(app, 'shifts').put('/shifts/:id', async (req) => {
+  only(app, 'shifts').put('/shifts/:id', { schema: { params: IdParams, body: ShiftBody }, config: { perm: ['attendance.configure'], feature: ['shifts'] } }, async (req) => {
     const a = tenantActor(req, 'attendance.configure');
-    const { id } = z.object({ id: Uuid }).parse(req.params);
+    const { id } = IdParams.parse(req.params);
     const body = ShiftBody.parse(req.body);
     return a.tx(async (db) => {
       await requireFeature(db, a.tenantId, 'shifts');
@@ -404,9 +419,9 @@ export async function attendanceRoutes(app: FastifyInstance) {
     });
   });
 
-  only(app, 'shifts').post('/shift-assignments', async (req) => {
+  only(app, 'shifts').post('/shift-assignments', { schema: { body: ShiftAssignmentsBody }, config: { perm: ['attendance.configure'], feature: ['shifts'] } }, async (req) => {
     const a = tenantActor(req, 'attendance.configure');
-    const body = z.object({ employeeIds: z.array(Uuid).min(1).max(1000), shiftId: Uuid, effectiveFrom: IsoDate, effectiveTo: IsoDate.nullable().optional() }).parse(req.body);
+    const body = ShiftAssignmentsBody.parse(req.body);
     if (body.effectiveTo && body.effectiveTo < body.effectiveFrom) throw badRequest('effectiveTo must be on or after effectiveFrom');
     return a.tx(async (db) => {
       await requireFeature(db, a.tenantId, 'shifts');
@@ -429,17 +444,17 @@ export async function attendanceRoutes(app: FastifyInstance) {
   });
 
   // ------------------------------------------------------------ holidays
-  only(app, 'holidays').get('/holidays', async (req) => {
+  only(app, 'holidays').get('/holidays', { schema: { querystring: HolidaysQuery }, config: { feature: ['holidays'] } }, async (req) => {
     const a = tenantActor(req);
-    const q = z.object({ year: z.coerce.number().int().min(2000).max(2100) }).parse(req.query);
+    const q = HolidaysQuery.parse(req.query);
     return a.tx(async (db) => (await requireFeature(db, a.tenantId, 'holidays'), { items: (await db.query(`SELECT h.id, h.holiday_date, h.name, h.optional, h.branch_id, b.name AS branch_name
       FROM holidays h LEFT JOIN branches b ON b.tenant_id=h.tenant_id AND b.id=h.branch_id
       WHERE h.tenant_id=$1 AND extract(year FROM h.holiday_date)=$2 ORDER BY h.holiday_date`, [a.tenantId, q.year])).rows }));
   });
 
-  only(app, 'holidays').post('/holidays', async (req, reply) => {
+  only(app, 'holidays').post('/holidays', { schema: { body: HolidaysBody }, config: { perm: ['attendance.configure'], feature: ['holidays'] } }, async (req, reply) => {
     const a = tenantActor(req, 'attendance.configure');
-    const body = z.object({ holidayDate: IsoDate, name: z.string().trim().min(2).max(120), branchId: Uuid.nullable().optional(), optional: z.boolean().default(false) }).parse(req.body);
+    const body = HolidaysBody.parse(req.body);
     return a.tx(async (db) => {
       await requireFeature(db, a.tenantId, 'holidays');
       if ((await lockedDates(db, a.tenantId, body.holidayDate, body.holidayDate)).size) throw conflict('This date is in a locked attendance period');
@@ -450,9 +465,9 @@ export async function attendanceRoutes(app: FastifyInstance) {
     });
   });
 
-  only(app, 'holidays').delete('/holidays/:id', async (req) => {
+  only(app, 'holidays').delete('/holidays/:id', { schema: { params: IdParams }, config: { perm: ['attendance.configure'], feature: ['holidays'] } }, async (req) => {
     const a = tenantActor(req, 'attendance.configure');
-    const { id } = z.object({ id: Uuid }).parse(req.params);
+    const { id } = IdParams.parse(req.params);
     return a.tx(async (db) => {
       await requireFeature(db, a.tenantId, 'holidays');
       const h = await db.query<{ holiday_date: string }>('SELECT holiday_date FROM holidays WHERE tenant_id=$1 AND id=$2', [a.tenantId, id]);
@@ -465,7 +480,7 @@ export async function attendanceRoutes(app: FastifyInstance) {
   });
 
   // ------------------------------------------------------------ biometric devices (management)
-  only(app, 'attendance.biometric').get('/devices', async (req) => {
+  only(app, 'attendance.biometric').get('/devices', { schema: {}, config: { permAny: ['attendance.devices.manage', 'attendance.configure'] } }, async (req) => {
     const a = tenantActorAny(req, 'attendance.devices.manage', 'attendance.configure');
     return a.tx(async (db) => ({ items: (await db.query(`SELECT d.id, d.serial_number, d.name, d.adapter_key, d.status, d.last_sync_at, d.last_clock_drift_seconds,
         d.last_error, d.api_key_prefix, b.name AS branch_name, d.branch_id,
@@ -473,10 +488,9 @@ export async function attendanceRoutes(app: FastifyInstance) {
       FROM attendance_devices d JOIN branches b ON b.tenant_id=d.tenant_id AND b.id=d.branch_id WHERE d.tenant_id=$1 ORDER BY d.name`, [a.tenantId])).rows }));
   });
 
-  only(app, 'attendance.biometric').post('/devices', async (req, reply) => {
+  only(app, 'attendance.biometric').post('/devices', { schema: { body: DevicesBody }, config: { perm: ['attendance.devices.manage'], feature: ['attendance'] } }, async (req, reply) => {
     const a = tenantActor(req, 'attendance.devices.manage');
-    const body = z.object({ branchId: Uuid, serialNumber: z.string().trim().min(3).max(64), name: z.string().trim().min(2).max(100),
-      adapterKey: z.enum(['generic_push_v1']) }).parse(req.body);
+    const body = DevicesBody.parse(req.body);
     return a.tx(async (db) => {
       await requireFeature(db, a.tenantId, 'attendance');
       const s = (await evaluateFeatures(db, a.tenantId)).get('attendance.biometric')!;
@@ -491,9 +505,9 @@ export async function attendanceRoutes(app: FastifyInstance) {
     });
   });
 
-  only(app, 'attendance.biometric').post('/devices/:id/rotate-key', async (req) => {
+  only(app, 'attendance.biometric').post('/devices/:id/rotate-key', { schema: { params: IdParams }, config: { perm: ['attendance.devices.manage'] } }, async (req) => {
     const a = tenantActor(req, 'attendance.devices.manage');
-    const { id } = z.object({ id: Uuid }).parse(req.params);
+    const { id } = IdParams.parse(req.params);
     return a.tx(async (db) => {
       const { prefix, secret, key } = newDeviceKey();
       const r = await db.query(`UPDATE attendance_devices SET api_key_hash=$3, api_key_prefix=$4 WHERE tenant_id=$1 AND id=$2`, [a.tenantId, id, sha256(secret), prefix]);
@@ -503,10 +517,10 @@ export async function attendanceRoutes(app: FastifyInstance) {
     });
   });
 
-  only(app, 'attendance.biometric').patch('/devices/:id', async (req) => {
+  only(app, 'attendance.biometric').patch('/devices/:id', { schema: { params: IdParams, body: PatchDevicesBody }, config: { perm: ['attendance.devices.manage'] } }, async (req) => {
     const a = tenantActor(req, 'attendance.devices.manage');
-    const { id } = z.object({ id: Uuid }).parse(req.params);
-    const body = z.object({ status: z.enum(['active', 'disabled', 'replaced']).optional(), branchId: Uuid.optional(), name: z.string().trim().min(2).max(100).optional() }).parse(req.body);
+    const { id } = IdParams.parse(req.params);
+    const body = PatchDevicesBody.parse(req.body);
     return a.tx(async (db) => {
       const prev = await db.query('SELECT status, branch_id, name FROM attendance_devices WHERE tenant_id=$1 AND id=$2 FOR UPDATE', [a.tenantId, id]);
       if (!prev.rowCount) throw notFound('Device not found');
@@ -517,17 +531,17 @@ export async function attendanceRoutes(app: FastifyInstance) {
     });
   });
 
-  only(app, 'attendance.biometric').get('/device-mappings', async (req) => {
+  only(app, 'attendance.biometric').get('/device-mappings', { schema: {}, config: { perm: ['attendance.devices.manage'] } }, async (req) => {
     const a = tenantActor(req, 'attendance.devices.manage');
     return a.tx(async (db) => ({ items: (await db.query(`SELECT m.device_user_id, m.employee_id, e.employee_code, trim(e.first_name||' '||coalesce(e.last_name,'')) AS name
       FROM device_user_mappings m JOIN employees e ON e.tenant_id=m.tenant_id AND e.id=m.employee_id WHERE m.tenant_id=$1 ORDER BY m.device_user_id`, [a.tenantId])).rows }));
   });
 
   /** Map a device enrolment id to an employee and re-process any events that were waiting in the unmapped queue. */
-  only(app, 'attendance.biometric').put('/device-mappings/:deviceUserId', async (req) => {
+  only(app, 'attendance.biometric').put('/device-mappings/:deviceUserId', { schema: { params: DeviceMappingsParams, body: DeviceMappingsBody }, config: { perm: ['attendance.devices.manage'] } }, async (req) => {
     const a = tenantActor(req, 'attendance.devices.manage');
-    const { deviceUserId } = z.object({ deviceUserId: z.string().min(1).max(64) }).parse(req.params);
-    const body = z.object({ employeeId: Uuid }).parse(req.body);
+    const { deviceUserId } = DeviceMappingsParams.parse(req.params);
+    const body = DeviceMappingsBody.parse(req.body);
     return a.tx(async (db) => {
       const e = await db.query('SELECT 1 FROM employees WHERE tenant_id=$1 AND id=$2', [a.tenantId, body.employeeId]);
       if (!e.rowCount) throw notFound('Employee not found');
@@ -547,7 +561,7 @@ export async function attendanceRoutes(app: FastifyInstance) {
     });
   });
 
-  only(app, 'attendance.biometric').get('/device-events/unmapped', async (req) => {
+  only(app, 'attendance.biometric').get('/device-events/unmapped', { schema: {}, config: { perm: ['attendance.devices.manage'] } }, async (req) => {
     const a = tenantActor(req, 'attendance.devices.manage');
     return a.tx(async (db) => ({ items: (await db.query(`SELECT ev.id, ev.device_user_id, ev.event_time, ev.device_time, ev.direction, ev.received_at, d.name AS device_name, d.serial_number
       FROM attendance_events ev LEFT JOIN attendance_devices d ON d.tenant_id=ev.tenant_id AND d.id=ev.device_id

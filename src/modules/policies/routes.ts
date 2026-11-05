@@ -68,14 +68,26 @@ const idList = z.string().optional().transform((s, ctx) => {
   return [...new Set(ids)];
 });
 
+const GetRootQuery = z.object({ status: z.enum(['active', 'retired']).optional() });
+const IdParams = z.object({ id: Uuid });
+const PutRootBody = PolicyBody.omit({ code: true });
+const RetireBody = z.object({ reason: z.string().trim().min(3).max(500) });
+const VersionsBody = z.object({
+      changeSummary: z.string().trim().min(3).max(1000), effectiveFrom: IsoDate, body: z.string().trim().max(100000).optional().transform((v) => v || null),
+      requiresAck: z.enum(['true', 'false']).default('true').transform((v) => v === 'true'), ackDueDays: z.coerce.number().int().min(1).max(180).default(14),
+      audienceBranchIds: idList, audienceDepartmentIds: idList,
+    });
+const VersionsFileQuery = z.object({ inline: QueryBool.default(false) });
+const VersionsAcknowledgeBody = z.object({ contentSha256: z.string().regex(/^[0-9a-f]{64}$/) });
+const VersionsAcknowledgementsQuery = PageQuery.extend({ status: z.enum(['pending', 'acknowledged']).optional() });
 export async function policyRoutes(app: FastifyInstance) {
   gateFeatures(app, 'core.policies');
   const maxBytes = app.deps.env.STORAGE_MAX_FILE_MB * 1024 * 1024;
 
   // ------------------------------------------------------------ policies
-  app.get('/', async (req) => {
+  app.get('/', { schema: { querystring: GetRootQuery }, config: { perm: ['policies.read'], feature: [FEATURE] } }, async (req) => {
     const a = tenantActor(req, 'policies.read');
-    const q = z.object({ status: z.enum(['active', 'retired']).optional() }).parse(req.query);
+    const q = GetRootQuery.parse(req.query);
     return a.tx(async (db) => {
       await requireFeature(db, a.tenantId, FEATURE);
       const rows = (await db.query(`SELECT p.id, p.code, p.title, p.category, p.owner, p.status, p.created_at,
@@ -90,7 +102,7 @@ export async function policyRoutes(app: FastifyInstance) {
     });
   });
 
-  app.post('/', async (req, reply) => {
+  app.post('/', { schema: { body: PolicyBody }, config: { perm: ['policies.manage'], feature: [FEATURE] } }, async (req, reply) => {
     const a = tenantActor(req, 'policies.manage');
     const b = PolicyBody.parse(req.body);
     return a.tx(async (db) => {
@@ -102,10 +114,10 @@ export async function policyRoutes(app: FastifyInstance) {
     });
   });
 
-  app.put('/:id', async (req) => {
+  app.put('/:id', { schema: { params: IdParams, body: PutRootBody }, config: { perm: ['policies.manage'], feature: [FEATURE] } }, async (req) => {
     const a = tenantActor(req, 'policies.manage');
-    const { id } = z.object({ id: Uuid }).parse(req.params);
-    const b = PolicyBody.omit({ code: true }).parse(req.body);
+    const { id } = IdParams.parse(req.params);
+    const b = PutRootBody.parse(req.body);
     return a.tx(async (db) => {
       await requireFeature(db, a.tenantId, FEATURE);
       const r = await db.query(`UPDATE policies SET title=$3, category=$4, owner=$5 WHERE tenant_id=$1 AND id=$2`, [a.tenantId, id, b.title, b.category, b.owner]);
@@ -116,10 +128,10 @@ export async function policyRoutes(app: FastifyInstance) {
   });
 
   /** Retiring withdraws the published version; history and acknowledgements are kept. */
-  app.post('/:id/retire', async (req) => {
+  app.post('/:id/retire', { schema: { params: IdParams, body: RetireBody }, config: { perm: ['policies.publish'], feature: [FEATURE] } }, async (req) => {
     const a = tenantActor(req, 'policies.publish');
-    const { id } = z.object({ id: Uuid }).parse(req.params);
-    const { reason } = z.object({ reason: z.string().trim().min(3).max(500) }).parse(req.body);
+    const { id } = IdParams.parse(req.params);
+    const { reason } = RetireBody.parse(req.body);
     return a.tx(async (db) => {
       await requireFeature(db, a.tenantId, FEATURE);
       const r = await db.query(`UPDATE policies SET status='retired' WHERE tenant_id=$1 AND id=$2 AND status='active'`, [a.tenantId, id]);
@@ -130,9 +142,9 @@ export async function policyRoutes(app: FastifyInstance) {
     });
   });
 
-  app.get('/:id', async (req) => {
+  app.get('/:id', { schema: { params: IdParams }, config: { perm: ['policies.read'], feature: [FEATURE] } }, async (req) => {
     const a = tenantActor(req, 'policies.read');
-    const { id } = z.object({ id: Uuid }).parse(req.params);
+    const { id } = IdParams.parse(req.params);
     return a.tx(async (db) => {
       await requireFeature(db, a.tenantId, FEATURE);
       const p = (await db.query(`SELECT id, code, title, category, owner, status, created_at FROM policies WHERE tenant_id=$1 AND id=$2`, [a.tenantId, id])).rows[0];
@@ -148,16 +160,12 @@ export async function policyRoutes(app: FastifyInstance) {
 
   // ------------------------------------------------------------ versions
   /** multipart/form-data: changeSummary, effectiveFrom, body?, requiresAck?, ackDueDays?, audienceBranchIds?, audienceDepartmentIds?, file? (PDF) */
-  app.post('/:id/versions', { config: { rateLimit: { max: 20, timeWindow: '1 minute' } } }, async (req, reply) => {
+  app.post('/:id/versions', { schema: { params: IdParams, body: VersionsBody, consumes: ['multipart/form-data'] }, config: { perm: ['policies.manage'], feature: [FEATURE], rateLimit: { max: 20, timeWindow: '1 minute' } } }, async (req, reply) => {
     const a = tenantActor(req, 'policies.manage');
-    const { id } = z.object({ id: Uuid }).parse(req.params);
+    const { id } = IdParams.parse(req.params);
     if (!req.isMultipart()) throw badRequest('Upload as multipart/form-data');
     const { file, fields } = await readMultipart(req, maxBytes);
-    const b = z.object({
-      changeSummary: z.string().trim().min(3).max(1000), effectiveFrom: IsoDate, body: z.string().trim().max(100000).optional().transform((v) => v || null),
-      requiresAck: z.enum(['true', 'false']).default('true').transform((v) => v === 'true'), ackDueDays: z.coerce.number().int().min(1).max(180).default(14),
-      audienceBranchIds: idList, audienceDepartmentIds: idList,
-    }).parse(fields);
+    const b = VersionsBody.parse(fields);
     if (!b.body && !file) throw badRequest('Add the policy text, a PDF, or both');
     let detected: { contentType: string; ext: string } | null = null;
     if (file) {
@@ -197,9 +205,9 @@ export async function policyRoutes(app: FastifyInstance) {
     });
   });
 
-  app.post('/versions/:id/discard', async (req) => {
+  app.post('/versions/:id/discard', { schema: { params: IdParams }, config: { perm: ['policies.manage'], feature: [FEATURE] } }, async (req) => {
     const a = tenantActor(req, 'policies.manage');
-    const { id } = z.object({ id: Uuid }).parse(req.params);
+    const { id } = IdParams.parse(req.params);
     return a.tx(async (db) => {
       await requireFeature(db, a.tenantId, FEATURE);
       const r = await db.query(`UPDATE policy_versions SET status='withdrawn' WHERE tenant_id=$1 AND id=$2 AND status='draft'`, [a.tenantId, id]);
@@ -209,9 +217,9 @@ export async function policyRoutes(app: FastifyInstance) {
     });
   });
 
-  app.post('/versions/:id/publish', async (req) => {
+  app.post('/versions/:id/publish', { schema: { params: IdParams }, config: { perm: ['policies.publish'], feature: [FEATURE] } }, async (req) => {
     const a = tenantActor(req, 'policies.publish');
-    const { id } = z.object({ id: Uuid }).parse(req.params);
+    const { id } = IdParams.parse(req.params);
     return a.tx(async (db) => {
       await requireFeature(db, a.tenantId, FEATURE);
       const v = await loadVersion(db, a.tenantId, id, true);
@@ -233,10 +241,10 @@ export async function policyRoutes(app: FastifyInstance) {
     });
   });
 
-  app.post('/versions/:id/withdraw', async (req) => {
+  app.post('/versions/:id/withdraw', { schema: { params: IdParams, body: RetireBody }, config: { perm: ['policies.publish'], feature: [FEATURE] } }, async (req) => {
     const a = tenantActor(req, 'policies.publish');
-    const { id } = z.object({ id: Uuid }).parse(req.params);
-    const { reason } = z.object({ reason: z.string().trim().min(3).max(500) }).parse(req.body);
+    const { id } = IdParams.parse(req.params);
+    const { reason } = RetireBody.parse(req.body);
     return a.tx(async (db) => {
       await requireFeature(db, a.tenantId, FEATURE);
       const r = await db.query(`UPDATE policy_versions SET status='withdrawn' WHERE tenant_id=$1 AND id=$2 AND status='published'`, [a.tenantId, id]);
@@ -246,9 +254,9 @@ export async function policyRoutes(app: FastifyInstance) {
     });
   });
 
-  app.get('/versions/:id', async (req) => {
+  app.get('/versions/:id', { schema: { params: IdParams }, config: { feature: [FEATURE] } }, async (req) => {
     const a = tenantActor(req);
-    const { id } = z.object({ id: Uuid }).parse(req.params);
+    const { id } = IdParams.parse(req.params);
     return a.tx(async (db) => {
       await requireFeature(db, a.tenantId, FEATURE);
       const v = await loadVersion(db, a.tenantId, id);
@@ -262,9 +270,9 @@ export async function policyRoutes(app: FastifyInstance) {
     });
   });
 
-  app.get('/versions/:id/file', async (req, reply) => {
+  app.get('/versions/:id/file', { schema: { params: IdParams, querystring: VersionsFileQuery }, config: { feature: [FEATURE] } }, async (req, reply) => {
     const a = tenantActor(req);
-    const { id } = z.object({ id: Uuid }).parse(req.params);
+    const { id } = IdParams.parse(req.params);
     const v = await a.tx(async (db) => {
       await requireFeature(db, a.tenantId, FEATURE);
       const v = await loadVersion(db, a.tenantId, id);
@@ -278,17 +286,17 @@ export async function policyRoutes(app: FastifyInstance) {
       req.log.error({ policyVersionId: id }, 'policy file integrity check failed');
       throw new AppError(500, 'integrity_failed', 'The stored file failed its integrity check. Contact your administrator.');
     }
-    const q = z.object({ inline: QueryBool.default(false) }).parse(req.query);
+    const q = VersionsFileQuery.parse(req.query);
     return reply.header('content-type', 'application/pdf')
       .header('content-disposition', `${q.inline ? 'inline' : 'attachment'}; filename="${v.file_name!.replace(/"/g, '')}"; filename*=UTF-8''${encodeURIComponent(v.file_name!)}`)
       .header('cache-control', 'private, no-store').header('x-content-type-options', 'nosniff').send(buf);
   });
 
   /** The client sends back the content hash it displayed; a stale page (newer version published) is refused. */
-  app.post('/versions/:id/acknowledge', async (req) => {
+  app.post('/versions/:id/acknowledge', { schema: { params: IdParams, body: VersionsAcknowledgeBody }, config: { perm: ['policies.self'], feature: [FEATURE] } }, async (req) => {
     const a = tenantActor(req, 'policies.self');
-    const { id } = z.object({ id: Uuid }).parse(req.params);
-    const { contentSha256 } = z.object({ contentSha256: z.string().regex(/^[0-9a-f]{64}$/) }).parse(req.body);
+    const { id } = IdParams.parse(req.params);
+    const { contentSha256 } = VersionsAcknowledgeBody.parse(req.body);
     if (!a.user.employeeId) throw badRequest('Your account is not linked to an employee record');
     return a.tx(async (db) => {
       await requireFeature(db, a.tenantId, FEATURE);
@@ -309,7 +317,7 @@ export async function policyRoutes(app: FastifyInstance) {
   });
 
   /** Current policies that apply to me, with acknowledgement status. */
-  app.get('/mine', async (req) => {
+  app.get('/mine', { schema: {}, config: { perm: ['policies.self'], feature: [FEATURE] } }, async (req) => {
     const a = tenantActor(req, 'policies.self');
     if (!a.user.employeeId) return { items: [], pending: 0 };
     return a.tx(async (db) => {
@@ -341,10 +349,10 @@ export async function policyRoutes(app: FastifyInstance) {
     return { total, rows };
   }
 
-  app.get('/versions/:id/acknowledgements', async (req) => {
+  app.get('/versions/:id/acknowledgements', { schema: { params: IdParams, querystring: VersionsAcknowledgementsQuery }, config: { perm: ['policies.read'], feature: [FEATURE] } }, async (req) => {
     const a = tenantActor(req, 'policies.read');
-    const { id } = z.object({ id: Uuid }).parse(req.params);
-    const q = PageQuery.extend({ status: z.enum(['pending', 'acknowledged']).optional() }).parse(req.query);
+    const { id } = IdParams.parse(req.params);
+    const q = VersionsAcknowledgementsQuery.parse(req.query);
     return a.tx(async (db) => {
       await requireFeature(db, a.tenantId, FEATURE);
       if (!(await loadVersion(db, a.tenantId, id))) throw notFound('Version not found');
@@ -353,9 +361,9 @@ export async function policyRoutes(app: FastifyInstance) {
     });
   });
 
-  app.get('/versions/:id/acknowledgements.xlsx', async (req, reply) => {
+  app.get('/versions/:id/acknowledgements.xlsx', { schema: { params: IdParams }, config: { perm: ['policies.read'], feature: [FEATURE] } }, async (req, reply) => {
     const a = tenantActor(req, 'policies.read');
-    const { id } = z.object({ id: Uuid }).parse(req.params);
+    const { id } = IdParams.parse(req.params);
     const { book, name } = await a.tx(async (db) => {
       await requireFeature(db, a.tenantId, FEATURE);
       const v = await loadVersion(db, a.tenantId, id);
@@ -370,9 +378,9 @@ export async function policyRoutes(app: FastifyInstance) {
     return reply.header('content-type', XLSX_TYPE).header('content-disposition', `attachment; filename="${name}"`).header('cache-control', 'private, no-store').send(book);
   });
 
-  app.get('/versions/:id/acknowledgements.csv', async (req, reply) => {
+  app.get('/versions/:id/acknowledgements.csv', { schema: { params: IdParams }, config: { perm: ['policies.read'], feature: [FEATURE] } }, async (req, reply) => {
     const a = tenantActor(req, 'policies.read');
-    const { id } = z.object({ id: Uuid }).parse(req.params);
+    const { id } = IdParams.parse(req.params);
     const { csv, name } = await a.tx(async (db) => {
       await requireFeature(db, a.tenantId, FEATURE);
       const v = await loadVersion(db, a.tenantId, id);

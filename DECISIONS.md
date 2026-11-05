@@ -265,3 +265,13 @@ A request is an approval request (`lab_authorization`) routed to holders of `com
 
 **Reason.** There is no domain common to every installation to publish a type page at. The request id is what the logs carry, so a user's reference finds the line, and it holds nothing from the address. Framework 4xx messages are replaced by fixed text because `JSON.parse` messages quote the body. Constraint names left the answers: they named the schema and nothing used them. No compatibility shape, because the frontend had already switched.
 
+## D51 — OpenAPI: route schemas are documentation; the handler still parses
+
+**Context.** Fastify validates before the handler, and permissions are checked inside handlers. Real validation in `schema` would answer 400 where today an unauthenticated caller gets 401 and an unauthorized one 403. Moving auth to a hook on 330 routes is a larger, riskier change.
+
+**Options.** Move auth to `preValidation`; `fastify-type-provider-zod`; or a pass-through validator and the same zod object in `schema` and in the handler's `.parse`.
+
+**Decision.** The last. `setValidatorCompiler` passes data through. Each inline schema was hoisted by a codemod, keeping validation where it was. `setSerializerCompiler` is plain `JSON.stringify`, so a response schema can never remove a field. `z.toJSONSchema` (zod 4, `io: 'input'`, unrepresentable as any) makes the document, in a small transform, with `@fastify/swagger` as a dev dependency, loaded only by `npm run openapi`. The API does not serve the document: CI publishes it as an artifact.
+
+**Reason.** Refusal order and strictness stay exactly as they were, and a test checks 401, 403, 400 in that order. Refinements, such as "email or phone", have no JSON Schema form and appear only as the plain field rules. Off-flag routes are in the document with `x-feature`, built with every switch on, so one file describes the product. `x-feature` holds groups: every group needs one variable on. `x-permissions-conditional` is read from the handler's `a.has(...)` calls, and means holding it changes what the route does.
+

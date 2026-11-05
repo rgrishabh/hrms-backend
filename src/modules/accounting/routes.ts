@@ -13,11 +13,15 @@ import { payrollJournal, reimbursementJournal, toCsv, toTallyXml, type Journal }
 
 const KEY = /^(earning|deduction|employer_expense|employer_payable|expense):([A-Z0-9_]{1,30}|\*)$|^(net_pay|reimbursement_payable|travel_advance)$/;
 
+const LedgerMapBody = z.object({ entries: z.array(z.object({ key: z.string().regex(KEY, 'Unknown head'), ledger: z.string().trim().max(200) })).min(1).max(500) });
+const ExportQuery = z.object({ format: z.enum(['csv', 'tally_xml']).default('csv') });
+const IdParams = z.object({ id: Uuid });
+
 export async function accountingRoutes(app: FastifyInstance) {
   gateFeatures(app, 'accounting_exports');
 
   /** The organization's ledger names, and the heads this installation uses (to map). */
-  app.get('/ledger-map', async (req) => {
+  app.get('/ledger-map', { schema: {}, config: { permAny: ['accounting.export', 'accounting.configure'] } }, async (req) => {
     const a = tenantActorAny(req, 'accounting.export', 'accounting.configure');
     return a.tx(async (db) => {
       const items = (await db.query(`SELECT map_key, ledger_name, updated_at FROM accounting_ledger_map WHERE tenant_id=$1 ORDER BY map_key`, [a.tenantId])).rows;
@@ -42,9 +46,9 @@ export async function accountingRoutes(app: FastifyInstance) {
     });
   });
 
-  app.put('/ledger-map', async (req) => {
+  app.put('/ledger-map', { schema: { body: LedgerMapBody }, config: { perm: ['accounting.configure'] } }, async (req) => {
     const a = tenantActor(req, 'accounting.configure');
-    const b = z.object({ entries: z.array(z.object({ key: z.string().regex(KEY, 'Unknown head'), ledger: z.string().trim().max(200) })).min(1).max(500) }).parse(req.body);
+    const b = LedgerMapBody.parse(req.body);
     return a.tx(async (db) => {
       for (const e of b.entries) {
         if (e.ledger) await db.query(`INSERT INTO accounting_ledger_map (tenant_id, map_key, ledger_name, updated_by) VALUES ($1,$2,$3,$4)
@@ -57,7 +61,7 @@ export async function accountingRoutes(app: FastifyInstance) {
   });
 
   /** What can be exported, with the last export of each. */
-  app.get('/sources', async (req) => {
+  app.get('/sources', { schema: {}, config: { perm: ['accounting.export'] } }, async (req) => {
     const a = tenantActor(req, 'accounting.export');
     return a.tx(async (db) => {
       const last = `(SELECT json_build_object('at', x.created_at, 'format', x.format, 'by', u.display_name) FROM accounting_exports x JOIN users u ON u.id=x.exported_by
@@ -85,7 +89,7 @@ export async function accountingRoutes(app: FastifyInstance) {
   });
 
   const load = async (req: FastifyRequest, a: ReturnType<typeof tenantActor>, kind: 'payroll_run' | 'reimbursement_batch', read: 'read' | 'export') => {
-    const { id } = z.object({ id: Uuid }).parse(req.params);
+    const { id } = IdParams.parse(req.params);
     return a.tx(async (db) => {
       if (kind === 'reimbursement_batch' && !(await featureOn(db, a.tenantId, 'expenses'))) throw conflict('Expenses are not in use');
       if (kind === 'payroll_run') {
@@ -118,13 +122,13 @@ export async function accountingRoutes(app: FastifyInstance) {
 
   for (const [path, kind] of [['payroll-runs', 'payroll_run'], ['reimbursement-batches', 'reimbursement_batch']] as const) {
     /** Preview: the voucher, its entries and any heads still to map. */
-    app.get(`/${path}/:id/journal`, async (req) => {
+    app.get(`/${path}/:id/journal`, { schema: { params: IdParams }, config: { perm: ['accounting.export'] } }, async (req) => {
       const a = tenantActor(req, 'accounting.export');
       return (await load(req, a, kind, 'read')).j;
     });
-    app.get(`/${path}/:id/export`, async (req, reply) => {
+    app.get(`/${path}/:id/export`, { schema: { params: IdParams, querystring: ExportQuery }, config: { perm: ['accounting.export'] } }, async (req, reply) => {
       const a = tenantActor(req, 'accounting.export');
-      const { format } = z.object({ format: z.enum(['csv', 'tally_xml']).default('csv') }).parse(req.query);
+      const { format } = ExportQuery.parse(req.query);
       const { id, j } = await load(req, a, kind, 'export');
       return exportFile(a, reply, kind, id, j, format);
     });

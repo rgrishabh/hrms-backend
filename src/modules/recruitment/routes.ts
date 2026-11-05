@@ -140,14 +140,41 @@ export function registerRecruitmentApprovals() {
   });
 }
 
+const RequisitionsQuery = PageQuery.extend({ status: z.string().max(20).optional(), scope: z.enum(['mine', 'all']).optional() });
+const IdParams = z.object({ id: Uuid });
+const RequisitionsBody = RequisitionBody.extend({ expectedVersion: z.number().int() });
+const RequisitionsParams = z.object({ id: Uuid, action: z.enum(['hold', 'reopen', 'close', 'cancel']) });
+const PostRequisitionsBody = z.object({ reason: z.string().trim().min(3).max(500) });
+const CandidatesQuery = PageQuery.extend({ search: z.string().trim().max(100).optional() });
+const ApplicationsBody = z.object({ requisitionId: Uuid, candidateId: Uuid, note: Text(500) });
+const ApplicationsMoveBody = z.object({ stage: z.enum(STAGES), note: Text(1000), reason: Text(500), expectedVersion: z.number().int() });
+const ApplicationsInterviewsBody = z.object({ round: z.number().int().min(1).max(20), kind: z.enum(['phone', 'technical', 'practical_lab', 'hr', 'panel', 'other']),
+      scheduledAt: z.iso.datetime({ offset: true }), durationMin: z.number().int().min(10).max(480).default(45), location: Text(300),
+      panelUserIds: z.array(Uuid).min(1).max(10) });
+const PanelUsersQuery = z.object({ search: z.string().trim().max(100).optional() });
+const InterviewsFeedbackBody = z.object({ rating: z.number().int().min(1).max(5), recommendation: z.enum(['strong_yes', 'yes', 'no', 'strong_no']), notes: z.string().trim().min(10).max(4000) });
+const OffersParams = z.object({ id: Uuid, action: z.enum(['sent', 'accepted', 'declined', 'withdraw']) });
+const OffersBody = z.object({ note: Text(500) });
+const OffersHireBody = z.object({ employeeCode: z.string().trim(), workEmail: z.string().trim().optional().transform((v) => v || undefined), confirmDuplicate: z.boolean().default(false) });
+const candidateNum = (max: number) => z.string().optional().transform((v) => (v ? Number(v) : null)).pipe(z.number().int().min(0).max(max).nullable());
+const CandidateFields = z.object({
+  firstName: z.string().trim().min(1).max(100), lastName: Text(100), email: z.string().trim().toLowerCase().pipe(z.email()).optional().or(z.literal('')).transform((v) => v || null),
+  phone: z.string().trim().regex(/^\+?[0-9 -]{10,15}$/, 'Enter a valid phone number').optional().or(z.literal('')).transform((v) => v || null),
+  source: z.enum(['referral', 'job_portal', 'website', 'agency', 'campus', 'walk_in', 'other']), referredBy: Uuid.optional().or(z.literal('')).transform((v) => v || null),
+  currentCompany: Text(150), currentDesignation: Text(120), experienceMonths: candidateNum(720), noticeDays: candidateNum(365),
+  expectedCtc: z.string().optional().transform((v) => (v ? Number(v) : null)).pipe(Money.nullable()),
+  location: Text(100), qualification: Text(200), consent: z.literal('true', { message: 'Record the candidate\'s consent to process their data for recruitment' }),
+  consentNote: z.string().trim().min(3).max(300), confirmDuplicate: z.enum(['true', 'false']).default('false'),
+    }).refine((c) => c.email || c.phone, { message: 'Give an email or a phone number', path: ['email'] });
+
 export async function recruitmentRoutes(app: FastifyInstance) {
   gateFeatures(app, 'recruitment');
   const maxBytes = app.deps.env.STORAGE_MAX_FILE_MB * 1024 * 1024;
 
   // ------------------------------------------------------------ requisitions
-  app.get('/requisitions', async (req) => {
+  app.get('/requisitions', { schema: { querystring: RequisitionsQuery }, config: { permAny: ['recruitment.requisition', 'recruitment.read', 'recruitment.manage', 'recruitment.approve'], feature: [FEATURE] } }, async (req) => {
     const a = tenantActorAny(req, 'recruitment.requisition', 'recruitment.read', 'recruitment.manage', 'recruitment.approve');
-    const q = PageQuery.extend({ status: z.string().max(20).optional(), scope: z.enum(['mine', 'all']).optional() }).parse(req.query);
+    const q = RequisitionsQuery.parse(req.query);
     return a.tx(async (db) => {
       await requireFeature(db, a.tenantId, FEATURE);
       const all = isReader(a) && q.scope !== 'mine';
@@ -174,7 +201,7 @@ export async function recruitmentRoutes(app: FastifyInstance) {
   }
   const reqCols = (b: z.infer<typeof RequisitionBody>) => [b.title, b.legalEntityId, b.branchId, b.departmentId, b.designation, b.employmentType, b.positions, b.justification, b.budgetCtcMax, b.hiringManagerId, b.targetDate];
 
-  app.post('/requisitions', async (req, reply) => {
+  app.post('/requisitions', { schema: { body: RequisitionBody }, config: { permAny: ['recruitment.requisition', 'recruitment.manage'], feature: [FEATURE] } }, async (req, reply) => {
     const a = tenantActorAny(req, 'recruitment.requisition', 'recruitment.manage');
     const b = RequisitionBody.parse(req.body);
     if (b.budgetCtcMax != null && !a.has('recruitment.compensation')) throw forbidden('Only users with compensation access can set a budget');
@@ -191,10 +218,10 @@ export async function recruitmentRoutes(app: FastifyInstance) {
     });
   });
 
-  app.put('/requisitions/:id', async (req) => {
+  app.put('/requisitions/:id', { schema: { params: IdParams, body: RequisitionsBody }, config: { permAny: ['recruitment.requisition', 'recruitment.manage'], feature: [FEATURE] } }, async (req) => {
     const a = tenantActorAny(req, 'recruitment.requisition', 'recruitment.manage');
-    const { id } = z.object({ id: Uuid }).parse(req.params);
-    const b = RequisitionBody.extend({ expectedVersion: z.number().int() }).parse(req.body);
+    const { id } = IdParams.parse(req.params);
+    const b = RequisitionsBody.parse(req.body);
     return a.tx(async (db) => {
       await requireFeature(db, a.tenantId, FEATURE);
       const r = await loadRequisition(db, a, id, true);
@@ -211,9 +238,9 @@ export async function recruitmentRoutes(app: FastifyInstance) {
     });
   });
 
-  app.post('/requisitions/:id/submit', async (req) => {
+  app.post('/requisitions/:id/submit', { schema: { params: IdParams }, config: { permAny: ['recruitment.requisition', 'recruitment.manage'], feature: [FEATURE] } }, async (req) => {
     const a = tenantActorAny(req, 'recruitment.requisition', 'recruitment.manage');
-    const { id } = z.object({ id: Uuid }).parse(req.params);
+    const { id } = IdParams.parse(req.params);
     return a.tx(async (db) => {
       await requireFeature(db, a.tenantId, FEATURE);
       const r = await loadRequisition(db, a, id, true);
@@ -228,10 +255,10 @@ export async function recruitmentRoutes(app: FastifyInstance) {
     });
   });
 
-  app.post('/requisitions/:id/:action', async (req) => {
+  app.post('/requisitions/:id/:action', { schema: { params: RequisitionsParams, body: PostRequisitionsBody }, config: { perm: ['recruitment.manage'], feature: [FEATURE] } }, async (req) => {
     const a = tenantActor(req, 'recruitment.manage');
-    const p = z.object({ id: Uuid, action: z.enum(['hold', 'reopen', 'close', 'cancel']) }).parse(req.params);
-    const { reason } = z.object({ reason: z.string().trim().min(3).max(500) }).parse(req.body);
+    const p = RequisitionsParams.parse(req.params);
+    const { reason } = PostRequisitionsBody.parse(req.body);
     return a.tx(async (db) => {
       await requireFeature(db, a.tenantId, FEATURE);
       const r = await loadRequisition(db, a, p.id, true);
@@ -252,9 +279,9 @@ export async function recruitmentRoutes(app: FastifyInstance) {
     });
   });
 
-  app.get('/requisitions/:id', async (req) => {
+  app.get('/requisitions/:id', { schema: { params: IdParams }, config: { permAny: ['recruitment.requisition', 'recruitment.read', 'recruitment.manage', 'recruitment.approve'], feature: [FEATURE] } }, async (req) => {
     const a = tenantActorAny(req, 'recruitment.requisition', 'recruitment.read', 'recruitment.manage', 'recruitment.approve');
-    const { id } = z.object({ id: Uuid }).parse(req.params);
+    const { id } = IdParams.parse(req.params);
     return a.tx(async (db) => {
       await requireFeature(db, a.tenantId, FEATURE);
       await loadRequisition(db, a, id);
@@ -275,9 +302,9 @@ export async function recruitmentRoutes(app: FastifyInstance) {
   });
 
   // ------------------------------------------------------------ candidates
-  app.get('/candidates', async (req) => {
+  app.get('/candidates', { schema: { querystring: CandidatesQuery }, config: { permAny: ['recruitment.read', 'recruitment.manage'], feature: [FEATURE] } }, async (req) => {
     const a = tenantActorAny(req, 'recruitment.read', 'recruitment.manage');
-    const q = PageQuery.extend({ search: z.string().trim().max(100).optional() }).parse(req.query);
+    const q = CandidatesQuery.parse(req.query);
     return a.tx(async (db) => {
       await requireFeature(db, a.tenantId, FEATURE);
       const where = `c.tenant_id=$1 AND c.status='active' AND ($2::text IS NULL OR lower(c.first_name||' '||coalesce(c.last_name,'')) LIKE '%'||lower($2)||'%'
@@ -294,20 +321,11 @@ export async function recruitmentRoutes(app: FastifyInstance) {
 
   /** multipart: firstName, lastName?, email?, phone?, source, referredBy?, currentCompany?, currentDesignation?, experienceMonths?,
    *  noticeDays?, expectedCtc?, location?, qualification?, consent=true, consentNote, confirmDuplicate?, resume (PDF/DOCX) */
-  app.post('/candidates', { config: { rateLimit: { max: 30, timeWindow: '1 minute' } } }, async (req, reply) => {
+  app.post('/candidates', { schema: { body: CandidateFields, consumes: ['multipart/form-data'] }, config: { perm: ['recruitment.manage'], feature: [FEATURE], rateLimit: { max: 30, timeWindow: '1 minute' } } }, async (req, reply) => {
     const a = tenantActor(req, 'recruitment.manage');
     if (!req.isMultipart()) throw badRequest('Upload as multipart/form-data');
     const { file, fields } = await readMultipart(req, maxBytes);
-    const num = (max: number) => z.string().optional().transform((v) => (v ? Number(v) : null)).pipe(z.number().int().min(0).max(max).nullable());
-    const b = z.object({
-      firstName: z.string().trim().min(1).max(100), lastName: Text(100), email: z.string().trim().toLowerCase().pipe(z.email()).optional().or(z.literal('')).transform((v) => v || null),
-      phone: z.string().trim().regex(/^\+?[0-9 -]{10,15}$/, 'Enter a valid phone number').optional().or(z.literal('')).transform((v) => v || null),
-      source: z.enum(['referral', 'job_portal', 'website', 'agency', 'campus', 'walk_in', 'other']), referredBy: Uuid.optional().or(z.literal('')).transform((v) => v || null),
-      currentCompany: Text(150), currentDesignation: Text(120), experienceMonths: num(720), noticeDays: num(365),
-      expectedCtc: z.string().optional().transform((v) => (v ? Number(v) : null)).pipe(Money.nullable()),
-      location: Text(100), qualification: Text(200), consent: z.literal('true', { message: 'Record the candidate\'s consent to process their data for recruitment' }),
-      consentNote: z.string().trim().min(3).max(300), confirmDuplicate: z.enum(['true', 'false']).default('false'),
-    }).refine((c) => c.email || c.phone, { message: 'Give an email or a phone number', path: ['email'] }).parse(fields);
+    const b = CandidateFields.parse(fields);
     if (b.expectedCtc != null && !a.has('recruitment.compensation')) throw forbidden('Only users with compensation access can record expected CTC');
     let detected: { contentType: string; ext: string } | null = null;
     if (file) {
@@ -347,9 +365,9 @@ export async function recruitmentRoutes(app: FastifyInstance) {
     });
   });
 
-  app.get('/candidates/:id', async (req) => {
+  app.get('/candidates/:id', { schema: { params: IdParams }, config: { feature: [FEATURE] } }, async (req) => {
     const a = tenantActor(req);
-    const { id } = z.object({ id: Uuid }).parse(req.params);
+    const { id } = IdParams.parse(req.params);
     return a.tx(async (db) => {
       await requireFeature(db, a.tenantId, FEATURE);
       if (!(await canSeeCandidate(db, a, id))) throw notFound('Candidate not found');
@@ -366,9 +384,9 @@ export async function recruitmentRoutes(app: FastifyInstance) {
     });
   });
 
-  app.get('/candidates/:id/resume', async (req, reply) => {
+  app.get('/candidates/:id/resume', { schema: { params: IdParams }, config: { feature: [FEATURE] } }, async (req, reply) => {
     const a = tenantActor(req);
-    const { id } = z.object({ id: Uuid }).parse(req.params);
+    const { id } = IdParams.parse(req.params);
     const c = await a.tx(async (db) => {
       await requireFeature(db, a.tenantId, FEATURE);
       if (!(await canSeeCandidate(db, a, id))) throw notFound('Candidate not found');
@@ -387,10 +405,10 @@ export async function recruitmentRoutes(app: FastifyInstance) {
   });
 
   /** Erasure on the candidate's request (or before retention ends). Hired candidates keep their employee record. */
-  app.post('/candidates/:id/anonymize', async (req) => {
+  app.post('/candidates/:id/anonymize', { schema: { params: IdParams, body: PostRequisitionsBody }, config: { perm: ['recruitment.manage'], feature: [FEATURE] } }, async (req) => {
     const a = tenantActor(req, 'recruitment.manage');
-    const { id } = z.object({ id: Uuid }).parse(req.params);
-    const { reason } = z.object({ reason: z.string().trim().min(3).max(500) }).parse(req.body);
+    const { id } = IdParams.parse(req.params);
+    const { reason } = PostRequisitionsBody.parse(req.body);
     return a.tx(async (db) => {
       await requireFeature(db, a.tenantId, FEATURE);
       const live = await db.query(`SELECT 1 FROM job_offers o JOIN job_applications ap ON ap.tenant_id=o.tenant_id AND ap.id=o.application_id
@@ -403,9 +421,9 @@ export async function recruitmentRoutes(app: FastifyInstance) {
   });
 
   // ------------------------------------------------------------ applications
-  app.post('/applications', async (req, reply) => {
+  app.post('/applications', { schema: { body: ApplicationsBody }, config: { perm: ['recruitment.manage'], feature: [FEATURE] } }, async (req, reply) => {
     const a = tenantActor(req, 'recruitment.manage');
-    const b = z.object({ requisitionId: Uuid, candidateId: Uuid, note: Text(500) }).parse(req.body);
+    const b = ApplicationsBody.parse(req.body);
     return a.tx(async (db) => {
       await requireFeature(db, a.tenantId, FEATURE);
       const r = await loadRequisition(db, a, b.requisitionId, true);
@@ -421,9 +439,9 @@ export async function recruitmentRoutes(app: FastifyInstance) {
     });
   });
 
-  app.get('/applications/:id', async (req) => {
+  app.get('/applications/:id', { schema: { params: IdParams }, config: { feature: [FEATURE] } }, async (req) => {
     const a = tenantActor(req);
-    const { id } = z.object({ id: Uuid }).parse(req.params);
+    const { id } = IdParams.parse(req.params);
     return a.tx(async (db) => {
       await requireFeature(db, a.tenantId, FEATURE);
       const ap = await loadApplication(db, a, id);
@@ -453,10 +471,10 @@ export async function recruitmentRoutes(app: FastifyInstance) {
     });
   });
 
-  app.post('/applications/:id/move', async (req) => {
+  app.post('/applications/:id/move', { schema: { params: IdParams, body: ApplicationsMoveBody }, config: { perm: ['recruitment.manage'], feature: [FEATURE] } }, async (req) => {
     const a = tenantActor(req, 'recruitment.manage');
-    const { id } = z.object({ id: Uuid }).parse(req.params);
-    const b = z.object({ stage: z.enum(STAGES), note: Text(1000), reason: Text(500), expectedVersion: z.number().int() }).parse(req.body);
+    const { id } = IdParams.parse(req.params);
+    const b = ApplicationsMoveBody.parse(req.body);
     return a.tx(async (db) => {
       await requireFeature(db, a.tenantId, FEATURE);
       const ap = await loadApplication(db, a, id, true);
@@ -475,12 +493,10 @@ export async function recruitmentRoutes(app: FastifyInstance) {
   });
 
   // ------------------------------------------------------------ interviews
-  app.post('/applications/:id/interviews', async (req, reply) => {
+  app.post('/applications/:id/interviews', { schema: { params: IdParams, body: ApplicationsInterviewsBody }, config: { perm: ['recruitment.manage'], feature: [FEATURE] } }, async (req, reply) => {
     const a = tenantActor(req, 'recruitment.manage');
-    const { id } = z.object({ id: Uuid }).parse(req.params);
-    const b = z.object({ round: z.number().int().min(1).max(20), kind: z.enum(['phone', 'technical', 'practical_lab', 'hr', 'panel', 'other']),
-      scheduledAt: z.iso.datetime({ offset: true }), durationMin: z.number().int().min(10).max(480).default(45), location: Text(300),
-      panelUserIds: z.array(Uuid).min(1).max(10) }).parse(req.body);
+    const { id } = IdParams.parse(req.params);
+    const b = ApplicationsInterviewsBody.parse(req.body);
     return a.tx(async (db) => {
       await requireFeature(db, a.tenantId, FEATURE);
       const ap = await loadApplication(db, a, id);
@@ -500,9 +516,9 @@ export async function recruitmentRoutes(app: FastifyInstance) {
   });
 
   /** Active users to pick an interview panel from (name only; no roles or contact details). */
-  app.get('/panel-users', async (req) => {
+  app.get('/panel-users', { schema: { querystring: PanelUsersQuery }, config: { perm: ['recruitment.manage'], feature: [FEATURE] } }, async (req) => {
     const a = tenantActor(req, 'recruitment.manage');
-    const q = z.object({ search: z.string().trim().max(100).optional() }).parse(req.query);
+    const q = PanelUsersQuery.parse(req.query);
     return a.tx(async (db) => {
       await requireFeature(db, a.tenantId, FEATURE);
       return { items: (await db.query(`SELECT u.id, u.display_name, e.designation FROM users u LEFT JOIN employees e ON e.tenant_id=u.tenant_id AND e.user_id=u.id
@@ -511,7 +527,7 @@ export async function recruitmentRoutes(app: FastifyInstance) {
     });
   });
 
-  app.get('/interviews/mine', async (req) => {
+  app.get('/interviews/mine', { schema: {}, config: { feature: [FEATURE] } }, async (req) => {
     const a = tenantActor(req);
     return a.tx(async (db) => {
       await requireFeature(db, a.tenantId, FEATURE);
@@ -525,10 +541,10 @@ export async function recruitmentRoutes(app: FastifyInstance) {
     });
   });
 
-  app.post('/interviews/:id/feedback', async (req) => {
+  app.post('/interviews/:id/feedback', { schema: { params: IdParams, body: InterviewsFeedbackBody }, config: { feature: [FEATURE] } }, async (req) => {
     const a = tenantActor(req);
-    const { id } = z.object({ id: Uuid }).parse(req.params);
-    const b = z.object({ rating: z.number().int().min(1).max(5), recommendation: z.enum(['strong_yes', 'yes', 'no', 'strong_no']), notes: z.string().trim().min(10).max(4000) }).parse(req.body);
+    const { id } = IdParams.parse(req.params);
+    const b = InterviewsFeedbackBody.parse(req.body);
     return a.tx(async (db) => {
       await requireFeature(db, a.tenantId, FEATURE);
       const iv = (await db.query<{ status: string; scheduled_at: Date }>(`SELECT i.status, i.scheduled_at FROM interviews i JOIN interview_panel p ON p.tenant_id=i.tenant_id AND p.interview_id=i.id
@@ -546,9 +562,9 @@ export async function recruitmentRoutes(app: FastifyInstance) {
     });
   });
 
-  app.post('/interviews/:id/cancel', async (req) => {
+  app.post('/interviews/:id/cancel', { schema: { params: IdParams }, config: { perm: ['recruitment.manage'], feature: [FEATURE] } }, async (req) => {
     const a = tenantActor(req, 'recruitment.manage');
-    const { id } = z.object({ id: Uuid }).parse(req.params);
+    const { id } = IdParams.parse(req.params);
     return a.tx(async (db) => {
       await requireFeature(db, a.tenantId, FEATURE);
       const r = await db.query(`UPDATE interviews SET status='cancelled' WHERE tenant_id=$1 AND id=$2 AND status='scheduled'`, [a.tenantId, id]);
@@ -563,9 +579,9 @@ export async function recruitmentRoutes(app: FastifyInstance) {
     const b = (await db.query<{ budget_ctc_max: string | null }>('SELECT budget_ctc_max FROM job_requisitions WHERE tenant_id=$1 AND id=$2', [tenantId, requisitionId])).rows[0]!.budget_ctc_max;
     return b != null && ctc > Number(b);
   }
-  app.post('/applications/:id/offers', async (req, reply) => {
+  app.post('/applications/:id/offers', { schema: { params: IdParams, body: OfferBody }, config: { perm: ['recruitment.manage', 'recruitment.compensation'], feature: [FEATURE] } }, async (req, reply) => {
     const a = tenantActor(req, 'recruitment.manage', 'recruitment.compensation');
-    const { id } = z.object({ id: Uuid }).parse(req.params);
+    const { id } = IdParams.parse(req.params);
     const b = OfferBody.parse(req.body);
     return a.tx(async (db) => {
       await requireFeature(db, a.tenantId, FEATURE);
@@ -592,9 +608,9 @@ export async function recruitmentRoutes(app: FastifyInstance) {
     return { o, ap };
   }
 
-  app.put('/offers/:id', async (req) => {
+  app.put('/offers/:id', { schema: { params: IdParams, body: OfferBody }, config: { perm: ['recruitment.manage', 'recruitment.compensation'], feature: [FEATURE] } }, async (req) => {
     const a = tenantActor(req, 'recruitment.manage', 'recruitment.compensation');
-    const { id } = z.object({ id: Uuid }).parse(req.params);
+    const { id } = IdParams.parse(req.params);
     const b = OfferBody.parse(req.body);
     return a.tx(async (db) => {
       await requireFeature(db, a.tenantId, FEATURE);
@@ -610,9 +626,9 @@ export async function recruitmentRoutes(app: FastifyInstance) {
     });
   });
 
-  app.post('/offers/:id/submit', async (req) => {
+  app.post('/offers/:id/submit', { schema: { params: IdParams }, config: { perm: ['recruitment.manage'], feature: [FEATURE] } }, async (req) => {
     const a = tenantActor(req, 'recruitment.manage');
-    const { id } = z.object({ id: Uuid }).parse(req.params);
+    const { id } = IdParams.parse(req.params);
     return a.tx(async (db) => {
       await requireFeature(db, a.tenantId, FEATURE);
       const { o, ap } = await loadOffer(db, a, id);
@@ -629,10 +645,10 @@ export async function recruitmentRoutes(app: FastifyInstance) {
     });
   });
 
-  app.post('/offers/:id/:action', async (req) => {
+  app.post('/offers/:id/:action', { schema: { params: OffersParams, body: OffersBody }, config: { perm: ['recruitment.manage'], feature: [FEATURE] } }, async (req) => {
     const a = tenantActor(req, 'recruitment.manage');
-    const p = z.object({ id: Uuid, action: z.enum(['sent', 'accepted', 'declined', 'withdraw']) }).parse(req.params);
-    const b = z.object({ note: Text(500) }).parse(req.body ?? {});
+    const p = OffersParams.parse(req.params);
+    const b = OffersBody.parse(req.body ?? {});
     return a.tx(async (db) => {
       await requireFeature(db, a.tenantId, FEATURE);
       const { o } = await loadOffer(db, a, p.id);
@@ -647,10 +663,10 @@ export async function recruitmentRoutes(app: FastifyInstance) {
   });
 
   /** Accepted offer → employee record (pre_joining), application hired, requisition filled (closed when full). */
-  app.post('/offers/:id/hire', async (req, reply) => {
+  app.post('/offers/:id/hire', { schema: { params: IdParams, body: OffersHireBody }, config: { perm: ['recruitment.manage', 'employees.manage'], feature: [FEATURE] } }, async (req, reply) => {
     const a = tenantActor(req, 'recruitment.manage', 'employees.manage');
-    const { id } = z.object({ id: Uuid }).parse(req.params);
-    const b = z.object({ employeeCode: z.string().trim(), workEmail: z.string().trim().optional().transform((v) => v || undefined), confirmDuplicate: z.boolean().default(false) }).parse(req.body);
+    const { id } = IdParams.parse(req.params);
+    const b = OffersHireBody.parse(req.body);
     return a.tx(async (db) => {
       await requireFeature(db, a.tenantId, FEATURE);
       const { o, ap } = await loadOffer(db, a, id);

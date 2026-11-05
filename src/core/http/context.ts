@@ -1,4 +1,4 @@
-import type { FastifyInstance, FastifyRequest } from 'fastify';
+import type { FastifyInstance, FastifyRequest, RouteOptions } from 'fastify';
 import type { HostResolution } from '../tenancy/resolve.js';
 import type { SessionUser } from '../auth/session.js';
 import { forbidden, notFound, unauthorized, AppError, featureNotConfigured } from './errors.js';
@@ -9,6 +9,8 @@ import type { FieldCipher } from '../crypto/index.js';
 import type { Env } from '../../config/env.js';
 import type { FeatureRoute } from '../features/routes.js';
 
+export type RouteOptionsRecord = Pick<RouteOptions, 'method' | 'url' | 'schema' | 'config'> & { handler: unknown };
+
 export interface RequestContext {
   requestId: string;
   ip: string;
@@ -17,11 +19,20 @@ export interface RequestContext {
 }
 
 declare module 'fastify' {
+  /** What a route needs, for the OpenAPI document. The handler still enforces it; a test keeps the two the same. */
+  interface FastifyContextConfig {
+    /** Every one of these permissions. */
+    perm?: readonly string[];
+    /** Any one of these permissions. */
+    permAny?: readonly string[];
+    /** Features checked at run time by `requireFeature`, besides what mounts the route. */
+    feature?: readonly string[];
+  }
   interface FastifyRequest { ctx: RequestContext }
   interface FastifyInstance { deps: AppDeps; featureRoutes: readonly FeatureRoute[] }
 }
 
-export interface AppDeps { env: Env; pool: Pool; cipher: FieldCipher; /** Tests: keep an injected mailer instead of building one from env. */ mailerOverride?: boolean; storeOverride?: boolean; pushOverride?: boolean; /** Tests: another directory than the fixed /brand mount. */ brandDirOverride?: string }
+export interface AppDeps { env: Env; pool: Pool; cipher: FieldCipher; /** `npm run openapi`: build the document. Serving does not load the generator. */ openapi?: boolean; onRouteRecorded?: (r: RouteOptionsRecord) => void; /** Tests: keep an injected mailer instead of building one from env. */ mailerOverride?: boolean; storeOverride?: boolean; pushOverride?: boolean; /** Tests: another directory than the fixed /brand mount. */ brandDirOverride?: string }
 
 export interface TenantActor {
   tenantId: string;

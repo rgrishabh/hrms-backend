@@ -10,6 +10,7 @@ import { loadSession, SESSION_COOKIE } from './core/auth/session.js';
 import { sha256, safeEqualHex } from './core/crypto/index.js';
 import { AppError } from './core/http/errors.js';
 import { problemErrorHandler } from './core/http/problem.js';
+import { OPENAPI_INFO, openApiTransform } from './core/http/openapi.js';
 import { isExportRoute, perUserLimit } from './core/http/limits.js';
 import type { AppDeps } from './core/http/context.js';
 import { initRuntime } from './core/runtime.js';
@@ -84,6 +85,7 @@ export async function buildApp(deps: AppDeps): Promise<FastifyInstance> {
   app.addHook('onRoute', (r) => {
     for (const method of [r.method].flat()) {
       if (method === 'HEAD' || method === 'OPTIONS') continue;
+      deps.onRouteRecorded?.({ method, url: r.url, schema: r.schema, config: r.config, handler: r.handler });
       featureRoutes.push({ method, url: r.url, requires: [...(mounting ? [mounting] : []), ...(r.config?.features ? [r.config.features] : [])] });
       if (isExportRoute(method, r.url)) {
         r.config = { ...r.config, rateLimit: { max: env.EXPORT_RATE_LIMIT_PER_MINUTE * 4, timeWindow: '1 minute' } };
@@ -95,7 +97,14 @@ export async function buildApp(deps: AppDeps): Promise<FastifyInstance> {
   const mfaPolicy = mfaPolicyOf(env);
   const SPA_CSP = spaCsp([publicConfig.brand.logoUrl, publicConfig.brand.logoDarkUrl, publicConfig.brand.faviconUrl]);
   app.decorateRequest('ctx', null as never);
+  // A route's schema is documentation: its handler parses with the same object, after the permission check, so 401 and 403 still come before 400 (D51).
+  app.setValidatorCompiler(() => (data) => ({ value: data }));
+  app.setSerializerCompiler(() => (data) => JSON.stringify(data));
 
+  if (deps.openapi) {
+    const { default: swagger } = await import('@fastify/swagger');
+    await app.register(swagger, { openapi: OPENAPI_INFO, transform: openApiTransform(() => featureRoutes), hideUntagged: false });
+  }
   await app.register(cookie);
   // BRAND_DOMAIN is the only origin allowed to call the API from a browser, with cookies. Same-origin requests need none of this.
   await app.register(cors, { credentials: true, methods: ['GET', 'HEAD', 'POST', 'PUT', 'PATCH', 'DELETE'], allowedHeaders: ['content-type', 'x-csrf-token'], maxAge: 600,

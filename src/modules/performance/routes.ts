@@ -31,9 +31,18 @@ async function goalAccess(db: Db, a: TenantActor, cycleId: string, employeeId: s
   return { role, cycleStatus: c.status, empUser: e.user_id, mgrUser: e.mgr_user };
 }
 
+const CyclesBody = z.object({ name: z.string().trim().min(2).max(120), periodStart: IsoDate, periodEnd: IsoDate, selfReview: z.boolean().default(true) }).refine((x) => x.periodEnd > x.periodStart, { message: 'End must be after start', path: ['periodEnd'] });
+const IdParams = z.object({ id: Uuid });
+const CyclesGoalsParams = z.object({ id: Uuid, employeeId: Uuid });
+const CyclesGoalsBody = z.object({ title: z.string().trim().min(3).max(200), description: z.string().trim().max(2000).nullable().default(null), measure: z.string().trim().max(500).nullable().default(null), weight: z.number().int().min(1).max(100) });
+const GoalsParams = z.object({ id: Uuid, action: z.enum(['agree', 'drop', 'progress']) });
+const GoalsBody = z.object({ progress: z.number().int().min(0).max(100).optional() });
+const ReviewsQuery = z.object({ cycleId: Uuid, scope: z.enum(['mine', 'team', 'all']).default('mine') });
+const ReviewsParams = z.object({ id: Uuid, step: z.enum(['self', 'manager', 'finalize', 'acknowledge']) });
+const ReviewsBody = z.object({ rating: Rating.optional(), comments: z.string().trim().max(5000).optional(), goalRatings: z.record(Uuid, Rating).optional(), expectedVersion: z.number().int() });
 export async function performanceRoutes(app: FastifyInstance) {
   gateFeatures(app, 'performance');
-  app.get('/cycles', async (req) => {
+  app.get('/cycles', { schema: {}, config: { feature: [F] } }, async (req) => {
     const a = tenantActor(req);
     return a.tx(async (db) => {
       await requireFeature(db, a.tenantId, F);
@@ -43,9 +52,9 @@ export async function performanceRoutes(app: FastifyInstance) {
         FROM review_cycles c WHERE c.tenant_id=$1 AND ($2 OR c.status <> 'draft') ORDER BY c.period_end DESC`, [a.tenantId, a.has('performance.manage')])).rows };
     });
   });
-  app.post('/cycles', async (req, reply) => {
+  app.post('/cycles', { schema: { body: CyclesBody }, config: { perm: ['performance.manage'], feature: [F] } }, async (req, reply) => {
     const a = tenantActor(req, 'performance.manage');
-    const b = z.object({ name: z.string().trim().min(2).max(120), periodStart: IsoDate, periodEnd: IsoDate, selfReview: z.boolean().default(true) }).refine((x) => x.periodEnd > x.periodStart, { message: 'End must be after start', path: ['periodEnd'] }).parse(req.body);
+    const b = CyclesBody.parse(req.body);
     return a.tx(async (db) => {
       await requireFeature(db, a.tenantId, F);
       const id = (await db.query<{ id: string }>(`INSERT INTO review_cycles (tenant_id, name, period_start, period_end, self_review, created_by) VALUES ($1,$2,$3,$4,$5,$6) RETURNING id`,
@@ -55,9 +64,9 @@ export async function performanceRoutes(app: FastifyInstance) {
     });
   });
   /** Activating creates a review for every active employee who joined before the period ended; their manager reviews. */
-  app.post('/cycles/:id/activate', async (req) => {
+  app.post('/cycles/:id/activate', { schema: { params: IdParams }, config: { perm: ['performance.manage'], feature: [F] } }, async (req) => {
     const a = tenantActor(req, 'performance.manage');
-    const { id } = z.object({ id: Uuid }).parse(req.params);
+    const { id } = IdParams.parse(req.params);
     return a.tx(async (db) => {
       await requireFeature(db, a.tenantId, F);
       const c = (await db.query<{ status: string; period_end: string; name: string }>(`SELECT status, period_end::text, name FROM review_cycles WHERE tenant_id=$1 AND id=$2 FOR UPDATE`, [a.tenantId, id])).rows[0];
@@ -73,9 +82,9 @@ export async function performanceRoutes(app: FastifyInstance) {
       return { ok: true, reviews: r.rowCount };
     });
   });
-  app.post('/cycles/:id/close', async (req) => {
+  app.post('/cycles/:id/close', { schema: { params: IdParams }, config: { perm: ['performance.manage'] } }, async (req) => {
     const a = tenantActor(req, 'performance.manage');
-    const { id } = z.object({ id: Uuid }).parse(req.params);
+    const { id } = IdParams.parse(req.params);
     return a.tx(async (db) => {
       const open = Number((await db.query<{ n: string }>(`SELECT count(*) AS n FROM performance_reviews WHERE tenant_id=$1 AND cycle_id=$2 AND status NOT IN ('finalized','acknowledged')`, [a.tenantId, id])).rows[0]!.n);
       if (open) throw conflict(`${open} review(s) are not finalized`);
@@ -87,9 +96,9 @@ export async function performanceRoutes(app: FastifyInstance) {
   });
 
   // ------------------------------------------------------------ goals
-  app.get('/cycles/:id/goals/:employeeId', async (req) => {
+  app.get('/cycles/:id/goals/:employeeId', { schema: { params: CyclesGoalsParams }, config: { feature: [F] } }, async (req) => {
     const a = tenantActor(req);
-    const p = z.object({ id: Uuid, employeeId: Uuid }).parse(req.params);
+    const p = CyclesGoalsParams.parse(req.params);
     return a.tx(async (db) => {
       await requireFeature(db, a.tenantId, F);
       await goalAccess(db, a, p.id, p.employeeId);
@@ -97,10 +106,10 @@ export async function performanceRoutes(app: FastifyInstance) {
       return { items: goals, totalWeight: goals.reduce((s, g) => s + (g.weight as number), 0) };
     });
   });
-  app.post('/cycles/:id/goals/:employeeId', async (req, reply) => {
+  app.post('/cycles/:id/goals/:employeeId', { schema: { params: CyclesGoalsParams, body: CyclesGoalsBody }, config: { feature: [F] } }, async (req, reply) => {
     const a = tenantActor(req);
-    const p = z.object({ id: Uuid, employeeId: Uuid }).parse(req.params);
-    const b = z.object({ title: z.string().trim().min(3).max(200), description: z.string().trim().max(2000).nullable().default(null), measure: z.string().trim().max(500).nullable().default(null), weight: z.number().int().min(1).max(100) }).parse(req.body);
+    const p = CyclesGoalsParams.parse(req.params);
+    const b = CyclesGoalsBody.parse(req.body);
     return a.tx(async (db) => {
       await requireFeature(db, a.tenantId, F);
       const g = await goalAccess(db, a, p.id, p.employeeId);
@@ -114,10 +123,10 @@ export async function performanceRoutes(app: FastifyInstance) {
       reply.code(201); return { id };
     });
   });
-  app.post('/goals/:id/:action', async (req) => {
+  app.post('/goals/:id/:action', { schema: { params: GoalsParams, body: GoalsBody } }, async (req) => {
     const a = tenantActor(req);
-    const p = z.object({ id: Uuid, action: z.enum(['agree', 'drop', 'progress']) }).parse(req.params);
-    const b = z.object({ progress: z.number().int().min(0).max(100).optional() }).parse(req.body ?? {});
+    const p = GoalsParams.parse(req.params);
+    const b = GoalsBody.parse(req.body ?? {});
     return a.tx(async (db) => {
       const gl = (await db.query<{ cycle_id: string; employee_id: string; status: string }>('SELECT cycle_id, employee_id, status FROM goals WHERE tenant_id=$1 AND id=$2 FOR UPDATE', [a.tenantId, p.id])).rows[0];
       if (!gl) throw notFound('Goal not found');
@@ -131,9 +140,9 @@ export async function performanceRoutes(app: FastifyInstance) {
   });
 
   // ------------------------------------------------------------ reviews
-  app.get('/reviews', async (req) => {
+  app.get('/reviews', { schema: { querystring: ReviewsQuery }, config: { feature: [F] } }, async (req) => {
     const a = tenantActor(req);
-    const q = z.object({ cycleId: Uuid, scope: z.enum(['mine', 'team', 'all']).default('mine') }).parse(req.query);
+    const q = ReviewsQuery.parse(req.query);
     return a.tx(async (db) => {
       await requireFeature(db, a.tenantId, F);
       if (q.scope === 'all' && !a.has('performance.manage')) throw forbidden();
@@ -145,9 +154,9 @@ export async function performanceRoutes(app: FastifyInstance) {
       return { items: rows.map(({ own, ...r }) => (own && !['finalized', 'acknowledged'].includes(r.status as string) ? { ...r, manager_rating: null, final_rating: null } : r)) };
     });
   });
-  app.get('/reviews/:id', async (req) => {
+  app.get('/reviews/:id', { schema: { params: IdParams } }, async (req) => {
     const a = tenantActor(req);
-    const { id } = z.object({ id: Uuid }).parse(req.params);
+    const { id } = IdParams.parse(req.params);
     return a.tx(async (db) => {
       const { r, role } = await loadReview(db, a, id);
       const d = (await db.query(`SELECT r.*, trim(e.first_name||' '||coalesce(e.last_name,'')) AS employee_name, c.name AS cycle_name, c.period_start::text, c.period_end::text
@@ -158,10 +167,10 @@ export async function performanceRoutes(app: FastifyInstance) {
         final_rating: hideManager ? null : d.final_rating, final_comments: hideManager ? null : d.final_comments };
     });
   });
-  app.post('/reviews/:id/:step', async (req) => {
+  app.post('/reviews/:id/:step', { schema: { params: ReviewsParams, body: ReviewsBody } }, async (req) => {
     const a = tenantActor(req);
-    const p = z.object({ id: Uuid, step: z.enum(['self', 'manager', 'finalize', 'acknowledge']) }).parse(req.params);
-    const body = z.object({ rating: Rating.optional(), comments: z.string().trim().max(5000).optional(), goalRatings: z.record(Uuid, Rating).optional(), expectedVersion: z.number().int() }).parse(req.body);
+    const p = ReviewsParams.parse(req.params);
+    const body = ReviewsBody.parse(req.body);
     return a.tx(async (db) => {
       const { r, role } = await loadReview(db, a, p.id, true);
       if (r.version !== body.expectedVersion) throw conflict('The review changed meanwhile. Reload and try again.');

@@ -49,13 +49,17 @@ async function loadCategory(db: Db, tenantId: string, id: string) {
   return c;
 }
 
+const IdParams = z.object({ id: Uuid });
+const GetRootQuery = PageQuery.extend({ employeeId: Uuid.optional(), scope: z.enum(['employee', 'company', 'mine']).optional(), categoryId: Uuid.optional(),
+      status: z.enum(['active', 'archived']).default('active'), expiringWithinDays: z.coerce.number().int().min(0).max(365).optional() });
+const PostRootBody = z.object({ categoryId: Uuid, title: z.string().trim().min(2).max(200), employeeId: Uuid.optional(), expiresOn: IsoDate.optional() });
 export async function documentRoutes(app: FastifyInstance) {
   gateFeatures(app, 'core.documents');
   const { env } = app.deps;
   const maxBytes = env.STORAGE_MAX_FILE_MB * 1024 * 1024;
 
   // ------------------------------------------------------------ categories
-  app.get('/categories', async (req) => {
+  app.get('/categories', { schema: {}, config: { feature: ['core.documents'] } }, async (req) => {
     const a = tenantActor(req);
     return a.tx(async (db) => {
       await requireFeature(db, a.tenantId, 'core.documents');
@@ -65,7 +69,7 @@ export async function documentRoutes(app: FastifyInstance) {
   });
 
   const catCols = (b: z.infer<typeof CategoryBody>) => [b.code, b.name, b.scope, b.employeeVisible, b.employeeUpload, b.restricted, b.requiresExpiry, b.status, b.payrollRelated];
-  app.post('/categories', async (req, reply) => {
+  app.post('/categories', { schema: { body: CategoryBody }, config: { perm: ['documents.manage'], feature: ['core.documents'] } }, async (req, reply) => {
     const a = tenantActor(req, 'documents.manage');
     const b = CategoryBody.parse(req.body);
     return a.tx(async (db) => {
@@ -77,9 +81,9 @@ export async function documentRoutes(app: FastifyInstance) {
     });
   });
 
-  app.put('/categories/:id', async (req) => {
+  app.put('/categories/:id', { schema: { params: IdParams, body: CategoryBody }, config: { perm: ['documents.manage'] } }, async (req) => {
     const a = tenantActor(req, 'documents.manage');
-    const { id } = z.object({ id: Uuid }).parse(req.params);
+    const { id } = IdParams.parse(req.params);
     const b = CategoryBody.parse(req.body);
     return a.tx(async (db) => {
       const prev = await loadCategory(db, a.tenantId, id);
@@ -94,10 +98,9 @@ export async function documentRoutes(app: FastifyInstance) {
   });
 
   // ------------------------------------------------------------ documents
-  app.get('/', async (req) => {
+  app.get('/', { schema: { querystring: GetRootQuery }, config: { feature: ['core.documents'] } }, async (req) => {
     const a = tenantActor(req);
-    const q = PageQuery.extend({ employeeId: Uuid.optional(), scope: z.enum(['employee', 'company', 'mine']).optional(), categoryId: Uuid.optional(),
-      status: z.enum(['active', 'archived']).default('active'), expiringWithinDays: z.coerce.number().int().min(0).max(365).optional() }).parse(req.query);
+    const q = GetRootQuery.parse(req.query);
     return a.tx(async (db) => {
       await requireFeature(db, a.tenantId, 'core.documents');
       const v = visibilitySql(a);
@@ -118,7 +121,7 @@ export async function documentRoutes(app: FastifyInstance) {
   });
 
   /** multipart/form-data: file + categoryId, title, employeeId?, expiresOn? */
-  app.post('/', { config: { rateLimit: { max: 30, timeWindow: '1 minute' } } }, async (req, reply) => {
+  app.post('/', { schema: { body: PostRootBody, consumes: ['multipart/form-data'] }, config: { feature: ['core.documents'], rateLimit: { max: 30, timeWindow: '1 minute' } } }, async (req, reply) => {
     const a = tenantActor(req);
     if (!req.isMultipart()) throw badRequest('Upload as multipart/form-data');
     const store = getStore();
@@ -134,7 +137,7 @@ export async function documentRoutes(app: FastifyInstance) {
         file = { buf, name: part.filename || 'document' };
       } else fields[part.fieldname] = String(part.value);
     }
-    const body = z.object({ categoryId: Uuid, title: z.string().trim().min(2).max(200), employeeId: Uuid.optional(), expiresOn: IsoDate.optional() }).parse(fields);
+    const body = PostRootBody.parse(fields);
     if (!file || !file.buf.length) throw badRequest('Choose a file to upload');
     if (file.buf.length > maxBytes) throw new AppError(413, 'file_too_large', `Files are limited to ${env.STORAGE_MAX_FILE_MB} MB`);
     const detected = await prepareUpload(req, a, file.buf, file.name);
@@ -164,9 +167,9 @@ export async function documentRoutes(app: FastifyInstance) {
     });
   });
 
-  app.get('/:id/download', async (req, reply) => {
+  app.get('/:id/download', { schema: { params: IdParams }, config: { feature: ['core.documents'] } }, async (req, reply) => {
     const a = tenantActor(req);
-    const { id } = z.object({ id: Uuid }).parse(req.params);
+    const { id } = IdParams.parse(req.params);
     const doc = await a.tx(async (db) => {
       await requireFeature(db, a.tenantId, 'core.documents');
       const v = visibilitySql(a);
@@ -193,9 +196,9 @@ export async function documentRoutes(app: FastifyInstance) {
       .send(buf);
   });
 
-  app.post('/:id/archive', async (req) => {
+  app.post('/:id/archive', { schema: { params: IdParams }, config: { perm: ['documents.manage'] } }, async (req) => {
     const a = tenantActor(req, 'documents.manage');
-    const { id } = z.object({ id: Uuid }).parse(req.params);
+    const { id } = IdParams.parse(req.params);
     return a.tx(async (db) => {
       const r = await db.query(`UPDATE documents SET status='archived', archived_at=now(), archived_by=$3 WHERE tenant_id=$1 AND id=$2 AND status='active'`, [a.tenantId, id, a.user.userId]);
       if (!r.rowCount) throw notFound('Active document not found');

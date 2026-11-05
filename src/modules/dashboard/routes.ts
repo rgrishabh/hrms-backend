@@ -242,7 +242,7 @@ export async function dashboardSummary(db: Db, a: TenantActor) {
 }
 
 export async function dashboardRoutes(app: FastifyInstance) {
-  app.get('/', async (req) => {
+  app.get('/', { schema: {} }, async (req) => {
     const a = tenantActor(req);
     return a.tx((db) => dashboardSummary(db, a));
   });

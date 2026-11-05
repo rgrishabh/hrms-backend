@@ -78,12 +78,30 @@ export function registerPayrollApprovals() {
   });
 }
 
+const IdParams = z.object({ id: Uuid });
+const EmployeesSalariesBody = z.object({ effectiveFrom: IsoDate, amounts: z.record(z.string().toUpperCase(), z.number().min(0).max(1e8)).refine((o) => Object.keys(o).length > 0, 'Add at least one component'),
+      annualCtc: z.number().positive().nullable().default(null), reason: z.string().trim().min(3).max(500) });
+const EmployeesStatutoryBody = z.object({ uan: z.string().regex(/^[0-9]{12}$/).nullable().optional(), pfMemberId: z.string().trim().max(40).nullable().optional(), pfExcluded: z.boolean().optional(),
+      esiIpNumber: z.string().regex(/^[0-9]{10}$/).nullable().optional(), pan: z.string().trim().toUpperCase().regex(/^[A-Z]{5}[0-9]{4}[A-Z]$/, 'PAN format: AAAAA9999A').optional(),
+      aadhaar: z.string().trim().regex(/^[2-9][0-9]{11}$/, 'An Aadhaar number has 12 digits').optional(),
+      taxRegime: z.enum(['new', 'old']).optional(), ptState: z.string().trim().max(60).nullable().optional() });
+const RunsBody = z.object({ period: Period, legalEntityId: Uuid, kind: z.enum(['regular', 'fnf']).default('regular'), employeeId: Uuid.optional() })
+      .refine((r) => r.kind !== 'fnf' || r.employeeId, { message: 'F&F runs are for one employee', path: ['employeeId'] });
+const RunsAdjustmentsBody = z.object({ employeeId: Uuid, kind: z.enum(['earning', 'deduction', 'lop_days']), label: z.string().trim().min(2).max(80), amount: z.number().refine((v) => v !== 0, 'Not zero'),
+      taxable: z.boolean().default(true), note: Text(500) }).refine((x) => x.kind === 'lop_days' || x.amount > 0, { message: 'Amounts are positive; choose earning or deduction', path: ['amount'] });
+const RunsAdjustmentsParams = z.object({ id: Uuid, adjId: Uuid });
+const RunsHoldBody = z.object({ employeeId: Uuid, hold: z.boolean() });
+const RunsItemsReleaseParams = z.object({ id: Uuid, employeeId: Uuid });
+const RunsItemsReleaseBody = z.object({ reason: z.string().trim().min(5).max(500) });
+const RunsAcknowledgeWarningsBody = z.object({ note: z.string().trim().min(5).max(1000) });
+const RunsPaidBody = z.object({ paymentReference: z.string().trim().min(3).max(100) });
+const FnfSuggestionsParams = z.object({ employeeId: Uuid });
 export async function payrollRoutes(app: FastifyInstance) {
   gateFeatures(app, 'payroll');
   const cipher = app.deps.cipher;
 
   // ------------------------------------------------------------ components
-  app.get('/components', async (req) => {
+  app.get('/components', { schema: {}, config: { permAny: ['payroll.read', 'payroll.manage'], feature: [F] } }, async (req) => {
     const a = tenantActorAny(req, 'payroll.read', 'payroll.manage');
     return a.tx(async (db) => {
       await requireFeature(db, a.tenantId, F);
@@ -109,22 +127,22 @@ export async function payrollRoutes(app: FastifyInstance) {
     await audit(db, { ...a.auditBase, action: 'payroll.component_saved', category: 'configuration', targetType: 'pay_component', targetId: id, metadata: b });
     return id;
   }
-  app.post('/components', async (req, reply) => {
+  app.post('/components', { schema: { body: ComponentBody }, config: { perm: ['payroll.manage'] } }, async (req, reply) => {
     const a = tenantActor(req, 'payroll.manage');
     const b = ComponentBody.parse(req.body);
     return a.tx(async (db) => { const id = await saveComponent(db, a, b); reply.code(201); return { id }; });
   });
-  app.put('/components/:id', async (req) => {
+  app.put('/components/:id', { schema: { params: IdParams, body: ComponentBody }, config: { perm: ['payroll.manage'] } }, async (req) => {
     const a = tenantActor(req, 'payroll.manage');
-    const { id } = z.object({ id: Uuid }).parse(req.params);
+    const { id } = IdParams.parse(req.params);
     const b = ComponentBody.parse(req.body);
     return a.tx(async (db) => { await saveComponent(db, a, b, id); return { ok: true }; });
   });
 
   // ------------------------------------------------------------ salaries (maker-checker)
-  app.get('/employees/:id/salaries', async (req) => {
+  app.get('/employees/:id/salaries', { schema: { params: IdParams }, config: { feature: [F] } }, async (req) => {
     const a = tenantActor(req);
-    const { id } = z.object({ id: Uuid }).parse(req.params);
+    const { id } = IdParams.parse(req.params);
     return a.tx(async (db) => {
       await requireFeature(db, a.tenantId, F);
       const v = await policyViewer(db, a.tenantId, a.user);
@@ -140,11 +158,10 @@ export async function payrollRoutes(app: FastifyInstance) {
       }) };
     });
   });
-  app.post('/employees/:id/salaries', async (req, reply) => {
+  app.post('/employees/:id/salaries', { schema: { params: IdParams, body: EmployeesSalariesBody }, config: { perm: ['payroll.manage'], feature: [F] } }, async (req, reply) => {
     const a = tenantActor(req, 'payroll.manage');
-    const { id } = z.object({ id: Uuid }).parse(req.params);
-    const b = z.object({ effectiveFrom: IsoDate, amounts: z.record(z.string().toUpperCase(), z.number().min(0).max(1e8)).refine((o) => Object.keys(o).length > 0, 'Add at least one component'),
-      annualCtc: z.number().positive().nullable().default(null), reason: z.string().trim().min(3).max(500) }).parse(req.body);
+    const { id } = IdParams.parse(req.params);
+    const b = EmployeesSalariesBody.parse(req.body);
     return a.tx(async (db) => {
       await requireFeature(db, a.tenantId, F);
       const e = (await db.query<{ name: string; user_id: string | null }>(`SELECT trim(first_name||' '||coalesce(last_name,'')) AS name, user_id FROM employees WHERE tenant_id=$1 AND id=$2`, [a.tenantId, id])).rows[0];
@@ -169,9 +186,9 @@ export async function payrollRoutes(app: FastifyInstance) {
   });
 
   // ------------------------------------------------------------ employee statutory details
-  only(app, 'payroll.statutory').get('/employees/:id/statutory', async (req) => {
+  only(app, 'payroll.statutory').get('/employees/:id/statutory', { schema: { params: IdParams }, config: { feature: [F] } }, async (req) => {
     const a = tenantActor(req);
-    const { id } = z.object({ id: Uuid }).parse(req.params);
+    const { id } = IdParams.parse(req.params);
     return a.tx(async (db) => {
       await requireFeature(db, a.tenantId, F);
       const v = await policyViewer(db, a.tenantId, a.user);
@@ -188,14 +205,11 @@ export async function payrollRoutes(app: FastifyInstance) {
       return row;
     });
   });
-  only(app, 'payroll.statutory').put('/employees/:id/statutory', async (req) => {
+  only(app, 'payroll.statutory').put('/employees/:id/statutory', { schema: { params: IdParams, body: EmployeesStatutoryBody }, config: { perm: ['payroll.manage'], feature: [F] } }, async (req) => {
     const a = tenantActor(req, 'payroll.manage');
-    const { id } = z.object({ id: Uuid }).parse(req.params);
+    const { id } = IdParams.parse(req.params);
     // Only what is sent changes: an omitted field keeps its value, null clears it.
-    const b = z.object({ uan: z.string().regex(/^[0-9]{12}$/).nullable().optional(), pfMemberId: z.string().trim().max(40).nullable().optional(), pfExcluded: z.boolean().optional(),
-      esiIpNumber: z.string().regex(/^[0-9]{10}$/).nullable().optional(), pan: z.string().trim().toUpperCase().regex(/^[A-Z]{5}[0-9]{4}[A-Z]$/, 'PAN format: AAAAA9999A').optional(),
-      aadhaar: z.string().trim().regex(/^[2-9][0-9]{11}$/, 'An Aadhaar number has 12 digits').optional(),
-      taxRegime: z.enum(['new', 'old']).optional(), ptState: z.string().trim().max(60).nullable().optional() }).parse(req.body);
+    const b = EmployeesStatutoryBody.parse(req.body);
     return a.tx(async (db) => {
       await requireFeature(db, a.tenantId, F);
       if (!(await db.query('SELECT 1 FROM employees WHERE tenant_id=$1 AND id=$2', [a.tenantId, id])).rowCount) throw notFound('Employee not found');
@@ -222,7 +236,7 @@ export async function payrollRoutes(app: FastifyInstance) {
   });
 
   // ------------------------------------------------------------ statutory rule register
-  only(app, 'payroll.statutory').get('/statutory-rules', async (req) => {
+  only(app, 'payroll.statutory').get('/statutory-rules', { schema: {}, config: { permAny: ['payroll.read', 'payroll.statutory'], feature: ['payroll.statutory'] } }, async (req) => {
     const a = tenantActorAny(req, 'payroll.read', 'payroll.statutory');
     return a.tx(async (db) => {
       await requireFeature(db, a.tenantId, 'payroll.statutory');
@@ -240,7 +254,7 @@ export async function payrollRoutes(app: FastifyInstance) {
     if (['pf', 'esi'].includes(b.kind) && b.scope !== 'IN') throw badRequest('PF and ESI rules are national: scope IN');
     return p.data;
   }
-  only(app, 'payroll.statutory').post('/statutory-rules', async (req, reply) => {
+  only(app, 'payroll.statutory').post('/statutory-rules', { schema: { body: RuleBody }, config: { perm: ['payroll.statutory'], feature: ['payroll.statutory'] } }, async (req, reply) => {
     const a = tenantActor(req, 'payroll.statutory');
     const b = RuleBody.parse(req.body);
     const params = checkRule(b);
@@ -252,9 +266,9 @@ export async function payrollRoutes(app: FastifyInstance) {
       reply.code(201); return { id };
     });
   });
-  only(app, 'payroll.statutory').put('/statutory-rules/:id', async (req) => {
+  only(app, 'payroll.statutory').put('/statutory-rules/:id', { schema: { params: IdParams, body: RuleBody }, config: { perm: ['payroll.statutory'], feature: ['payroll.statutory'] } }, async (req) => {
     const a = tenantActor(req, 'payroll.statutory');
-    const { id } = z.object({ id: Uuid }).parse(req.params);
+    const { id } = IdParams.parse(req.params);
     const b = RuleBody.parse(req.body);
     const params = checkRule(b);
     return a.tx(async (db) => {
@@ -267,9 +281,9 @@ export async function payrollRoutes(app: FastifyInstance) {
     });
   });
   /** A second person checks the values against the cited source and activates the rule. */
-  only(app, 'payroll.statutory').post('/statutory-rules/:id/verify', async (req) => {
+  only(app, 'payroll.statutory').post('/statutory-rules/:id/verify', { schema: { params: IdParams }, config: { perm: ['payroll.statutory'], feature: ['payroll.statutory'] } }, async (req) => {
     const a = tenantActor(req, 'payroll.statutory');
-    const { id } = z.object({ id: Uuid }).parse(req.params);
+    const { id } = IdParams.parse(req.params);
     return a.tx(async (db) => {
       await requireFeature(db, a.tenantId, 'payroll.statutory');
       const r = (await db.query<{ created_by: string; status: string; kind: RuleKind; scope: string; effective_from: string }>(`SELECT created_by, status, kind, scope, effective_from::text FROM statutory_rules WHERE tenant_id=$1 AND id=$2 FOR UPDATE`, [a.tenantId, id])).rows[0];
@@ -284,9 +298,9 @@ export async function payrollRoutes(app: FastifyInstance) {
       return { ok: true };
     });
   });
-  only(app, 'payroll.statutory').post('/statutory-rules/:id/retire', async (req) => {
+  only(app, 'payroll.statutory').post('/statutory-rules/:id/retire', { schema: { params: IdParams }, config: { perm: ['payroll.statutory'], feature: ['payroll.statutory'] } }, async (req) => {
     const a = tenantActor(req, 'payroll.statutory');
-    const { id } = z.object({ id: Uuid }).parse(req.params);
+    const { id } = IdParams.parse(req.params);
     return a.tx(async (db) => {
       await requireFeature(db, a.tenantId, 'payroll.statutory');
       const r = await db.query(`UPDATE statutory_rules SET status='retired' WHERE tenant_id=$1 AND id=$2 AND status IN ('draft','active')`, [a.tenantId, id]);
@@ -297,7 +311,7 @@ export async function payrollRoutes(app: FastifyInstance) {
   });
 
   // ------------------------------------------------------------ runs
-  app.get('/runs', async (req) => {
+  app.get('/runs', { schema: {}, config: { permAny: ['payroll.read', 'payroll.manage', 'payroll.approve'], feature: [F] } }, async (req) => {
     const a = tenantActorAny(req, 'payroll.read', 'payroll.manage', 'payroll.approve');
     return a.tx(async (db) => {
       await requireFeature(db, a.tenantId, F);
@@ -320,10 +334,9 @@ export async function payrollRoutes(app: FastifyInstance) {
       return { items };
     });
   });
-  app.post('/runs', async (req, reply) => {
+  app.post('/runs', { schema: { body: RunsBody }, config: { perm: ['payroll.manage'], feature: [F] } }, async (req, reply) => {
     const a = tenantActor(req, 'payroll.manage');
-    const b = z.object({ period: Period, legalEntityId: Uuid, kind: z.enum(['regular', 'fnf']).default('regular'), employeeId: Uuid.optional() })
-      .refine((r) => r.kind !== 'fnf' || r.employeeId, { message: 'F&F runs are for one employee', path: ['employeeId'] }).parse(req.body);
+    const b = RunsBody.parse(req.body);
     return a.tx(async (db) => {
       await requireFeature(db, a.tenantId, F);
       if (!(await db.query('SELECT 1 FROM legal_entities WHERE tenant_id=$1 AND id=$2', [a.tenantId, b.legalEntityId])).rowCount) throw badRequest('Unknown legal entity');
@@ -343,9 +356,9 @@ export async function payrollRoutes(app: FastifyInstance) {
     });
   });
 
-  app.post('/runs/:id/compute', async (req) => {
+  app.post('/runs/:id/compute', { schema: { params: IdParams }, config: { perm: ['payroll.manage'], feature: [F] } }, async (req) => {
     const a = tenantActor(req, 'payroll.manage');
-    const { id } = z.object({ id: Uuid }).parse(req.params);
+    const { id } = IdParams.parse(req.params);
     return a.tx(async (db) => {
       await requireFeature(db, a.tenantId, F);
       const r = await loadRun(db, a, id, true);
@@ -360,9 +373,9 @@ export async function payrollRoutes(app: FastifyInstance) {
     });
   });
 
-  app.get('/runs/:id', async (req) => {
+  app.get('/runs/:id', { schema: { params: IdParams }, config: { permAny: ['payroll.read', 'payroll.manage', 'payroll.approve'], feature: [F] } }, async (req) => {
     const a = tenantActorAny(req, 'payroll.read', 'payroll.manage', 'payroll.approve');
-    const { id } = z.object({ id: Uuid }).parse(req.params);
+    const { id } = IdParams.parse(req.params);
     return a.tx(async (db) => {
       await requireFeature(db, a.tenantId, F);
       const { totals_enc, ...run } = (await db.query(`SELECT r.*, le.name AS legal_entity_name FROM payroll_runs r JOIN legal_entities le ON le.tenant_id=r.tenant_id AND le.id=r.legal_entity_id WHERE r.tenant_id=$1 AND r.id=$2`, [a.tenantId, id])).rows[0] ?? {};
@@ -388,11 +401,10 @@ export async function payrollRoutes(app: FastifyInstance) {
     });
   });
 
-  app.post('/runs/:id/adjustments', async (req, reply) => {
+  app.post('/runs/:id/adjustments', { schema: { params: IdParams, body: RunsAdjustmentsBody }, config: { perm: ['payroll.manage'] } }, async (req, reply) => {
     const a = tenantActor(req, 'payroll.manage');
-    const { id } = z.object({ id: Uuid }).parse(req.params);
-    const b = z.object({ employeeId: Uuid, kind: z.enum(['earning', 'deduction', 'lop_days']), label: z.string().trim().min(2).max(80), amount: z.number().refine((v) => v !== 0, 'Not zero'),
-      taxable: z.boolean().default(true), note: Text(500) }).refine((x) => x.kind === 'lop_days' || x.amount > 0, { message: 'Amounts are positive; choose earning or deduction', path: ['amount'] }).parse(req.body);
+    const { id } = IdParams.parse(req.params);
+    const b = RunsAdjustmentsBody.parse(req.body);
     return a.tx(async (db) => {
       const r = await loadRun(db, a, id, true);
       if (!['draft', 'computed'].includes(r.status)) throw conflict(`A ${r.status} run cannot be adjusted`);
@@ -405,9 +417,9 @@ export async function payrollRoutes(app: FastifyInstance) {
       reply.code(201); return { id: aid };
     });
   });
-  app.delete('/runs/:id/adjustments/:adjId', async (req) => {
+  app.delete('/runs/:id/adjustments/:adjId', { schema: { params: RunsAdjustmentsParams }, config: { perm: ['payroll.manage'] } }, async (req) => {
     const a = tenantActor(req, 'payroll.manage');
-    const p = z.object({ id: Uuid, adjId: Uuid }).parse(req.params);
+    const p = RunsAdjustmentsParams.parse(req.params);
     return a.tx(async (db) => {
       const r = await loadRun(db, a, p.id, true);
       if (!['draft', 'computed'].includes(r.status)) throw conflict(`A ${r.status} run cannot be adjusted`);
@@ -419,10 +431,10 @@ export async function payrollRoutes(app: FastifyInstance) {
     });
   });
 
-  app.post('/runs/:id/hold', async (req) => {
+  app.post('/runs/:id/hold', { schema: { params: IdParams, body: RunsHoldBody }, config: { perm: ['payroll.manage'] } }, async (req) => {
     const a = tenantActor(req, 'payroll.manage');
-    const { id } = z.object({ id: Uuid }).parse(req.params);
-    const b = z.object({ employeeId: Uuid, hold: z.boolean() }).parse(req.body);
+    const { id } = IdParams.parse(req.params);
+    const b = RunsHoldBody.parse(req.body);
     return a.tx(async (db) => {
       const r = await loadRun(db, a, id, true);
       if (r.status !== 'computed') throw conflict('Compute the run first');
@@ -439,10 +451,10 @@ export async function payrollRoutes(app: FastifyInstance) {
    * Pays out an item held at finalize. A payroll approver decides, not the person who prepared the run; the item leaves
    * the hold, the employee gets their payslip, and it goes out in its own bank file so the run's file never changes.
    */
-  app.post('/runs/:id/items/:employeeId/release', async (req) => {
+  app.post('/runs/:id/items/:employeeId/release', { schema: { params: RunsItemsReleaseParams, body: RunsItemsReleaseBody }, config: { perm: ['payroll.approve'] } }, async (req) => {
     const a = tenantActor(req, 'payroll.approve');
-    const { id, employeeId } = z.object({ id: Uuid, employeeId: Uuid }).parse(req.params);
-    const { reason } = z.object({ reason: z.string().trim().min(5).max(500) }).parse(req.body);
+    const { id, employeeId } = RunsItemsReleaseParams.parse(req.params);
+    const { reason } = RunsItemsReleaseBody.parse(req.body);
     return a.tx(async (db) => {
       const r = await loadRun(db, a, id, true);
       if (!['finalized', 'paid'].includes(r.status)) throw conflict('Only held pay in a finalized run is released here; before that, take it off hold');
@@ -461,10 +473,10 @@ export async function payrollRoutes(app: FastifyInstance) {
     });
   });
 
-  app.post('/runs/:id/acknowledge-warnings', async (req) => {
+  app.post('/runs/:id/acknowledge-warnings', { schema: { params: IdParams, body: RunsAcknowledgeWarningsBody }, config: { perm: ['payroll.manage'] } }, async (req) => {
     const a = tenantActor(req, 'payroll.manage');
-    const { id } = z.object({ id: Uuid }).parse(req.params);
-    const { note } = z.object({ note: z.string().trim().min(5).max(1000) }).parse(req.body);
+    const { id } = IdParams.parse(req.params);
+    const { note } = RunsAcknowledgeWarningsBody.parse(req.body);
     return a.tx(async (db) => {
       const r = await loadRun(db, a, id, true);
       if (r.status !== 'computed') throw conflict('Compute the run first');
@@ -474,9 +486,9 @@ export async function payrollRoutes(app: FastifyInstance) {
     });
   });
 
-  app.post('/runs/:id/submit', async (req) => {
+  app.post('/runs/:id/submit', { schema: { params: IdParams }, config: { perm: ['payroll.manage'] } }, async (req) => {
     const a = tenantActor(req, 'payroll.manage');
-    const { id } = z.object({ id: Uuid }).parse(req.params);
+    const { id } = IdParams.parse(req.params);
     return a.tx(async (db) => {
       const r = await loadRun(db, a, id, true);
       if (r.status !== 'computed') throw conflict('Compute the run before submitting');
@@ -493,9 +505,9 @@ export async function payrollRoutes(app: FastifyInstance) {
   });
 
   /** Locks the run: items can no longer change (database trigger), payslips become visible. */
-  app.post('/runs/:id/finalize', async (req) => {
+  app.post('/runs/:id/finalize', { schema: { params: IdParams }, config: { perm: ['payroll.manage'] } }, async (req) => {
     const a = tenantActor(req, 'payroll.manage');
-    const { id } = z.object({ id: Uuid }).parse(req.params);
+    const { id } = IdParams.parse(req.params);
     return a.tx(async (db) => {
       const r = await loadRun(db, a, id, true);
       if (r.status !== 'approved') throw conflict('Only an approved run can be finalized');
@@ -514,9 +526,9 @@ export async function payrollRoutes(app: FastifyInstance) {
   });
 
   /** Back to draft from approved, for a result that is out of date: it is recomputed and approved again. */
-  app.post('/runs/:id/reopen', async (req) => {
+  app.post('/runs/:id/reopen', { schema: { params: IdParams }, config: { perm: ['payroll.manage'] } }, async (req) => {
     const a = tenantActor(req, 'payroll.manage');
-    const { id } = z.object({ id: Uuid }).parse(req.params);
+    const { id } = IdParams.parse(req.params);
     return a.tx(async (db) => {
       const r = await loadRun(db, a, id, true);
       if (r.status !== 'approved') throw conflict('Only an approved run can be reopened');
@@ -526,10 +538,10 @@ export async function payrollRoutes(app: FastifyInstance) {
     });
   });
 
-  app.post('/runs/:id/paid', async (req) => {
+  app.post('/runs/:id/paid', { schema: { params: IdParams, body: RunsPaidBody }, config: { perm: ['payroll.manage'] } }, async (req) => {
     const a = tenantActor(req, 'payroll.manage');
-    const { id } = z.object({ id: Uuid }).parse(req.params);
-    const { paymentReference } = z.object({ paymentReference: z.string().trim().min(3).max(100) }).parse(req.body);
+    const { id } = IdParams.parse(req.params);
+    const { paymentReference } = RunsPaidBody.parse(req.body);
     return a.tx(async (db) => {
       const r = await loadRun(db, a, id, true);
       if (r.status !== 'finalized') throw conflict('Finalize the run first');
@@ -540,9 +552,9 @@ export async function payrollRoutes(app: FastifyInstance) {
     });
   });
 
-  app.post('/runs/:id/cancel', async (req) => {
+  app.post('/runs/:id/cancel', { schema: { params: IdParams }, config: { perm: ['payroll.manage'] } }, async (req) => {
     const a = tenantActor(req, 'payroll.manage');
-    const { id } = z.object({ id: Uuid }).parse(req.params);
+    const { id } = IdParams.parse(req.params);
     return a.tx(async (db) => {
       const r = await loadRun(db, a, id, true);
       if (!['draft', 'computed'].includes(r.status)) throw conflict(`A ${r.status} run cannot be cancelled`);
@@ -556,9 +568,9 @@ export async function payrollRoutes(app: FastifyInstance) {
   // Statutory and bank files keep their CSV layouts; the salary register is also offered as an Excel workbook.
   type Exported = { rows: unknown[][]; subjects: string[]; fields: readonly string[]; excluded?: number };
   const exportRun = (name: string, build: (db: Db, a: TenantActor, run: { id: string; period: string }) => Promise<Exported>, perm = 'payroll.read', formats: readonly ('csv' | 'xlsx')[] = ['csv']) =>
-    formats.forEach((format) => app.get(`/runs/:id/${name}.${format}`, async (req, reply) => {
+    formats.forEach((format) => app.get(`/runs/:id/${name}.${format}`, { schema: { params: IdParams }, config: { permAny: ['payroll.manage'], feature: [F] } }, async (req, reply) => {
       const a = tenantActorAny(req, perm, 'payroll.manage');
-      const { id } = z.object({ id: Uuid }).parse(req.params);
+      const { id } = IdParams.parse(req.params);
       const { rows, period, excluded } = await a.tx(async (db) => {
         await requireFeature(db, a.tenantId, F);
         const r = await loadRun(db, a, id);
@@ -640,7 +652,7 @@ export async function payrollRoutes(app: FastifyInstance) {
   });
 
   // ------------------------------------------------------------ payslips
-  only(app, 'payroll.payslips').get('/payslips/mine', async (req) => {
+  only(app, 'payroll.payslips').get('/payslips/mine', { schema: {}, config: { perm: ['payslips.self'], feature: ['payroll.payslips'] } }, async (req) => {
     const a = tenantActor(req, 'payslips.self');
     if (!a.user.employeeId) return { items: [] };
     return a.tx(async (db) => {
@@ -653,9 +665,9 @@ export async function payrollRoutes(app: FastifyInstance) {
       return { items: rows.map(({ data_enc, ...r }) => { const d = itemFields(openItem(data_enc)); const row = { ...r, gross: d.gross, deductions: d.deductions, net: d.net }; return reveal ? row : maskFields(row, fields); }) };
     });
   });
-  only(app, 'payroll.payslips').get('/payslips/:id', async (req) => {
+  only(app, 'payroll.payslips').get('/payslips/:id', { schema: { params: IdParams }, config: { feature: ['payroll.payslips'] } }, async (req) => {
     const a = tenantActor(req);
-    const { id } = z.object({ id: Uuid }).parse(req.params);
+    const { id } = IdParams.parse(req.params);
     return a.tx(async (db) => {
       const p = (await db.query<{ employee_id: string; status: string; hold: boolean }>(`SELECT i.employee_id, r.status, i.hold FROM payroll_items i JOIN payroll_runs r ON r.tenant_id=i.tenant_id AND r.id=i.run_id WHERE i.tenant_id=$1 AND i.id=$2`, [a.tenantId, id])).rows[0];
       const own = !!p && p.employee_id === a.user.employeeId && a.has('payslips.self') && ['finalized', 'paid'].includes(p.status) && !p.hold;
@@ -692,9 +704,9 @@ export async function payrollRoutes(app: FastifyInstance) {
 
   // ------------------------------------------------------------ F&F helper
   /** Suggested F&F inputs for a leaver (HR confirms each as an adjustment). */
-  app.get('/fnf-suggestions/:employeeId', async (req) => {
+  app.get('/fnf-suggestions/:employeeId', { schema: { params: FnfSuggestionsParams }, config: { perm: ['payroll.manage'] } }, async (req) => {
     const a = tenantActor(req, 'payroll.manage');
-    const { employeeId } = z.object({ employeeId: Uuid }).parse(req.params);
+    const { employeeId } = FnfSuggestionsParams.parse(req.params);
     return a.tx(async (db) => {
       if (!(await subjectVisible(db, a.tenantId, await policyViewer(db, a.tenantId, a.user), employeeId))) throw notFound('No approved separation');
       const s = (await db.query<{ shortfall_days: number; waive_shortfall: boolean; lwd: string; kind: string }>(`SELECT shortfall_days, waive_shortfall, coalesce(approved_lwd, requested_lwd)::text AS lwd, kind

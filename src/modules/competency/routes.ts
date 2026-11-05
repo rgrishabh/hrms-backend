@@ -77,11 +77,29 @@ export function registerCompetencyApprovals() {
   });
 }
 
+const IdParams = z.object({ id: Uuid });
+const TrainingRecordsQuery = PageQuery.extend({ employeeId: Uuid.optional(), courseId: Uuid.optional(), expiringWithinDays: z.coerce.number().int().min(0).max(365).optional(),
+      includeRevoked: QueryBool.default(false) });
+const TrainingRecordsBody = z.object({
+      employeeId: Uuid, courseId: Uuid, completedOn: IsoDate, result: z.enum(['completed', 'passed', 'failed']),
+      trainer: Text(150), provider: Text(150), hours: z.number().positive().max(9999).multipleOf(0.1).nullable().default(null), notes: Text(1000),
+    });
+const AssessmentsQuery = PageQuery.extend({ employeeId: Uuid.optional(), methodId: Uuid.optional() });
+const AssessmentsBody = z.object({
+      employeeId: Uuid, methodId: Uuid, activity: Activity, assessedOn: IsoDate,
+      approach: z.enum(['witnessed', 'replicate', 'retained_sample', 'proficiency_test', 'interlab_comparison', 'written', 'other']),
+      result: z.enum(['competent', 'not_yet_competent']), evidence: z.string().trim().min(3).max(2000),
+    });
+const AuthorizationsBody = z.object({ assessmentId: Uuid });
+const AuthorizationsQuery = PageQuery.extend({ employeeId: Uuid.optional(), methodId: Uuid.optional(), status: z.enum(['pending', 'authorized', 'suspended', 'in_force', 'ended', 'review_due']).optional() });
+const CheckQuery = z.object({ employeeId: Uuid.optional(), employeeCode: z.string().trim().max(50).optional(), methodId: Uuid.optional(), methodCode: z.string().trim().toUpperCase().max(40).optional(), activity: Activity })
+      .refine((v) => (v.employeeId || v.employeeCode) && (v.methodId || v.methodCode), 'Give an employee and a method');
+const MatrixQuery = z.object({ discipline: z.string().trim().max(80).optional(), branchId: Uuid.optional() });
 export async function competencyRoutes(app: FastifyInstance) {
   gateFeatures(app, 'training');
 
   // ------------------------------------------------------------ courses (feature: training)
-  app.get('/courses', async (req) => {
+  app.get('/courses', { schema: {}, config: { permAny: ['training.manage', 'competency.read', 'competency.manage', 'competency.self'], feature: ['training'] } }, async (req) => {
     const a = tenantActorAny(req, 'training.manage', 'competency.read', 'competency.manage', 'competency.self');
     return a.tx(async (db) => {
       await requireFeature(db, a.tenantId, 'training');
@@ -91,7 +109,7 @@ export async function competencyRoutes(app: FastifyInstance) {
     });
   });
   const courseCols = (b: z.infer<typeof CourseBody>) => [b.code, b.name, b.kind, b.description, b.validityMonths, b.status];
-  app.post('/courses', async (req, reply) => {
+  app.post('/courses', { schema: { body: CourseBody }, config: { perm: ['training.manage'], feature: ['training'] } }, async (req, reply) => {
     const a = tenantActor(req, 'training.manage');
     const b = CourseBody.parse(req.body);
     return a.tx(async (db) => {
@@ -102,9 +120,9 @@ export async function competencyRoutes(app: FastifyInstance) {
       reply.code(201); return { id };
     });
   });
-  app.put('/courses/:id', async (req) => {
+  app.put('/courses/:id', { schema: { params: IdParams, body: CourseBody }, config: { perm: ['training.manage'], feature: ['training'] } }, async (req) => {
     const a = tenantActor(req, 'training.manage');
-    const { id } = z.object({ id: Uuid }).parse(req.params);
+    const { id } = IdParams.parse(req.params);
     const b = CourseBody.parse(req.body);
     return a.tx(async (db) => {
       await requireFeature(db, a.tenantId, 'training');
@@ -117,10 +135,9 @@ export async function competencyRoutes(app: FastifyInstance) {
   });
 
   // ------------------------------------------------------------ training records
-  app.get('/training-records', async (req) => {
+  app.get('/training-records', { schema: { querystring: TrainingRecordsQuery }, config: { feature: ['training'] } }, async (req) => {
     const a = tenantActor(req);
-    const q = PageQuery.extend({ employeeId: Uuid.optional(), courseId: Uuid.optional(), expiringWithinDays: z.coerce.number().int().min(0).max(365).optional(),
-      includeRevoked: QueryBool.default(false) }).parse(req.query);
+    const q = TrainingRecordsQuery.parse(req.query);
     const employeeId = scopeEmployee(a, q.employeeId, 'training.manage', 'competency.read');
     return a.tx(async (db) => {
       await requireFeature(db, a.tenantId, 'training');
@@ -139,12 +156,9 @@ export async function competencyRoutes(app: FastifyInstance) {
     });
   });
 
-  app.post('/training-records', async (req, reply) => {
+  app.post('/training-records', { schema: { body: TrainingRecordsBody }, config: { perm: ['training.manage'], feature: ['training'] } }, async (req, reply) => {
     const a = tenantActor(req, 'training.manage');
-    const b = z.object({
-      employeeId: Uuid, courseId: Uuid, completedOn: IsoDate, result: z.enum(['completed', 'passed', 'failed']),
-      trainer: Text(150), provider: Text(150), hours: z.number().positive().max(9999).multipleOf(0.1).nullable().default(null), notes: Text(1000),
-    }).parse(req.body);
+    const b = TrainingRecordsBody.parse(req.body);
     return a.tx(async (db) => {
       await requireFeature(db, a.tenantId, 'training');
       notSelf(a, b.employeeId, 'record training'); // training is a prerequisite for authorizations: no self-certification
@@ -162,9 +176,9 @@ export async function competencyRoutes(app: FastifyInstance) {
     });
   });
 
-  app.post('/training-records/:id/revoke', async (req) => {
+  app.post('/training-records/:id/revoke', { schema: { params: IdParams, body: Reason }, config: { perm: ['training.manage'], feature: ['training'] } }, async (req) => {
     const a = tenantActor(req, 'training.manage');
-    const { id } = z.object({ id: Uuid }).parse(req.params);
+    const { id } = IdParams.parse(req.params);
     const { reason } = Reason.parse(req.body);
     return a.tx(async (db) => {
       await requireFeature(db, a.tenantId, 'training');
@@ -178,7 +192,7 @@ export async function competencyRoutes(app: FastifyInstance) {
   });
 
   // ------------------------------------------------------------ methods (feature: lab.competency)
-  only(app, 'lab.competency').get('/methods', async (req) => {
+  only(app, 'lab.competency').get('/methods', { schema: {}, config: { permAny: ['competency.read', 'competency.manage', 'competency.assess', 'competency.self'], feature: ['lab.competency'] } }, async (req) => {
     const a = tenantActorAny(req, 'competency.read', 'competency.manage', 'competency.assess', 'competency.self');
     return a.tx(async (db) => {
       await requireFeature(db, a.tenantId, 'lab.competency');
@@ -207,7 +221,7 @@ export async function competencyRoutes(app: FastifyInstance) {
     for (const c of new Set(b.requiredCourseIds)) await db.query('INSERT INTO lab_method_requirements (tenant_id, method_id, course_id) VALUES ($1,$2,$3)', [a.tenantId, id, c]);
     return id;
   }
-  only(app, 'lab.competency').post('/methods', async (req, reply) => {
+  only(app, 'lab.competency').post('/methods', { schema: { body: MethodBody }, config: { perm: ['competency.manage'], feature: ['lab.competency'] } }, async (req, reply) => {
     const a = tenantActor(req, 'competency.manage');
     const b = MethodBody.parse(req.body);
     return a.tx(async (db) => {
@@ -217,9 +231,9 @@ export async function competencyRoutes(app: FastifyInstance) {
       reply.code(201); return { id };
     });
   });
-  only(app, 'lab.competency').put('/methods/:id', async (req) => {
+  only(app, 'lab.competency').put('/methods/:id', { schema: { params: IdParams, body: MethodBody }, config: { perm: ['competency.manage'], feature: ['lab.competency'] } }, async (req) => {
     const a = tenantActor(req, 'competency.manage');
-    const { id } = z.object({ id: Uuid }).parse(req.params);
+    const { id } = IdParams.parse(req.params);
     const b = MethodBody.parse(req.body);
     return a.tx(async (db) => {
       await requireFeature(db, a.tenantId, 'lab.competency');
@@ -231,9 +245,9 @@ export async function competencyRoutes(app: FastifyInstance) {
   });
 
   // ------------------------------------------------------------ assessments
-  only(app, 'lab.competency').get('/assessments', async (req) => {
+  only(app, 'lab.competency').get('/assessments', { schema: { querystring: AssessmentsQuery }, config: { feature: ['lab.competency'] } }, async (req) => {
     const a = tenantActor(req);
-    const q = PageQuery.extend({ employeeId: Uuid.optional(), methodId: Uuid.optional() }).parse(req.query);
+    const q = AssessmentsQuery.parse(req.query);
     const employeeId = scopeEmployee(a, q.employeeId, 'competency.read', 'competency.assess');
     return a.tx(async (db) => {
       await requireFeature(db, a.tenantId, 'lab.competency');
@@ -249,13 +263,9 @@ export async function competencyRoutes(app: FastifyInstance) {
     });
   });
 
-  only(app, 'lab.competency').post('/assessments', async (req, reply) => {
+  only(app, 'lab.competency').post('/assessments', { schema: { body: AssessmentsBody }, config: { perm: ['competency.assess'], feature: ['lab.competency'] } }, async (req, reply) => {
     const a = tenantActor(req, 'competency.assess');
-    const b = z.object({
-      employeeId: Uuid, methodId: Uuid, activity: Activity, assessedOn: IsoDate,
-      approach: z.enum(['witnessed', 'replicate', 'retained_sample', 'proficiency_test', 'interlab_comparison', 'written', 'other']),
-      result: z.enum(['competent', 'not_yet_competent']), evidence: z.string().trim().min(3).max(2000),
-    }).parse(req.body);
+    const b = AssessmentsBody.parse(req.body);
     notSelf(a, b.employeeId, 'record a competency assessment');
     return a.tx(async (db) => {
       await requireFeature(db, a.tenantId, 'lab.competency');
@@ -272,9 +282,9 @@ export async function competencyRoutes(app: FastifyInstance) {
   });
 
   // ------------------------------------------------------------ authorizations
-  only(app, 'lab.competency').post('/authorizations', async (req, reply) => {
+  only(app, 'lab.competency').post('/authorizations', { schema: { body: AuthorizationsBody }, config: { perm: ['competency.assess'], feature: ['lab.competency'] } }, async (req, reply) => {
     const a = tenantActor(req, 'competency.assess');
-    const { assessmentId } = z.object({ assessmentId: Uuid }).parse(req.body);
+    const { assessmentId } = AuthorizationsBody.parse(req.body);
     return a.tx(async (db) => {
       await requireFeature(db, a.tenantId, 'lab.competency');
       const s = (await db.query<{ employee_id: string; method_id: string; activity: (typeof ACTIVITIES)[number]; result: string; assessed_on: string; method_status: string; method_code: string; method_name: string }>(
@@ -305,9 +315,9 @@ export async function competencyRoutes(app: FastifyInstance) {
     });
   });
 
-  only(app, 'lab.competency').get('/authorizations', async (req) => {
+  only(app, 'lab.competency').get('/authorizations', { schema: { querystring: AuthorizationsQuery }, config: { feature: ['lab.competency'] } }, async (req) => {
     const a = tenantActor(req);
-    const q = PageQuery.extend({ employeeId: Uuid.optional(), methodId: Uuid.optional(), status: z.enum(['pending', 'authorized', 'suspended', 'in_force', 'ended', 'review_due']).optional() }).parse(req.query);
+    const q = AuthorizationsQuery.parse(req.query);
     const employeeId = scopeEmployee(a, q.employeeId, 'competency.read', 'competency.authorize');
     return a.tx(async (db) => {
       await requireFeature(db, a.tenantId, 'lab.competency');
@@ -332,9 +342,9 @@ export async function competencyRoutes(app: FastifyInstance) {
     });
   });
 
-  only(app, 'lab.competency').get('/authorizations/:id', async (req) => {
+  only(app, 'lab.competency').get('/authorizations/:id', { schema: { params: IdParams }, config: { feature: ['lab.competency'] } }, async (req) => {
     const a = tenantActor(req);
-    const { id } = z.object({ id: Uuid }).parse(req.params);
+    const { id } = IdParams.parse(req.params);
     return a.tx(async (db) => {
       await requireFeature(db, a.tenantId, 'lab.competency');
       const z0 = await loadAuthorization(db, a.tenantId, id);
@@ -350,7 +360,7 @@ export async function competencyRoutes(app: FastifyInstance) {
 
   const transition = (action: 'suspend' | 'reinstate' | 'withdraw') => async (req: FastifyRequest) => {
     const a = tenantActor(req, 'competency.authorize');
-    const { id } = z.object({ id: Uuid }).parse(req.params);
+    const { id } = IdParams.parse(req.params);
     const { reason } = Reason.parse(req.body);
     return a.tx(async (db) => {
       await requireFeature(db, a.tenantId, 'lab.competency');
@@ -375,13 +385,13 @@ export async function competencyRoutes(app: FastifyInstance) {
       return { ok: true, status: to };
     });
   };
-  only(app, 'lab.competency').post('/authorizations/:id/suspend', transition('suspend'));
-  only(app, 'lab.competency').post('/authorizations/:id/reinstate', transition('reinstate'));
-  only(app, 'lab.competency').post('/authorizations/:id/withdraw', transition('withdraw'));
+  only(app, 'lab.competency').post('/authorizations/:id/suspend', { schema: { params: IdParams, body: Reason }, config: { perm: ['competency.authorize'], feature: ['lab.competency'] } }, transition('suspend'));
+  only(app, 'lab.competency').post('/authorizations/:id/reinstate', { schema: { params: IdParams, body: Reason }, config: { perm: ['competency.authorize'], feature: ['lab.competency'] } }, transition('reinstate'));
+  only(app, 'lab.competency').post('/authorizations/:id/withdraw', { schema: { params: IdParams, body: Reason }, config: { perm: ['competency.authorize'], feature: ['lab.competency'] } }, transition('withdraw'));
 
-  only(app, 'lab.competency').post('/authorizations/:id/cancel', async (req) => {
+  only(app, 'lab.competency').post('/authorizations/:id/cancel', { schema: { params: IdParams }, config: { perm: ['competency.assess'], feature: ['lab.competency'] } }, async (req) => {
     const a = tenantActor(req, 'competency.assess');
-    const { id } = z.object({ id: Uuid }).parse(req.params);
+    const { id } = IdParams.parse(req.params);
     return a.tx(async (db) => {
       await requireFeature(db, a.tenantId, 'lab.competency');
       const r = (await db.query<{ id: string }>(`SELECT id FROM approval_requests WHERE tenant_id=$1 AND entity_type='lab_authorization' AND entity_id=$2 AND status='pending'`, [a.tenantId, id])).rows[0];
@@ -393,10 +403,9 @@ export async function competencyRoutes(app: FastifyInstance) {
 
   // ------------------------------------------------------------ check & matrix
   /** For LIMS / report sign-off integration: is this person authorized for this method and activity today? */
-  only(app, 'lab.competency').get('/check', async (req) => {
+  only(app, 'lab.competency').get('/check', { schema: { querystring: CheckQuery }, config: { feature: ['lab.competency'] } }, async (req) => {
     const a = tenantActor(req);
-    const q = z.object({ employeeId: Uuid.optional(), employeeCode: z.string().trim().max(50).optional(), methodId: Uuid.optional(), methodCode: z.string().trim().toUpperCase().max(40).optional(), activity: Activity })
-      .refine((v) => (v.employeeId || v.employeeCode) && (v.methodId || v.methodCode), 'Give an employee and a method').parse(req.query);
+    const q = CheckQuery.parse(req.query);
     return a.tx(async (db) => {
       await requireFeature(db, a.tenantId, 'lab.competency');
       const emp = (await db.query<{ id: string }>('SELECT id FROM employees WHERE tenant_id=$1 AND ($2::uuid IS NULL OR id=$2) AND ($3::text IS NULL OR employee_code=$3)',
@@ -410,9 +419,9 @@ export async function competencyRoutes(app: FastifyInstance) {
     });
   });
 
-  only(app, 'lab.competency').get('/matrix', async (req) => {
+  only(app, 'lab.competency').get('/matrix', { schema: { querystring: MatrixQuery }, config: { perm: ['competency.read'], feature: ['lab.competency'] } }, async (req) => {
     const a = tenantActor(req, 'competency.read');
-    const q = z.object({ discipline: z.string().trim().max(80).optional(), branchId: Uuid.optional() }).parse(req.query);
+    const q = MatrixQuery.parse(req.query);
     return a.tx(async (db) => {
       await requireFeature(db, a.tenantId, 'lab.competency');
       const today = await orgToday(db, a.tenantId);
@@ -443,7 +452,7 @@ export async function competencyRoutes(app: FastifyInstance) {
     });
   });
 
-  app.get('/me', async (req) => {
+  app.get('/me', { schema: {}, config: { perm: ['competency.self'], feature: ['training', 'lab.competency'] } }, async (req) => {
     const a = tenantActor(req, 'competency.self');
     if (!a.user.employeeId) throw badRequest('Your account is not linked to an employee record');
     return a.tx(async (db) => {

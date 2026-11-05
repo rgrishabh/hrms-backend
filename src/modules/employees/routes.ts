@@ -57,12 +57,16 @@ export function registerEmployeeApprovals() {
   });
 }
 
+const IdParams = z.object({ id: Uuid });
+const PostRootBody = z.object({ employee: EmployeeInput, confirmDuplicate: z.boolean().default(false) });
+const PatchRootBody = z.object({ changes: z.record(z.string(), z.unknown()), expectedVersion: z.number().int(), exitDate: IsoDate.optional() });
+const ImportBody = z.object({ dryRun: z.boolean().default(true), rows: z.array(z.record(z.string(), z.unknown())).min(1).max(2000) });
 export async function employeeRoutes(app: FastifyInstance) {
   const { cipher } = app.deps;
   await profileRoutes(app);
 
 
-  app.get('/', async (req) => {
+  app.get('/', { schema: { querystring: ListQuery }, config: { permAny: ['employees.read', 'employees.directory'] } }, async (req) => {
     const a = tenantActorAny(req, 'employees.read', 'employees.directory');
     const full = a.has('employees.read');
     const q = ListQuery.parse(req.query);
@@ -81,15 +85,15 @@ export async function employeeRoutes(app: FastifyInstance) {
     });
   });
 
-  app.get('/me', async (req) => {
+  app.get('/me', { schema: {} }, async (req) => {
     const a = tenantActor(req);
     if (!a.user.employeeId) throw notFound('Your user account is not linked to an employee record');
     return a.tx(async (db) => (await db.query(`SELECT ${fullSelect()} ${FROM_JOINS} WHERE e.tenant_id=$1 AND e.id=$2`, [a.tenantId, a.user.employeeId])).rows[0]);
   });
 
-  app.get('/:id', async (req) => {
+  app.get('/:id', { schema: { params: IdParams }, config: { permAny: ['employees.read', 'employees.directory'] } }, async (req) => {
     const a = tenantActorAny(req, 'employees.read', 'employees.directory');
-    const { id } = z.object({ id: Uuid }).parse(req.params);
+    const { id } = IdParams.parse(req.params);
     const full = a.has('employees.read') || a.user.employeeId === id;
     return a.tx(async (db) => {
       const v = await policyViewer(db, a.tenantId, a.user);
@@ -102,9 +106,9 @@ export async function employeeRoutes(app: FastifyInstance) {
     });
   });
 
-  app.post('/', async (req, reply) => {
+  app.post('/', { schema: { body: PostRootBody }, config: { perm: ['employees.manage'] } }, async (req, reply) => {
     const a = tenantActor(req, 'employees.manage');
-    const body = z.object({ employee: EmployeeInput, confirmDuplicate: z.boolean().default(false) }).parse(req.body);
+    const body = PostRootBody.parse(req.body);
     return a.tx(async (db) => {
       const id = await insertEmployee(db, a.tenantId, body.employee, body.confirmDuplicate);
       await audit(db, { ...a.auditBase, action: 'employee.created', targetType: 'employee', targetId: id,
@@ -113,10 +117,10 @@ export async function employeeRoutes(app: FastifyInstance) {
     });
   });
 
-  app.patch('/:id', async (req) => {
+  app.patch('/:id', { schema: { params: IdParams, body: PatchRootBody }, config: { perm: ['employees.manage'] } }, async (req) => {
     const a = tenantActor(req, 'employees.manage');
-    const { id } = z.object({ id: Uuid }).parse(req.params);
-    const body = z.object({ changes: z.record(z.string(), z.unknown()), expectedVersion: z.number().int(), exitDate: IsoDate.optional() }).parse(req.body);
+    const { id } = IdParams.parse(req.params);
+    const body = PatchRootBody.parse(req.body);
     return a.tx(async (db) => {
       const cur = await db.query(`SELECT * FROM employees WHERE tenant_id=$1 AND id=$2 FOR UPDATE`, [a.tenantId, id]);
       const row = cur.rows[0];
@@ -159,9 +163,9 @@ export async function employeeRoutes(app: FastifyInstance) {
    * Bulk import. All-or-nothing: rows are validated first (dryRun returns the
    * per-row report), then inserted in one transaction. Org references by code.
    */
-  app.post('/import', { bodyLimit: 5 * 1024 * 1024 }, async (req) => {
+  app.post('/import', { schema: { body: ImportBody }, config: { perm: ['employees.manage'] }, bodyLimit: 5 * 1024 * 1024 }, async (req) => {
     const a = tenantActor(req, 'employees.manage');
-    const body = z.object({ dryRun: z.boolean().default(true), rows: z.array(z.record(z.string(), z.unknown())).min(1).max(2000) }).parse(req.body);
+    const body = ImportBody.parse(req.body);
     return a.tx(async (db) => {
       const branches = new Map((await db.query<{ code: string; id: string; legal_entity_id: string }>('SELECT code, id, legal_entity_id FROM branches WHERE tenant_id=$1', [a.tenantId])).rows.map((r) => [r.code, r]));
       const depts = new Map((await db.query<{ code: string; id: string }>('SELECT code, id FROM departments WHERE tenant_id=$1', [a.tenantId])).rows.map((r) => [r.code, r.id]));
@@ -217,18 +221,18 @@ export async function employeeRoutes(app: FastifyInstance) {
     });
   });
 
-  app.get('/:id/history', async (req) => {
+  app.get('/:id/history', { schema: { params: IdParams }, config: { perm: ['employees.read'] } }, async (req) => {
     const a = tenantActor(req, 'employees.read');
-    const { id } = z.object({ id: Uuid }).parse(req.params);
+    const { id } = IdParams.parse(req.params);
     return a.tx(async (db) => ({ items: (await db.query(`SELECT l.id, l.action, l.change_metadata, l.created_at, u.display_name AS actor_name
       FROM audit_logs l LEFT JOIN users u ON u.id=l.actor_id WHERE l.tenant_id=$1 AND l.target_type='employee' AND l.target_id=$2
       ORDER BY l.created_at DESC LIMIT 100`, [a.tenantId, id])).rows.map((r) => ({ ...r, change_metadata: redact(r.change_metadata) })) }));
   });
 
   // ------------------------------------------------------------ restricted: bank details
-  app.get('/:id/bank-account', async (req) => {
+  app.get('/:id/bank-account', { schema: { params: IdParams }, config: { permAny: ['employees.bank.read', 'attendance.self'] } }, async (req) => {
     const a = tenantActorAny(req, 'employees.bank.read', 'attendance.self');
-    const { id } = z.object({ id: Uuid }).parse(req.params);
+    const { id } = IdParams.parse(req.params);
     if (!a.has('employees.bank.read') && a.user.employeeId !== id) throw forbidden();
     return a.tx(async (db) => {
       if (!(await subjectVisible(db, a.tenantId, await policyViewer(db, a.tenantId, a.user), id))) throw notFound('Employee not found');
@@ -249,9 +253,9 @@ export async function employeeRoutes(app: FastifyInstance) {
    * Salary follows this account, so a change is only proposed here: someone else approves it, and the employee hears
    * about it at both ends. Nobody proposes a change to their own account through this route.
    */
-  app.put('/:id/bank-account', async (req, reply) => {
+  app.put('/:id/bank-account', { schema: { params: IdParams, body: BankBody }, config: { perm: ['employees.bank.manage'] } }, async (req, reply) => {
     const a = tenantActor(req, 'employees.bank.manage');
-    const { id } = z.object({ id: Uuid }).parse(req.params);
+    const { id } = IdParams.parse(req.params);
     const body = BankBody.parse(req.body);
     return a.tx(async (db) => {
       const e = (await db.query<{ user_id: string | null; name: string }>(`SELECT user_id, trim(first_name||' '||coalesce(last_name,'')) AS name FROM employees WHERE tenant_id=$1 AND id=$2 FOR UPDATE`, [a.tenantId, id])).rows[0];
@@ -272,9 +276,9 @@ export async function employeeRoutes(app: FastifyInstance) {
     });
   });
 
-  app.get('/:id/bank-account/pending', async (req) => {
+  app.get('/:id/bank-account/pending', { schema: { params: IdParams }, config: { permAny: ['employees.bank.read', 'employees.bank.approve'] } }, async (req) => {
     const a = tenantActorAny(req, 'employees.bank.read', 'employees.bank.approve');
-    const { id } = z.object({ id: Uuid }).parse(req.params);
+    const { id } = IdParams.parse(req.params);
     return a.tx(async (db) => {
       if (!(await subjectVisible(db, a.tenantId, await policyViewer(db, a.tenantId, a.user), id))) throw notFound('Employee not found');
       const c = (await db.query<{ id: string; account_holder: string; account_last4: string; ifsc: string; bank_name: string | null; created_at: Date; requested_by_name: string }>(

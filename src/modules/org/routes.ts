@@ -14,8 +14,9 @@ const BranchBody = z.object({ legalEntityId: Uuid, code: Code, name: z.string().
   city: z.string().trim().max(80).nullable().optional(), status: z.enum(['active', 'inactive']).default('active') });
 const DepartmentBody = z.object({ code: Code, name: z.string().trim().min(2).max(200), parentId: Uuid.nullable().optional(), status: z.enum(['active', 'inactive']).default('active') });
 
+const IdParams = z.object({ id: Uuid });
 export async function orgRoutes(app: FastifyInstance) {
-  app.get('/', async (req) => {
+  app.get('/', { schema: {}, config: { permAny: ['org.read', 'employees.directory'] } }, async (req) => {
     // Directory users need branch/department names for filters; full management needs org.manage.
     const a = tenantActorAny(req, 'org.read', 'employees.directory');
     return a.tx((db) => cached(db, a.tenantId, 'org', 'lists', async () => ({
@@ -27,7 +28,7 @@ export async function orgRoutes(app: FastifyInstance) {
 
   const upsert = <B extends z.ZodTypeAny>(entity: string, table: string, schema: B,
     cols: (b: z.infer<B>) => Record<string, unknown>) => {
-    app.post(`/${entity}`, async (req, reply) => {
+    app.post(`/${entity}`, { schema: { body: schema }, config: { perm: ['org.manage'] } }, async (req, reply) => {
       const a = tenantActor(req, 'org.manage');
       const b = schema.parse(req.body);
       const c = cols(b);
@@ -40,9 +41,9 @@ export async function orgRoutes(app: FastifyInstance) {
         reply.code(201); return { id: r.rows[0]!.id };
       });
     });
-    app.put(`/${entity}/:id`, async (req) => {
+    app.put(`/${entity}/:id`, { schema: { params: IdParams, body: schema }, config: { perm: ['org.manage'] } }, async (req) => {
       const a = tenantActor(req, 'org.manage');
-      const { id } = z.object({ id: Uuid }).parse(req.params);
+      const { id } = IdParams.parse(req.params);
       const c = cols(schema.parse(req.body));
       const keys = Object.keys(c);
       return a.tx(async (db) => {

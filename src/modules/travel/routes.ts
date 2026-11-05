@@ -117,10 +117,16 @@ export function registerTravelApprovals() {
   });
 }
 
+const RequestsQuery = PageQuery.extend({ scope: z.enum(['mine', 'team', 'all']).default('mine'), status: z.enum(['pending', 'approved', 'rejected', 'returned', 'cancelled', 'completed', 'closed']).optional(),
+      advance: z.enum(['to_pay', 'outstanding']).optional(), on: IsoDate.optional() });
+const IdParams = z.object({ id: Uuid });
+const RequestsCancelBody = z.object({ reason: z.string().trim().min(3).max(500) });
+const RequestsAdvancePaidBody = z.object({ reference: z.string().trim().min(3).max(100) });
+const RequestsAdvanceReturnedBody = z.object({ amount: z.union([z.number(), z.string()]).transform((v) => new Decimal(v)), note: z.string().trim().min(3).max(300) });
 export async function travelRoutes(app: FastifyInstance) {
   gateFeatures(app, F);
 
-  app.post('/requests', async (req, reply) => {
+  app.post('/requests', { schema: { body: Body }, config: { perm: ['travel.self'] } }, async (req, reply) => {
     const a = tenantActor(req, 'travel.self');
     const b = Body.parse(req.body);
     const empId = a.user.employeeId;
@@ -164,10 +170,9 @@ export async function travelRoutes(app: FastifyInstance) {
     });
   });
 
-  app.get('/requests', async (req) => {
+  app.get('/requests', { schema: { querystring: RequestsQuery }, config: { permAny: ['travel.self', 'travel.team.read'] } }, async (req) => {
     const a = tenantActorAny(req, 'travel.self', 'travel.team.read', ...READ_ALL);
-    const q = PageQuery.extend({ scope: z.enum(['mine', 'team', 'all']).default('mine'), status: z.enum(['pending', 'approved', 'rejected', 'returned', 'cancelled', 'completed', 'closed']).optional(),
-      advance: z.enum(['to_pay', 'outstanding']).optional(), on: IsoDate.optional() }).parse(req.query);
+    const q = RequestsQuery.parse(req.query);
     return a.tx(async (db) => {
       let ids: string[] | null;
       if (q.scope === 'all') { if (!READ_ALL.some((p) => a.has(p))) throw forbidden(); ids = null; }
@@ -184,9 +189,9 @@ export async function travelRoutes(app: FastifyInstance) {
     });
   });
 
-  app.get('/requests/:id', async (req) => {
+  app.get('/requests/:id', { schema: { params: IdParams } }, async (req) => {
     const a = tenantActor(req);
-    const { id } = z.object({ id: Uuid }).parse(req.params);
+    const { id } = IdParams.parse(req.params);
     return a.tx(async (db) => {
       await loadTrip(db, a, id);
       const trip = (await db.query(`SELECT ${COLS} FROM ${FROM} WHERE t.tenant_id=$1 AND t.id=$2`, [a.tenantId, id])).rows[0];
@@ -194,9 +199,9 @@ export async function travelRoutes(app: FastifyInstance) {
     });
   });
 
-  app.post('/requests/:id/withdraw', async (req) => {
+  app.post('/requests/:id/withdraw', { schema: { params: IdParams }, config: { perm: ['travel.self'] } }, async (req) => {
     const a = tenantActor(req, 'travel.self');
-    const { id } = z.object({ id: Uuid }).parse(req.params);
+    const { id } = IdParams.parse(req.params);
     return a.tx(async (db) => {
       const t = await loadTrip(db, a, id, true);
       if (t.employee_id !== a.user.employeeId) throw forbidden('Only the traveller can withdraw this request');
@@ -213,10 +218,10 @@ export async function travelRoutes(app: FastifyInstance) {
    * Cancel an approved trip: the traveller before it starts, finance (travel.approve) until it is completed.
    * Its field duty is cancelled; a paid advance stays outstanding until it is returned.
    */
-  app.post('/requests/:id/cancel', async (req) => {
+  app.post('/requests/:id/cancel', { schema: { params: IdParams, body: RequestsCancelBody } }, async (req) => {
     const a = tenantActor(req);
-    const { id } = z.object({ id: Uuid }).parse(req.params);
-    const { reason } = z.object({ reason: z.string().trim().min(3).max(500) }).parse(req.body);
+    const { id } = IdParams.parse(req.params);
+    const { reason } = RequestsCancelBody.parse(req.body);
     return a.tx(async (db) => {
       const t = await loadTrip(db, a, id, true);
       if (t.status !== 'approved') throw conflict(`Only an approved trip can be cancelled (this one is ${t.status})`);
@@ -231,10 +236,10 @@ export async function travelRoutes(app: FastifyInstance) {
   });
 
   /** Finance records the advance as paid (bank transfer / cash). Never by the traveller. */
-  app.post('/requests/:id/advance-paid', async (req) => {
+  app.post('/requests/:id/advance-paid', { schema: { params: IdParams, body: RequestsAdvancePaidBody }, config: { perm: ['expenses.pay'] } }, async (req) => {
     const a = tenantActor(req, 'expenses.pay');
-    const { id } = z.object({ id: Uuid }).parse(req.params);
-    const b = z.object({ reference: z.string().trim().min(3).max(100) }).parse(req.body);
+    const { id } = IdParams.parse(req.params);
+    const b = RequestsAdvancePaidBody.parse(req.body);
     return a.tx(async (db) => {
       const t = await loadTrip(db, a, id, true);
       if (t.employee_id === a.user.employeeId) throw forbidden('You cannot pay your own travel advance');
@@ -250,9 +255,9 @@ export async function travelRoutes(app: FastifyInstance) {
   });
 
   /** Back from the trip. */
-  app.post('/requests/:id/complete', async (req) => {
+  app.post('/requests/:id/complete', { schema: { params: IdParams }, config: { perm: ['travel.self'] } }, async (req) => {
     const a = tenantActor(req, 'travel.self');
-    const { id } = z.object({ id: Uuid }).parse(req.params);
+    const { id } = IdParams.parse(req.params);
     return a.tx(async (db) => {
       const t = await loadTrip(db, a, id, true);
       if (t.employee_id !== a.user.employeeId) throw forbidden('Only the traveller can mark the trip completed');
@@ -265,9 +270,9 @@ export async function travelRoutes(app: FastifyInstance) {
   });
 
   /** Start the trip's expense claim (a draft in Expenses, linked to the trip so the advance is set off against it). */
-  app.post('/requests/:id/claim', async (req, reply) => {
+  app.post('/requests/:id/claim', { schema: { params: IdParams }, config: { perm: ['travel.self', 'expenses.self'] } }, async (req, reply) => {
     const a = tenantActor(req, 'travel.self', 'expenses.self');
-    const { id } = z.object({ id: Uuid }).parse(req.params);
+    const { id } = IdParams.parse(req.params);
     return a.tx(async (db) => {
       const t = await loadTrip(db, a, id, true);
       if (t.employee_id !== a.user.employeeId) throw forbidden('Only the traveller can claim the trip expenses');
@@ -284,10 +289,10 @@ export async function travelRoutes(app: FastifyInstance) {
   });
 
   /** Unspent advance returned by the employee (cash or transfer). Recovery through payroll belongs to advances and loans. */
-  app.post('/requests/:id/advance-returned', async (req) => {
+  app.post('/requests/:id/advance-returned', { schema: { params: IdParams, body: RequestsAdvanceReturnedBody }, config: { perm: ['expenses.pay'] } }, async (req) => {
     const a = tenantActor(req, 'expenses.pay');
-    const { id } = z.object({ id: Uuid }).parse(req.params);
-    const b = z.object({ amount: z.union([z.number(), z.string()]).transform((v) => new Decimal(v)), note: z.string().trim().min(3).max(300) }).parse(req.body);
+    const { id } = IdParams.parse(req.params);
+    const b = RequestsAdvanceReturnedBody.parse(req.body);
     return a.tx(async (db) => {
       const t = await loadTrip(db, a, id, true);
       if (t.employee_id === a.user.employeeId) throw forbidden('You cannot record your own advance as returned');
@@ -302,9 +307,9 @@ export async function travelRoutes(app: FastifyInstance) {
   });
 
   /** Finance closes a settled trip: nothing outstanding, no claim still in progress. */
-  app.post('/requests/:id/close', async (req) => {
+  app.post('/requests/:id/close', { schema: { params: IdParams }, config: { perm: ['expenses.pay'] } }, async (req) => {
     const a = tenantActor(req, 'expenses.pay');
-    const { id } = z.object({ id: Uuid }).parse(req.params);
+    const { id } = IdParams.parse(req.params);
     return a.tx(async (db) => {
       const t = await loadTrip(db, a, id, true);
       if (t.status !== 'completed') throw conflict('Close a trip once the traveller has marked it completed');

@@ -60,9 +60,17 @@ export async function endRosters(db: Db, tenantId: string, employeeIds: string[]
   return (ended.rowCount ?? 0) + (withdrawn.rowCount ?? 0);
 }
 
+const IdParams = z.object({ id: Uuid });
+const RosterPatternsBody = z.object({ name: z.string().trim().min(2).max(100).optional(), status: z.enum(['active', 'inactive']).optional(), days: PatternBody.shape.days.optional() });
+const RosterAssignmentsBody = z.object({ employeeIds: z.array(Uuid).min(1).max(500), patternId: Uuid, effectiveFrom: IsoDate, effectiveTo: IsoDate.nullable().optional(),
+      startDay: z.number().int().min(0).max(55).default(0) });
+const RosterAssignmentsEndBody = z.object({ employeeIds: z.array(Uuid).min(1).max(500), lastDay: IsoDate });
+const RosterOverridesBody = z.object({ employeeId: Uuid, date: IsoDate, shiftId: Uuid.nullable(), reason: z.string().trim().min(3).max(200) });
+const RosterOverridesParams = z.object({ employeeId: Uuid, date: IsoDate });
+const RosterQuery = z.object({ from: IsoDate, to: IsoDate, departmentId: Uuid.optional(), search: z.string().trim().max(60).optional() });
 export async function rosterRoutes(app: FastifyInstance) {
   // ------------------------------------------------------------ patterns
-  only(app, 'shifts').get('/roster-patterns', async (req) => {
+  only(app, 'shifts').get('/roster-patterns', { schema: {}, config: { permAny: ['attendance.configure', 'attendance.read', 'attendance.team.read'], feature: ['shifts'] } }, async (req) => {
     const a = tenantActorAny(req, 'attendance.configure', 'attendance.read', 'attendance.team.read');
     return a.tx(async (db) => {
       await requireFeature(db, a.tenantId, 'shifts');
@@ -74,7 +82,7 @@ export async function rosterRoutes(app: FastifyInstance) {
     });
   });
 
-  only(app, 'shifts').post('/roster-patterns', async (req, reply) => {
+  only(app, 'shifts').post('/roster-patterns', { schema: { body: PatternBody }, config: { perm: ['attendance.configure'], feature: ['shifts'] } }, async (req, reply) => {
     const a = tenantActor(req, 'attendance.configure');
     const b = PatternBody.parse(req.body);
     return a.tx(async (db) => {
@@ -90,10 +98,10 @@ export async function rosterRoutes(app: FastifyInstance) {
   });
 
   // Name and status can always change; the days only while nobody has followed the pattern (history must stay explainable).
-  only(app, 'shifts').patch('/roster-patterns/:id', async (req) => {
+  only(app, 'shifts').patch('/roster-patterns/:id', { schema: { params: IdParams, body: RosterPatternsBody }, config: { perm: ['attendance.configure'], feature: ['shifts'] } }, async (req) => {
     const a = tenantActor(req, 'attendance.configure');
-    const { id } = z.object({ id: Uuid }).parse(req.params);
-    const b = z.object({ name: z.string().trim().min(2).max(100).optional(), status: z.enum(['active', 'inactive']).optional(), days: PatternBody.shape.days.optional() }).parse(req.body);
+    const { id } = IdParams.parse(req.params);
+    const b = RosterPatternsBody.parse(req.body);
     return a.tx(async (db) => {
       await requireFeature(db, a.tenantId, 'shifts');
       const cur = (await db.query<{ code: string; days: (string | null)[] }>('SELECT code, days FROM roster_patterns WHERE tenant_id=$1 AND id=$2 FOR UPDATE', [a.tenantId, id])).rows[0];
@@ -111,10 +119,9 @@ export async function rosterRoutes(app: FastifyInstance) {
   });
 
   // ------------------------------------------------------------ who follows which pattern
-  only(app, 'shifts').post('/roster-assignments', async (req) => {
+  only(app, 'shifts').post('/roster-assignments', { schema: { body: RosterAssignmentsBody }, config: { perm: ['attendance.configure'], feature: ['shifts'] } }, async (req) => {
     const a = tenantActor(req, 'attendance.configure');
-    const b = z.object({ employeeIds: z.array(Uuid).min(1).max(500), patternId: Uuid, effectiveFrom: IsoDate, effectiveTo: IsoDate.nullable().optional(),
-      startDay: z.number().int().min(0).max(55).default(0) }).parse(req.body);
+    const b = RosterAssignmentsBody.parse(req.body);
     if (b.effectiveTo && b.effectiveTo < b.effectiveFrom) throw badRequest('The last day must be on or after the first day');
     return a.tx(async (db) => {
       await requireFeature(db, a.tenantId, 'shifts');
@@ -137,9 +144,9 @@ export async function rosterRoutes(app: FastifyInstance) {
   });
 
   // Stop following a roster after `lastDay`; the fixed shift assignment applies again.
-  only(app, 'shifts').post('/roster-assignments/end', async (req) => {
+  only(app, 'shifts').post('/roster-assignments/end', { schema: { body: RosterAssignmentsEndBody }, config: { perm: ['attendance.configure'], feature: ['shifts'] } }, async (req) => {
     const a = tenantActor(req, 'attendance.configure');
-    const b = z.object({ employeeIds: z.array(Uuid).min(1).max(500), lastDay: IsoDate }).parse(req.body);
+    const b = RosterAssignmentsEndBody.parse(req.body);
     return a.tx(async (db) => {
       await requireFeature(db, a.tenantId, 'shifts');
       await checkStart(db, a, addDays(b.lastDay, 1));
@@ -152,9 +159,9 @@ export async function rosterRoutes(app: FastifyInstance) {
   });
 
   // ------------------------------------------------------------ one-day changes (swap, cover, extra day off)
-  only(app, 'shifts').put('/roster-overrides', async (req) => {
+  only(app, 'shifts').put('/roster-overrides', { schema: { body: RosterOverridesBody }, config: { perm: ['attendance.configure'], feature: ['shifts'] } }, async (req) => {
     const a = tenantActor(req, 'attendance.configure');
-    const b = z.object({ employeeId: Uuid, date: IsoDate, shiftId: Uuid.nullable(), reason: z.string().trim().min(3).max(200) }).parse(req.body);
+    const b = RosterOverridesBody.parse(req.body);
     return a.tx(async (db) => {
       await requireFeature(db, a.tenantId, 'shifts');
       await checkStart(db, a, b.date);
@@ -169,9 +176,9 @@ export async function rosterRoutes(app: FastifyInstance) {
     });
   });
 
-  only(app, 'shifts').delete('/roster-overrides/:employeeId/:date', async (req) => {
+  only(app, 'shifts').delete('/roster-overrides/:employeeId/:date', { schema: { params: RosterOverridesParams }, config: { perm: ['attendance.configure'], feature: ['shifts'] } }, async (req) => {
     const a = tenantActor(req, 'attendance.configure');
-    const p = z.object({ employeeId: Uuid, date: IsoDate }).parse(req.params);
+    const p = RosterOverridesParams.parse(req.params);
     return a.tx(async (db) => {
       await requireFeature(db, a.tenantId, 'shifts');
       await checkStart(db, a, p.date);
@@ -185,9 +192,9 @@ export async function rosterRoutes(app: FastifyInstance) {
 
   // ------------------------------------------------------------ the roster: who works what, day by day
   // Everyone (attendance.read / configure), the reporting team (attendance.team.read), or only yourself.
-  only(app, 'shifts').get('/roster', async (req) => {
+  only(app, 'shifts').get('/roster', { schema: { querystring: RosterQuery }, config: { permAny: ['attendance.configure', 'attendance.read', 'attendance.team.read', 'attendance.self'], feature: ['shifts'] } }, async (req) => {
     const a = tenantActorAny(req, 'attendance.configure', 'attendance.read', 'attendance.team.read', 'attendance.self');
-    const q = z.object({ from: IsoDate, to: IsoDate, departmentId: Uuid.optional(), search: z.string().trim().max(60).optional() }).parse(req.query);
+    const q = RosterQuery.parse(req.query);
     if (q.to < q.from) throw badRequest('from must be on or before to');
     if (daysBetween(q.from, q.to) >= MAX_VIEW_DAYS) throw badRequest(`Show at most ${MAX_VIEW_DAYS} days at a time`);
     return a.tx(async (db) => {

@@ -74,11 +74,16 @@ export function registerFieldDutyApprovals() {
   });
 }
 
+const RequestsQuery = PageQuery.extend({ scope: z.enum(['mine', 'team', 'all']).default('mine'), status: z.enum(['pending', 'approved', 'rejected', 'returned', 'cancelled']).optional(),
+      on: IsoDate.optional(), from: IsoDate.optional(), to: IsoDate.optional() });
+const IdParams = z.object({ id: Uuid });
+const RequestsCancelBody = z.object({ reason: z.string().trim().min(3).max(500) });
+const RequestsReportBody = z.object({ outcome: z.enum(['completed', 'partly_completed', 'not_done']), note: z.string().trim().max(2000).optional().transform((v) => v || null) });
 export async function fieldDutyRoutes(app: FastifyInstance) {
   gateFeatures(app, F);
 
   /** Request field duty for yourself, or (field_duty.manage) record it for an employee; either way the manager approves. */
-  app.post('/requests', async (req, reply) => {
+  app.post('/requests', { schema: { body: Body }, config: { permAny: ['field_duty.self', 'field_duty.manage'] } }, async (req, reply) => {
     const a = tenantActorAny(req, 'field_duty.self', 'field_duty.manage');
     const b = Body.parse(req.body);
     const forOther = !!b.employeeId && b.employeeId !== a.user.employeeId;
@@ -121,10 +126,9 @@ export async function fieldDutyRoutes(app: FastifyInstance) {
     });
   });
 
-  app.get('/requests', async (req) => {
+  app.get('/requests', { schema: { querystring: RequestsQuery }, config: { permAny: ['field_duty.self', 'field_duty.team.read'] } }, async (req) => {
     const a = tenantActorAny(req, 'field_duty.self', 'field_duty.team.read', ...READ_ALL);
-    const q = PageQuery.extend({ scope: z.enum(['mine', 'team', 'all']).default('mine'), status: z.enum(['pending', 'approved', 'rejected', 'returned', 'cancelled']).optional(),
-      on: IsoDate.optional(), from: IsoDate.optional(), to: IsoDate.optional() }).parse(req.query);
+    const q = RequestsQuery.parse(req.query);
     return a.tx(async (db) => {
       let ids: string[] | null;
       if (q.scope === 'all') { if (!READ_ALL.some((p) => a.has(p))) throw forbidden(); ids = null; }
@@ -143,9 +147,9 @@ export async function fieldDutyRoutes(app: FastifyInstance) {
     });
   });
 
-  app.get('/requests/:id', async (req) => {
+  app.get('/requests/:id', { schema: { params: IdParams } }, async (req) => {
     const a = tenantActor(req);
-    const { id } = z.object({ id: Uuid }).parse(req.params);
+    const { id } = IdParams.parse(req.params);
     return a.tx(async (db) => {
       const d = await loadDuty(db, a, id);
       const decides = d.status === 'pending' && (
@@ -160,9 +164,9 @@ export async function fieldDutyRoutes(app: FastifyInstance) {
   });
 
   /** The employee (or whoever recorded it) takes back a request still awaiting approval. */
-  app.post('/requests/:id/withdraw', async (req) => {
+  app.post('/requests/:id/withdraw', { schema: { params: IdParams } }, async (req) => {
     const a = tenantActor(req);
-    const { id } = z.object({ id: Uuid }).parse(req.params);
+    const { id } = IdParams.parse(req.params);
     return a.tx(async (db) => {
       const d = await loadDuty(db, a, id, true);
       if (d.employee_id !== a.user.employeeId && d.created_by !== a.user.userId) throw forbidden('Only the employee or whoever recorded it can withdraw this request');
@@ -179,10 +183,10 @@ export async function fieldDutyRoutes(app: FastifyInstance) {
    * Cancel approved field duty: the employee while it has not started; HR (field_duty.manage) at any time before the
    * dates are locked for payroll, never their own. Attendance for those dates is recalculated.
    */
-  app.post('/requests/:id/cancel', async (req) => {
+  app.post('/requests/:id/cancel', { schema: { params: IdParams, body: RequestsCancelBody } }, async (req) => {
     const a = tenantActor(req);
-    const { id } = z.object({ id: Uuid }).parse(req.params);
-    const { reason } = z.object({ reason: z.string().trim().min(3).max(500) }).parse(req.body);
+    const { id } = IdParams.parse(req.params);
+    const { reason } = RequestsCancelBody.parse(req.body);
     return a.tx(async (db) => {
       const d = await loadDuty(db, a, id, true);
       if (d.status !== 'approved') throw conflict(`Only approved field duty can be cancelled (this one is ${d.status})`);
@@ -199,10 +203,10 @@ export async function fieldDutyRoutes(app: FastifyInstance) {
   });
 
   /** After the duty: what was done. The employee (or HR) records it once the duty has started. */
-  app.post('/requests/:id/report', async (req) => {
+  app.post('/requests/:id/report', { schema: { params: IdParams, body: RequestsReportBody } }, async (req) => {
     const a = tenantActor(req);
-    const { id } = z.object({ id: Uuid }).parse(req.params);
-    const b = z.object({ outcome: z.enum(['completed', 'partly_completed', 'not_done']), note: z.string().trim().max(2000).optional().transform((v) => v || null) }).parse(req.body);
+    const { id } = IdParams.parse(req.params);
+    const b = RequestsReportBody.parse(req.body);
     return a.tx(async (db) => {
       const d = await loadDuty(db, a, id, true);
       if (d.employee_id !== a.user.employeeId && !a.has('field_duty.manage')) throw forbidden('Only the employee or HR can report on this field duty');

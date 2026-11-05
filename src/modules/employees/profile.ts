@@ -152,12 +152,16 @@ export function registerProfileApprovals() {
   });
 }
 
+const IdParams = z.object({ id: Uuid });
+const ProfileParams = z.object({ id: Uuid, section: z.enum(SECTIONS) });
+const ProfileBody = z.object({ items: z.array(z.unknown()), note: optText(500) });
+const ProfileChangesParams = z.object({ changeId: Uuid });
 export async function profileRoutes(app: FastifyInstance) {
 
   /** Everything in the personal record, what is awaiting approval, and what is still missing. */
-  app.get('/:id/profile', async (req) => {
+  app.get('/:id/profile', { schema: { params: IdParams }, config: { permAny: ['profile.self', 'employees.read'] } }, async (req) => {
     const a = tenantActorAny(req, 'profile.self', 'employees.read');
-    const { id } = z.object({ id: Uuid }).parse(req.params);
+    const { id } = IdParams.parse(req.params);
     return a.tx(async (db) => {
       await assertCanView(db, a, id);
       await loadEmployee(db, a.tenantId, id);
@@ -178,10 +182,10 @@ export async function profileRoutes(app: FastifyInstance) {
   });
 
   /** Replace a section: directly (HR, or the employee's own contacts and addresses), or as a change for HR to approve. */
-  app.put('/:id/profile/:section', async (req, reply) => {
+  app.put('/:id/profile/:section', { schema: { params: ProfileParams, body: ProfileBody }, config: { permAny: ['profile.self', 'employees.manage'] } }, async (req, reply) => {
     const a = tenantActorAny(req, 'profile.self', 'employees.manage');
-    const { id, section } = z.object({ id: Uuid, section: z.enum(SECTIONS) }).parse(req.params);
-    const b = z.object({ items: z.array(z.unknown()), note: optText(500) }).parse(req.body);
+    const { id, section } = ProfileParams.parse(req.params);
+    const b = ProfileBody.parse(req.body);
     const self = a.user.employeeId === id;
     if (self ? !a.has('profile.self') : !a.has('employees.manage')) throw self ? forbidden() : notFound('Employee not found');
     return a.tx(async (db) => {
@@ -206,9 +210,9 @@ export async function profileRoutes(app: FastifyInstance) {
   });
 
   /** A proposed change with the section as it is now, for the approver to compare. */
-  app.get('/profile-changes/:changeId', async (req) => {
+  app.get('/profile-changes/:changeId', { schema: { params: ProfileChangesParams }, config: { permAny: ['profile.self', 'profile.approve', 'employees.read'] } }, async (req) => {
     const a = tenantActorAny(req, 'profile.self', 'profile.approve', 'employees.read');
-    const { changeId } = z.object({ changeId: Uuid }).parse(req.params);
+    const { changeId } = ProfileChangesParams.parse(req.params);
     return a.tx(async (db) => {
       const c = (await db.query<{ employee_id: string; section: Section }>(`SELECT c.id, c.employee_id, c.section, c.items, c.note, c.status, c.created_at, c.decided_at,
           trim(e.first_name||' '||coalesce(e.last_name,'')) AS employee_name, e.employee_code
@@ -219,9 +223,9 @@ export async function profileRoutes(app: FastifyInstance) {
   });
 
   /** The employee takes back a change still awaiting approval. */
-  app.post('/profile-changes/:changeId/withdraw', async (req) => {
+  app.post('/profile-changes/:changeId/withdraw', { schema: { params: ProfileChangesParams }, config: { perm: ['profile.self'] } }, async (req) => {
     const a = tenantActor(req, 'profile.self');
-    const { changeId } = z.object({ changeId: Uuid }).parse(req.params);
+    const { changeId } = ProfileChangesParams.parse(req.params);
     return a.tx(async (db) => {
       const c = (await db.query<{ employee_id: string; status: string; section: string }>(`SELECT employee_id, status, section FROM employee_profile_changes WHERE tenant_id=$1 AND id=$2 FOR UPDATE`, [a.tenantId, changeId])).rows[0];
       if (!c || c.employee_id !== a.user.employeeId) throw notFound('Change not found');

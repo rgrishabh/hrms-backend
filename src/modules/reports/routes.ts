@@ -52,8 +52,12 @@ async function ownSaved(db: Db, a: TenantActor, id: string) {
 
 const offReportKeys = () => REPORTS.filter((r) => allOff(r.feature)).map((r) => r.key);
 
+const IdParams = z.object({ id: Uuid });
+const ReportKeyParams = z.object({ key: z.string().max(60) });
+/** Each report declares its own parameters in the registry, and GET /reports lists them; runReport parses them with that report's schema. */
+const ReportParams = z.object({}).loose();
 export async function reportRoutes(app: FastifyInstance) {
-  app.get('/', async (req) => {
+  app.get('/', { schema: {} }, async (req) => {
     const a = tenantActor(req);
     return a.tx(async (db) => {
       const features = await evaluateFeatures(db, a.tenantId);
@@ -71,7 +75,7 @@ export async function reportRoutes(app: FastifyInstance) {
   });
 
   // ------------------------------------------------------------ advanced: saved reports, schedules, snapshots
-  only(app, 'reports.advanced').get('/saved', async (req) => {
+  only(app, 'reports.advanced').get('/saved', { schema: {}, config: { feature: [ADV] } }, async (req) => {
     const a = tenantActor(req);
     return a.tx(async (db) => {
       await requireFeature(db, a.tenantId, ADV);
@@ -84,7 +88,7 @@ export async function reportRoutes(app: FastifyInstance) {
     });
   });
 
-  only(app, 'reports.advanced').post('/saved', async (req, reply) => {
+  only(app, 'reports.advanced').post('/saved', { schema: { body: SavedBody }, config: { feature: [ADV] } }, async (req, reply) => {
     const a = tenantActor(req);
     const b = SavedBody.parse(req.body);
     const def = REPORT_MAP.get(b.reportKey);
@@ -99,9 +103,9 @@ export async function reportRoutes(app: FastifyInstance) {
     });
   });
 
-  only(app, 'reports.advanced').delete('/saved/:id', async (req) => {
+  only(app, 'reports.advanced').delete('/saved/:id', { schema: { params: IdParams } }, async (req) => {
     const a = tenantActor(req);
-    const { id } = z.object({ id: Uuid }).parse(req.params);
+    const { id } = IdParams.parse(req.params);
     return a.tx(async (db) => {
       await ownSaved(db, a, id);
       await db.query(`DELETE FROM saved_reports WHERE tenant_id=$1 AND id=$2`, [a.tenantId, id]);
@@ -110,9 +114,9 @@ export async function reportRoutes(app: FastifyInstance) {
   });
 
   /** Schedule a saved report (one schedule per saved report). Recipients need organization-wide access themselves. */
-  only(app, 'reports.advanced').put('/saved/:id/schedule', async (req) => {
+  only(app, 'reports.advanced').put('/saved/:id/schedule', { schema: { params: IdParams, body: ScheduleBody }, config: { feature: [ADV] } }, async (req) => {
     const a = tenantActor(req);
-    const { id } = z.object({ id: Uuid }).parse(req.params);
+    const { id } = IdParams.parse(req.params);
     const b = ScheduleBody.parse(req.body);
     if (b.frequency === 'weekly' && b.weekday === undefined) throw badRequest('Choose the day of the week');
     if (b.frequency === 'monthly' && b.dayOfMonth === undefined) throw badRequest('Choose the day of the month (1–28)');
@@ -140,9 +144,9 @@ export async function reportRoutes(app: FastifyInstance) {
   });
 
   /** People who may receive this saved report: active users who can see it for the whole organization. */
-  only(app, 'reports.advanced').get('/saved/:id/recipients', async (req) => {
+  only(app, 'reports.advanced').get('/saved/:id/recipients', { schema: { params: IdParams }, config: { feature: [ADV] } }, async (req) => {
     const a = tenantActor(req);
-    const { id } = z.object({ id: Uuid }).parse(req.params);
+    const { id } = IdParams.parse(req.params);
     return a.tx(async (db) => {
       await requireFeature(db, a.tenantId, ADV);
       const s = await ownSaved(db, a, id);
@@ -156,9 +160,9 @@ export async function reportRoutes(app: FastifyInstance) {
     });
   });
 
-  only(app, 'reports.advanced').delete('/saved/:id/schedule', async (req) => {
+  only(app, 'reports.advanced').delete('/saved/:id/schedule', { schema: { params: IdParams } }, async (req) => {
     const a = tenantActor(req);
-    const { id } = z.object({ id: Uuid }).parse(req.params);
+    const { id } = IdParams.parse(req.params);
     return a.tx(async (db) => {
       await ownSaved(db, a, id);
       await db.query(`DELETE FROM report_schedules WHERE tenant_id=$1 AND saved_report_id=$2`, [a.tenantId, id]);
@@ -167,7 +171,7 @@ export async function reportRoutes(app: FastifyInstance) {
   });
 
   /** Scheduled reports sent to me (kept 90 days). */
-  only(app, 'reports.advanced').get('/snapshots', async (req) => {
+  only(app, 'reports.advanced').get('/snapshots', { schema: {}, config: { feature: [ADV] } }, async (req) => {
     const a = tenantActor(req);
     return a.tx(async (db) => {
       await requireFeature(db, a.tenantId, ADV);
@@ -202,16 +206,16 @@ export async function reportRoutes(app: FastifyInstance) {
     if (!REPORT_MAP.get(s.report_key)?.l4 || !s.columns.some((c) => c.key === 'gross' || c.key === 'payroll_gross')) return Promise.resolve();
     return a.tx((db) => auditL4(db, readContext(req, a), kind, `reports.snapshot.${s.report_key}`, (s.subjects ?? []).map((employeeId) => ({ employeeId, fields: ['pay'] }))));
   };
-  only(app, 'reports.advanced').get('/snapshots/:id', async (req) => {
+  only(app, 'reports.advanced').get('/snapshots/:id', { schema: { params: IdParams } }, async (req) => {
     const a = tenantActor(req);
-    const { id } = z.object({ id: Uuid }).parse(req.params);
+    const { id } = IdParams.parse(req.params);
     const s = await loadSnapshot(a, id);
     await auditSnapshot(req, a, s, 'read');
     return { id: s.id, key: s.report_key, name: s.name, params: s.params, scope: s.scope, columns: s.columns, rows: s.rows, totals: s.totals, notes: s.notes, generatedAt: s.generated_at };
   });
-  for (const format of ['csv', 'xlsx'] as const) app.get(`/snapshots/:id/export.${format}`, async (req, reply) => {
+  for (const format of ['csv', 'xlsx'] as const) app.get(`/snapshots/:id/export.${format}`, { schema: { params: IdParams } }, async (req, reply) => {
     const a = tenantActor(req);
-    const { id } = z.object({ id: Uuid }).parse(req.params);
+    const { id } = IdParams.parse(req.params);
     const s = await loadSnapshot(a, id);
     await a.tx((db) => audit(db, { ...a.auditBase, action: 'reports.exported', category: 'access', targetType: 'report_snapshot', targetId: id, metadata: { report: s.report_key, rows: s.rows.length, format } }));
     await auditSnapshot(req, a, s, 'export');
@@ -222,13 +226,13 @@ export async function reportRoutes(app: FastifyInstance) {
   // ------------------------------------------------------------ run a report
   /** A report that is not available is a 404 before anything else, so this route does not change what `/saved` answers while it is off. */
   const reportKey = (req: FastifyRequest) => {
-    const { key } = z.object({ key: z.string().max(60) }).parse(req.params);
+    const { key } = ReportKeyParams.parse(req.params);
     const def = REPORT_MAP.get(key);
     if (!def || allOff(def.feature)) throw notFound('Report not found');
     return key;
   };
 
-  app.get('/:key', async (req) => {
+  app.get('/:key', { schema: { params: ReportKeyParams, querystring: ReportParams } }, async (req) => {
     const key = reportKey(req);
     const a = tenantActor(req);
     const reveal = wantsReveal(req);
@@ -238,7 +242,7 @@ export async function reportRoutes(app: FastifyInstance) {
   });
 
   /** CSV or Excel export: audited (who exported which report with which parameters, in which format). */
-  for (const format of ['csv', 'xlsx'] as const) app.get(`/:key/export.${format}`, async (req, reply) => {
+  for (const format of ['csv', 'xlsx'] as const) app.get(`/:key/export.${format}`, { schema: { params: ReportKeyParams, querystring: ReportParams } }, async (req, reply) => {
     const key = reportKey(req);
     const a = tenantActor(req);
     const { def, params, today, columns, rows, totals, scope, excluded, subjects } = await a.tx((db) => runReport(db, a.tenantId, key, req.query, viewer(a), { reveal: true }));

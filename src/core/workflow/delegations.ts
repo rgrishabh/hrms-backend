@@ -26,20 +26,27 @@ const SELECT = `SELECT d.id, d.delegator_id, gu.display_name AS delegator_name, 
 const state = (d: { revoked_at: string | null; starts_on: string; ends_on: string }, today: string) =>
   d.revoked_at ? 'revoked' : d.ends_on < today ? 'ended' : d.starts_on > today ? 'scheduled' : 'active';
 
+const DelegatesQuery = z.object({ q: z.string().trim().max(60).optional() });
+const DelegationsQuery = z.object({ scope: z.enum(['mine', 'all']).default('mine') });
+const DelegationsBody = z.object({
+      delegateId: Uuid, startsOn: Day, endsOn: Day, note: z.string().trim().max(300).optional(),
+      delegatorId: Uuid.optional(),   // HR on someone's behalf
+    });
+const IdParams = z.object({ id: Uuid });
 export async function delegationRoutes(app: FastifyInstance) {
   // People who can be chosen as a delegate (active accounts, never yourself).
-  app.get('/delegates', async (req) => {
+  app.get('/delegates', { schema: { querystring: DelegatesQuery }, config: { permAny: ['employees.directory', 'employees.read'] } }, async (req) => {
     const a = tenantActorAny(req, 'employees.directory', 'employees.read', DELEGATE_PERMISSION);
-    const q = z.object({ q: z.string().trim().max(60).optional() }).parse(req.query);
+    const q = DelegatesQuery.parse(req.query);
     return a.tx(async (db) => ({ items: (await db.query(`SELECT u.id, u.display_name AS name, e.employee_code AS code, e.designation
         FROM users u LEFT JOIN employees e ON e.tenant_id=u.tenant_id AND e.user_id=u.id
        WHERE u.tenant_id=$1 AND u.status='active' AND u.id <> $2 AND ($3::text IS NULL OR u.display_name ILIKE '%'||$3||'%' OR e.employee_code ILIKE $3||'%')
        ORDER BY u.display_name LIMIT 20`, [a.tenantId, a.user.userId, q.q || null])).rows }));
   });
 
-  app.get('/delegations', async (req) => {
+  app.get('/delegations', { schema: { querystring: DelegationsQuery } }, async (req) => {
     const a = tenantActor(req);
-    const { scope } = z.object({ scope: z.enum(['mine', 'all']).default('mine') }).parse(req.query);
+    const { scope } = DelegationsQuery.parse(req.query);
     if (scope === 'all' && !a.has(DELEGATE_PERMISSION)) throw forbidden();
     return a.tx(async (db) => {
       const today = await orgToday(db, a.tenantId);
@@ -53,12 +60,9 @@ export async function delegationRoutes(app: FastifyInstance) {
     });
   });
 
-  app.post('/delegations', async (req, reply) => {
+  app.post('/delegations', { schema: { body: DelegationsBody } }, async (req, reply) => {
     const a = tenantActor(req);
-    const b = z.object({
-      delegateId: Uuid, startsOn: Day, endsOn: Day, note: z.string().trim().max(300).optional(),
-      delegatorId: Uuid.optional(),   // HR on someone's behalf
-    }).parse(req.body);
+    const b = DelegationsBody.parse(req.body);
     const delegatorId = b.delegatorId ?? a.user.userId;
     if (delegatorId !== a.user.userId && !a.has(DELEGATE_PERMISSION)) throw forbidden('Only HR can hand over someone else\'s approvals');
     if (b.delegateId === delegatorId) throw badRequest('Choose someone else to approve while you are away');
@@ -97,9 +101,9 @@ export async function delegationRoutes(app: FastifyInstance) {
   });
 
   // End a delegation now (or cancel one not yet started): the delegator, whoever set it up, HR, or the delegate declining it.
-  app.post('/delegations/:id/revoke', async (req) => {
+  app.post('/delegations/:id/revoke', { schema: { params: IdParams } }, async (req) => {
     const a = tenantActor(req);
-    const { id } = z.object({ id: Uuid }).parse(req.params);
+    const { id } = IdParams.parse(req.params);
     return a.tx(async (db) => {
       const today = await orgToday(db, a.tenantId);
       const d = (await db.query<{ delegator_id: string; delegate_id: string; delegator_name: string; created_by: string; revoked_at: string | null; ends_on: string }>(

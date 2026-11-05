@@ -52,8 +52,15 @@ export async function priceAllowance(db: Db, tenantId: string, p: {
   return { rate, amount: p.claimed ?? allowance, allowance };
 }
 
+const AllowanceRatesBody = z.discriminatedUnion('kind', [
+      z.object({ kind: z.literal('per_diem'), tier: Tier, grade: z.string().trim().min(1).max(20).nullable().optional() }),
+      z.object({ kind: z.literal('mileage'), vehicle: z.enum(['car', 'two_wheeler']) }),
+    ]).and(z.object({ rate: z.number().positive().max(1_000_000).refine((v) => Number.isInteger(v * 100), 'Up to 2 decimals'), effectiveFrom: IsoDate, note: z.string().trim().max(200).optional() }));
+const IdParams = z.object({ id: Uuid });
+const AllowanceQuoteQuery = z.object({ kind: z.enum(['per_diem', 'mileage']), date: IsoDate, to: IsoDate.optional(), tier: Tier.optional(), vehicle: z.enum(['car', 'two_wheeler']).optional(),
+      km: z.coerce.number().positive().max(2000).optional(), employeeId: Uuid.optional() });
 export async function allowanceRoutes(app: FastifyInstance) {
-  app.get('/allowance-rates', async (req) => {
+  app.get('/allowance-rates', { schema: {}, config: { permAny: ['expenses.self', 'expenses.manage', 'expenses.read', 'travel.self'], feature: ['expenses'] } }, async (req) => {
     const a = tenantActorAny(req, 'expenses.self', 'expenses.manage', 'expenses.read', 'travel.self');
     return a.tx(async (db) => {
       await requireFeature(db, a.tenantId, 'expenses');
@@ -74,12 +81,9 @@ export async function allowanceRoutes(app: FastifyInstance) {
     });
   });
 
-  app.post('/allowance-rates', async (req, reply) => {
+  app.post('/allowance-rates', { schema: { body: AllowanceRatesBody }, config: { perm: ['expenses.manage'], feature: ['expenses'] } }, async (req, reply) => {
     const a = tenantActor(req, 'expenses.manage');
-    const b = z.discriminatedUnion('kind', [
-      z.object({ kind: z.literal('per_diem'), tier: Tier, grade: z.string().trim().min(1).max(20).nullable().optional() }),
-      z.object({ kind: z.literal('mileage'), vehicle: z.enum(['car', 'two_wheeler']) }),
-    ]).and(z.object({ rate: z.number().positive().max(1_000_000).refine((v) => Number.isInteger(v * 100), 'Up to 2 decimals'), effectiveFrom: IsoDate, note: z.string().trim().max(200).optional() }))
+    const b = AllowanceRatesBody
       .parse(req.body);
     return a.tx(async (db) => {
       await requireFeature(db, a.tenantId, 'expenses');
@@ -99,9 +103,9 @@ export async function allowanceRoutes(app: FastifyInstance) {
   });
 
   // Only a rate that has not started yet can be withdrawn (a typo in next month's rate); others are superseded.
-  app.delete('/allowance-rates/:id', async (req) => {
+  app.delete('/allowance-rates/:id', { schema: { params: IdParams }, config: { perm: ['expenses.manage'] } }, async (req) => {
     const a = tenantActor(req, 'expenses.manage');
-    const { id } = z.object({ id: Uuid }).parse(req.params);
+    const { id } = IdParams.parse(req.params);
     return a.tx(async (db) => {
       // Rates are never updated (no UPDATE grant, so no row lock either): delete only while it has not started.
       const del = await db.query('DELETE FROM allowance_rates WHERE tenant_id=$1 AND id=$2 AND effective_from > $3', [a.tenantId, id, await orgToday(db, a.tenantId)]);
@@ -115,10 +119,9 @@ export async function allowanceRoutes(app: FastifyInstance) {
   });
 
   // What an allowance comes to, for a trip estimate or before adding an item: per diem for the days from..to, or mileage for km.
-  app.get('/allowance-quote', async (req) => {
+  app.get('/allowance-quote', { schema: { querystring: AllowanceQuoteQuery }, config: { permAny: ['expenses.self', 'travel.self'], feature: ['expenses'] } }, async (req) => {
     const a = tenantActorAny(req, 'expenses.self', 'travel.self');
-    const q = z.object({ kind: z.enum(['per_diem', 'mileage']), date: IsoDate, to: IsoDate.optional(), tier: Tier.optional(), vehicle: z.enum(['car', 'two_wheeler']).optional(),
-      km: z.coerce.number().positive().max(2000).optional(), employeeId: Uuid.optional() }).parse(req.query);
+    const q = AllowanceQuoteQuery.parse(req.query);
     return a.tx(async (db) => {
       await requireFeature(db, a.tenantId, 'expenses');
       const employeeId = q.employeeId ?? a.user.employeeId;

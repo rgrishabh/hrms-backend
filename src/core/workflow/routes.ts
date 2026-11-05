@@ -6,23 +6,26 @@ import { actOnRequest, cancelRequest, inbox, reassignRequest, requestHistory, ES
 import { notFound, forbidden } from '../http/errors.js';
 import { delegationRoutes } from './delegations.js';
 
+const IdParams = z.object({ id: Uuid });
+const ReassignBody = z.object({ userId: Uuid, reason: z.string().trim().min(5).max(500) });
+const ActBody = z.object({ action: z.enum(['approve', 'reject', 'return']), comment: z.string().trim().max(1000).optional() });
 export async function approvalRoutes(app: FastifyInstance) {
   await delegationRoutes(app);
 
-  app.get('/inbox', async (req) => {
+  app.get('/inbox', { schema: {} }, async (req) => {
     const a = tenantActor(req);
     return a.tx(async (db) => ({ items: await inbox(db, a.tenantId, { userId: a.user.userId, permissions: a.user.permissions }) }));
   });
 
-  app.get('/mine', async (req) => {
+  app.get('/mine', { schema: {} }, async (req) => {
     const a = tenantActor(req);
     return a.tx(async (db) => ({ items: (await db.query(`SELECT id, entity_type, entity_id, summary, status, created_at, decided_at
       FROM approval_requests WHERE tenant_id=$1 AND requester_id=$2 AND NOT (entity_type = ANY($3)) ORDER BY created_at DESC LIMIT 100`, [a.tenantId, a.user.userId, offEntityTypes()])).rows }));
   });
 
-  app.get('/:id', async (req) => {
+  app.get('/:id', { schema: { params: IdParams } }, async (req) => {
     const a = tenantActor(req);
-    const { id } = z.object({ id: Uuid }).parse(req.params);
+    const { id } = IdParams.parse(req.params);
     return a.tx(async (db) => {
       const r = await db.query<{ requester_id: string }>(`SELECT id, entity_type, entity_id, summary, status, requester_id, created_at, decided_at
         FROM approval_requests WHERE tenant_id=$1 AND id=$2 AND NOT (entity_type = ANY($3))`, [a.tenantId, id, offEntityTypes()]);
@@ -37,27 +40,27 @@ export async function approvalRoutes(app: FastifyInstance) {
     });
   });
 
-  app.post('/:id/reassign', async (req) => {
+  app.post('/:id/reassign', { schema: { params: IdParams, body: ReassignBody }, config: { permAny: ['users.manage'] } }, async (req) => {
     const a = tenantActorAny(req, ESCALATION_PERMISSION, 'users.manage');
-    const { id } = z.object({ id: Uuid }).parse(req.params);
-    const b = z.object({ userId: Uuid, reason: z.string().trim().min(5).max(500) }).parse(req.body);
+    const { id } = IdParams.parse(req.params);
+    const b = ReassignBody.parse(req.body);
     return a.tx(async (db) => {
       await reassignRequest(db, a.tenantId, id, a.user.userId, b.userId, b.reason, { requestId: req.id, ip: req.ip }, { onlyIfStuck: !a.has(ESCALATION_PERMISSION) });
       return { ok: true };
     });
   });
 
-  app.post('/:id/act', async (req) => {
+  app.post('/:id/act', { schema: { params: IdParams, body: ActBody } }, async (req) => {
     const a = tenantActor(req);
-    const { id } = z.object({ id: Uuid }).parse(req.params);
-    const body = z.object({ action: z.enum(['approve', 'reject', 'return']), comment: z.string().trim().max(1000).optional() }).parse(req.body);
+    const { id } = IdParams.parse(req.params);
+    const body = ActBody.parse(req.body);
     return a.tx((db) => actOnRequest(db, a.tenantId, id, { userId: a.user.userId, permissions: a.user.permissions }, body.action, body.comment,
       { requestId: req.id, ip: req.ctx.ip }));
   });
 
-  app.post('/:id/cancel', async (req) => {
+  app.post('/:id/cancel', { schema: { params: IdParams } }, async (req) => {
     const a = tenantActor(req);
-    const { id } = z.object({ id: Uuid }).parse(req.params);
+    const { id } = IdParams.parse(req.params);
     await a.tx((db) => cancelRequest(db, a.tenantId, id, a.user.userId, { requestId: req.id, ip: req.ctx.ip }));
     return { ok: true };
   });

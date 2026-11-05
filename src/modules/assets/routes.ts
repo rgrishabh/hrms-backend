@@ -23,11 +23,15 @@ export async function openAssets(db: Db, tenantId: string, employeeId: string) {
     WHERE s.tenant_id=$1 AND s.employee_id=$2 AND s.returned_at IS NULL ORDER BY a.tag`, [tenantId, employeeId])).rows;
 }
 
+const GetRootQuery = PageQuery.extend({ search: z.string().trim().max(100).optional(), status: z.string().max(20).optional(), category: z.enum(CATEGORIES).optional(), calibrationWithinDays: z.coerce.number().int().min(0).max(365).optional() });
+const IdParams = z.object({ id: Uuid });
+const IssueBody = z.object({ employeeId: Uuid, issuedAt: IsoDate, conditionOut: Text(300), dueBack: IsoDate.nullable().default(null) });
+const ReceiveBody = z.object({ returnedAt: IsoDate, outcome: z.enum(['returned', 'lost', 'damaged']), conditionIn: Text(500) });
 export async function assetRoutes(app: FastifyInstance) {
   gateFeatures(app, 'assets');
-  app.get('/', async (req) => {
+  app.get('/', { schema: { querystring: GetRootQuery }, config: { perm: ['assets.manage'], feature: [F] } }, async (req) => {
     const a = tenantActor(req, 'assets.manage');
-    const q = PageQuery.extend({ search: z.string().trim().max(100).optional(), status: z.string().max(20).optional(), category: z.enum(CATEGORIES).optional(), calibrationWithinDays: z.coerce.number().int().min(0).max(365).optional() }).parse(req.query);
+    const q = GetRootQuery.parse(req.query);
     return a.tx(async (db) => {
       await requireFeature(db, a.tenantId, F);
       const today = await orgToday(db, a.tenantId);
@@ -44,7 +48,7 @@ export async function assetRoutes(app: FastifyInstance) {
     });
   });
 
-  app.post('/', async (req, reply) => {
+  app.post('/', { schema: { body: AssetBody }, config: { perm: ['assets.manage'], feature: [F] } }, async (req, reply) => {
     const a = tenantActor(req, 'assets.manage');
     const b = AssetBody.parse(req.body);
     return a.tx(async (db) => {
@@ -55,9 +59,9 @@ export async function assetRoutes(app: FastifyInstance) {
       reply.code(201); return { id };
     });
   });
-  app.put('/:id', async (req) => {
+  app.put('/:id', { schema: { params: IdParams, body: AssetBody }, config: { perm: ['assets.manage'], feature: [F] } }, async (req) => {
     const a = tenantActor(req, 'assets.manage');
-    const { id } = z.object({ id: Uuid }).parse(req.params);
+    const { id } = IdParams.parse(req.params);
     const b = AssetBody.parse(req.body);
     return a.tx(async (db) => {
       await requireFeature(db, a.tenantId, F);
@@ -71,19 +75,19 @@ export async function assetRoutes(app: FastifyInstance) {
     });
   });
 
-  app.get('/:id/history', async (req) => {
+  app.get('/:id/history', { schema: { params: IdParams }, config: { perm: ['assets.manage'] } }, async (req) => {
     const a = tenantActor(req, 'assets.manage');
-    const { id } = z.object({ id: Uuid }).parse(req.params);
+    const { id } = IdParams.parse(req.params);
     return a.tx(async (db) => ({ items: (await db.query(`SELECT s.id, trim(e.first_name||' '||coalesce(e.last_name,'')) AS employee_name, e.employee_code, s.issued_at::text, s.condition_out, s.due_back::text,
         s.returned_at::text, s.condition_in, s.outcome, s.acknowledged_at, iu.display_name AS issued_by_name, ru.display_name AS received_by_name
       FROM asset_assignments s JOIN employees e ON e.tenant_id=s.tenant_id AND e.id=s.employee_id JOIN users iu ON iu.id=s.issued_by LEFT JOIN users ru ON ru.id=s.received_by
       WHERE s.tenant_id=$1 AND s.asset_id=$2 ORDER BY s.issued_at DESC`, [a.tenantId, id])).rows }));
   });
 
-  app.post('/:id/issue', async (req) => {
+  app.post('/:id/issue', { schema: { params: IdParams, body: IssueBody }, config: { perm: ['assets.manage'], feature: [F] } }, async (req) => {
     const a = tenantActor(req, 'assets.manage');
-    const { id } = z.object({ id: Uuid }).parse(req.params);
-    const b = z.object({ employeeId: Uuid, issuedAt: IsoDate, conditionOut: Text(300), dueBack: IsoDate.nullable().default(null) }).parse(req.body);
+    const { id } = IdParams.parse(req.params);
+    const b = IssueBody.parse(req.body);
     return a.tx(async (db) => {
       await requireFeature(db, a.tenantId, F);
       const as = (await db.query<{ status: string; tag: string; name: string; category: string; calibration_due: string | null }>('SELECT status, tag, name, category, calibration_due::text FROM assets WHERE tenant_id=$1 AND id=$2 FOR UPDATE', [a.tenantId, id])).rows[0];
@@ -104,10 +108,10 @@ export async function assetRoutes(app: FastifyInstance) {
     });
   });
 
-  app.post('/:id/receive', async (req) => {
+  app.post('/:id/receive', { schema: { params: IdParams, body: ReceiveBody }, config: { perm: ['assets.manage'] } }, async (req) => {
     const a = tenantActor(req, 'assets.manage');
-    const { id } = z.object({ id: Uuid }).parse(req.params);
-    const b = z.object({ returnedAt: IsoDate, outcome: z.enum(['returned', 'lost', 'damaged']), conditionIn: Text(500) }).parse(req.body);
+    const { id } = IdParams.parse(req.params);
+    const b = ReceiveBody.parse(req.body);
     return a.tx(async (db) => {
       const s = (await db.query<{ id: string; issued_at: string }>(`SELECT id, issued_at::text FROM asset_assignments WHERE tenant_id=$1 AND asset_id=$2 AND returned_at IS NULL FOR UPDATE`, [a.tenantId, id])).rows[0];
       if (!s) throw conflict('The asset is not issued to anyone');
@@ -120,7 +124,7 @@ export async function assetRoutes(app: FastifyInstance) {
     });
   });
 
-  app.get('/mine', async (req) => {
+  app.get('/mine', { schema: {}, config: { perm: ['assets.self'], feature: [F] } }, async (req) => {
     const a = tenantActor(req, 'assets.self');
     if (!a.user.employeeId) return { items: [] };
     return a.tx(async (db) => {
@@ -129,9 +133,9 @@ export async function assetRoutes(app: FastifyInstance) {
         FROM asset_assignments s JOIN assets a ON a.tenant_id=s.tenant_id AND a.id=s.asset_id WHERE s.tenant_id=$1 AND s.employee_id=$2 AND s.returned_at IS NULL ORDER BY s.issued_at DESC`, [a.tenantId, a.user.employeeId])).rows };
     });
   });
-  app.post('/assignments/:id/acknowledge', async (req) => {
+  app.post('/assignments/:id/acknowledge', { schema: { params: IdParams }, config: { perm: ['assets.self'] } }, async (req) => {
     const a = tenantActor(req, 'assets.self');
-    const { id } = z.object({ id: Uuid }).parse(req.params);
+    const { id } = IdParams.parse(req.params);
     return a.tx(async (db) => {
       const r = await db.query(`UPDATE asset_assignments SET acknowledged_at=now() WHERE tenant_id=$1 AND id=$2 AND employee_id=$3 AND returned_at IS NULL AND acknowledged_at IS NULL`, [a.tenantId, id, a.user.employeeId ?? null]);
       if (!r.rowCount) throw notFound('Assignment not found');

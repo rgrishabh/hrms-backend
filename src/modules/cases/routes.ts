@@ -59,6 +59,21 @@ function caseAuditBase(a: TenantActor, role: string) {
   return role === 'complainant' ? { ...a.auditBase, actorId: null, ip: undefined, metadata: { actor: 'complainant' } } : { ...a.auditBase, metadata: {} };
 }
 
+const CommitteeBody = z.object({ members: z.array(z.object({ userId: Uuid, role: z.enum(['presiding_officer', 'member']) })).min(1).max(20)
+      .refine((m) => m.filter((x) => x.role === 'presiding_officer').length === 1, 'Exactly one presiding officer'),
+      external: z.array(z.object({ name: z.string().trim().min(2).max(120), organization: z.string().trim().min(2).max(200), since: IsoDate })).max(5) });
+const PeopleQuery = z.object({ search: z.string().trim().max(100).optional() });
+const PostRootBody = z.object({
+      kind: z.enum(['posh', 'grievance']), category: z.string(), description: z.string().trim().min(20).max(10000), incidentDate: IsoDate.nullable().default(null),
+      respondentEmployeeId: Uuid.nullable().default(null), respondentText: z.string().trim().max(500).nullable().default(null), anonymous: z.boolean().default(false), lateReason: z.string().trim().max(2000).nullable().default(null),
+    });
+const GetRootQuery = z.object({ kind: z.enum(['posh', 'grievance']), scope: z.enum(['mine', 'handling']).default('mine'), status: z.string().max(30).optional() });
+const IdParams = z.object({ id: Uuid });
+const EventsBody = z.object({ text: z.string().trim().min(2).max(10000), visibleToComplainant: z.boolean().default(false), toStatus: z.string().optional(), outcome: z.string().trim().max(10000).optional(),
+      expectedVersion: z.number().int() });
+const AssignBody = z.object({ userId: Uuid });
+const WithdrawBody = z.object({ reason: z.string().trim().min(3).max(2000) });
+const PoshAnnualReportQuery = z.object({ year: z.coerce.number().int().min(2013).max(2100) });
 export async function caseRoutes(app: FastifyInstance) {
   gateFeatures(app, 'grievance', 'posh');
   const cipher: FieldCipher = app.deps.cipher;
@@ -66,7 +81,7 @@ export async function caseRoutes(app: FastifyInstance) {
   const dec = (s: string | null | undefined) => (s ? cipher.decrypt(s) : null);
 
   // ------------------------------------------------------------ Internal Committee
-  only(app, 'posh').get('/committee', async (req) => {
+  only(app, 'posh').get('/committee', { schema: {}, config: { feature: ['posh'] } }, async (req) => {
     const a = tenantActor(req);
     return a.tx(async (db) => {
       await requireFeature(db, a.tenantId, 'posh');
@@ -76,11 +91,9 @@ export async function caseRoutes(app: FastifyInstance) {
       return { members, external, warnings: [...(members.some((m: { role: string }) => m.role === 'presiding_officer') ? [] : ['No presiding officer']), ...(external.length ? [] : ['No external member'])] };
     });
   });
-  only(app, 'posh').put('/committee', async (req) => {
+  only(app, 'posh').put('/committee', { schema: { body: CommitteeBody }, config: { perm: ['posh.admin'], feature: ['posh'] } }, async (req) => {
     const a = tenantActor(req, 'posh.admin');
-    const b = z.object({ members: z.array(z.object({ userId: Uuid, role: z.enum(['presiding_officer', 'member']) })).min(1).max(20)
-      .refine((m) => m.filter((x) => x.role === 'presiding_officer').length === 1, 'Exactly one presiding officer'),
-      external: z.array(z.object({ name: z.string().trim().min(2).max(120), organization: z.string().trim().min(2).max(200), since: IsoDate })).max(5) }).parse(req.body);
+    const b = CommitteeBody.parse(req.body);
     return a.tx(async (db) => {
       await requireFeature(db, a.tenantId, 'posh');
       const users = (await db.query(`SELECT id FROM users WHERE tenant_id=$1 AND status='active' AND id = ANY($2::uuid[])`, [a.tenantId, b.members.map((m) => m.userId)])).rows;
@@ -107,21 +120,18 @@ export async function caseRoutes(app: FastifyInstance) {
   });
 
   /** Active users (name only) for picking IC members or grievance handlers. */
-  app.get('/people', async (req) => {
+  app.get('/people', { schema: { querystring: PeopleQuery } }, async (req) => {
     const a = tenantActor(req);
     if (!a.has('posh.admin') && !a.has('grievance.manage')) throw forbidden();
-    const q = z.object({ search: z.string().trim().max(100).optional() }).parse(req.query);
+    const q = PeopleQuery.parse(req.query);
     return a.tx(async (db) => ({ items: (await db.query(`SELECT id, display_name FROM users WHERE tenant_id=$1 AND status='active'
       AND ($2::text IS NULL OR lower(display_name) LIKE '%'||lower($2)||'%') ORDER BY display_name LIMIT 25`, [a.tenantId, q.search || null])).rows }));
   });
 
   // ------------------------------------------------------------ file a case
-  app.post('/', async (req, reply) => {
+  app.post('/', { schema: { body: PostRootBody }, config: { perm: ['cases.self'] } }, async (req, reply) => {
     const a = tenantActor(req, 'cases.self');
-    const b = z.object({
-      kind: z.enum(['posh', 'grievance']), category: z.string(), description: z.string().trim().min(20).max(10000), incidentDate: IsoDate.nullable().default(null),
-      respondentEmployeeId: Uuid.nullable().default(null), respondentText: z.string().trim().max(500).nullable().default(null), anonymous: z.boolean().default(false), lateReason: z.string().trim().max(2000).nullable().default(null),
-    }).parse(req.body);
+    const b = PostRootBody.parse(req.body);
     if (!a.user.employeeId && !b.anonymous) throw badRequest('Your account is not linked to an employee record');
     const cats: readonly string[] = b.kind === 'posh' ? POSH_CATEGORIES : GRIEVANCE_CATEGORIES;
     if (!cats.includes(b.category)) throw badRequest(`Category must be one of: ${cats.join(', ')}`);
@@ -157,9 +167,9 @@ export async function caseRoutes(app: FastifyInstance) {
   });
 
   // ------------------------------------------------------------ lists
-  app.get('/', async (req) => {
+  app.get('/', { schema: { querystring: GetRootQuery } }, async (req) => {
     const a = tenantActor(req);
-    const q = z.object({ kind: z.enum(['posh', 'grievance']), scope: z.enum(['mine', 'handling']).default('mine'), status: z.string().max(30).optional() }).parse(req.query);
+    const q = GetRootQuery.parse(req.query);
     return a.tx(async (db) => {
       await requireFeature(db, a.tenantId, FEATURE[q.kind]);
       if (q.scope === 'handling') {
@@ -178,9 +188,9 @@ export async function caseRoutes(app: FastifyInstance) {
   });
 
   // Only ids, so that /committee is simply not found while POSH is off.
-  app.get('/:id([0-9a-fA-F-]{36})', async (req) => {
+  app.get('/:id([0-9a-fA-F-]{36})', { schema: { params: IdParams } }, async (req) => {
     const a = tenantActor(req);
-    const { id } = z.object({ id: Uuid }).parse(req.params);
+    const { id } = IdParams.parse(req.params);
     return a.tx(async (db) => {
       const { c, role } = await loadCase(db, a, id);
       const row = (await db.query(`SELECT c.*, c.incident_date::text, c.inquiry_due::text, c.report_due::text, c.sla_due::text,
@@ -207,11 +217,10 @@ export async function caseRoutes(app: FastifyInstance) {
   });
 
   // ------------------------------------------------------------ actions
-  app.post('/:id/events', async (req, reply) => {
+  app.post('/:id/events', { schema: { params: IdParams, body: EventsBody } }, async (req, reply) => {
     const a = tenantActor(req);
-    const { id } = z.object({ id: Uuid }).parse(req.params);
-    const b = z.object({ text: z.string().trim().min(2).max(10000), visibleToComplainant: z.boolean().default(false), toStatus: z.string().optional(), outcome: z.string().trim().max(10000).optional(),
-      expectedVersion: z.number().int() }).parse(req.body);
+    const { id } = IdParams.parse(req.params);
+    const b = EventsBody.parse(req.body);
     return a.tx(async (db) => {
       const { c, role } = await loadCase(db, a, id, true);
       if (c.version !== b.expectedVersion) throw conflict('The case changed meanwhile. Reload and try again.');
@@ -243,10 +252,10 @@ export async function caseRoutes(app: FastifyInstance) {
     });
   });
 
-  app.post('/:id/assign', async (req) => {
+  app.post('/:id/assign', { schema: { params: IdParams, body: AssignBody }, config: { perm: ['grievance.manage'] } }, async (req) => {
     const a = tenantActor(req, 'grievance.manage');
-    const { id } = z.object({ id: Uuid }).parse(req.params);
-    const { userId } = z.object({ userId: Uuid }).parse(req.body);
+    const { id } = IdParams.parse(req.params);
+    const { userId } = AssignBody.parse(req.body);
     return a.tx(async (db) => {
       const { c } = await loadCase(db, a, id, true);
       if (c.kind !== 'grievance') throw badRequest('POSH complaints are handled by the Internal Committee');
@@ -264,10 +273,10 @@ export async function caseRoutes(app: FastifyInstance) {
     });
   });
 
-  app.post('/:id/withdraw', async (req) => {
+  app.post('/:id/withdraw', { schema: { params: IdParams, body: WithdrawBody }, config: { perm: ['cases.self'] } }, async (req) => {
     const a = tenantActor(req, 'cases.self');
-    const { id } = z.object({ id: Uuid }).parse(req.params);
-    const { reason } = z.object({ reason: z.string().trim().min(3).max(2000) }).parse(req.body);
+    const { id } = IdParams.parse(req.params);
+    const { reason } = WithdrawBody.parse(req.body);
     return a.tx(async (db) => {
       const { c, role } = await loadCase(db, a, id, true);
       if (role !== 'complainant') throw forbidden('Only the complainant can withdraw');
@@ -280,9 +289,9 @@ export async function caseRoutes(app: FastifyInstance) {
   });
 
   /** Counts for the annual report the IC prepares (no names). */
-  only(app, 'posh').get('/posh/annual-report', async (req) => {
+  only(app, 'posh').get('/posh/annual-report', { schema: { querystring: PoshAnnualReportQuery }, config: { feature: ['posh'] } }, async (req) => {
     const a = tenantActor(req);
-    const q = z.object({ year: z.coerce.number().int().min(2013).max(2100) }).parse(req.query);
+    const q = PoshAnnualReportQuery.parse(req.query);
     return a.tx(async (db) => {
       await requireFeature(db, a.tenantId, 'posh');
       if (!(await isCommittee(db, a.tenantId, a.user.userId)) && !a.has('posh.admin')) throw forbidden();

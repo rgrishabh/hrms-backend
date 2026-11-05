@@ -75,13 +75,25 @@ export function registerExpenseApprovals() {
   });
 }
 
+const IdParams = z.object({ id: Uuid });
+const ClaimsQuery = PageQuery.extend({ scope: z.enum(['mine', 'team', 'all']).default('mine'), status: z.string().max(20).optional() });
+const ClaimsItemsParams = z.object({ id: Uuid, itemId: Uuid });
+const ItemsReceiptParams = z.object({ itemId: Uuid });
+const BatchesBody = z.object({ claimIds: z.array(Uuid).min(1).max(500) });
+const BatchesPaidBody = z.object({ paymentReference: z.string().trim().min(3).max(100) });
+/** A receipt line, as form fields or JSON. */
+const ItemFields = z.object({ categoryId: Uuid, expenseDate: IsoDate, amount: Money.optional(), description: z.string().trim().min(2).max(500),
+  quantity: z.coerce.number().positive().optional(), tier: z.string().trim().toUpperCase().max(20).optional(), vehicle: z.enum(['car', 'two_wheeler']).optional(),
+  merchant: z.string().trim().max(150).optional(), invoiceNumber: z.string().trim().max(50).optional(),
+  gstin: z.string().trim().toUpperCase().regex(/^[0-9]{2}[A-Z0-9]{13}$/, 'GSTIN must be 15 characters').optional() });
+
 export async function expenseRoutes(app: FastifyInstance) {
   gateFeatures(app, 'expenses');
 
   await allowanceRoutes(app);
 
   // ------------------------------------------------------------ categories
-  app.get('/categories', async (req) => {
+  app.get('/categories', { schema: {}, config: { permAny: ['expenses.self', 'expenses.manage', 'expenses.read'], feature: ['expenses'] } }, async (req) => {
     const a = tenantActorAny(req, 'expenses.self', 'expenses.manage', 'expenses.read');
     return a.tx(async (db) => {
       await requireFeature(db, a.tenantId, 'expenses');
@@ -90,7 +102,7 @@ export async function expenseRoutes(app: FastifyInstance) {
     });
   });
   const catCols = (b: z.infer<typeof CategoryBody>) => [b.code, b.name, b.description ?? null, b.requiresReceipt, b.maxAmount, b.gstApplicable, b.status, b.calc];
-  app.post('/categories', async (req, reply) => {
+  app.post('/categories', { schema: { body: CategoryBody }, config: { perm: ['expenses.manage'], feature: ['expenses'] } }, async (req, reply) => {
     const a = tenantActor(req, 'expenses.manage');
     const b = CategoryBody.parse(req.body);
     return a.tx(async (db) => {
@@ -101,9 +113,9 @@ export async function expenseRoutes(app: FastifyInstance) {
       reply.code(201); return { id: r.rows[0]!.id };
     });
   });
-  app.put('/categories/:id', async (req) => {
+  app.put('/categories/:id', { schema: { params: IdParams, body: CategoryBody }, config: { perm: ['expenses.manage'] } }, async (req) => {
     const a = tenantActor(req, 'expenses.manage');
-    const { id } = z.object({ id: Uuid }).parse(req.params);
+    const { id } = IdParams.parse(req.params);
     const b = CategoryBody.parse(req.body);
     return a.tx(async (db) => {
       const r = await db.query(`UPDATE expense_categories SET code=$3, name=$4, description=$5, requires_receipt=$6, max_amount=$7, gst_applicable=$8, status=$9, calc=$10
@@ -115,7 +127,7 @@ export async function expenseRoutes(app: FastifyInstance) {
   });
 
   // ------------------------------------------------------------ claims
-  app.post('/claims', async (req, reply) => {
+  app.post('/claims', { schema: { body: ClaimBody }, config: { perm: ['expenses.self'], feature: ['expenses'] } }, async (req, reply) => {
     const a = tenantActor(req, 'expenses.self');
     const b = ClaimBody.parse(req.body);
     if (!a.user.employeeId) throw badRequest('Your account is not linked to an employee record');
@@ -127,9 +139,9 @@ export async function expenseRoutes(app: FastifyInstance) {
     });
   });
 
-  app.get('/claims', async (req) => {
+  app.get('/claims', { schema: { querystring: ClaimsQuery }, config: { feature: ['expenses'] } }, async (req) => {
     const a = tenantActor(req);
-    const q = PageQuery.extend({ scope: z.enum(['mine', 'team', 'all']).default('mine'), status: z.string().max(20).optional() }).parse(req.query);
+    const q = ClaimsQuery.parse(req.query);
     return a.tx(async (db) => {
       await requireFeature(db, a.tenantId, 'expenses');
       let ids: string[] | null = null;
@@ -149,9 +161,9 @@ export async function expenseRoutes(app: FastifyInstance) {
     });
   });
 
-  app.get('/claims/:id', async (req) => {
+  app.get('/claims/:id', { schema: { params: IdParams }, config: { feature: ['expenses'] } }, async (req) => {
     const a = tenantActor(req);
-    const { id } = z.object({ id: Uuid }).parse(req.params);
+    const { id } = IdParams.parse(req.params);
     return a.tx(async (db) => {
       await requireFeature(db, a.tenantId, 'expenses');
       await loadClaim(db, a, id);
@@ -168,9 +180,9 @@ export async function expenseRoutes(app: FastifyInstance) {
     });
   });
 
-  app.put('/claims/:id', async (req) => {
+  app.put('/claims/:id', { schema: { params: IdParams, body: ClaimBody }, config: { perm: ['expenses.self'] } }, async (req) => {
     const a = tenantActor(req, 'expenses.self');
-    const { id } = z.object({ id: Uuid }).parse(req.params);
+    const { id } = IdParams.parse(req.params);
     const b = ClaimBody.parse(req.body);
     return a.tx(async (db) => {
       const c = await loadClaim(db, a, id, true);
@@ -181,9 +193,9 @@ export async function expenseRoutes(app: FastifyInstance) {
   });
 
   /** multipart: categoryId, expenseDate, amount, description, merchant?, invoiceNumber?, gstin?, receipt (file)? */
-  app.post('/claims/:id/items', { config: { rateLimit: { max: 60, timeWindow: '1 minute' } } }, async (req, reply) => {
+  app.post('/claims/:id/items', { schema: { params: IdParams, body: ItemFields, consumes: ['multipart/form-data', 'application/json'] }, config: { perm: ['expenses.self'], feature: ['expenses'], rateLimit: { max: 60, timeWindow: '1 minute' } } }, async (req, reply) => {
     const a = tenantActor(req, 'expenses.self');
-    const { id } = z.object({ id: Uuid }).parse(req.params);
+    const { id } = IdParams.parse(req.params);
     const fields: Record<string, string> = {}; let file: { buf: Buffer; name: string } | null = null;
     if (req.isMultipart()) {
       for await (const part of req.parts()) {
@@ -193,10 +205,7 @@ export async function expenseRoutes(app: FastifyInstance) {
         } else fields[part.fieldname] = String(part.value);
       }
     } else Object.assign(fields, req.body as Record<string, string>);
-    const b = z.object({ categoryId: Uuid, expenseDate: IsoDate, amount: Money.optional(), description: z.string().trim().min(2).max(500),
-      quantity: z.coerce.number().positive().optional(), tier: z.string().trim().toUpperCase().max(20).optional(), vehicle: z.enum(['car', 'two_wheeler']).optional(),
-      merchant: z.string().trim().max(150).optional(), invoiceNumber: z.string().trim().max(50).optional(),
-      gstin: z.string().trim().toUpperCase().regex(/^[0-9]{2}[A-Z0-9]{13}$/, 'GSTIN must be 15 characters').optional() }).parse(
+    const b = ItemFields.parse(
       Object.fromEntries(Object.entries(fields).filter(([, v]) => v !== '')));
     const detected = file ? await prepareUpload(req, a, file.buf, file.name) : null;
     if (file && detected) file.buf = detected.bytes;
@@ -263,9 +272,9 @@ export async function expenseRoutes(app: FastifyInstance) {
     });
   });
 
-  app.delete('/claims/:id/items/:itemId', async (req) => {
+  app.delete('/claims/:id/items/:itemId', { schema: { params: ClaimsItemsParams }, config: { perm: ['expenses.self'] } }, async (req) => {
     const a = tenantActor(req, 'expenses.self');
-    const { id, itemId } = z.object({ id: Uuid, itemId: Uuid }).parse(req.params);
+    const { id, itemId } = ClaimsItemsParams.parse(req.params);
     return a.tx(async (db) => {
       const c = await loadClaim(db, a, id, true);
       assertEditable(a, c);
@@ -276,9 +285,9 @@ export async function expenseRoutes(app: FastifyInstance) {
     });
   });
 
-  app.get('/items/:itemId/receipt', async (req, reply) => {
+  app.get('/items/:itemId/receipt', { schema: { params: ItemsReceiptParams } }, async (req, reply) => {
     const a = tenantActor(req);
-    const { itemId } = z.object({ itemId: Uuid }).parse(req.params);
+    const { itemId } = ItemsReceiptParams.parse(req.params);
     const item = await a.tx(async (db) => {
       const i = (await db.query<{ claim_id: string; receipt_key: string | null; receipt_name: string; receipt_type: string; receipt_sha256: string }>(
         `SELECT claim_id, receipt_key, receipt_name, receipt_type, receipt_sha256 FROM expense_items WHERE tenant_id=$1 AND id=$2`, [a.tenantId, itemId])).rows[0];
@@ -293,9 +302,9 @@ export async function expenseRoutes(app: FastifyInstance) {
       .header('cache-control', 'private, no-store').header('x-content-type-options', 'nosniff').send(buf);
   });
 
-  app.post('/claims/:id/submit', async (req) => {
+  app.post('/claims/:id/submit', { schema: { params: IdParams }, config: { perm: ['expenses.self'], feature: ['expenses'] } }, async (req) => {
     const a = tenantActor(req, 'expenses.self');
-    const { id } = z.object({ id: Uuid }).parse(req.params);
+    const { id } = IdParams.parse(req.params);
     return a.tx(async (db) => {
       await requireFeature(db, a.tenantId, 'expenses');
       const c = await loadClaim(db, a, id, true);
@@ -317,9 +326,9 @@ export async function expenseRoutes(app: FastifyInstance) {
     });
   });
 
-  app.post('/claims/:id/cancel', async (req) => {
+  app.post('/claims/:id/cancel', { schema: { params: IdParams }, config: { perm: ['expenses.self'] } }, async (req) => {
     const a = tenantActor(req, 'expenses.self');
-    const { id } = z.object({ id: Uuid }).parse(req.params);
+    const { id } = IdParams.parse(req.params);
     return a.tx(async (db) => {
       const c = await loadClaim(db, a, id, true);
       if (c.employee_id !== a.user.employeeId) throw forbidden();
@@ -334,16 +343,16 @@ export async function expenseRoutes(app: FastifyInstance) {
   });
 
   // ------------------------------------------------------------ payment (finance)
-  app.get('/payables', async (req) => {
+  app.get('/payables', { schema: {}, config: { perm: ['expenses.pay'] } }, async (req) => {
     const a = tenantActor(req, 'expenses.pay');
     return a.tx(async (db) => ({ items: (await db.query(`SELECT c.id, c.title, c.total, c.advance_adjusted, (c.total - c.advance_adjusted) AS payable, c.approved_at, e.employee_code, trim(e.first_name||' '||coalesce(e.last_name,'')) AS employee_name,
         (current_date - c.approved_at::date) AS age_days FROM expense_claims c JOIN employees e ON e.tenant_id=c.tenant_id AND e.id=c.employee_id
       WHERE c.tenant_id=$1 AND c.status='approved' AND c.batch_id IS NULL ORDER BY c.approved_at`, [a.tenantId])).rows }));
   });
 
-  app.post('/batches', async (req, reply) => {
+  app.post('/batches', { schema: { body: BatchesBody }, config: { perm: ['expenses.pay'], feature: ['expenses'] } }, async (req, reply) => {
     const a = tenantActor(req, 'expenses.pay');
-    const b = z.object({ claimIds: z.array(Uuid).min(1).max(500) }).parse(req.body);
+    const b = BatchesBody.parse(req.body);
     return a.tx(async (db) => {
       await requireFeature(db, a.tenantId, 'expenses');
       const claims = await db.query<{ id: string; total: string }>(`SELECT id, (total - advance_adjusted)::text AS total FROM expense_claims WHERE tenant_id=$1 AND id = ANY($2) AND status='approved' AND batch_id IS NULL FOR UPDATE`,
@@ -358,7 +367,7 @@ export async function expenseRoutes(app: FastifyInstance) {
     });
   });
 
-  app.get('/batches', async (req) => {
+  app.get('/batches', { schema: {}, config: { permAny: ['expenses.pay', 'expenses.read'] } }, async (req) => {
     const a = tenantActorAny(req, 'expenses.pay', 'expenses.read');
     return a.tx(async (db) => ({ items: (await db.query(`SELECT b.*, p.display_name AS prepared_by_name, ap.display_name AS approved_by_name, pd.display_name AS paid_by_name
       FROM reimbursement_batches b JOIN users p ON p.id=b.prepared_by LEFT JOIN users ap ON ap.id=b.approved_by LEFT JOIN users pd ON pd.id=b.paid_by
@@ -371,9 +380,9 @@ export async function expenseRoutes(app: FastifyInstance) {
     return b;
   };
 
-  app.post('/batches/:id/approve', async (req) => {
+  app.post('/batches/:id/approve', { schema: { params: IdParams }, config: { perm: ['expenses.pay'] } }, async (req) => {
     const a = tenantActor(req, 'expenses.pay');
-    const { id } = z.object({ id: Uuid }).parse(req.params);
+    const { id } = IdParams.parse(req.params);
     return a.tx(async (db) => {
       const b = await batchFor(db, a, id);
       if (b.status !== 'prepared') throw conflict(`Batch is already ${b.status}`);
@@ -384,9 +393,9 @@ export async function expenseRoutes(app: FastifyInstance) {
     });
   });
 
-  app.post('/batches/:id/cancel', async (req) => {
+  app.post('/batches/:id/cancel', { schema: { params: IdParams }, config: { perm: ['expenses.pay'] } }, async (req) => {
     const a = tenantActor(req, 'expenses.pay');
-    const { id } = z.object({ id: Uuid }).parse(req.params);
+    const { id } = IdParams.parse(req.params);
     return a.tx(async (db) => {
       const b = await batchFor(db, a, id);
       if (!['prepared', 'approved'].includes(b.status)) throw conflict(`A ${b.status} batch cannot be cancelled`);
@@ -397,10 +406,10 @@ export async function expenseRoutes(app: FastifyInstance) {
     });
   });
 
-  app.post('/batches/:id/paid', async (req) => {
+  app.post('/batches/:id/paid', { schema: { params: IdParams, body: BatchesPaidBody }, config: { perm: ['expenses.pay'] } }, async (req) => {
     const a = tenantActor(req, 'expenses.pay');
-    const { id } = z.object({ id: Uuid }).parse(req.params);
-    const body = z.object({ paymentReference: z.string().trim().min(3).max(100) }).parse(req.body);
+    const { id } = IdParams.parse(req.params);
+    const body = BatchesPaidBody.parse(req.body);
     return a.tx(async (db) => {
       const b = await batchFor(db, a, id);
       if (b.status === 'paid') throw conflict('This batch is already recorded as paid');
@@ -417,9 +426,9 @@ export async function expenseRoutes(app: FastifyInstance) {
   });
 
   /** CSV for the bank / accounting. Full account numbers only with employees.bank.read as well; always audited. */
-  app.get('/batches/:id/export.csv', async (req, reply) => {
+  app.get('/batches/:id/export.csv', { schema: { params: IdParams }, config: { perm: ['expenses.pay'] } }, async (req, reply) => {
     const a = tenantActor(req, 'expenses.pay');
-    const { id } = z.object({ id: Uuid }).parse(req.params);
+    const { id } = IdParams.parse(req.params);
     const full = a.has('employees.bank.read');
     const rows = await a.tx(async (db) => {
       const b = (await db.query<{ status: string }>(`SELECT status FROM reimbursement_batches WHERE tenant_id=$1 AND id=$2`, [a.tenantId, id])).rows[0];
@@ -450,7 +459,7 @@ export async function expenseRoutes(app: FastifyInstance) {
   });
 
   // ------------------------------------------------------------ reports
-  app.get('/reports/ageing', async (req) => {
+  app.get('/reports/ageing', { schema: {}, config: { permAny: ['expenses.read', 'expenses.pay'] } }, async (req) => {
     const a = tenantActorAny(req, 'expenses.read', 'expenses.pay');
     return a.tx(async (db) => {
       const buckets = (await db.query(`SELECT CASE WHEN age <= 7 THEN '0-7' WHEN age <= 15 THEN '8-15' WHEN age <= 30 THEN '16-30' ELSE '30+' END AS bucket,

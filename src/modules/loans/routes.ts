@@ -76,17 +76,25 @@ export function registerLoanApprovals() {
   registerApprovalHandler('salary_advance', handler('salary_advance', 'Salary advance'));
 }
 
+const RequestsBody = z.object({
+      employeeId: Uuid.optional(), kind: z.enum(['salary_advance', 'loan']),
+      amount: z.number().int('Whole rupees only').positive().max(99_99_999), installments: z.number().int().min(1).max(120),
+      firstPeriod: Period, purpose: z.string().trim().min(3).max(1000),
+    });
+const RequestsQuery = PageQuery.extend({ scope: z.enum(['mine', 'team', 'all']).default('mine'),
+      status: z.enum(['pending', 'approved', 'rejected', 'returned', 'cancelled', 'disbursed', 'closed']).optional(), kind: z.enum(['salary_advance', 'loan']).optional() });
+const IdParams = z.object({ id: Uuid });
+const RequestsDisburseBody = z.object({ reference: z.string().trim().min(3).max(100) });
+const RequestsCancelBody = z.object({ reason: z.string().trim().min(3).max(500) });
+const RequestsRepaymentBody = z.object({ amount: z.number().int('Whole rupees only').positive(), reference: z.string().trim().min(3).max(100) });
+const RequestsDeferBody = z.object({ period: Period, reason: z.string().trim().min(3).max(300) });
 export async function loanRoutes(app: FastifyInstance) {
   gateFeatures(app, 'loans', 'salary_advance');
 
   /** Apply for a salary advance or loan, or (loans.manage) record one for an employee; the manager and finance approve. */
-  app.post('/requests', async (req, reply) => {
+  app.post('/requests', { schema: { body: RequestsBody }, config: { permAny: ['loans.self', 'loans.manage'] } }, async (req, reply) => {
     const a = tenantActorAny(req, 'loans.self', 'loans.manage');
-    const b = z.object({
-      employeeId: Uuid.optional(), kind: z.enum(['salary_advance', 'loan']),
-      amount: z.number().int('Whole rupees only').positive().max(99_99_999), installments: z.number().int().min(1).max(120),
-      firstPeriod: Period, purpose: z.string().trim().min(3).max(1000),
-    }).parse(req.body);
+    const b = RequestsBody.parse(req.body);
     const forOther = !!b.employeeId && b.employeeId !== a.user.employeeId;
     if (forOther && !a.has('loans.manage')) throw forbidden('You can apply only for yourself');
     if (!forOther && !a.has('loans.self')) throw forbidden();
@@ -121,10 +129,9 @@ export async function loanRoutes(app: FastifyInstance) {
     });
   });
 
-  app.get('/requests', async (req) => {
+  app.get('/requests', { schema: { querystring: RequestsQuery }, config: { permAny: ['loans.self', 'loans.team.read'] } }, async (req) => {
     const a = tenantActorAny(req, 'loans.self', 'loans.team.read', ...READ_ALL);
-    const q = PageQuery.extend({ scope: z.enum(['mine', 'team', 'all']).default('mine'),
-      status: z.enum(['pending', 'approved', 'rejected', 'returned', 'cancelled', 'disbursed', 'closed']).optional(), kind: z.enum(['salary_advance', 'loan']).optional() }).parse(req.query);
+    const q = RequestsQuery.parse(req.query);
     return a.tx(async (db) => {
       let ids: string[] | null;
       if (q.scope === 'all') { if (!READ_ALL.some((p) => a.has(p))) throw forbidden(); ids = null; }
@@ -145,9 +152,9 @@ export async function loanRoutes(app: FastifyInstance) {
     });
   });
 
-  app.get('/requests/:id', async (req) => {
+  app.get('/requests/:id', { schema: { params: IdParams } }, async (req) => {
     const a = tenantActor(req);
-    const { id } = z.object({ id: Uuid }).parse(req.params);
+    const { id } = IdParams.parse(req.params);
     return a.tx(async (db) => {
       const loan = await loadLoan(db, a, id);
       const v = await policyViewer(db, a.tenantId, a.user);
@@ -164,9 +171,9 @@ export async function loanRoutes(app: FastifyInstance) {
     });
   });
 
-  app.post('/requests/:id/withdraw', async (req) => {
+  app.post('/requests/:id/withdraw', { schema: { params: IdParams } }, async (req) => {
     const a = tenantActor(req);
-    const { id } = z.object({ id: Uuid }).parse(req.params);
+    const { id } = IdParams.parse(req.params);
     return a.tx(async (db) => {
       const l = await loadLoan(db, a, id, true);
       if (l.employee_id !== a.user.employeeId && l.created_by !== a.user.userId) throw forbidden('Only the employee or whoever recorded it can withdraw this request');
@@ -180,10 +187,10 @@ export async function loanRoutes(app: FastifyInstance) {
   });
 
   /** Payroll records the money paid out; recovery then starts in the first month. Never your own. */
-  app.post('/requests/:id/disburse', async (req) => {
+  app.post('/requests/:id/disburse', { schema: { params: IdParams, body: RequestsDisburseBody }, config: { perm: ['loans.manage'] } }, async (req) => {
     const a = tenantActor(req, 'loans.manage');
-    const { id } = z.object({ id: Uuid }).parse(req.params);
-    const b = z.object({ reference: z.string().trim().min(3).max(100) }).parse(req.body);
+    const { id } = IdParams.parse(req.params);
+    const b = RequestsDisburseBody.parse(req.body);
     return a.tx(async (db) => {
       const l = await loadLoan(db, a, id, true);
       if (l.employee_id === a.user.employeeId && !(isCollapsedMode() && a.user.roles.some(isOwnerRole))) throw forbidden('You cannot disburse your own advance or loan');
@@ -196,10 +203,10 @@ export async function loanRoutes(app: FastifyInstance) {
   });
 
   /** Approved but not paid out: payroll or finance cancels it. */
-  app.post('/requests/:id/cancel', async (req) => {
+  app.post('/requests/:id/cancel', { schema: { params: IdParams, body: RequestsCancelBody }, config: { permAny: ['loans.manage', 'loans.approve'] } }, async (req) => {
     const a = tenantActorAny(req, 'loans.manage', 'loans.approve');
-    const { id } = z.object({ id: Uuid }).parse(req.params);
-    const { reason } = z.object({ reason: z.string().trim().min(3).max(500) }).parse(req.body);
+    const { id } = IdParams.parse(req.params);
+    const { reason } = RequestsCancelBody.parse(req.body);
     return a.tx(async (db) => {
       const l = await loadLoan(db, a, id, true);
       if (l.status !== 'approved') throw conflict(`Only an approved, not yet paid request can be cancelled (this one is ${l.status})`);
@@ -210,10 +217,10 @@ export async function loanRoutes(app: FastifyInstance) {
   });
 
   /** The employee pays back directly (all or part); later instalments shrink accordingly. */
-  app.post('/requests/:id/repayment', async (req) => {
+  app.post('/requests/:id/repayment', { schema: { params: IdParams, body: RequestsRepaymentBody }, config: { perm: ['loans.manage'] } }, async (req) => {
     const a = tenantActor(req, 'loans.manage');
-    const { id } = z.object({ id: Uuid }).parse(req.params);
-    const b = z.object({ amount: z.number().int('Whole rupees only').positive(), reference: z.string().trim().min(3).max(100) }).parse(req.body);
+    const { id } = IdParams.parse(req.params);
+    const b = RequestsRepaymentBody.parse(req.body);
     return a.tx(async (db) => {
       const l = await loadLoan(db, a, id, true);
       if (l.employee_id === a.user.employeeId && !(isCollapsedMode() && a.user.roles.some(isOwnerRole))) throw forbidden('You cannot record a repayment of your own loan');
@@ -228,10 +235,10 @@ export async function loanRoutes(app: FastifyInstance) {
   });
 
   /** Skip a month's instalment (e.g. hardship, or a month with little pay); the schedule moves out by a month. */
-  app.post('/requests/:id/defer', async (req) => {
+  app.post('/requests/:id/defer', { schema: { params: IdParams, body: RequestsDeferBody }, config: { perm: ['loans.manage'] } }, async (req) => {
     const a = tenantActor(req, 'loans.manage');
-    const { id } = z.object({ id: Uuid }).parse(req.params);
-    const b = z.object({ period: Period, reason: z.string().trim().min(3).max(300) }).parse(req.body);
+    const { id } = IdParams.parse(req.params);
+    const b = RequestsDeferBody.parse(req.body);
     return a.tx(async (db) => {
       const l = await loadLoan(db, a, id, true);
       if (!['approved', 'disbursed'].includes(l.status)) throw conflict(`The ${KIND_LABEL[l.kind]!.toLowerCase()} is ${l.status}`);

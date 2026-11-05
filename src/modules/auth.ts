@@ -33,6 +33,9 @@ async function passwordMinLength(db: Db, tenantId: string) {
   return getSettingValue<number>(db, tenantId, 'security.password_min_length');
 }
 
+const AuthPreferencesBody = z.object({ emailNotifications: z.boolean().optional() });
+const AuthPasswordForgotBody = z.object({ email: z.string().trim().toLowerCase().pipe(z.email()) });
+const IdParams = z.object({ id: Uuid });
 export async function authRoutes(app: FastifyInstance, opts: { publicConfig: PublicConfig }) {
   const { pool, env, cipher } = app.deps;
   const publicConfig = opts.publicConfig;
@@ -51,7 +54,7 @@ export async function authRoutes(app: FastifyInstance, opts: { publicConfig: Pub
    * Runtime configuration for the web app: brand, feature flags, mode and MFA from deployment configuration.
    * Public and non-sensitive by construction (see config/installation.ts). Lets one image serve any customer.
    */
-  app.get('/config/public', async (req, reply) => {
+  app.get('/config/public', { schema: {} }, async (req, reply) => {
     requireTenantHost(req);
     reply.header('cache-control', 'no-cache');
     return publicConfig;
@@ -66,7 +69,7 @@ export async function authRoutes(app: FastifyInstance, opts: { publicConfig: Pub
     const r = await accountLimit(req);
     if (!r.isAllowed && r.isExceeded) throw new AppError(429, 'rate_limited', 'Too many requests. Please slow down.');
   };
-  app.post('/auth/login', { config: { rateLimit: { max: env.AUTH_RATE_LIMIT_PER_MINUTE, timeWindow: '1 minute' } } }, async (req, reply) => {
+  app.post('/auth/login', { schema: { body: LoginBody }, config: { rateLimit: { max: env.AUTH_RATE_LIMIT_PER_MINUTE, timeWindow: '1 minute' } } }, async (req, reply) => {
     const body = LoginBody.parse(req.body);
     const tenant = requireTenantHost(req);
     const tenantId = tenant.id;
@@ -123,7 +126,7 @@ export async function authRoutes(app: FastifyInstance, opts: { publicConfig: Pub
       mfaDelivery: result.delivery };
   });
 
-  app.post('/auth/logout', async (req, reply) => {
+  app.post('/auth/logout', { schema: {} }, async (req, reply) => {
     const u = req.ctx.user;
     if (u) {
       await withPlatformBypass(pool, async (db) => {
@@ -135,7 +138,7 @@ export async function authRoutes(app: FastifyInstance, opts: { publicConfig: Pub
     return { ok: true };
   });
 
-  app.get('/auth/me', async (req) => {
+  app.get('/auth/me', { schema: {} }, async (req) => {
     const u = req.ctx.user;
     if (!u || !u.tenantId) throw unauthorized();
     const host = requireTenantHost(req);
@@ -170,7 +173,7 @@ export async function authRoutes(app: FastifyInstance, opts: { publicConfig: Pub
   });
 
   const PasswordBody = z.object({ currentPassword: z.string().min(1), newPassword: z.string().min(1).max(256) });
-  app.post('/auth/password', { config: { rateLimit: { max: Math.min(5, env.AUTH_RATE_LIMIT_PER_MINUTE), timeWindow: '1 minute' } }, preHandler: perUserLimit(app, 'password', 5) }, async (req, reply) => {
+  app.post('/auth/password', { schema: { body: PasswordBody }, config: { rateLimit: { max: Math.min(5, env.AUTH_RATE_LIMIT_PER_MINUTE), timeWindow: '1 minute' } }, preHandler: perUserLimit(app, 'password', 5) }, async (req, reply) => {
     const u = req.ctx.user;
     if (!u || !u.tenantId) throw unauthorized();
     const body = PasswordBody.parse(req.body);
@@ -193,10 +196,10 @@ export async function authRoutes(app: FastifyInstance, opts: { publicConfig: Pub
     return { ok: true, csrfToken: rotated.csrf };
   });
 
-  app.put('/auth/preferences', async (req) => {
+  app.put('/auth/preferences', { schema: { body: AuthPreferencesBody } }, async (req) => {
     const u = req.ctx.user;
     if (!u || !u.tenantId) throw unauthorized();
-    const body = z.object({ emailNotifications: z.boolean().optional() }).parse(req.body);
+    const body = AuthPreferencesBody.parse(req.body);
     await withTenant(pool, u.tenantId, async (db) => {
       await db.query('UPDATE users SET email_notifications=coalesce($3, email_notifications), updated_at=now() WHERE tenant_id=$1 AND id=$2',
         [u.tenantId, u.userId, body.emailNotifications ?? null]);
@@ -238,19 +241,19 @@ export async function authRoutes(app: FastifyInstance, opts: { publicConfig: Pub
   const linkLimit = { rateLimit: { max: Math.min(10, env.AUTH_RATE_LIMIT_PER_MINUTE), timeWindow: '1 minute' } };
 
   /** A one-time setup link from the bootstrap command, or an invitation. */
-  app.post('/auth/setup', { config: linkLimit }, async (req) => finishLink(req, LinkBody.parse(req.body), ['setup', 'invite'],
+  app.post('/auth/setup', { schema: { body: LinkBody }, config: linkLimit }, async (req) => finishLink(req, LinkBody.parse(req.body), ['setup', 'invite'],
     new AppError(400, 'setup_link_invalid', 'This setup link is invalid, already used or expired. Ask for a new one.')));
 
-  app.post('/auth/password/reset', { config: linkLimit }, async (req) => finishLink(req, LinkBody.parse(req.body), ['reset'],
+  app.post('/auth/password/reset', { schema: { body: LinkBody }, config: linkLimit }, async (req) => finishLink(req, LinkBody.parse(req.body), ['reset'],
     new AppError(400, 'reset_link_invalid', 'This link is invalid, already used or expired. Ask for a new one.')));
 
   /**
    * Always the same answer in about the same time, whether or not the address has an account: the response is held to a fixed minimum, which covers
    * the work of queueing a mail. Sends nothing to a disabled account, past the hourly limit, or without a mail transport, and says nothing about that either.
    */
-  app.post('/auth/password/forgot', { config: { rateLimit: { max: Math.min(5, env.AUTH_RATE_LIMIT_PER_MINUTE), timeWindow: '1 minute' } } }, async (req) => {
+  app.post('/auth/password/forgot', { schema: { body: AuthPasswordForgotBody }, config: { rateLimit: { max: Math.min(5, env.AUTH_RATE_LIMIT_PER_MINUTE), timeWindow: '1 minute' } } }, async (req) => {
     const started = performance.now();
-    const { email } = z.object({ email: z.string().trim().toLowerCase().pipe(z.email()) }).parse(req.body);
+    const { email } = AuthPasswordForgotBody.parse(req.body);
     const tenant = requireTenantHost(req);
     try {
       await withTenant(pool, tenant.id, async (db) => {
@@ -265,7 +268,7 @@ export async function authRoutes(app: FastifyInstance, opts: { publicConfig: Pub
   });
 
   /** This user's active sessions, newest first. */
-  app.get('/auth/sessions', async (req) => {
+  app.get('/auth/sessions', { schema: {} }, async (req) => {
     const u = req.ctx.user;
     if (!u) throw unauthorized();
     return withPlatformBypass(pool, async (db) => ({ items: (await db.query(`SELECT id, ip, user_agent, created_at, last_seen_at, expires_at, id = $2 AS current, mfa_verified_at IS NOT NULL AS mfa_verified
@@ -273,10 +276,10 @@ export async function authRoutes(app: FastifyInstance, opts: { publicConfig: Pub
   });
 
   /** End one of this user's sessions. Someone else's does not exist. */
-  app.delete('/auth/sessions/:id', async (req, reply) => {
+  app.delete('/auth/sessions/:id', { schema: { params: IdParams } }, async (req, reply) => {
     const u = req.ctx.user;
     if (!u) throw unauthorized();
-    const { id } = z.object({ id: Uuid }).parse(req.params);
+    const { id } = IdParams.parse(req.params);
     await withPlatformBypass(pool, async (db) => {
       const r = await db.query('UPDATE sessions SET revoked_at=now() WHERE id=$1 AND user_id=$2 AND revoked_at IS NULL', [id, u.userId]);
       if (!r.rowCount) throw notFound('Session not found');
@@ -287,7 +290,7 @@ export async function authRoutes(app: FastifyInstance, opts: { publicConfig: Pub
   });
 
   /** Log out everywhere, this browser included. */
-  app.post('/auth/sessions/revoke-all', async (req, reply) => {
+  app.post('/auth/sessions/revoke-all', { schema: {} }, async (req, reply) => {
     const u = req.ctx.user;
     if (!u) throw unauthorized();
     await withPlatformBypass(pool, async (db) => {

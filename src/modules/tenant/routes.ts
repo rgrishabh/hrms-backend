@@ -26,12 +26,22 @@ import { clearLoginAccount } from '../../core/auth/throttle.js';
 const noRoleScreens = () => { if (isCollapsedMode()) throw notFound(); };
 const isOwnerOrSuperAdmin = (a: { user: { roles: string[] } }) => a.user.roles.some(isOwnerRole);
 
+const SettingsQuery = z.object({ branchId: Uuid.optional() });
+const SettingsParams = z.object({ key: z.string() });
+const DeleteSettingsQuery = z.object({ scope: z.enum(['tenant', 'branch']).default('tenant'), branchId: Uuid.optional() });
+const RolesParams = z.object({ key: z.string().regex(/^custom:[a-z0-9_]+$/, 'Built-in roles cannot be changed') });
+const DeleteRolesParams = z.object({ key: z.string().regex(/^custom:[a-z0-9_]+$/, 'Built-in roles cannot be deleted') });
+const UsersQuery = PageQuery.extend({ search: z.string().trim().max(100).optional() });
+const IdParams = z.object({ id: Uuid });
+const UsersSalaryLevelBody = z.object({ level: z.number().int().min(0).max(SALARY_LEVEL_MAX) });
+const AuditQuery = PageQuery.extend({ category: z.enum(['auth', 'configuration', 'data', 'security', 'access']).optional(),
+      targetType: z.string().max(50).optional(), targetId: z.string().max(100).optional(), action: z.string().max(80).optional() });
 export async function tenantAdminRoutes(app: FastifyInstance, opts: { publicConfig: PublicConfig }) {
 
   // ------------------------------------------------------------ settings
-  app.get('/settings', async (req) => {
+  app.get('/settings', { schema: { querystring: SettingsQuery }, config: { perm: ['settings.read'] } }, async (req) => {
     const a = tenantActor(req, 'settings.read');
-    const q = z.object({ branchId: Uuid.optional() }).parse(req.query);
+    const q = SettingsQuery.parse(req.query);
     return a.tx(async (db) => {
       const items = [];
       for (const d of SETTINGS) {
@@ -51,8 +61,8 @@ export async function tenantAdminRoutes(app: FastifyInstance, opts: { publicConf
 
   const SettingWriteBody = z.object({ value: z.unknown(), scope: z.enum(['tenant', 'branch']).default('tenant'), branchId: Uuid.optional(), expectedVersion: z.number().int().optional() });
 
-  app.put('/settings/:key', async (req) => {
-    const { key } = z.object({ key: z.string() }).parse(req.params);
+  app.put('/settings/:key', { schema: { params: SettingsParams, body: SettingWriteBody } }, async (req) => {
+    const { key } = SettingsParams.parse(req.params);
     const def = SETTINGS.find((s) => s.key === key);
     if (!def || allOff(def.feature)) throw notFound('Unknown setting');
     const a = tenantActor(req, def.editPermission);
@@ -65,12 +75,12 @@ export async function tenantAdminRoutes(app: FastifyInstance, opts: { publicConf
     });
   });
 
-  app.delete('/settings/:key', async (req) => {
-    const { key } = z.object({ key: z.string() }).parse(req.params);
+  app.delete('/settings/:key', { schema: { params: SettingsParams, querystring: DeleteSettingsQuery } }, async (req) => {
+    const { key } = SettingsParams.parse(req.params);
     const def = SETTINGS.find((s) => s.key === key);
     if (!def || allOff(def.feature)) throw notFound('Unknown setting');
     const a = tenantActor(req, def.editPermission);
-    const q = z.object({ scope: z.enum(['tenant', 'branch']).default('tenant'), branchId: Uuid.optional() }).parse(req.query);
+    const q = DeleteSettingsQuery.parse(req.query);
     return a.tx(async (db) => {
       const prev = await clearSetting(db, a.tenantId, key, q.scope, q.branchId);
       if (prev !== undefined) {
@@ -86,7 +96,7 @@ export async function tenantAdminRoutes(app: FastifyInstance, opts: { publicConf
    * domains and modules. All deployment-controlled (Compose .env / Terraform);
    * administrators can see but not change them. Contains no secrets.
    */
-  app.get('/installation', async (req) => {
+  app.get('/installation', { schema: {}, config: { perm: ['settings.read'] } }, async (req) => {
     const a = tenantActor(req, 'settings.read');
     return a.tx(async (db) => {
       const states = await evaluateFeatures(db, a.tenantId);
@@ -101,7 +111,7 @@ export async function tenantAdminRoutes(app: FastifyInstance, opts: { publicConf
   });
 
   // ------------------------------------------------------------ scheduled jobs
-  app.get('/jobs', async (req) => {
+  app.get('/jobs', { schema: {}, config: { perm: ['settings.read'] } }, async (req) => {
     const a = tenantActor(req, 'settings.read');
     return a.tx(async (db) => {
       const states = await evaluateFeatures(db, a.tenantId);
@@ -121,8 +131,8 @@ export async function tenantAdminRoutes(app: FastifyInstance, opts: { publicConf
     });
   });
 
-  app.post('/jobs/:key/run', { config: { rateLimit: { max: 10, timeWindow: '1 minute' } } }, async (req, reply) => {
-    const { key } = z.object({ key: z.string() }).parse(req.params);
+  app.post('/jobs/:key/run', { schema: { params: SettingsParams }, config: { rateLimit: { max: 10, timeWindow: '1 minute' } } }, async (req, reply) => {
+    const { key } = SettingsParams.parse(req.params);
     const job = JOB_MAP.get(key);
     if (!job || (!job.retention && allOff(job.feature))) throw notFound('Unknown job');
     const a = tenantActor(req, job.runPermission);
@@ -137,7 +147,7 @@ export async function tenantAdminRoutes(app: FastifyInstance, opts: { publicConf
   });
 
   // ------------------------------------------------------------ users & roles
-  app.get('/roles', async (req) => {
+  app.get('/roles', { schema: {}, config: { permAny: ['users.manage', 'settings.read'] } }, async (req) => {
     noRoleScreens();
     const a = tenantActorAny(req, 'users.manage', 'settings.read');
     // `grantable`: whether this user may grant or remove the role (the same rule assertMayGrant enforces).
@@ -179,7 +189,7 @@ export async function tenantAdminRoutes(app: FastifyInstance, opts: { publicConf
     if (dup.rowCount) throw conflict(`A role named "${name}" already exists`);
   };
 
-  app.post('/roles', async (req, reply) => {
+  app.post('/roles', { schema: { body: RoleBody }, config: { perm: ['users.manage'] } }, async (req, reply) => {
     noRoleScreens();
     const a = tenantActor(req, 'users.manage');
     const b = RoleBody.parse(req.body);
@@ -198,11 +208,12 @@ export async function tenantAdminRoutes(app: FastifyInstance, opts: { publicConf
     return out;
   });
 
-  app.patch('/roles/:key', async (req) => {
+  const RolesBody = RoleBody.partial();
+  app.patch('/roles/:key', { schema: { params: RolesParams, body: RolesBody }, config: { perm: ['users.manage'] } }, async (req) => {
     noRoleScreens();
     const a = tenantActor(req, 'users.manage');
-    const { key } = z.object({ key: z.string().regex(/^custom:[a-z0-9_]+$/, 'Built-in roles cannot be changed') }).parse(req.params);
-    const b = RoleBody.partial().parse(req.body);
+    const { key } = RolesParams.parse(req.params);
+    const b = RolesBody.parse(req.body);
     return a.tx(async (db) => {
       const cur = (await db.query<{ name: string; description: string | null; permissions: string[] }>('SELECT name, description, permissions FROM tenant_roles WHERE tenant_id=$1 AND key=$2 FOR UPDATE',
         [a.tenantId, key])).rows[0];
@@ -227,10 +238,10 @@ export async function tenantAdminRoutes(app: FastifyInstance, opts: { publicConf
     });
   });
 
-  app.delete('/roles/:key', async (req) => {
+  app.delete('/roles/:key', { schema: { params: DeleteRolesParams }, config: { perm: ['users.manage'] } }, async (req) => {
     noRoleScreens();
     const a = tenantActor(req, 'users.manage');
-    const { key } = z.object({ key: z.string().regex(/^custom:[a-z0-9_]+$/, 'Built-in roles cannot be deleted') }).parse(req.params);
+    const { key } = DeleteRolesParams.parse(req.params);
     return a.tx(async (db) => {
       const cur = (await db.query<{ name: string; permissions: string[] }>('SELECT name, permissions FROM tenant_roles WHERE tenant_id=$1 AND key=$2 FOR UPDATE', [a.tenantId, key])).rows[0];
       if (!cur) throw notFound('Role not found');
@@ -243,9 +254,9 @@ export async function tenantAdminRoutes(app: FastifyInstance, opts: { publicConf
     });
   });
 
-  app.get('/users', async (req) => {
+  app.get('/users', { schema: { querystring: UsersQuery }, config: { perm: ['users.manage'] } }, async (req) => {
     const a = tenantActor(req, 'users.manage');
-    const q = PageQuery.extend({ search: z.string().trim().max(100).optional() }).parse(req.query);
+    const q = UsersQuery.parse(req.query);
     return a.tx(async (db) => {
       const where = `u.tenant_id=$1 AND ($2::text IS NULL OR u.email ILIKE '%'||$2||'%' OR u.display_name ILIKE '%'||$2||'%')`;
       const total = Number((await db.query<{ n: string }>(`SELECT count(*) AS n FROM users u WHERE ${where}`, [a.tenantId, q.search ?? null])).rows[0]!.n);
@@ -323,12 +334,13 @@ export async function tenantAdminRoutes(app: FastifyInstance, opts: { publicConf
     if (targetRoles.includes('tenant_admin') || beyond.length) throw forbidden('Only an administrator can change this account');
   };
 
+  const UsersBody = z.object({ email: z.string().trim().toLowerCase().pipe(z.email()), displayName: z.string().trim().min(2).max(120),
+      roles: RoleKeys, employeeId: Uuid.optional() });
   /** A person gets an invitation by email and chooses their own password. Nobody else ever knows it. Without mail: `bootstrap --issue-link` prints one for the operator. */
-  app.post('/users', async (req, reply) => {
+  app.post('/users', { schema: { body: UsersBody }, config: { perm: ['users.manage'] } }, async (req, reply) => {
     const a = tenantActor(req, 'users.manage');
     if (req.body && typeof req.body === 'object' && 'initialPassword' in req.body) throw badRequest('Initial passwords are gone: people choose their own from an invitation sent by email. Leave this out.');
-    const body = z.object({ email: z.string().trim().toLowerCase().pipe(z.email()), displayName: z.string().trim().min(2).max(120),
-      roles: RoleKeys, employeeId: Uuid.optional() }).parse(req.body);
+    const body = UsersBody.parse(req.body);
     return a.tx(async (db) => {
       await assertTenantRoles(db, a.tenantId, body.roles);
       await assertMayGrant(db, a, body.roles);
@@ -350,7 +362,7 @@ export async function tenantAdminRoutes(app: FastifyInstance, opts: { publicConf
   /** Sends a link to someone: a fresh invitation to a person who has not accepted one, or a reset to anyone else below the sender. */
   const sendLink = (purpose: 'invite' | 'reset') => async (req: FastifyRequest) => {
     const a = tenantActor(req, 'users.manage');
-    const { id } = z.object({ id: Uuid }).parse(req.params);
+    const { id } = IdParams.parse(req.params);
     return a.tx(async (db) => {
       const u = (await db.query<{ status: string; accepted: boolean }>('SELECT status, password_hash IS NOT NULL AS accepted FROM users WHERE tenant_id=$1 AND id=$2', [a.tenantId, id])).rows[0];
       if (!u) throw notFound('User not found');
@@ -366,13 +378,14 @@ export async function tenantAdminRoutes(app: FastifyInstance, opts: { publicConf
       return { ok: true };
     });
   };
-  app.post('/users/:id/invite', { config: { rateLimit: { max: 10, timeWindow: '1 minute' } } }, sendLink('invite'));
-  app.post('/users/:id/password-reset', { config: { rateLimit: { max: 10, timeWindow: '1 minute' } } }, sendLink('reset'));
+  app.post('/users/:id/invite', { schema: { params: IdParams }, config: { perm: ['users.manage'], rateLimit: { max: 10, timeWindow: '1 minute' } } }, sendLink('invite'));
+  app.post('/users/:id/password-reset', { schema: { params: IdParams }, config: { perm: ['users.manage'], rateLimit: { max: 10, timeWindow: '1 minute' } } }, sendLink('reset'));
 
-  app.patch('/users/:id', async (req) => {
+  const PatchUsersBody = z.object({ status: z.enum(['active', 'disabled']).optional(), roles: RoleKeys.optional(), unlock: z.boolean().optional(), resetMfa: z.boolean().optional() });
+  app.patch('/users/:id', { schema: { params: IdParams, body: PatchUsersBody }, config: { perm: ['users.manage'] } }, async (req) => {
     const a = tenantActor(req, 'users.manage');
-    const { id } = z.object({ id: Uuid }).parse(req.params);
-    const body = z.object({ status: z.enum(['active', 'disabled']).optional(), roles: RoleKeys.optional(), unlock: z.boolean().optional(), resetMfa: z.boolean().optional() }).parse(req.body);
+    const { id } = IdParams.parse(req.params);
+    const body = PatchUsersBody.parse(req.body);
     return a.tx(async (db) => {
       const u = await db.query<{ status: string; email: string }>('SELECT status, email FROM users WHERE tenant_id=$1 AND id=$2 FOR UPDATE', [a.tenantId, id]);
       if (!u.rowCount) throw notFound('User not found');
@@ -420,10 +433,10 @@ export async function tenantAdminRoutes(app: FastifyInstance, opts: { publicConf
    * A user's stored salary level. Nobody changes their own, sets someone's to their own level or above, or edits someone at or
    * above them. The effective level can still end higher: it never falls below the floor of the person's roles.
    */
-  app.put('/users/:id/salary-level', async (req) => {
+  app.put('/users/:id/salary-level', { schema: { params: IdParams, body: UsersSalaryLevelBody }, config: { perm: ['users.manage'] } }, async (req) => {
     const a = tenantActor(req, 'users.manage');
-    const { id } = z.object({ id: Uuid }).parse(req.params);
-    const { level } = z.object({ level: z.number().int().min(0).max(SALARY_LEVEL_MAX) }).parse(req.body);
+    const { id } = IdParams.parse(req.params);
+    const { level } = UsersSalaryLevelBody.parse(req.body);
     if (id === a.user.userId) throw forbidden('You cannot change your own salary level');
     return a.tx(async (db) => {
       const u = (await db.query<{ salary_access_level: number }>('SELECT salary_access_level FROM users WHERE tenant_id=$1 AND id=$2 FOR UPDATE', [a.tenantId, id])).rows[0];
@@ -442,10 +455,9 @@ export async function tenantAdminRoutes(app: FastifyInstance, opts: { publicConf
   });
 
   // ------------------------------------------------------------ audit history
-  app.get('/audit', async (req) => {
+  app.get('/audit', { schema: { querystring: AuditQuery }, config: { perm: ['audit.read'] } }, async (req) => {
     const a = tenantActor(req, 'audit.read');
-    const q = PageQuery.extend({ category: z.enum(['auth', 'configuration', 'data', 'security', 'access']).optional(),
-      targetType: z.string().max(50).optional(), targetId: z.string().max(100).optional(), action: z.string().max(80).optional() }).parse(req.query);
+    const q = AuditQuery.parse(req.query);
     return a.tx(async (db) => {
       const params = [a.tenantId, q.category ?? null, q.targetType ?? null, q.targetId ?? null, q.action ?? null];
       const where = `l.tenant_id=$1 AND ($2::text IS NULL OR l.category=$2) AND ($3::text IS NULL OR l.target_type=$3)
@@ -466,7 +478,7 @@ export async function tenantAdminRoutes(app: FastifyInstance, opts: { publicConf
     if (!isOwnerOrSuperAdmin(a)) throw forbidden();
     return a;
   };
-  app.get('/audit/chain', async (req) => {
+  app.get('/audit/chain', { schema: { querystring: PageQuery } }, async (req) => {
     const a = chainActor(req);
     const q = PageQuery.parse(req.query);
     return a.tx(async (db) => {
@@ -476,7 +488,7 @@ export async function tenantAdminRoutes(app: FastifyInstance, opts: { publicConf
       return paged(rows.rows.map((r) => ({ ...r, change_metadata: redact(r.change_metadata) })), total, q);
     });
   });
-  app.get('/audit/chain/verify', async (req) => {
+  app.get('/audit/chain/verify', { schema: {} }, async (req) => {
     const a = chainActor(req);
     return a.tx(async (db) => {
       const r = (await db.query<{ ok: boolean; checked: string; broken_seq: string | null; reason: string | null }>('SELECT * FROM audit_chain_verify($1)', [a.tenantId])).rows[0]!;

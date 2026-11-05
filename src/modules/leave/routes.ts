@@ -138,13 +138,26 @@ export function registerLeaveApprovals() {
   });
 }
 
+const TypesQuery = z.object({ includeInactive: QueryBool.optional() });
+const IdParams = z.object({ id: Uuid });
+const BalancesQuery = z.object({ employeeId: Uuid.optional(), year: z.coerce.number().int().min(2000).max(2100).optional() });
+const LedgerQuery = z.object({ employeeId: Uuid, leaveTypeId: Uuid, year: z.coerce.number().int().min(2000).max(2100) });
+const RequestsQuery = PageQuery.extend({ scope: z.enum(['mine', 'team', 'all']).default('mine'), status: z.enum(['pending', 'approved', 'rejected', 'returned', 'cancelled']).optional(),
+      employeeId: Uuid.optional() });
+const RequestsCancelBody = z.object({ reason: z.string().trim().max(500).optional() });
+const CalendarQuery = z.object({ from: IsoDate, to: IsoDate, branchId: Uuid.optional() }).refine((x) => x.from <= x.to && daysBetween(x.from, x.to) <= 92, 'Range must be 0–92 days');
+const AccrualsBody = z.object({ leaveYear: z.number().int().min(2000).max(2100), throughMonth: z.number().int().min(1).max(12).default(12) });
+const YearEndBody = z.object({ leaveYear: z.number().int().min(2000).max(2100) });
+const AdjustmentsBody = z.object({ employeeId: Uuid, leaveTypeId: Uuid, leaveYear: z.number().int().min(2000).max(2100),
+      days: z.number().multipleOf(0.5).min(-366).max(366).refine((d) => d !== 0, 'Days cannot be zero'),
+      entryType: z.enum(['adjustment', 'opening']).default('adjustment'), note: z.string().trim().min(5).max(500) });
 export async function leaveRoutes(app: FastifyInstance) {
   gateFeatures(app, 'leave');
 
   // ------------------------------------------------------------ types
-  app.get('/types', async (req) => {
+  app.get('/types', { schema: { querystring: TypesQuery }, config: { permAny: ['leave.self', 'leave.manage', 'leave.read'], feature: ['leave'] } }, async (req) => {
     const a = tenantActorAny(req, 'leave.self', 'leave.manage', 'leave.read');
-    const q = z.object({ includeInactive: QueryBool.optional() }).parse(req.query);
+    const q = TypesQuery.parse(req.query);
     return a.tx(async (db) => {
       await requireFeature(db, a.tenantId, 'leave');
       const all = q.includeInactive && a.has('leave.manage');
@@ -158,7 +171,7 @@ export async function leaveRoutes(app: FastifyInstance) {
   const TYPE_FIELDS = `code, name, description, paid, allow_half_day, requires_balance, accrual_method, annual_entitlement, carry_forward_max, max_balance,
     count_non_working_days, min_notice_days, max_consecutive_days, eligible_after_days, applicable_employment_types, status`;
 
-  app.post('/types', async (req, reply) => {
+  app.post('/types', { schema: { body: LeaveTypeBody }, config: { perm: ['leave.manage'], feature: ['leave'] } }, async (req, reply) => {
     const a = tenantActor(req, 'leave.manage');
     const b = LeaveTypeBody.parse(req.body);
     return a.tx(async (db) => {
@@ -170,9 +183,9 @@ export async function leaveRoutes(app: FastifyInstance) {
     });
   });
 
-  app.put('/types/:id', async (req) => {
+  app.put('/types/:id', { schema: { params: IdParams, body: LeaveTypeBody }, config: { perm: ['leave.manage'], feature: ['leave'] } }, async (req) => {
     const a = tenantActor(req, 'leave.manage');
-    const { id } = z.object({ id: Uuid }).parse(req.params);
+    const { id } = IdParams.parse(req.params);
     const b = LeaveTypeBody.parse(req.body);
     return a.tx(async (db) => {
       await requireFeature(db, a.tenantId, 'leave');
@@ -186,9 +199,9 @@ export async function leaveRoutes(app: FastifyInstance) {
   });
 
   // ------------------------------------------------------------ balances
-  app.get('/balances', async (req) => {
+  app.get('/balances', { schema: { querystring: BalancesQuery }, config: { permAny: ['leave.self', 'leave.read', 'leave.team.read', 'leave.manage'], feature: ['leave'] } }, async (req) => {
     const a = tenantActorAny(req, 'leave.self', 'leave.read', 'leave.team.read', 'leave.manage');
-    const q = z.object({ employeeId: Uuid.optional(), year: z.coerce.number().int().min(2000).max(2100).optional() }).parse(req.query);
+    const q = BalancesQuery.parse(req.query);
     return a.tx(async (db) => {
       await requireFeature(db, a.tenantId, 'leave');
       const employeeId = q.employeeId ?? a.user.employeeId;
@@ -213,9 +226,9 @@ export async function leaveRoutes(app: FastifyInstance) {
     });
   });
 
-  app.get('/ledger', async (req) => {
+  app.get('/ledger', { schema: { querystring: LedgerQuery }, config: { permAny: ['leave.self', 'leave.read', 'leave.team.read', 'leave.manage'] } }, async (req) => {
     const a = tenantActorAny(req, 'leave.self', 'leave.read', 'leave.team.read', 'leave.manage');
-    const q = z.object({ employeeId: Uuid, leaveTypeId: Uuid, year: z.coerce.number().int().min(2000).max(2100) }).parse(req.query);
+    const q = LedgerQuery.parse(req.query);
     return a.tx(async (db) => {
       await assertCanView(db, a, q.employeeId);
       return { items: (await db.query(`SELECT l.id, l.entry_type, l.days, l.note, l.created_at, l.request_id, u.display_name AS created_by_name
@@ -225,7 +238,7 @@ export async function leaveRoutes(app: FastifyInstance) {
   });
 
   // ------------------------------------------------------------ requests
-  app.post('/requests/preview', async (req) => {
+  app.post('/requests/preview', { schema: { body: RequestBody }, config: { permAny: ['leave.self', 'leave.manage'], feature: ['leave'] } }, async (req) => {
     const a = tenantActorAny(req, 'leave.self', 'leave.manage');
     const body = RequestBody.parse(req.body);
     return a.tx(async (db) => {
@@ -236,7 +249,7 @@ export async function leaveRoutes(app: FastifyInstance) {
     });
   });
 
-  app.post('/requests', async (req, reply) => {
+  app.post('/requests', { schema: { body: RequestBody }, config: { permAny: ['leave.self', 'leave.manage'], feature: ['leave'] } }, async (req, reply) => {
     const a = tenantActorAny(req, 'leave.self', 'leave.manage');
     const body = RequestBody.parse(req.body);
     if (!body.reason) throw badRequest('Please give a reason');
@@ -261,10 +274,9 @@ export async function leaveRoutes(app: FastifyInstance) {
     });
   });
 
-  app.get('/requests', async (req) => {
+  app.get('/requests', { schema: { querystring: RequestsQuery }, config: { permAny: ['leave.self', 'leave.read', 'leave.team.read', 'leave.manage'], feature: ['leave'] } }, async (req) => {
     const a = tenantActorAny(req, 'leave.self', 'leave.read', 'leave.team.read', 'leave.manage');
-    const q = PageQuery.extend({ scope: z.enum(['mine', 'team', 'all']).default('mine'), status: z.enum(['pending', 'approved', 'rejected', 'returned', 'cancelled']).optional(),
-      employeeId: Uuid.optional() }).parse(req.query);
+    const q = RequestsQuery.parse(req.query);
     return a.tx(async (db) => {
       await requireFeature(db, a.tenantId, 'leave');
       let ids: string[] | null = null;
@@ -292,10 +304,10 @@ export async function leaveRoutes(app: FastifyInstance) {
    * leave starts, or leave.manage at any time — the consumed days are reversed in the
    * ledger. Never for dates locked for payroll.
    */
-  app.post('/requests/:id/cancel', async (req) => {
+  app.post('/requests/:id/cancel', { schema: { params: IdParams, body: RequestsCancelBody }, config: { permAny: ['leave.self', 'leave.manage'] } }, async (req) => {
     const a = tenantActorAny(req, 'leave.self', 'leave.manage');
-    const { id } = z.object({ id: Uuid }).parse(req.params);
-    const body = z.object({ reason: z.string().trim().max(500).optional() }).parse(req.body ?? {});
+    const { id } = IdParams.parse(req.params);
+    const body = RequestsCancelBody.parse(req.body ?? {});
     return a.tx(async (db) => {
       const r = (await db.query<{ employee_id: string; leave_type_id: string; leave_year: number; days: string; start_date: string; end_date: string; status: string; requested_by: string }>(
         `SELECT employee_id, leave_type_id, leave_year, days, start_date, end_date, status, requested_by FROM leave_requests WHERE tenant_id=$1 AND id=$2 FOR UPDATE`, [a.tenantId, id])).rows[0];
@@ -321,9 +333,9 @@ export async function leaveRoutes(app: FastifyInstance) {
   });
 
   // ------------------------------------------------------------ calendar
-  app.get('/calendar', async (req) => {
+  app.get('/calendar', { schema: { querystring: CalendarQuery }, config: { permAny: ['leave.read', 'leave.team.read', 'leave.manage'], feature: ['leave'] } }, async (req) => {
     const a = tenantActorAny(req, 'leave.read', 'leave.team.read', 'leave.manage');
-    const q = z.object({ from: IsoDate, to: IsoDate, branchId: Uuid.optional() }).refine((x) => x.from <= x.to && daysBetween(x.from, x.to) <= 92, 'Range must be 0–92 days').parse(req.query);
+    const q = CalendarQuery.parse(req.query);
     return a.tx(async (db) => {
       await requireFeature(db, a.tenantId, 'leave');
       const ids = a.has('leave.read') || a.has('leave.manage') ? null : a.user.employeeId ? await teamEmployeeIds(db, a.tenantId, a.user.employeeId) : [];
@@ -337,9 +349,9 @@ export async function leaveRoutes(app: FastifyInstance) {
   });
 
   // ------------------------------------------------------------ administration
-  app.post('/accruals', async (req) => {
+  app.post('/accruals', { schema: { body: AccrualsBody }, config: { perm: ['leave.manage'], feature: ['leave'] } }, async (req) => {
     const a = tenantActor(req, 'leave.manage');
-    const body = z.object({ leaveYear: z.number().int().min(2000).max(2100), throughMonth: z.number().int().min(1).max(12).default(12) }).parse(req.body);
+    const body = AccrualsBody.parse(req.body);
     return a.tx(async (db) => {
       await requireFeature(db, a.tenantId, 'leave');
       const r = await runAccruals(db, a.tenantId, body.leaveYear, body.throughMonth, a.user.userId);
@@ -348,9 +360,9 @@ export async function leaveRoutes(app: FastifyInstance) {
     });
   });
 
-  app.post('/year-end', async (req) => {
+  app.post('/year-end', { schema: { body: YearEndBody }, config: { perm: ['leave.manage'], feature: ['leave'] } }, async (req) => {
     const a = tenantActor(req, 'leave.manage');
-    const body = z.object({ leaveYear: z.number().int().min(2000).max(2100) }).parse(req.body);
+    const body = YearEndBody.parse(req.body);
     return a.tx(async (db) => {
       await requireFeature(db, a.tenantId, 'leave');
       const r = await runYearEnd(db, a.tenantId, body.leaveYear, a.user.userId, await orgToday(db, a.tenantId));
@@ -359,11 +371,9 @@ export async function leaveRoutes(app: FastifyInstance) {
     });
   });
 
-  app.post('/adjustments', async (req, reply) => {
+  app.post('/adjustments', { schema: { body: AdjustmentsBody }, config: { perm: ['leave.manage'], feature: ['leave'] } }, async (req, reply) => {
     const a = tenantActor(req, 'leave.manage');
-    const body = z.object({ employeeId: Uuid, leaveTypeId: Uuid, leaveYear: z.number().int().min(2000).max(2100),
-      days: z.number().multipleOf(0.5).min(-366).max(366).refine((d) => d !== 0, 'Days cannot be zero'),
-      entryType: z.enum(['adjustment', 'opening']).default('adjustment'), note: z.string().trim().min(5).max(500) }).parse(req.body);
+    const body = AdjustmentsBody.parse(req.body);
     return a.tx(async (db) => {
       await requireFeature(db, a.tenantId, 'leave');
       if (!(await loadEmployee(db, a.tenantId, body.employeeId))) throw notFound('Employee not found');
