@@ -96,7 +96,7 @@ Run: 2026-11-05, macOS, Node 26.5, PostgreSQL 17.11. `npm run test:coverage`, `n
 | Measure | Result | Threshold |
 |---|---|---|
 | Lines, all of `src` | 92.36% | 85% |
-| Branches, all of `src` | 81.07% | none |
+| Branches, all of `src` | 81.08% | none |
 
 Branch coverage of the business rules, threshold 100% on each:
 
@@ -110,15 +110,15 @@ Branch coverage of the business rules, threshold 100% on each:
 
 Files at 0% lines, process entry points tested only by running them: `server.ts`, `worker.ts`, `worker-health.ts`, `core/jobs/cli.ts`, `db/provision.ts`, `db/seed.ts`, `core/db-role.ts`.
 
-**Mutation score** (Stryker, 439 mutants):
+**Mutation score** (Stryker, 438 mutants):
 
 | File | Score | Killed | Survived | No coverage |
 |---|---|---|---|---|
 | `payroll/calc.ts` | 67.47% | 195 | 73 | 21 |
-| `leave/service.ts` | 88.67% | 133 | 3 | 14 |
-| All | 74.72% | 328 | 76 | 35 |
+| `leave/service.ts` | 88.59% | 132 | 3 | 14 |
+| All | 74.66% | 327 | 76 | 35 |
 
-`payroll/calc.ts` was mutated against its pure suites, without the database integration suites, so its score is a floor. 73 mutations of the tax and statutory arithmetic pass those suites, which is the clearest place to add assertions. Taken before the last branch tests in `business-branches.test.ts`; not repeated after them.
+`payroll/calc.ts` was mutated against its pure suites, without the database integration suites, so its score is a floor. 73 mutations of the tax and statutory arithmetic pass those suites, which is the clearest place to add assertions.
 
 **OpenAPI.** See `npm run openapi` for current counts. Every route declares its schema; those with no input declare an empty one. Response schemas exist for L4 paths, sign-in, public config and core self-service, and are verified by the whole suite through `verifyResponses`, only for the paths tests reach. The rest have none. Refinements (such as "email or phone") have no JSON form and do not appear in the document.
 
