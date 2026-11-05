@@ -9,6 +9,7 @@ import { badRequest, conflict, forbidden, notFound } from '../../core/http/error
 import { IsoDate, PageQuery, offsetOf, paged, Uuid } from '../../core/http/pagination.js';
 import { endAccess } from '../lifecycle/service.js';
 import { EmployeeInput, COLS, DIRECTORY_SELECT, TEAM_SELECT, fullSelect, FROM_JOINS, EMPLOYEE_STATUSES, insertEmployee, validateReferences, findDuplicates } from './service.js';
+import { cardRoutes } from './cards.js';
 import { profileRoutes } from './profile.js';
 import { createApprovalRequest, registerApprovalHandler } from '../../core/workflow/engine.js';
 import { notifyUsers } from '../../core/notify/service.js';
@@ -100,6 +101,7 @@ const ImportBody = z.object({ dryRun: z.boolean().default(true), rows: z.array(z
 export async function employeeRoutes(app: FastifyInstance) {
   const { cipher } = app.deps;
   await profileRoutes(app);
+  await cardRoutes(app);
 
   app.get('/', { schema: { response: { 200: R.GetEmployees200 }, querystring: ListQuery }, config: { permAny: ['employees.read', 'employees.directory'] } }, async (req) => {
     const a = tenantActorAny(req, 'employees.read', 'employees.directory');

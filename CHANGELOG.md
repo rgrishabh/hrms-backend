@@ -4,6 +4,7 @@
 
 ### Added after batch G
 
+* Printable ID and business cards: `GET /api/v1/employees/{id}/id-card.pdf`, `/business-card.pdf`, and for everyone `/api/v1/employees/cards/id-cards.pdf`, `/business-cards.pdf`; `PUT /api/v1/employees/{id}/photo` for the photo (all `employees.manage`).
 * `PUT /api/v1/recruitment/candidates/{id}/resume` (`recruitment.manage`): add or replace the resume of an active candidate, audited as `recruitment.resume_replaced`. The replaced file is deleted from storage.
 
 ### CI in batch H
