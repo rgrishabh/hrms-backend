@@ -15,8 +15,8 @@ import { featureOn } from './service.js';
 const ON = 'core.onboarding';
 const OFF = 'core.offboarding';
 const IdParams = z.object({ id: Uuid });
-/** `?salary=1` asks for the annual CTC on an appointment letter. It prints only if this reader may see it, and then it is an L4 export. */
-const AppointmentQuery = z.object({ salary: z.literal('1').optional() });
+/** `?includePay=1` asks for the annual CTC on an appointment letter. It prints only if this reader may see it, and then it is an L4 export. */
+const AppointmentQuery = z.object({ includePay: z.literal('1').optional() });
 
 interface Subject { id: string; name: string; employee_code: string; designation: string | null; employment_type: string; date_of_joining: string; probation_end_date: string | null; department: string | null; branch: string; legal_entity: string }
 const subjectOf = async (db: Db, tenantId: string, id: string) => (await db.query<Subject>(`SELECT e.id, trim(e.first_name||' '||coalesce(e.last_name,'')) AS name, e.employee_code, e.designation, e.employment_type,
@@ -63,7 +63,7 @@ export function letterRoutes(app: FastifyInstance) {
       await requireFeature(db, a.tenantId, ON);
       if (!(await hrAbove(db, a, id))) throw notFound('Employee not found');
       const subject = (await subjectOf(db, a.tenantId, id))!;
-      const ctc = q.salary ? await annualCtc(db, a, id) : null;
+      const ctc = q.includePay ? await annualCtc(db, a, id) : null;
       await issued(db, req, a, id, 'appointment', ctc !== null);
       return { subject, ctc, today: await orgToday(db, a.tenantId), identity: await loadPdfIdentity(db, a.tenantId) };
     });
@@ -76,7 +76,7 @@ export function letterRoutes(app: FastifyInstance) {
       ...(r.ctc !== null ? [`Your annual cost to company is ${w.money(r.ctc)}.`] : []),
       'Your employment is subject to the terms of your contract and the policies of the organization as they apply from time to time.',
     ] });
-    return pdfHeaders(reply, 'appointment-letter.pdf').header('x-salary-included', r.ctc !== null ? '1' : '0').send(doc);
+    return pdfHeaders(reply, 'appointment-letter.pdf').header('x-pay-included', r.ctc !== null ? '1' : '0').send(doc);
   });
 
   only(app, 'core.offboarding').get('/employees/:id/letters/experience.pdf', { schema: { params: IdParams }, config: { permAny: ['employees.manage', 'lifecycle.self'], feature: [OFF] } }, async (req, reply) => {

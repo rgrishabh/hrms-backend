@@ -300,8 +300,55 @@ So drawing the largest report allowed costs under a second of CPU, and yielding 
 
 **Payslip.** One rule in one function with the JSON route, so they cannot drift: a held payslip or a run not final is 404 for the employee, and staff who may read this person's pay can open it. Unlike the JSON view it says so on the page, `ON HOLD` or `NOT FINAL`, so that a printout cannot pass for a payslip. A file always shows the figures, so it is always audited, `l4.export` with one row, as well as `payroll.payslip_viewed` when it is your own. Employer contributions are left off, as they are not the employee's pay.
 
-**Letters.** Under `/lifecycle/employees/:id/letters/`, since they belong to joining and leaving. HR with `employees.manage` strictly above the person, and never their own by this path. The person may fetch their own experience and relieving letters. An experience letter is available from the last working day of an approved separation. A relieving letter says clearance is done, so it needs a completed separation, and does not exist for a death or an absconding. Refused for state: 409. Out of reach: 404. **In practice** completing a separation disables the login, and the daily job does so after the last working day, so a person can fetch their own experience letter on their last day, and their relieving letter hardly ever: there is no portal for former employees, and HR hands it over. The reason for leaving (L3) is never printed. Salary prints on an appointment letter only for `?salary=1`, with a pay permission, above the person, and payroll in use; it is then `l4.export`. Otherwise the letter comes without it, and `x-salary-included: 0` says so. The wording is deliberately plain and factual: the terms belong to the organization's contract, and there is no template editor.
+**Letters.** Under `/lifecycle/employees/:id/letters/`, since they belong to joining and leaving. HR with `employees.manage` strictly above the person, and never their own by this path. The person may fetch their own experience and relieving letters. An experience letter is available from the last working day of an approved separation. A relieving letter says clearance is done, so it needs a completed separation, and does not exist for a death or an absconding. Refused for state: 409. Out of reach: 404. **In practice** completing a separation disables the login, and the daily job does so after the last working day, so a person can fetch their own experience letter on their last day, and their relieving letter hardly ever: there is no portal for former employees, and HR hands it over. The reason for leaving (L3) is never printed. Salary prints on an appointment letter only for `?includePay=1`, with a pay permission, above the person, and payroll in use; it is then `l4.export`. Otherwise the letter comes without it, and `x-pay-included: 0` says so. The wording is deliberately plain and factual: the terms belong to the organization's contract, and there is no template editor.
 
 **Reports.** One line per row on landscape A4, so rows and pages are known in advance. A number is never cut, which would make it a different number; it is drawn smaller. Text is cut, with a note at the end, and the CSV and Excel have it whole. The header repeats on every page. Column widths come from the first 200 rows.
 
 **File names** are `payslip-<yyyy-mm>.pdf`, `appointment-letter.pdf` and `<report>-<date>.pdf`: no name, no figure, no identifier, and neither do the URLs or the document's title.
+
+## D53 — Company details: a table of their own, not settings
+
+**Context.** Layer 3 lists GSTIN, PAN, TAN, CIN, address, PF, ESI and PT numbers, payroll bank details, signatory, signature and stamp. Only `legal_entities` had any of it.
+
+**Options.** Settings registry entries in a `company` group, through `PUT /tenant/settings/:key`; or a table and a route.
+
+**Decision.** `company_profile`, one row per organization, with `GET` and `PUT /tenant/company` and `/tenant/company/images/:kind`, under a new permission `company.manage` (Super-admin, Owner, Finance). PAN and the bank account number are sealed. PAN comes back as its last four, always. The bank account comes back as its last four, or whole with `?reveal=1` for `company.manage`, audited, as an employee's does. Holder, bank name and IFSC are L4 and audited by name, like an employee's. Other fields are audited old to new. Legal entities stay the fallback for name, GSTIN and CIN.
+
+**Reason.** `tenant_settings.setting_value` is L1 JSON read by anyone with `settings.read`, and `rotate-keys` rewrites columns, not keys inside JSON. A sealed setting would have needed masking and rotation added to the settings path, for two fields, beside a generic audit that writes old and new. The table gets classification, rotation and masking from what exists.
+
+**Known limit.** The middle of a GSTIN is the PAN, and a GSTIN is public. Where one is set, sealing the PAN hides little, and old-to-new audit of the GSTIN holds it. The PAN is sealed anyway: an organization may have none, and the classification rule makes no exception.
+
+**Off.** PF, ESI, PT and bank fields belong to payroll: with it off they are left out of answers, refused on write, and kept. `loadCompanyProfile` holds the whole PAN for the server's own documents only.
+
+## D54 — Grades and designations: text on the employee, a master beside it
+
+**Context.** `employees.designation` and `grade` are free text, used by imports, hiring, reports and allowance rates.
+
+**Options.** A foreign key from employees to a master; or keep the text and validate.
+
+**Decision.** Keep the text. `grades` and `designations` are masters under `org.manage`, seeded by migration 050 from distinct values in use. With no entries, anything goes. With entries, `POST` and `PATCH /employees` need an active entry, matched by code or name in any case, but only for a value being changed. What someone already holds stays valid. An import adds a new title to the master, warns in its report and audits it, and does not fail. Hiring keeps its offer's text.
+
+**Reason.** A foreign key would touch every query that reads those columns and change the API, for the same result on screen. `allowance_rates.grade` matches the text too. The cost is that renaming a master entry does not rename what people already hold.
+
+## D55 — Erasure: a two-person rule of its own, and rows that stay as nobody's
+
+**Context.** DPDP erasure has to be authorised, and much of what a person leaves behind must by law stay.
+
+**Options.** The approval engine; or a request table with its own rule. For retained rows: keep the name on them until the period ends; or anonymize at once and seal the identity aside.
+
+**Decision.** `erasure_requests` with its own rule: whoever raised it cannot carry it out, except an Owner in the smaller modes, audited. Employee data is anonymized at once. Carve-out rows stay, without a name on them, with the identity sealed on the request until the payroll period ends. Then statutory and bank details and remaining files go, the code is replaced, and figures stay as nobody's.
+
+**Reason.** The engine's handlers apply a decision on approval and route by requester and manager. Here the requester may be gone, a person may have no manager or account, and the executor needs an answer with a report. The rule took a few lines. Deleting payroll items was ruled out: a finalized run is immutable (D38 and its trigger), and its sealed totals must keep adding up.
+
+**Periods** are settings in financial years: payroll 8, attendance 5, disputes 3. See `docs/DATA_RIGHTS.md`, which says they are not legal advice.
+
+## D56 — Retention: DELETE returned to the runtime role for rows that have an end
+
+**Context.** Migrations 007, 008, 009 and 034 revoked DELETE on `job_runs`, `notifications`, `email_outbox`, `documents` and `employee_bank_changes`, with no job to use anything else. Audit section 5 called these unbounded.
+
+**Options.** A `SECURITY DEFINER` purge function per table; or grant DELETE, with RLS still limiting it to the tenant.
+
+**Decision.** Grant DELETE on those five, and column-level UPDATE on `attendance_events` (latitude, longitude) and `case_events` (text_enc). `audit_logs` keeps its triggers and its refusals. Migration 009's comment said retention policy would decide: this is that.
+
+**Reason.** Functions would be a second way of writing the rules that the service and tests already hold, for a role that already has DELETE on most personal tables. Rows can go by app bug where they could not before. Punches stay protected, except for the two columns.
+

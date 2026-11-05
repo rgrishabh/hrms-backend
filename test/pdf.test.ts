@@ -435,7 +435,7 @@ describe('letters', () => {
     const r = await c.hr!.get(letter('appointment', emp('employee')));
     expect(r.statusCode, r.body).toBe(200);
     expect(r.headers['content-disposition']).toBe('attachment; filename="appointment-letter.pdf"');
-    expect(r.headers['x-salary-included']).toBe('0');
+    expect(r.headers['x-pay-included']).toBe('0');
     const text = await pdfText(r.rawPayload);
     for (const want of ['Northwind Assays Private Limited', 'Asha Verma', 'Senior Analyst', '01/01/2024', 'Letter of appointment', 'Authorised signatory']) expect(text).toContain(want);
     expect(text).not.toContain('8,53,332');
@@ -446,21 +446,21 @@ describe('letters', () => {
 
   it('salary on an appointment letter: only a reader who passes L4, and then an L4 export', async () => {
     const before = (await auditRows('l4.export', emp('employee'))).length;
-    const r = await c.hr!.get(letter('appointment', emp('employee'), '?salary=1'));
+    const r = await c.hr!.get(letter('appointment', emp('employee'), '?includePay=1'));
     expect(r.statusCode, r.body).toBe(200);
-    expect(r.headers['x-salary-included']).toBe('1');
+    expect(r.headers['x-pay-included']).toBe('1');
     expect(await pdfText(r.rawPayload)).toContain('INR 8,53,332.00');
     expect((await auditRows('l4.export', emp('employee'))).length).toBe(before + 1);
     // HR without any pay permission gets the letter and no figure, and no L4 row is written.
     const [u] = await ownerQuery<{ id: string }>(`INSERT INTO users (tenant_id, email, display_name, password_hash) SELECT tenant_id, $2, 'Exec', password_hash FROM users WHERE id=$1 RETURNING id`, [T.users.hr!.id, `exec@${T.host}`]);
     await ownerQuery(`INSERT INTO user_roles (user_id, tenant_id, role_key) VALUES ($1,$2,'hr_executive')`, [u!.id, T.id]);
     const exec = await Client.login(app, T.host, `exec@${T.host}`);
-    const noPay = await exec.get(letter('appointment', emp('employee'), '?salary=1'));
+    const noPay = await exec.get(letter('appointment', emp('employee'), '?includePay=1'));
     expect(noPay.statusCode, noPay.body).toBe(200);
-    expect(noPay.headers['x-salary-included']).toBe('0');
+    expect(noPay.headers['x-pay-included']).toBe('0');
     expect(await pdfText(noPay.rawPayload)).not.toContain('8,53,332');
     expect((await auditRows('l4.export', emp('employee'))).length).toBe(before + 1);
-    expect(problem(await c.hr!.get(letter('appointment', emp('employee'), '?salary=yes'))).status).toBe(400);
+    expect(problem(await c.hr!.get(letter('appointment', emp('employee'), '?includePay=yes'))).status).toBe(400);
   });
 
   it('appointment: 403 without the permission, 404 out of reach, and nobody issues their own', async () => {

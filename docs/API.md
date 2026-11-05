@@ -50,7 +50,7 @@ Base path `/api/v1`. JSON in and out. Each installation serves one organization;
 | POST `/payroll/runs/:id/items/:employeeId/release` | `payroll.approve` | Release held pay after finalize |
 | GET `/payroll/runs/:id/bank-released.csv` | `payroll.read` | Held pay released after finalize |
 | GET `/payroll/payslips/:id/payslip.pdf` | Own (`payslips.self`, final and not held), or a pay permission above them | Branded PDF, `payslip-<yyyy-mm>.pdf`; 404 otherwise, or with `payroll.payslips` off; audited `l4.export`; limited as an export |
-| GET `/lifecycle/employees/:id/letters/appointment.pdf` | `employees.manage`, above them | With `core.onboarding`. `?salary=1` adds the annual CTC only for a pay permission above them (then `l4.export`); `x-salary-included` says whether it did. Audited `lifecycle.letter_issued` |
+| GET `/lifecycle/employees/:id/letters/appointment.pdf` | `employees.manage`, above them | With `core.onboarding`. `?includePay=1` adds the annual CTC only for a pay permission above them (then `l4.export`); `x-pay-included` says whether it did. Audited `lifecycle.letter_issued` |
 | GET `/lifecycle/employees/:id/letters/experience.pdf` · `relieving.pdf` | `employees.manage` above them, or the person (`lifecycle.self`) | With `core.offboarding`. 409 before the last working day of an approved separation, and for a relieving letter before it is completed. Audited `lifecycle.letter_issued` |
 | POST `/approvals/:id/reassign` | `approvals.escalations`, or `users.manage` when nobody can act | Hand the active step to a named person |
 | GET `/employees/:id/profile` | profile.self (own) / employees.read | Personal details `{sections: {contacts, addresses, nominees, education, experience}, pending, missing, edit}`; see EMPLOYEE_RECORD.md |

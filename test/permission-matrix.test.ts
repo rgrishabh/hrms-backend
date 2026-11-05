@@ -215,12 +215,12 @@ for (const mode of ['single', 'single_hr', 'multi'] as const) {
         const s = w.subjects[sp.key]!;
         const label = `${mode}: ${v.key} -> ${sp.key}`;
         const above = !!v.hrL3 && v.key !== sp.key && v.level > sp.level;
-        const appointment = await w.clients[v.key]!.get(`/api/v1/lifecycle/employees/${s.employeeId}/letters/appointment.pdf?salary=1`);
+        const appointment = await w.clients[v.key]!.get(`/api/v1/lifecycle/employees/${s.employeeId}/letters/appointment.pdf?includePay=1`);
         if (!v.hrL3) expect(appointment.statusCode, `${label} appointment`).toBe(403);
         else expect(appointment.statusCode, `${label} appointment`).toBe(above ? 200 : 404);
         if (appointment.statusCode === 200) {
           const paid = !!v.payroll && v.level > sp.level;
-          expect(appointment.headers['x-salary-included'], `${label} salary`).toBe(paid ? '1' : '0');
+          expect(appointment.headers['x-pay-included'], `${label} salary`).toBe(paid ? '1' : '0');
           expect((await pdfText(appointment.rawPayload)).includes(pdfAmount(s.gross * 12)), `${label} figure`).toBe(paid);
         } else expect(leaks(appointment.body, s), label).toBe(false);
         const experience = await w.clients[v.key]!.get(`/api/v1/lifecycle/employees/${s.employeeId}/letters/experience.pdf`);
