@@ -265,7 +265,7 @@ describe('no upload goes around the checks', () => {
       .map((f) => path.join(root, f))
       .filter((f) => /\.put\(key,/.test(readFileSync(f, 'utf8')));
     expect(users.sort()).toEqual(
-      ['attendance/routes.ts', 'documents/routes.ts', 'expenses/routes.ts', 'policies/routes.ts', 'recruitment/routes.ts', 'tenant/company.ts'].map((f) => path.join(root, f)),
+      ['attendance/routes.ts', 'documents/routes.ts', 'employees/cards.ts', 'expenses/routes.ts', 'policies/routes.ts', 'recruitment/routes.ts', 'tenant/company.ts'].map((f) => path.join(root, f)),
     );
     for (const f of users) expect(readFileSync(f, 'utf8'), f).toMatch(/await prepareUpload\(req, a,/);
   });
