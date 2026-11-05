@@ -1,6 +1,7 @@
 name: Publish (develop)
 # Push to develop: re-run CI, then push ghcr.io/<owner>/hrms-backend:sha-<short> and :develop
 # (SBOM + provenance + cosign signature) and ask hrms-deployment to deploy it to dev.
+# Stay on _app-publish.yml@main: deploy-prod and rollback-prod verify the cosign identity of exactly that workflow and ref.
 on:
   push:
     branches: [develop]
@@ -26,7 +27,7 @@ jobs:
       contents: read
       packages: write
       id-token: write
-    uses: rgrishabh/hrms-deployment/.github/workflows/_app-publish.yml@92fef0b227c3606731442c7ead25d0253d519857 # main
+    uses: rgrishabh/hrms-deployment/.github/workflows/_app-publish.yml@main
     with:
       app: backend
       mode: develop

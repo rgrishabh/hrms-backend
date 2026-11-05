@@ -6,6 +6,10 @@
 
 * `PUT /api/v1/recruitment/candidates/{id}/resume` (`recruitment.manage`): add or replace the resume of an active candidate, audited as `recruitment.resume_replaced`. The replaced file is deleted from storage.
 
+### CI in batch H
+
+* `publish-develop.yml` and `release.yml` call `_app-publish.yml` at `@main`, not a commit (D65, ADR-020 in `hrms-deployment`, which must merge first).
+
 ### Contract changes in batch H
 
 No route or field was renamed or removed.
