@@ -429,6 +429,7 @@ export async function leaveRoutes(app: FastifyInstance) {
         if (q.scope === 'mine') ids = a.user.employeeId ? [a.user.employeeId] : [];
         else if (q.scope === 'team') ids = a.user.employeeId && a.has('leave.team.read') ? await teamEmployeeIds(db, a.tenantId, a.user.employeeId) : [];
         else if (!a.has('leave.read') && !a.has('leave.manage')) throw forbidden();
+        const team = q.scope === 'team' ? ids : null;
         if (q.employeeId) {
           await assertCanView(db, a, q.employeeId);
           ids = [q.employeeId];
@@ -438,14 +439,14 @@ export async function leaveRoutes(app: FastifyInstance) {
         const total = Number((await db.query<{ n: string }>(`SELECT count(*) AS n FROM leave_requests r WHERE ${where}`, params)).rows[0]!.n);
         const v = await policyViewer(db, a.tenantId, a.user);
         // The reason is L3: the employee and HR above them. A manager reads it while a request of their team waits for a decision, because deciding needs it.
-        const reasonOk = `(${l3RowFilter(v, 'e')} OR (${a.has('leave.team.read') && q.scope === 'team' ? 'true' : 'false'} AND r.status='pending'))`;
+        const reasonOk = `(${l3RowFilter(v, 'e')} OR (coalesce(r.employee_id = ANY($6::uuid[]), false) AND r.status='pending'))`;
         const rows = await db.query(
           `SELECT r.id, r.employee_id, e.employee_code, trim(e.first_name||' '||coalesce(e.last_name,'')) AS name, t.code AS type_code, t.name AS type_name,
           r.start_date, r.end_date, r.start_half, r.end_half, r.days, r.reason, ${reasonOk} AS reason_ok, r.status, r.created_at, r.decided_at, ar.id AS approval_request_id
         FROM leave_requests r JOIN employees e ON e.tenant_id=r.tenant_id AND e.id=r.employee_id JOIN leave_types t ON t.tenant_id=r.tenant_id AND t.id=r.leave_type_id
         LEFT JOIN approval_requests ar ON ar.tenant_id=r.tenant_id AND ar.entity_type='leave_request' AND ar.entity_id=r.id
         WHERE ${where} ORDER BY r.start_date DESC, r.created_at DESC LIMIT $4 OFFSET $5`,
-          [...params, q.pageSize, offsetOf(q)],
+          [...params, q.pageSize, offsetOf(q), team],
         );
         return paged(
           rows.rows.map(({ reason_ok, ...r }) => (reason_ok ? r : maskFields(r, ['reason']))),

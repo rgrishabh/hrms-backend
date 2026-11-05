@@ -119,7 +119,8 @@ export class FieldCipher {
 }
 
 function open(key: Buffer, iv: string, tag: string, data: string) {
-  const d = createDecipheriv('aes-256-gcm', key, Buffer.from(iv, 'base64'));
+  // Without this GCM takes a shortened tag, and a four-byte tag can be guessed.
+  const d = createDecipheriv('aes-256-gcm', key, Buffer.from(iv, 'base64'), { authTagLength: 16 });
   d.setAuthTag(Buffer.from(tag, 'base64'));
   return Buffer.concat([d.update(Buffer.from(data, 'base64')), d.final()]).toString('utf8');
 }

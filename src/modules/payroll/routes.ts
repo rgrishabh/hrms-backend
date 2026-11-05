@@ -835,8 +835,12 @@ export async function payrollRoutes(app: FastifyInstance) {
     return a.tx(async (db) => {
       const r = await loadRun(db, a, p.id, true);
       if (!['draft', 'computed'].includes(r.status)) throw conflict(`A ${r.status} run cannot be adjusted`);
-      const d = await db.query('DELETE FROM payroll_adjustments WHERE tenant_id=$1 AND run_id=$2 AND id=$3', [a.tenantId, p.id, p.adjId]);
-      if (!d.rowCount) throw notFound();
+      const target = (
+        await db.query<{ employee_id: string }>('SELECT employee_id FROM payroll_adjustments WHERE tenant_id=$1 AND run_id=$2 AND id=$3', [a.tenantId, p.id, p.adjId])
+      ).rows[0];
+      if (!target) throw notFound();
+      await assertMayChangeSubject(db, a.tenantId, await policyViewer(db, a.tenantId, a.user), target.employee_id);
+      await db.query('DELETE FROM payroll_adjustments WHERE tenant_id=$1 AND run_id=$2 AND id=$3', [a.tenantId, p.id, p.adjId]);
       await db.query(`UPDATE payroll_runs SET status='draft' WHERE tenant_id=$1 AND id=$2 AND status='computed'`, [a.tenantId, p.id]);
       await audit(db, { ...a.auditBase, action: 'payroll.adjustment_removed', targetType: 'payroll_run', targetId: p.id, metadata: { adjustmentId: p.adjId } });
       return { ok: true };

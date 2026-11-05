@@ -40,17 +40,20 @@ describe('hashing', () => {
 
   it('the dummy for an unknown user costs what a real verification costs', async () => {
     const real = await hashPassword('correct horse battery');
-    const time = async (stored: string | null) => {
-      const samples: number[] = [];
-      for (let i = 0; i < 7; i++) {
-        const t = performance.now();
-        await verifyPassword('some guess at it', stored);
-        samples.push(performance.now() - t);
-      }
-      return samples.sort((x, y) => x - y)[3]!;
+    // In pairs, so that load from elsewhere falls on both sides of each comparison.
+    const once = async (stored: string | null) => {
+      const t = performance.now();
+      await verifyPassword('some guess at it', stored);
+      return performance.now() - t;
     };
-    const [known, unknown] = [await time(real), await time(null)];
-    expect(Math.abs(known - unknown) / known, `known ${known} ms, unknown ${unknown} ms`).toBeLessThan(0.35);
+    const ratios: number[] = [];
+    for (let i = 0; i < 7; i++) {
+      const known = await once(real);
+      const unknown = await once(null);
+      ratios.push(Math.abs(known - unknown) / known);
+    }
+    const middle = ratios.sort((x, y) => x - y)[3]!;
+    expect(middle, `median difference ${Math.round(middle * 100)}%`).toBeLessThan(0.35);
   }, 20000);
 });
 

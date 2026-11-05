@@ -1,7 +1,7 @@
 import type { FastifyInstance } from 'fastify';
 import * as R from '../../core/http/responses.js';
 import { z } from 'zod';
-import { subjectLevelSql } from '../../core/policy/salary.js';
+import { assertOutranks, subjectLevelSql } from '../../core/policy/salary.js';
 import { createHash } from 'node:crypto';
 import { tenantActor, requireFeature, type TenantActor, gateFeatures } from '../../core/http/context.js';
 import { audit } from '../../core/audit/audit.js';
@@ -212,6 +212,7 @@ export async function documentRoutes(app: FastifyInstance) {
         if (c.requires_expiry && !body.expiresOn) throw badRequest(`${c.name} needs an expiry date`);
         if (body.employeeId && !(await db.query('SELECT 1 FROM employees WHERE tenant_id=$1 AND id=$2', [a.tenantId, body.employeeId])).rowCount)
           throw notFound('Employee not found');
+        if (body.employeeId && body.employeeId !== a.user.employeeId && manage) await assertOutranks(db, a.tenantId, { level: a.user.salaryLevel }, body.employeeId);
         if (!store) throw new AppError(503, 'storage_unavailable', 'Document storage is not configured');
         const key = newKey(a.tenantId, body.employeeId ?? null);
         await store.put(key, file!.buf, detected.contentType);
@@ -282,6 +283,16 @@ export async function documentRoutes(app: FastifyInstance) {
     const a = tenantActor(req, 'documents.manage');
     const { id } = IdParams.parse(req.params);
     return a.tx(async (db) => {
+      const doc = (
+        await db.query<{ employee_id: string | null; restricted: boolean }>(
+          `SELECT d.employee_id, c.restricted FROM documents d JOIN document_categories c ON c.tenant_id=d.tenant_id AND c.id=d.category_id WHERE d.tenant_id=$1 AND d.id=$2`,
+          [a.tenantId, id],
+        )
+      ).rows[0];
+      if (!doc) throw notFound('Active document not found');
+      if (doc.restricted && !a.has('documents.restricted')) throw notFound('Active document not found');
+      if (doc.employee_id && doc.employee_id !== a.user.employeeId)
+        await assertOutranks(db, a.tenantId, { level: a.user.salaryLevel }, doc.employee_id, 'Active document not found');
       const r = await db.query(`UPDATE documents SET status='archived', archived_at=now(), archived_by=$3 WHERE tenant_id=$1 AND id=$2 AND status='active'`, [
         a.tenantId,
         id,

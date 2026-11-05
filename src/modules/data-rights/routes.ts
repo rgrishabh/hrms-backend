@@ -129,19 +129,13 @@ export async function dataRightsRoutes(app: FastifyInstance) {
   /** The periods in force and what they rest on. */
   app.get('/retention', { schema: {}, config: { permAny: ['settings.read', 'data_rights.manage'] } }, async (req) => {
     const a = tenantActorAny(req, 'settings.read', 'data_rights.manage');
-    return a.tx(async (db) => ({
-      carveOuts: await Promise.all(
-        Object.entries(CARVE_OUT_BASIS).map(async ([category, b]) => ({
-          category,
-          label: b.label,
-          years: await getSettingValue<number>(db, a.tenantId, b.setting),
-          basis: b.basis,
-          setting: b.setting,
-        })),
-      ),
-      auditLog: AUDIT_LOG_NOTE,
-      notLegalAdvice: NOT_LEGAL_ADVICE,
-    }));
+    return a.tx(async (db) => {
+      // One after another: a connection runs one query at a time.
+      const carveOuts = [];
+      for (const [category, b] of Object.entries(CARVE_OUT_BASIS))
+        carveOuts.push({ category, label: b.label, years: await getSettingValue<number>(db, a.tenantId, b.setting), basis: b.basis, setting: b.setting });
+      return { carveOuts, auditLog: AUDIT_LOG_NOTE, notLegalAdvice: NOT_LEGAL_ADVICE };
+    });
   });
 
   /**

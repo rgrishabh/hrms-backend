@@ -13,7 +13,8 @@ export function detectFile(buf: Buffer, fileName: string): Detected | { error: s
   const ext = fileName.toLowerCase().match(/\.([a-z0-9]{1,5})$/)?.[1] ?? '';
   if (starts(buf, [0x25, 0x50, 0x44, 0x46, 0x2d])) {
     // %PDF-
-    const text = buf.toString('latin1');
+    // A name in a PDF may spell any character as #xx, so /J#61vaScript is /JavaScript to a reader.
+    const text = buf.toString('latin1').replace(/#([0-9a-fA-F]{2})/g, (_, h: string) => String.fromCharCode(parseInt(h, 16)));
     // Active content has no place in HR documents.
     if (/\/(JavaScript|JS|Launch|EmbeddedFile|RichMedia)\b/.test(text)) return { error: 'PDF files with scripts, launch actions or embedded files are not accepted' };
     return { contentType: 'application/pdf', ext: 'pdf' };
@@ -22,6 +23,8 @@ export function detectFile(buf: Buffer, fileName: string): Detected | { error: s
   if (starts(buf, [0xff, 0xd8, 0xff])) return { contentType: 'image/jpeg', ext: 'jpg' };
   if (starts(buf, [0x52, 0x49, 0x46, 0x46]) && starts(buf, [0x57, 0x45, 0x42, 0x50], 8)) return { contentType: 'image/webp', ext: 'webp' };
   if (starts(buf, [0x50, 0x4b, 0x03, 0x04]) && buf.includes('[Content_Types].xml')) {
+    // A .docm or .xlsm named .docx: the macro part's name is in the archive's directory in the clear.
+    if (buf.includes('vbaProject.bin')) return { error: 'Office files with macros are not accepted' };
     if (ext === 'docx' && buf.includes('word/')) return { contentType: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document', ext: 'docx' };
     if (ext === 'xlsx' && buf.includes('xl/')) return { contentType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', ext: 'xlsx' };
   }

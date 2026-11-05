@@ -300,6 +300,8 @@ export async function authRoutes(app: FastifyInstance, opts: { publicConfig: Pub
         await db.query('UPDATE users SET password_hash = $2, must_change_password = false, updated_at = now() WHERE id = $1', [u.userId, hash]);
         // Changing a password signs out every other session, and this one gets a new token.
         await revokeOtherSessions(db, u.userId, u.sessionId);
+        // A link still in a mailbox would undo this.
+        await db.query('UPDATE admin_setup_tokens SET used_at=now() WHERE user_id=$1 AND used_at IS NULL', [u.userId]);
         await audit(db, { tenantId: u.tenantId, actorId: u.userId, action: 'auth.password_changed', category: 'security', requestId: req.id, ip: req.ip });
         await notifyUsers(db, u.tenantId!, [u.userId], {
           kind: 'security.password_changed',
@@ -351,6 +353,7 @@ export async function authRoutes(app: FastifyInstance, opts: { publicConfig: Pub
     const taken = await withTenant(pool, tenant.id, async (db) => {
       if (!(await takeLink(db, link.id))) return false;
       await db.query(`UPDATE users SET password_hash = $2, must_change_password = false, updated_at = now() WHERE tenant_id = $1 AND id = $3`, [tenant.id, hash, link.user_id]);
+      await db.query('UPDATE admin_setup_tokens SET used_at=now() WHERE user_id=$1 AND used_at IS NULL', [link.user_id]);
       await revokeAllSessionsForUser(db, link.user_id);
       await clearLoginAccount(db, tenant.id, link.email);
       await audit(db, {

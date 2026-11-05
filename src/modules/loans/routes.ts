@@ -11,7 +11,7 @@ import { getSettingValue } from '../../core/settings/service.js';
 import { notifyUsers } from '../../core/notify/service.js';
 import { teamEmployeeIds } from '../attendance/service.js';
 import { orgToday } from '../competency/service.js';
-import { l4RowFilter, auditL4, maskFields, policyViewer, readContext, subjectVisible, wantsReveal } from '../../core/policy/salary.js';
+import { assertMayChangeSubject, l4RowFilter, auditL4, maskFields, policyViewer, readContext, subjectVisible, wantsReveal } from '../../core/policy/salary.js';
 import { isCollapsedMode } from '../../core/policy/mode.js';
 import { isOwnerRole } from '../../core/auth/permissions.js';
 import { KIND_LABEL, balanceOf, closeRepaid, outstandingOf, installmentOf, KIND_FEATURE, enabledLoanKinds } from './service.js';
@@ -41,7 +41,20 @@ const COLS = `l.id, l.employee_id, l.kind, l.amount, l.installments, l.installme
   (SELECT ar.id FROM approval_requests ar WHERE ar.tenant_id=l.tenant_id AND ar.entity_type IN ('employee_loan','salary_advance') AND ar.entity_id=l.id ORDER BY ar.created_at DESC LIMIT 1) AS approval_request_id`;
 
 /** Loans are L4 but stay plaintext, under access control. Purpose can say why someone needs the money, so it goes with the amounts. */
-const LOAN_FIELDS = ['amount', 'installment_amount', 'outstanding', 'purpose', 'balance', 'schedule', 'recoveries'] as const;
+const LOAN_FIELDS = [
+  'amount',
+  'installment_amount',
+  'outstanding',
+  'purpose',
+  'balance',
+  'schedule',
+  'recoveries',
+  'installments',
+  'first_period',
+  'skip_periods',
+  'disbursement_reference',
+  'cancel_reason',
+] as const;
 const FROM = `employee_loans l JOIN employees e ON e.tenant_id=l.tenant_id AND e.id=l.employee_id LEFT JOIN departments dp ON dp.tenant_id=e.tenant_id AND dp.id=e.department_id`;
 
 async function loadLoan(db: Db, a: TenantActor, id: string, lock = false): Promise<Loan> {
@@ -142,6 +155,7 @@ export async function loanRoutes(app: FastifyInstance) {
     if (!empId) throw badRequest('Your account is not linked to an employee record');
     return a.tx(async (db) => {
       await requireFeature(db, a.tenantId, KIND_FEATURE[b.kind]!);
+      if (forOther) await assertMayChangeSubject(db, a.tenantId, await policyViewer(db, a.tenantId, a.user), empId);
       const e = (
         await db.query<{ status: string; user_id: string | null; name: string; mgr_user: string | null }>(
           `SELECT e.status, e.user_id, trim(e.first_name||' '||coalesce(e.last_name,'')) AS name, CASE WHEN m.status IN ('active','on_notice') THEN m.user_id END AS mgr_user
@@ -226,7 +240,7 @@ export async function loanRoutes(app: FastifyInstance) {
         ).rows;
         const outstanding = await outstandingOf(db, a.tenantId, rows);
         const reveal = wantsReveal(req);
-        const fields = LOAN_FIELDS.filter((f) => ['amount', 'installment_amount', 'outstanding', 'purpose'].includes(f));
+        const fields = LOAN_FIELDS.filter((f) => !['balance', 'schedule', 'recoveries'].includes(f));
         const shown = rows.filter((r) => reveal && r.visible);
         if (shown.length)
           await auditL4(
@@ -308,6 +322,7 @@ export async function loanRoutes(app: FastifyInstance) {
     return a.tx(async (db) => {
       const l = await loadLoan(db, a, id, true);
       if (l.employee_id === a.user.employeeId && !(isCollapsedMode() && a.user.roles.some(isOwnerRole))) throw forbidden('You cannot disburse your own advance or loan');
+      await assertMayChangeSubject(db, a.tenantId, await policyViewer(db, a.tenantId, a.user), l.employee_id);
       if (l.status !== 'approved') throw conflict(`Only an approved request can be disbursed (this one is ${l.status})`);
       await db.query(`UPDATE employee_loans SET status='disbursed', disbursed_at=now(), disbursed_by=$3, disbursement_reference=$4 WHERE tenant_id=$1 AND id=$2`, [
         a.tenantId,
@@ -335,6 +350,7 @@ export async function loanRoutes(app: FastifyInstance) {
     const { reason } = RequestsCancelBody.parse(req.body);
     return a.tx(async (db) => {
       const l = await loadLoan(db, a, id, true);
+      await assertMayChangeSubject(db, a.tenantId, await policyViewer(db, a.tenantId, a.user), l.employee_id);
       if (l.status !== 'approved') throw conflict(`Only an approved, not yet paid request can be cancelled (this one is ${l.status})`);
       await db.query(`UPDATE employee_loans SET status='cancelled', cancelled_by=$3, cancel_reason=$4 WHERE tenant_id=$1 AND id=$2`, [a.tenantId, id, a.user.userId, reason]);
       await audit(db, { ...a.auditBase, action: 'loans.cancelled', targetType: 'employee_loan', targetId: id, metadata: { reason } });
@@ -350,6 +366,7 @@ export async function loanRoutes(app: FastifyInstance) {
     return a.tx(async (db) => {
       const l = await loadLoan(db, a, id, true);
       if (l.employee_id === a.user.employeeId && !(isCollapsedMode() && a.user.roles.some(isOwnerRole))) throw forbidden('You cannot record a repayment of your own loan');
+      await assertMayChangeSubject(db, a.tenantId, await policyViewer(db, a.tenantId, a.user), l.employee_id);
       if (l.status !== 'disbursed') throw conflict(`Repayments are recorded against a disbursed loan (this one is ${l.status})`);
       const bal = await balanceOf(db, a.tenantId, id);
       if (new Decimal(b.amount).gt(bal.outstanding))
@@ -377,6 +394,7 @@ export async function loanRoutes(app: FastifyInstance) {
     return a.tx(async (db) => {
       const l = await loadLoan(db, a, id, true);
       if (l.employee_id === a.user.employeeId && !(isCollapsedMode() && a.user.roles.some(isOwnerRole))) throw forbidden('You cannot defer your own recovery');
+      await assertMayChangeSubject(db, a.tenantId, await policyViewer(db, a.tenantId, a.user), l.employee_id);
       if (!['approved', 'disbursed'].includes(l.status)) throw conflict(`The ${KIND_LABEL[l.kind]!.toLowerCase()} is ${l.status}`);
       if (l.skip_periods.includes(b.period)) throw conflict(`${b.period} is already deferred`);
       if (b.period < (await orgToday(db, a.tenantId)).slice(0, 7)) throw badRequest('A past month cannot be deferred');

@@ -1,7 +1,9 @@
 import type { FastifyRequest } from 'fastify';
 import type { Db } from '../../db/tx.js';
 import { auditMany } from '../audit/audit.js';
-import { AppError, notFound } from '../http/errors.js';
+import { AppError, forbidden, notFound } from '../http/errors.js';
+import { isOwnerRole } from '../auth/permissions.js';
+import { isCollapsedMode } from './mode.js';
 import { getSettingValue } from '../settings/service.js';
 import { effectiveLevelSql } from './levels.js';
 
@@ -17,6 +19,8 @@ export interface PolicyViewer {
   has: (p: string) => boolean;
   /** Reports of this viewer, when the organization lets managers see team salaries. */
   managedTeam?: readonly string[];
+  /** An owner where there is nobody above them (single, single_hr): their own record has no second person. */
+  ownerOfCollapsed?: boolean;
 }
 
 /** Any one of these makes someone an authorised L4 reader; each path still has its own permission on top. */
@@ -84,7 +88,22 @@ export async function assertSubjectVisible(db: Db, tenantId: string, v: PolicyVi
 
 /** Changing someone's L4 data needs the same standing as seeing it, and never your own through a staff route. */
 export async function assertMayChangeSubject(db: Db, tenantId: string, v: PolicyViewer, employeeId: string) {
-  if (v.employeeId !== employeeId && !(await subjectVisible(db, tenantId, v, employeeId))) throw notFound('Employee not found');
+  if (v.employeeId === employeeId) {
+    if (!v.ownerOfCollapsed) throw forbidden('You cannot change this on your own record');
+    return;
+  }
+  if (!(await subjectVisible(db, tenantId, v, employeeId))) throw notFound('Employee not found');
+}
+
+/** Strictly above the subject in the hierarchy, whatever permissions the viewer holds. Not true of oneself. */
+export async function outranks(db: Db, tenantId: string, v: Pick<PolicyViewer, 'level'>, employeeId: string) {
+  const r = await db.query<{ ok: boolean }>(`SELECT ${level(v.level)} > ${subjectLevelSql('e')} AS ok FROM employees e WHERE e.tenant_id=$1 AND e.id=$2`, [tenantId, employeeId]);
+  return r.rows[0]?.ok ?? false;
+}
+
+/** The same 404 as reading: someone at or above you does not exist for this action (D40). */
+export async function assertOutranks(db: Db, tenantId: string, v: Pick<PolicyViewer, 'level'>, employeeId: string, message = 'Employee not found') {
+  if (!(await outranks(db, tenantId, v, employeeId))) throw notFound(message);
 }
 
 /** Of these employees, who is out of this viewer's reach. */
@@ -101,9 +120,15 @@ export async function hiddenSubjects(db: Db, tenantId: string, v: PolicyViewer, 
 export async function policyViewer(
   db: Db,
   tenantId: string,
-  u: { userId: string; employeeId: string | null; salaryLevel: number; permissions: ReadonlySet<string> },
+  u: { userId: string; employeeId: string | null; salaryLevel: number; permissions: ReadonlySet<string>; roles?: readonly string[] },
 ): Promise<PolicyViewer> {
-  const v: PolicyViewer = { userId: u.userId, employeeId: u.employeeId, level: u.salaryLevel, has: (p) => u.permissions.has(p) };
+  const v: PolicyViewer = {
+    userId: u.userId,
+    employeeId: u.employeeId,
+    level: u.salaryLevel,
+    has: (p) => u.permissions.has(p),
+    ownerOfCollapsed: isCollapsedMode() && !!u.roles?.some(isOwnerRole),
+  };
   if (!u.employeeId || (!u.permissions.has('loans.team.read') && !u.permissions.has('leave.team.read'))) return v;
   if (!(await getSettingValue<boolean>(db, tenantId, 'security.manager_team_salaries'))) return v;
   const team = await db.query<{ id: string }>(

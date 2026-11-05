@@ -2,6 +2,7 @@ import type { FastifyInstance } from 'fastify';
 import * as R from '../../core/http/responses.js';
 import { z } from 'zod';
 import { Decimal } from 'decimal.js';
+import { decimalOrNaN } from '../../core/http/money.js';
 import { tenantActor, tenantActorAny, gateFeatures, type TenantActor } from '../../core/http/context.js';
 import { audit } from '../../core/audit/audit.js';
 import { AppError, badRequest, conflict, forbidden, notFound } from '../../core/http/errors.js';
@@ -42,7 +43,7 @@ const Money = z
   .union([z.number(), z.string()])
   .default(0)
   .transform((v, ctx) => {
-    const d = new Decimal(v || 0);
+    const d = decimalOrNaN(v || 0);
     if (!d.isFinite() || d.lt(0) || d.decimalPlaces() > 2 || d.gt('9999999999.99')) {
       ctx.addIssue({ code: 'custom', message: 'Enter an amount of 0 or more with up to 2 decimals' });
       return z.NEVER;

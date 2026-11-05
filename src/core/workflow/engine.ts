@@ -752,6 +752,11 @@ export async function reassignRequest(
   if (blocked.has(targetUserId)) throw badRequest('That person cannot act on this request');
   const target = await db.query(`SELECT 1 FROM users WHERE tenant_id=$1 AND id=$2 AND status='active'`, [tenantId, targetUserId]);
   if (!target.rowCount) throw badRequest('Choose an active user');
+  const covers = await db.query(
+    `SELECT 1 FROM approval_delegations WHERE tenant_id=$1 AND delegator_id=$2 AND delegate_id=$3 AND revoked_at IS NULL AND $4::date BETWEEN starts_on AND ends_on`,
+    [tenantId, targetUserId, actorId, await orgToday(db, tenantId)],
+  );
+  if (covers.rowCount) throw badRequest('This person has handed their approvals to you, so this would come back to you. Choose someone else');
   const step = (
     await db.query<ActiveStep>(
       `SELECT approver_kind, approver_user_id, approver_permission, escalated_to, escalated_permission FROM approval_steps WHERE tenant_id=$1 AND request_id=$2 AND status='active' FOR UPDATE`,

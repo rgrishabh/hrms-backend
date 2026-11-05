@@ -1,3 +1,4 @@
+import { isCollapsedMode } from '../../core/policy/mode.js';
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import { tenantActor, requireFeature, type TenantActor, gateFeatures } from '../../core/http/context.js';
@@ -21,11 +22,12 @@ interface Rev {
   reviewer_user: string | null;
   cycle_status: string;
   self_review: boolean;
+  manager_submitted_by: string | null;
 }
 async function loadReview(db: Db, a: TenantActor, id: string, lock = false) {
   const r = (
     await db.query<Rev>(
-      `SELECT r.id, r.cycle_id, r.employee_id, r.reviewer_id, r.status, r.version, e.user_id AS emp_user, m.user_id AS reviewer_user, c.status AS cycle_status, c.self_review
+      `SELECT r.id, r.cycle_id, r.employee_id, r.reviewer_id, r.status, r.version, r.manager_submitted_by, e.user_id AS emp_user, m.user_id AS reviewer_user, c.status AS cycle_status, c.self_review
     FROM performance_reviews r JOIN employees e ON e.tenant_id=r.tenant_id AND e.id=r.employee_id LEFT JOIN employees m ON m.tenant_id=r.tenant_id AND m.id=r.reviewer_id
     JOIN review_cycles c ON c.tenant_id=r.tenant_id AND c.id=r.cycle_id WHERE r.tenant_id=$1 AND r.id=$2${lock ? ' FOR UPDATE OF r' : ''}`,
       [a.tenantId, id],
@@ -291,6 +293,7 @@ export async function performanceRoutes(app: FastifyInstance) {
           [a.tenantId, id],
         )
       ).rows[0]!;
+      delete d.manager_submitted_by;
       const goals = (
         await db.query(
           `SELECT id, title, measure, weight, status, progress FROM goals WHERE tenant_id=$1 AND cycle_id=$2 AND employee_id=$3 AND status='agreed' ORDER BY created_at`,
@@ -346,12 +349,13 @@ export async function performanceRoutes(app: FastifyInstance) {
           throw conflict(r.self_review && r.status === 'not_started' ? 'Waiting for the self-review' : 'The manager review was already submitted');
         if (!body.rating || !body.comments || body.comments.length < 20) throw badRequest('Give a rating and at least 20 characters of comments');
         await db.query(
-          `UPDATE performance_reviews SET manager_rating=$3, manager_comments=$4, goal_ratings=$5, status='manager_submitted', version=version+1 WHERE tenant_id=$1 AND id=$2`,
-          [a.tenantId, p.id, body.rating, body.comments, JSON.stringify(body.goalRatings ?? {})],
+          `UPDATE performance_reviews SET manager_rating=$3, manager_comments=$4, goal_ratings=$5, status='manager_submitted', manager_submitted_by=$6, version=version+1 WHERE tenant_id=$1 AND id=$2`,
+          [a.tenantId, p.id, body.rating, body.comments, JSON.stringify(body.goalRatings ?? {}), a.user.userId],
         );
       } else if (p.step === 'finalize') {
         need(a.has('performance.manage') && role !== 'employee', 'HR finalizes ratings (not on your own review)');
         need(role !== 'manager', 'A different person finalizes the rating you wrote as the manager');
+        need(r.manager_submitted_by !== a.user.userId || isCollapsedMode(), 'A different person finalizes the rating you wrote');
         if (r.status !== 'manager_submitted') throw conflict('The manager review is not submitted yet');
         if (!body.rating) throw badRequest('Give the final rating');
         await db.query(`UPDATE performance_reviews SET final_rating=$3, final_comments=$4, finalized_by=$5, status='finalized', version=version+1 WHERE tenant_id=$1 AND id=$2`, [

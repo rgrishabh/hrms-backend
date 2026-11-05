@@ -12,7 +12,7 @@ const me = async (c: Client) => (await c.get('/api/v1/auth/me')).json();
 const roles = async (c: Client) => (await c.get('/api/v1/tenant/roles')).json();
 
 beforeAll(async () => {
-  app = await makeApp({ ...flags('default,leave,training') });
+  app = await makeApp({ ...flags('default,leave,training,assets') });
   T = await createTenant();
   admin = await login('admin');
   it_ = await login('it');

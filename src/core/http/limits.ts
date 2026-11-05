@@ -16,3 +16,13 @@ export function perUserLimit(app: FastifyInstance, name: string, max: number) {
 
 /** What counts as an export: a file of many people's data. */
 export const isExportRoute = (method: string, url: string) => method === 'GET' && (/\.(csv|xlsx|pdf)$/.test(url) || /\/export(\.\w+)?$/.test(url));
+
+/**
+ * Who a limit counts. An office is one address, so a signed-in person is counted as themselves. Sign-in and files of many people's data stay counted by address, since a valid session must not buy
+ * anyone a fresh budget for guessing other people's passwords, and exports have the per-user limit above as well.
+ */
+export function limitKey(req: FastifyRequest): string {
+  const url = req.routeOptions.url ?? req.url;
+  const user = req.ctx?.user;
+  return user && !url.startsWith('/api/v1/auth') && !isExportRoute(req.method, url) ? `user:${user.userId}` : req.ip;
+}

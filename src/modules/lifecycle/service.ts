@@ -58,8 +58,10 @@ export async function taskAssignees(db: Db, tenantId: string, owner: Owner, emp:
 }
 
 export function canActOnTask(owner: Owner, emp: { user_id: string | null; manager_user_id: string | null }, user: { userId: string; permissions: Set<string> }) {
+  // Whoever is joining or leaving answers only for their own tasks: clearing their own HR, IT or finance checks would clear them for exit.
+  if (emp.user_id === user.userId) return owner === 'employee';
   if (user.permissions.has('lifecycle.manage')) return true;
-  if (owner === 'employee') return emp.user_id === user.userId;
+  if (owner === 'employee') return false;
   if (owner === 'manager') return emp.manager_user_id === user.userId;
   return user.permissions.has(OWNER_PERMISSION[owner]!);
 }

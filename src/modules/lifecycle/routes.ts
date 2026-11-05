@@ -2,6 +2,7 @@ import type { FastifyInstance } from 'fastify';
 import { only } from '../../core/features/routes.js';
 import { z } from 'zod';
 import { scrubAmounts } from '../../core/policy/text.js';
+import { assertOutranks, l3RowFilter, maskFields, policyViewer, subjectVisible } from '../../core/policy/salary.js';
 import { evaluateFeatures } from '../../core/features/state.js';
 import { tenantActor, tenantActorAny, requireFeature, type TenantActor, gateFeatures } from '../../core/http/context.js';
 import { audit } from '../../core/audit/audit.js';
@@ -514,6 +515,7 @@ export async function lifecycleRoutes(app: FastifyInstance) {
     const b = SeparationsBody.parse(req.body);
     if (b.employeeId === a.user.employeeId) throw forbidden('Use "Resign" for your own separation');
     return a.tx(async (db) => {
+      await assertOutranks(db, a.tenantId, { level: a.user.salaryLevel }, b.employeeId);
       const r = await startSeparation(db, a, b);
       reply.code(201);
       return r;
@@ -582,10 +584,13 @@ export async function lifecycleRoutes(app: FastifyInstance) {
       const checklist = (await db.query<{ id: string }>(`SELECT id FROM checklists WHERE tenant_id=$1 AND separation_id=$2 ORDER BY created_at DESC LIMIT 1`, [a.tenantId, id]))
         .rows[0];
       // Leave balances at exit (input to F&F; encashment rules are decided in payroll).
-      const leave = hr ? (await balancesAt(db, a.tenantId, emp.id, s.approved_lwd ?? s.requested_lwd)).items : [];
+      // L3 (D39): the person, HR above them, and whoever decides while it is pending.
+      const l3 = await subjectVisible(db, a.tenantId, await policyViewer(db, a.tenantId, a.user), emp.id, l3RowFilter);
+      const decides = s.status === 'pending' && (a.has('lifecycle.manage') || emp.manager_user_id === a.user.userId);
+      const leave = hr && l3 ? (await balancesAt(db, a.tenantId, emp.id, s.approved_lwd ?? s.requested_lwd)).items : [];
       return {
-        ...s,
-        exit_interview: hr ? s.exit_interview : undefined,
+        ...(l3 || decides ? s : maskFields(s, ['reason', 'fnf_note'])),
+        exit_interview: hr && l3 ? s.exit_interview : undefined,
         employee: { id: emp.id, name: emp.name, status: emp.status },
         checklist: checklist ? await checklistDetail(db, a, checklist.id) : null,
         leaveBalances: leave,
@@ -660,8 +665,8 @@ export async function lifecycleRoutes(app: FastifyInstance) {
     const { id } = IdParams.parse(req.params);
     const b = SeparationsExitInterviewBody.parse(req.body);
     return a.tx(async (db) => {
-      const { s, emp, hr } = await loadSeparation(db, a, id, true);
-      if (!hr && emp.user_id !== a.user.userId) throw forbidden('Only the employee or HR can record the exit interview');
+      const { s, emp } = await loadSeparation(db, a, id, true);
+      if (!a.has('lifecycle.manage') && emp.user_id !== a.user.userId) throw forbidden('Only the employee or HR can record the exit interview');
       if (!['approved', 'completed'].includes(s.status)) throw conflict('The exit interview is recorded after the separation is approved');
       await db.query(`UPDATE separations SET exit_interview=$3 WHERE tenant_id=$1 AND id=$2`, [
         a.tenantId,

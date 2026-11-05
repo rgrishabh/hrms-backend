@@ -112,6 +112,8 @@ function inputOf(err: unknown): ProblemInput | null {
   if (e.code === '23P01') return { status: 409, code: 'conflict', detail: 'This overlaps an existing record' };
   if (e.code === '23503') return { status: 400, code: 'invalid_reference', detail: 'A referenced record does not exist' };
   if (e.code === '23514') return { status: 400, code: 'constraint_violation', detail: 'The values violate a data rule' };
+  // Class 22 is bad data from the request: a NUL in text, a number or date out of range. Never a fault of ours, and never with the value in the answer.
+  if (typeof e.code === 'string' && e.code.startsWith('22')) return { status: 400, code: 'invalid_value', detail: 'A value in this request cannot be stored or compared' };
   if (typeof e.statusCode === 'number' && e.statusCode >= 400 && e.statusCode < 500) {
     const known = FRAMEWORK_4XX[e.statusCode] ?? { code: 'bad_request', detail: 'The request could not be processed.' };
     return { status: e.statusCode, ...known };

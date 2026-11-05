@@ -1,3 +1,5 @@
+import { csvCell } from '../../core/http/csv.js';
+import { decimalOrNaN } from '../../core/http/money.js';
 import type { FastifyInstance } from 'fastify';
 import * as R from '../../core/http/responses.js';
 import { z } from 'zod';
@@ -23,7 +25,7 @@ import { allowanceRoutes, priceAllowance } from './allowances.js';
 import { money } from '../../core/brand.js';
 
 const Money = z.union([z.number(), z.string()]).transform((v, ctx) => {
-  const d = new Decimal(v);
+  const d = decimalOrNaN(v);
   if (!d.isFinite() || d.lte(0) || d.decimalPlaces() > 2 || d.gt('9999999999.99')) {
     ctx.addIssue({ code: 'custom', message: 'Enter an amount greater than 0 with up to 2 decimals' });
     return z.NEVER;
@@ -699,14 +701,10 @@ export async function expenseRoutes(app: FastifyInstance) {
       });
       return r.rows;
     });
-    const cell = (v: string | null | number) => {
-      const s = v === null ? '' : String(v);
-      return /^[=+\-@]/.test(s) ? `'${s}` : /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
-    };
     const lines = [['employee_code', 'name', 'amount', 'claims', 'account_holder', 'ifsc', 'account_number'].join(',')];
     for (const r of rows) {
       const acct = r.account_number_enc ? (full ? app.deps.cipher.decrypt(r.account_number_enc) : `XXXXXX${r.account_last4}`) : '';
-      lines.push([r.employee_code, r.name, r.total, r.claims, r.account_holder, r.ifsc, acct].map(cell).join(','));
+      lines.push([r.employee_code, r.name, r.total, r.claims, r.account_holder, r.ifsc, acct].map(csvCell).join(','));
     }
     return reply
       .header('content-type', 'text/csv; charset=utf-8')

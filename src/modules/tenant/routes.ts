@@ -14,6 +14,7 @@ import { PageQuery, offsetOf, paged, Uuid, ListQuery, pageOf } from '../../core/
 import type { PublicConfig } from '../../config/installation.js';
 import { SYSTEM_ROLES, SYSTEM_ROLE_MAP, PERMISSIONS, permissionFeature, roleGroup, assignableRoles, isOwnerRole, OWNER_ROLE_KEYS } from '../../core/auth/permissions.js';
 import { currentMode, isCollapsedMode } from '../../core/policy/mode.js';
+import { outranks } from '../../core/policy/salary.js';
 import { anotherActiveOwner, effectiveLevel, roleFloor, SALARY_LEVEL_MAX } from '../../core/policy/levels.js';
 import { redact } from '../../core/audit/audit.js';
 import { emailLink } from '../../core/auth/links.js';
@@ -265,12 +266,17 @@ export async function tenantAdminRoutes(app: FastifyInstance, opts: { publicConf
   const checkPermissions = (a: { user: { roles: string[]; permissions: Set<string> } }, perms: string[], verb: string) => {
     const unknown = perms.filter((p) => !(p in PERMISSIONS));
     if (unknown.length) throw badRequest(`Unknown permission: ${unknown.join(', ')}`);
-    if (isAdministrator(a)) return;
-    const beyond = perms.filter((p) => !a.user.permissions.has(p));
+    const beyond = isAdministrator(a) ? [] : perms.filter((p) => !a.user.permissions.has(p));
     if (beyond.length)
       throw forbidden(
         `Only an administrator can ${verb} a role with permissions you do not have yourself: ${beyond.map((p) => PERMISSIONS[p as keyof typeof PERMISSIONS]).join('; ')}`,
       );
+    // A module that is off has no permissions: a role holding one now would quietly grant it the day the flag comes on.
+    const switchedOff = perms.filter((p) => {
+      const f = permissionFeature(p);
+      return !!f && allOff(f);
+    });
+    if (switchedOff.length) throw badRequest(`Unknown permission: ${switchedOff.join(', ')}`);
   };
   const checkName = async (db: import('../../db/tx.js').Db, tenantId: string, name: string, exceptKey?: string) => {
     if (SYSTEM_ROLES.some((r) => r.name.toLowerCase() === name.toLowerCase())) throw conflict(`"${name}" is the name of a built-in role; choose another`);
@@ -502,6 +508,11 @@ export async function tenantAdminRoutes(app: FastifyInstance, opts: { publicConf
       for (const role of body.roles)
         await db.query(`INSERT INTO user_roles (user_id, tenant_id, role_key, granted_by) VALUES ($1,$2,$3,$4)`, [userId, a.tenantId, role, a.user.userId]);
       if (body.employeeId) {
+        // A login on a record reads that record as its own, pay and bank included. So it goes to the address the record already has, or someone with the standing to see the person says so.
+        const rec = (await db.query<{ work_email: string | null }>('SELECT work_email FROM employees WHERE tenant_id=$1 AND id=$2', [a.tenantId, body.employeeId])).rows[0];
+        const sameAddress = !!rec?.work_email && rec.work_email.toLowerCase() === body.email.toLowerCase();
+        const mayVouch = (a.has('employees.manage') || a.user.roles.some(isOwnerRole)) && (await outranks(db, a.tenantId, { level: a.user.salaryLevel }, body.employeeId));
+        if (rec && !sameAddress && !mayVouch) throw forbidden("This address is not the one on the person's record. Update the record, or ask HR to create this login");
         const e = await db.query(`UPDATE employees SET user_id=$3, updated_at=now() WHERE tenant_id=$1 AND id=$2 AND user_id IS NULL`, [a.tenantId, body.employeeId, userId]);
         if (!e.rowCount) throw conflict('Employee not found or already linked to a user');
       }
@@ -561,7 +572,7 @@ export async function tenantAdminRoutes(app: FastifyInstance, opts: { publicConf
         throw conflict('You cannot disable yourself or remove your own administrator role');
       }
       await assertMayManage(db, a, prevRoles);
-      if (body.roles || body.status || body.resetMfa) await assertBelowActor(db, a, id, prevRoles);
+      if (body.roles || body.status || body.resetMfa || body.unlock) await assertBelowActor(db, a, id, prevRoles);
       // Someone must stay above everyone: nobody could appoint an administrator or produce a whole bank file otherwise. Recovery is the bootstrap command.
       const losesOwner = prevRoles.includes('owner') && u.rows[0]!.status === 'active' && (body.status === 'disabled' || (!!body.roles && !body.roles.includes('owner')));
       if (losesOwner && !(await anotherActiveOwner(db, a.tenantId, id))) throw conflict('This is the last active owner. Appoint another through the bootstrap command first.');
@@ -632,6 +643,7 @@ export async function tenantAdminRoutes(app: FastifyInstance, opts: { publicConf
       const u = (await db.query<{ salary_access_level: number }>('SELECT salary_access_level FROM users WHERE tenant_id=$1 AND id=$2 FOR UPDATE', [a.tenantId, id])).rows[0];
       if (!u) throw notFound('User not found');
       const roles = (await db.query<{ role_key: string }>('SELECT role_key FROM user_roles WHERE tenant_id=$1 AND user_id=$2', [a.tenantId, id])).rows.map((r) => r.role_key);
+      await assertMayManage(db, a, roles);
       const before = effectiveLevel(u.salary_access_level, roles);
       if (before >= a.user.salaryLevel) throw forbidden('You cannot change the salary level of someone at or above your own');
       if (level >= a.user.salaryLevel) throw forbidden('You can only set a salary level below your own');

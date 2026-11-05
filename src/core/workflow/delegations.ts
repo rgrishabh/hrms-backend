@@ -80,6 +80,8 @@ export async function delegationRoutes(app: FastifyInstance) {
     const delegatorId = b.delegatorId ?? a.user.userId;
     if (delegatorId !== a.user.userId && !a.has(DELEGATE_PERMISSION)) throw forbidden("Only HR can hand over someone else's approvals");
     if (b.delegateId === delegatorId) throw badRequest('Choose someone else to approve while you are away');
+    // Handing someone's approvals to yourself would let HR decide what they hold no permission to decide.
+    if (delegatorId !== a.user.userId && b.delegateId === a.user.userId) throw forbidden('Another person hands these over to you: you cannot name yourself');
     const out = await a.tx(async (db) => {
       const today = await orgToday(db, a.tenantId);
       if (b.startsOn < today) throw badRequest('A delegation cannot start in the past');

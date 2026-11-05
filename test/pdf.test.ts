@@ -524,11 +524,13 @@ describe('report PDF', () => {
       gaps.push(n - last);
       last = n;
     }, 1);
+    const started = performance.now();
     const { file, stats } = await read(new ReportTable(ctx(), { ...wide, rows: rowsOf(5000) }));
     clearInterval(beat);
+    const total = performance.now() - started;
     expect(stats.yields).toBeGreaterThan(5);
-    // Far above what it measures (D52), since this machine is shared with other tests: a stall of the whole render would be seconds.
-    expect(Math.max(...gaps)).toBeLessThan(400);
+    // Relative to the render, since on a busy machine both stretch: a render that does not yield stalls for all of it. 400 ms is the floor, as in D52.
+    expect(Math.max(...gaps)).toBeLessThan(Math.max(400, total / 4));
     const pages = await pdfPages(file);
     expect(pages.length).toBeGreaterThan(50);
     expect(pages.at(-1)).toContain('E4999');

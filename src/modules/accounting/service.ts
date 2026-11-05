@@ -1,3 +1,4 @@
+import { csvCell } from '../../core/http/csv.js';
 import { Decimal } from 'decimal.js';
 import type { Db } from '../../db/tx.js';
 import { openItem } from '../payroll/sealed.js';
@@ -145,7 +146,6 @@ export async function reimbursementJournal(db: Db, tenantId: string, batchId: st
   });
 }
 
-const csvCell = (v: string) => (/^[=+\-@]/.test(v) ? `'${v}` : /[",\n]/.test(v) ? `"${v.replace(/"/g, '""')}"` : v);
 export function toCsv(j: Journal) {
   const lines = [['date', 'voucher', 'ledger', 'debit', 'credit', 'narration', 'head'].join(',')];
   for (const e of j.entries) lines.push([j.date, j.number, e.ledger ?? '', e.debit, e.credit, j.narration, e.key].map(csvCell).join(','));

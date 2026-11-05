@@ -4,7 +4,7 @@ import { z } from 'zod';
 import { addTitle, assertKnownTitle, titleToAdd, type TitleKind } from '../org/masters.js';
 import { tenantActor, tenantActorAny } from '../../core/http/context.js';
 import { audit, redact } from '../../core/audit/audit.js';
-import { assertMayChangeSubject, auditL4, l3RowFilter, maskFields, policyViewer, readContext, subjectVisible, wantsReveal } from '../../core/policy/salary.js';
+import { assertOutranks, assertMayChangeSubject, auditL4, l3RowFilter, maskFields, policyViewer, readContext, subjectVisible, wantsReveal } from '../../core/policy/salary.js';
 import { badRequest, conflict, forbidden, notFound } from '../../core/http/errors.js';
 import { IsoDate, PageQuery, offsetOf, paged, Uuid } from '../../core/http/pagination.js';
 import { endAccess } from '../lifecycle/service.js';
@@ -201,8 +201,15 @@ export async function employeeRoutes(app: FastifyInstance) {
       if (changed.includes('grade')) await assertKnownTitle(db, a.tenantId, 'grades', next.grade);
       if (changed.some((k) => L3_EMPLOYEE_FIELDS.includes(k)) && !(await subjectVisible(db, a.tenantId, await policyViewer(db, a.tenantId, a.user), id, l3RowFilter)))
         throw notFound('Employee not found');
+      // Status ends a login; the manager decides approvals. Neither is for someone at or above you, and nobody picks their own approver (D40).
+      if (changed.includes('status') || changed.includes('reportingManagerId')) {
+        const viewer = await policyViewer(db, a.tenantId, a.user);
+        if (id === a.user.employeeId) {
+          if (!viewer.ownerOfCollapsed) throw forbidden('You cannot change your own status or reporting manager');
+        } else await assertOutranks(db, a.tenantId, viewer, id);
+      }
       if (changed.includes('workEmail') || changed.includes('phone')) {
-        const d = await findDuplicates(db, a.tenantId, { workEmail: next.workEmail, phone: next.phone }, id);
+        const d = await findDuplicates(db, a.tenantId, { workEmail: next.workEmail, phone: next.phone }, id, await policyViewer(db, a.tenantId, a.user));
         if (d.length) throw conflict('Another employee already uses this email or phone', { duplicates: d });
       }
       const sets = changed.map((k, i) => `${COLS[k]}=$${i + 3}`).join(', ');
@@ -297,7 +304,7 @@ export async function employeeRoutes(app: FastifyInstance) {
         const rep = report.find((r) => r.employeeCode === v.input.employeeCode)!;
         const ex = await db.query('SELECT 1 FROM employees WHERE tenant_id=$1 AND employee_code=$2', [a.tenantId, v.input.employeeCode]);
         if (ex.rowCount) rep.errors.push('employeeCode already exists');
-        const d = await findDuplicates(db, a.tenantId, v.input);
+        const d = await findDuplicates(db, a.tenantId, v.input, undefined, await policyViewer(db, a.tenantId, a.user));
         d.forEach((x) => (x.reason === 'Same work email' ? rep.errors : rep.warnings).push(`${x.reason} as ${x.employee_code} (${x.name})`));
         if (v.managerCode && !codesInFile.has(v.managerCode)) {
           const m = await db.query('SELECT 1 FROM employees WHERE tenant_id=$1 AND employee_code=$2', [a.tenantId, v.managerCode]);
@@ -344,16 +351,24 @@ export async function employeeRoutes(app: FastifyInstance) {
   app.get('/:id/history', { schema: { params: IdParams }, config: { perm: ['employees.read'] } }, async (req) => {
     const a = tenantActor(req, 'employees.read');
     const { id } = IdParams.parse(req.params);
-    return a.tx(async (db) => ({
-      items: (
-        await db.query(
-          `SELECT l.id, l.action, l.change_metadata, l.created_at, u.display_name AS actor_name
+    return a.tx(async (db) => {
+      if (!(await db.query('SELECT 1 FROM employees WHERE tenant_id=$1 AND id=$2', [a.tenantId, id])).rowCount) throw notFound('Employee not found');
+      const l3 = await subjectVisible(db, a.tenantId, await policyViewer(db, a.tenantId, a.user), id, l3RowFilter);
+      return {
+        items: (
+          await db.query(
+            `SELECT l.id, l.action, l.change_metadata, l.created_at, u.display_name AS actor_name
       FROM audit_logs l LEFT JOIN users u ON u.id=l.actor_id WHERE l.tenant_id=$1 AND l.target_type='employee' AND l.target_id=$2
       ORDER BY l.created_at DESC LIMIT 100`,
-          [a.tenantId, id],
-        )
-      ).rows.map((r) => ({ ...r, change_metadata: redact(r.change_metadata) })),
-    }));
+            [a.tenantId, id],
+          )
+        ).rows.map((r) => ({
+          ...r,
+          // The record's own changes hold L1 and L2 only. Other modules write reasons and notes against the person: L3, so HR above them or nobody.
+          change_metadata: l3 || String(r.action).startsWith('employee.') ? redact(r.change_metadata) : null,
+        })),
+      };
+    });
   });
 
   // ------------------------------------------------------------ restricted: bank details

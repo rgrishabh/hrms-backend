@@ -13,7 +13,7 @@ import { problemErrorHandler } from './core/http/problem.js';
 import { OPENAPI_INFO, openApiTransform, registerResponseCheck } from './core/http/openapi.js';
 import { registerMetrics } from './core/http/metrics.js';
 import { registerTelemetry } from './core/telemetry.js';
-import { isExportRoute, perUserLimit } from './core/http/limits.js';
+import { isExportRoute, limitKey, perUserLimit } from './core/http/limits.js';
 import type { AppDeps } from './core/http/context.js';
 import { initRuntime } from './core/runtime.js';
 import { withFeatures } from './core/features/state.js';
@@ -155,12 +155,14 @@ export async function buildApp(deps: AppDeps): Promise<FastifyInstance> {
     const u = req.url;
     // The reference a problem's `instance` and every log line carry.
     reply.header('x-request-id', req.id);
+    // API answers are personal, and a shared or disk cache must not keep them. A route that says otherwise, as the public config does, keeps its own.
+    if (u.startsWith('/api/') && !reply.hasHeader('cache-control')) reply.header('cache-control', 'no-store');
     reply.header(
       'content-security-policy',
       u.startsWith('/api/') || u.startsWith('/health') || u === '/ready' || u === '/metrics' ? API_CSP : u.startsWith('/brand/') ? ASSET_CSP : SPA_CSP,
     );
   });
-  await app.register(rateLimit, { global: true, max: env.RATE_LIMIT_PER_MINUTE, timeWindow: '1 minute' });
+  await app.register(rateLimit, { global: true, max: env.RATE_LIMIT_PER_MINUTE, timeWindow: '1 minute', keyGenerator: limitKey });
   await app.register(multipart, { limits: { fileSize: env.STORAGE_MAX_FILE_MB * 1024 * 1024, files: 1, fields: 10, parts: 12, fieldSize: 10_000 } });
 
   // Liveness/readiness are host-agnostic and unauthenticated; they reveal no internals.

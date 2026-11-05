@@ -3,6 +3,7 @@ import type { Db } from '../../db/tx.js';
 import { IsoDate, Uuid } from '../../core/http/pagination.js';
 import { badRequest, conflict } from '../../core/http/errors.js';
 import { isModuleEnabled } from '../../core/features/state.js';
+import { l3RowFilter, type PolicyViewer } from '../../core/policy/salary.js';
 
 export const EMPLOYMENT_TYPES = ['permanent', 'probation', 'contract', 'trainee', 'intern', 'consultant'] as const;
 export const EMPLOYEE_STATUSES = ['pre_joining', 'active', 'on_notice', 'exited', 'inactive'] as const;
@@ -121,16 +122,18 @@ export interface DuplicateCandidate {
 }
 
 /** Heuristic duplicate detection: same work email/phone, or same name + date of birth. */
-export async function findDuplicates(db: Db, tenantId: string, e: Partial<EmployeeInput>, excludeId?: string): Promise<DuplicateCandidate[]> {
+export async function findDuplicates(db: Db, tenantId: string, e: Partial<EmployeeInput>, excludeId?: string, viewer?: PolicyViewer): Promise<DuplicateCandidate[]> {
+  // Phone and date of birth are L3: a match on someone above the viewer would confirm a guess, so only their own reach is compared.
+  const l3 = viewer ? l3RowFilter(viewer, 'e') : 'true';
   const r = await db.query<DuplicateCandidate>(
     `SELECT id, employee_code, trim(first_name || ' ' || coalesce(last_name,'')) AS name,
       CASE WHEN $3::text IS NOT NULL AND work_email = $3 THEN 'Same work email'
            WHEN $4::text IS NOT NULL AND regexp_replace(phone, '[^0-9]', '', 'g') = regexp_replace($4, '[^0-9]', '', 'g') THEN 'Same phone number'
            ELSE 'Same name and date of birth' END AS reason
-    FROM employees WHERE tenant_id=$1 AND ($2::uuid IS NULL OR id <> $2) AND (
+    FROM employees e WHERE tenant_id=$1 AND ($2::uuid IS NULL OR id <> $2) AND (
       ($3::text IS NOT NULL AND work_email = $3)
-      OR ($4::text IS NOT NULL AND regexp_replace(phone, '[^0-9]', '', 'g') = regexp_replace($4, '[^0-9]', '', 'g'))
-      OR ($6::date IS NOT NULL AND date_of_birth = $6 AND lower(first_name) = lower($5) AND lower(coalesce(last_name,'')) = lower(coalesce($7,''))))
+      OR (${l3} AND $4::text IS NOT NULL AND regexp_replace(phone, '[^0-9]', '', 'g') = regexp_replace($4, '[^0-9]', '', 'g'))
+      OR (${l3} AND $6::date IS NOT NULL AND date_of_birth = $6 AND lower(first_name) = lower($5) AND lower(coalesce(last_name,'')) = lower(coalesce($7,''))))
     LIMIT 5`,
     [tenantId, excludeId ?? null, e.workEmail ?? null, e.phone ?? null, e.firstName ?? '', e.dateOfBirth ?? null, e.lastName ?? null],
   );

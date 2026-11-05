@@ -208,38 +208,41 @@ describe('no enumeration', () => {
   const median = (xs: number[]) => xs.sort((a, b) => a - b)[Math.floor(xs.length / 2)]!;
   it('a reset request takes about as long for an address with no account', async () => {
     const X = await createTenant();
-    const time = async (email: () => string) => {
-      const out: number[] = [];
-      for (let i = 0; i < 9; i++) {
-        const t = performance.now();
-        await forgot(email(), X.host);
-        out.push(performance.now() - t);
-      }
-      return median(out);
+    // In pairs, so that whatever else this machine is doing falls on both sides of each comparison.
+    const once = async (email: string) => {
+      const t = performance.now();
+      await forgot(email, X.host);
+      return performance.now() - t;
     };
-    let n = 0;
-    const known = await time(() => X.users.employee!.email);
-    const unknown = await time(() => `nobody${n++}@${X.host}`);
-    expect(known).toBeGreaterThanOrEqual(240);
-    expect(Math.abs(known - unknown), `known ${known} ms, unknown ${unknown} ms`).toBeLessThan(60);
+    const known: number[] = [];
+    const diffs: number[] = [];
+    for (let i = 0; i < 9; i++) {
+      const k = await once(X.users.employee!.email);
+      const u = await once(`nobody${i}@${X.host}`);
+      known.push(k);
+      diffs.push(Math.abs(k - u));
+    }
+    expect(median(known)).toBeGreaterThanOrEqual(240);
+    expect(median(diffs), `difference ${median(diffs)} ms`).toBeLessThan(60);
   }, 30000);
 
   it('a failed sign-in takes about as long for an address with no account', async () => {
     const X = await createTenant();
-    const time = async (email: () => string) => {
-      const out: number[] = [];
-      for (let i = 0; i < 4; i++) {
-        const t = performance.now();
-        const r = await raw('POST', '/api/v1/auth/login', { email: email(), password: 'wrong-guess-here' }, X.host);
-        out.push(performance.now() - t);
-        expect(r.statusCode).toBe(401);
-      }
-      return median(out);
+    const once = async (email: string) => {
+      const t = performance.now();
+      const r = await raw('POST', '/api/v1/auth/login', { email, password: 'wrong-guess-here' }, X.host);
+      expect(r.statusCode).toBe(401);
+      return performance.now() - t;
     };
-    let n = 0;
-    const known = await time(() => X.users.employee!.email);
-    const unknown = await time(() => `nobody${n++}@${X.host}`);
-    expect(Math.abs(known - unknown) / known, `known ${known} ms, unknown ${unknown} ms`).toBeLessThan(0.4);
+    const known: number[] = [];
+    const diffs: number[] = [];
+    for (let i = 0; i < 4; i++) {
+      const k = await once(X.users.employee!.email);
+      const u = await once(`nobody${i}@${X.host}`);
+      known.push(k);
+      diffs.push(Math.abs(k - u));
+    }
+    expect(median(diffs) / median(known), `difference ${median(diffs)} ms of ${median(known)} ms`).toBeLessThan(0.4);
     const [a, b] = await Promise.all([
       raw('POST', '/api/v1/auth/login', { email: X.users.other!.email, password: 'wrong-guess-here' }, X.host),
       raw('POST', '/api/v1/auth/login', { email: `someone@${X.host}`, password: 'wrong-guess-here' }, X.host),

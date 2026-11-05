@@ -582,6 +582,7 @@ export const CLASSIFICATION: Readonly<Record<string, Readonly<Record<string, Dat
     totals_enc: 'L4',
   },
   performance_reviews: {
+    manager_submitted_by: 'L3',
     cycle_id: 'L3',
     employee_id: 'L3',
     reviewer_id: 'L3',
