@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import type { FastifyInstance } from 'fastify';
-import { makeApp, createTenant, Client, ownerQuery, PASSWORD, type TenantFixture, flags } from './helpers.js';
+import { problem, makeApp, createTenant, Client, ownerQuery, PASSWORD, type TenantFixture, flags } from './helpers.js';
 import { hashPassword } from '../src/core/crypto/index.js';
 
 let app: FastifyInstance; let T: TenantFixture;
@@ -68,7 +68,7 @@ describe('accounting exports', () => {
       expect.objectContaining({ key: 'deduction:CANTEEN', credit: line('CANTEEN') }), expect.objectContaining({ key: 'net_pay', credit: Number(item.net).toFixed(2) })]);
     basic = line('BASIC'); net = Number(item.net).toFixed(2);
     expect(j.missing.sort()).toEqual(['deduction:CANTEEN', 'earning:BASIC', 'earning:HRA', 'net_pay']);
-    expect((await pay.get(`/api/v1/accounting/payroll-runs/${runId}/export`)).json().error.message).toMatch(/Map these heads to ledgers first/);
+    expect(problem((await pay.get(`/api/v1/accounting/payroll-runs/${runId}/export`))).detail).toMatch(/Map these heads to ledgers first/);
     const heads = (await fin.get('/api/v1/accounting/ledger-map')).json().heads.map((h: { key: string }) => h.key);
     expect(heads).toEqual(expect.arrayContaining(['earning:BASIC', 'deduction:CANTEEN', 'deduction:TDS', 'employer_payable:PF_EPF_ER', 'net_pay', 'expense:LOCAL', 'reimbursement_payable']));
     expect((await fin.put('/api/v1/accounting/ledger-map', { entries: [{ key: 'earning:BASIC', ledger: 'Salaries & Wages' }, { key: 'earning:*', ledger: 'Allowances' },

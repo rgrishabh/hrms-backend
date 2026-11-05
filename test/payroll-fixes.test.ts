@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import type { FastifyInstance } from 'fastify';
-import { makeApp, createTenant, Client, ownerQuery, type TenantFixture, flags } from './helpers.js';
+import { problem, makeApp, createTenant, Client, ownerQuery, type TenantFixture, flags } from './helpers.js';
 import { activeRule, activeSalary, approveEntity, compute, createRun, day, itemOf, lineOf, seedComponents } from './payroll-helpers.js';
 import { calculateDay, type DayInput } from '../src/modules/attendance/calc.js';
 import { csvCell } from '../src/core/http/csv.js';
@@ -233,7 +233,7 @@ describe('F-7 finalize refuses a stale result', () => {
     expect((await p.post('/api/v1/attendance/locks', { periodStart: '2026-02-01', periodEnd: '2026-02-28' })).statusCode).toBe(201);
     const stale = await p.post(`/api/v1/payroll/runs/${id}/finalize`);
     expect(stale.statusCode).toBe(409);
-    expect(stale.json().error.message).toMatch(/recompute|reopen/i);
+    expect(problem(stale).detail).toMatch(/recompute|reopen/i);
     expect((await p.post(`/api/v1/payroll/runs/${id}/reopen`)).statusCode).toBe(200);
     expect((await p.get(`/api/v1/payroll/runs/${id}?reveal=1`)).json().status).toBe('draft');
     await compute(p, id);
@@ -295,7 +295,7 @@ describe('other payroll findings (AUDIT 4.2)', () => {
     expect((await p.post(`/api/v1/payroll/runs/${id}/finalize`)).statusCode).toBe(200);
     const late = await approveEntity(f, sal.json().id);
     expect(late.statusCode).toBe(409);
-    expect(late.json().error.message).toMatch(/finalized/);
+    expect(problem(late).detail).toMatch(/finalized/);
   });
 
   it('whoever computed or adjusted a run cannot approve it, not only the submitter', async () => {

@@ -3,7 +3,7 @@ import { mkdtempSync, readFileSync, writeFileSync, readdirSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import type { FastifyInstance } from 'fastify';
-import { makeApp, createTenant, Client, ownerQuery, multipart, type TenantFixture } from './helpers.js';
+import { problem, makeApp, createTenant, Client, ownerQuery, multipart, type TenantFixture } from './helpers.js';
 import { TINY_PNG } from './images.js';
 import { LocalStore, setStore, assertKey } from '../src/core/storage/index.js';
 import { detectFile, safeFileName } from '../src/core/storage/sniff.js';
@@ -130,7 +130,7 @@ describe('upload, list and download', () => {
   it('validates type, size, expiry and scope', async () => {
     const id = T.users.employee!.employeeId!;
     expect((await upload(hr, { categoryId: cats.CONTRACT!, title: 'Exe', employeeId: id }, { name: 'x.pdf', content: Buffer.from('MZ fake exe') })).statusCode).toBe(415);
-    expect((await upload(hr, { categoryId: cats.CERT!, title: 'No expiry', employeeId: id }, { name: 'c.pdf', content: PDF })).json().error.message).toMatch(/expiry date/);
+    expect(problem((await upload(hr, { categoryId: cats.CERT!, title: 'No expiry', employeeId: id }, { name: 'c.pdf', content: PDF }))).detail).toMatch(/expiry date/);
     expect((await upload(hr, { categoryId: cats.POLICY!, title: 'Linked', employeeId: id }, { name: 'p.pdf', content: PDF })).statusCode).toBe(400);
     expect((await upload(hr, { categoryId: cats.CONTRACT!, title: 'No file', employeeId: id })).statusCode).toBe(400);
     const small = await makeApp({ STORAGE_MAX_FILE_MB: '1' }, { storeOverride: true });
@@ -154,7 +154,7 @@ describe('upload, list and download', () => {
     writeFileSync(path.join(root, d!.storage_key), Buffer.concat([PDF, Buffer.from('tampered')]));
     const dl = await hr.get(`/api/v1/documents/${r.json().id}/download`);
     expect(dl.statusCode).toBe(500);
-    expect(dl.json().error.code).toBe('integrity_failed');
+    expect(problem(dl).code).toBe('integrity_failed');
   });
 
   it('archiving hides a document from the active list; only document managers can archive', async () => {
@@ -187,8 +187,8 @@ describe('storage not configured', () => {
     const c = await Client.login(off, T.host, T.users.hr!.email);
     const r = await c.get('/api/v1/documents');
     expect(r.statusCode).toBe(409);
-    expect(r.json().error.code).toBe('feature_not_configured');
-    expect(r.json().error.message).toMatch(/Document storage not configured/);
+    expect(problem(r).code).toBe('feature_not_configured');
+    expect(problem(r).detail).toMatch(/Document storage not configured/);
     await off.close();
     setStore(new LocalStore(root));
     await makeApp({}, { storeOverride: true }).then((x) => x.close());

@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import pg from 'pg';
 import type { FastifyInstance } from 'fastify';
-import { makeApp, createTenant, Client, ownerQuery, multipart, type TenantFixture, flags } from './helpers.js';
+import { problem, makeApp, createTenant, Client, ownerQuery, multipart, type TenantFixture, flags } from './helpers.js';
 import { TEST_OWNER_URL } from './env.js';
 import { caseDeadlines } from '../src/modules/cases/routes.js';
 import { addDays, localDate } from '../src/modules/attendance/time.js';
@@ -39,7 +39,7 @@ describe('recruitment requisition checks', () => {
     await setReq('on_hold');
     const r = await hr.post(`/api/v1/recruitment/applications/${appId}/offers`, offer());
     expect(r.statusCode).toBe(409);
-    expect(r.json().error.message).toMatch(/requisition/i);
+    expect(problem(r).detail).toMatch(/requisition/i);
     await setReq('approved');
     const o = await hr.post(`/api/v1/recruitment/applications/${appId}/offers`, offer());
     expect(o.statusCode, o.body).toBe(201);
@@ -50,7 +50,7 @@ describe('recruitment requisition checks', () => {
     await setReq('on_hold');
     const hire = await hr.post(`/api/v1/recruitment/offers/${o.json().id}/hire`, { employeeCode: 'N1' });
     expect(hire.statusCode).toBe(409);
-    expect(hire.json().error.message).toMatch(/requisition/i);
+    expect(problem(hire).detail).toMatch(/requisition/i);
     await setReq('approved');
     expect((await hr.post(`/api/v1/recruitment/offers/${o.json().id}/hire`, { employeeCode: 'N1' })).statusCode).toBe(201);
   });
@@ -70,8 +70,8 @@ describe('cases: anonymity and respondents', () => {
     const respondent = await hr.post(`/api/v1/cases/${c.json().id}/assign`, { userId: T.users.other!.id });
     expect(complainant.statusCode).toBe(400);
     expect(respondent.statusCode).toBe(400);
-    expect(complainant.json().error.message).toBe(respondent.json().error.message);
-    expect(complainant.json().error.message).not.toMatch(/complainant/i);
+    expect(problem(complainant).detail).toBe(problem(respondent).detail);
+    expect(problem(complainant).detail).not.toMatch(/complainant/i);
   });
 
   it('a respondent holding grievance.manage is not told about the case, now or at its deadlines', async () => {

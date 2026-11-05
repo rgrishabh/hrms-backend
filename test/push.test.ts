@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { createDecipheriv, createECDH, createVerify, generateKeyPairSync, hkdfSync } from 'node:crypto';
 import type { FastifyInstance } from 'fastify';
-import { makeApp, createTenant, Client, ownerQuery, flags, inApp, type TenantFixture } from './helpers.js';
+import { problem, makeApp, createTenant, Client, ownerQuery, flags, inApp, type TenantFixture } from './helpers.js';
 import { createPushSender, encryptPayload, isAllowedEndpoint, pushPayload, setPushSender, vapidHeader, type PushMessage, type PushResult, type PushSubscription } from '../src/core/notify/push.js';
 import { deliverPushOutbox, notifyUsers } from '../src/core/notify/service.js';
 import { withTenant } from '../src/db/tx.js';
@@ -103,7 +103,7 @@ describe('push notifications', () => {
     const U = await createTenant();
     const c = await Client.login(a, U.host, U.users.employee!.email);
     const r = await c.get('/api/v1/notifications/push/public-key');
-    expect([r.statusCode, r.json().error.code]).toEqual([409, 'feature_not_configured']);
+    expect([r.statusCode, problem(r).code]).toEqual([409, 'feature_not_configured']);
     await a.close();
     setPushSender({ publicKey: 'PUB', async send() { return { ok: true }; } });
   });

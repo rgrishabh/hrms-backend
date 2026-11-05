@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import type { FastifyInstance } from 'fastify';
-import { makeApp, createTenant, Client, ownerQuery, type TenantFixture, flags } from './helpers.js';
+import { problem, makeApp, createTenant, Client, ownerQuery, type TenantFixture, flags } from './helpers.js';
 import { FEATURES } from '../src/core/features/registry.js';
 
 // A module listed but not built yet (if any remain in this release).
@@ -103,7 +103,7 @@ describe('settings center', () => {
   it('enforces the deployment ceiling over tenant values', async () => {
     const r = await admin.put('/api/v1/tenant/settings/security.session_ttl_hours', { value: 48 });
     expect(r.statusCode).toBe(400);
-    expect(r.json().error.message).toMatch(/cannot exceed 24/);
+    expect(problem(r).detail).toMatch(/cannot exceed 24/);
   });
 
   it('detects concurrent edits via expectedVersion', async () => {

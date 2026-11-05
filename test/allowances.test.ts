@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import type { FastifyInstance } from 'fastify';
-import { makeApp, createTenant, Client, ownerQuery, PASSWORD, type TenantFixture, flags } from './helpers.js';
+import { problem, makeApp, createTenant, Client, ownerQuery, PASSWORD, type TenantFixture, flags } from './helpers.js';
 import { hashPassword } from '../src/core/crypto/index.js';
 
 // Per-diem and mileage: the organization's effective-dated rates price items from days or km.
@@ -32,14 +32,14 @@ describe('allowance rates', () => {
   it('finance sets effective-dated rates; nothing is assumed', async () => {
     const claim = await newClaim();
     let r = await item(claim, { categoryId: cats.PERDIEM, quantity: 1, tier: 'METRO', description: 'Mumbai, client audit' });
-    expect(r.json().error.message).toMatch(/no per-diem rate for METRO/);
+    expect(problem(r).detail).toMatch(/no per-diem rate for METRO/);
 
     expect((await rate({ kind: 'per_diem', tier: 'metro', rate: 1200, effectiveFrom: plus(-30) })).statusCode).toBe(201);
     expect((await rate({ kind: 'per_diem', tier: 'METRO', grade: 'L3', rate: 1500, effectiveFrom: plus(-30) })).statusCode).toBe(201);
     expect((await rate({ kind: 'per_diem', tier: 'METRO', rate: 1400, effectiveFrom: plus(15), note: 'Revised policy' })).statusCode).toBe(201);
     expect((await rate({ kind: 'mileage', vehicle: 'car', rate: 9.5, effectiveFrom: plus(-30) })).statusCode).toBe(201);
     expect((await rate({ kind: 'per_diem', tier: 'METRO', rate: 1300, effectiveFrom: plus(-30) })).statusCode).toBe(409);   // same class, same day
-    expect((await rate({ kind: 'mileage', vehicle: 'car', rate: 9, effectiveFrom: plus(-120) })).json().error.message).toMatch(/90 days back/);
+    expect(problem((await rate({ kind: 'mileage', vehicle: 'car', rate: 9, effectiveFrom: plus(-120) }))).detail).toMatch(/90 days back/);
     expect((await emp.post('/api/v1/expenses/allowance-rates', { kind: 'mileage', vehicle: 'car', rate: 50, effectiveFrom: today })).statusCode).toBe(403);
 
     const list = (await emp.get('/api/v1/expenses/allowance-rates')).json();
@@ -56,10 +56,10 @@ describe('allowance rates', () => {
     expect(r.json()).toMatchObject({ amount: '2250.00', rate: '1500.00', allowance: '2250.00' });   // L3 rate beats the general one
     r = await item(claim, { categoryId: cats.MILEAGE, quantity: 42.5, vehicle: 'car', amount: 300, description: 'Lab to Taloja MIDC and back' });
     expect(r.json()).toMatchObject({ amount: '300.00', allowance: '403.75' });
-    expect((await item(claim, { categoryId: cats.MILEAGE, quantity: 10, vehicle: 'car', amount: 100, description: 'Too much' })).json().error.message).toMatch(/At most 95.00/);
-    expect((await item(claim, { categoryId: cats.MILEAGE, quantity: 10, vehicle: 'two_wheeler', description: 'Scooter' })).json().error.message).toMatch(/no mileage rate for a two-wheeler/);
-    expect((await item(claim, { categoryId: cats.PERDIEM, quantity: 1.25, tier: 'METRO', description: 'Odd' })).json().error.message).toMatch(/half days/);
-    expect((await item(claim, { categoryId: cats.PERDIEM, tier: 'METRO', description: 'No days' })).json().error.message).toMatch(/number of days/);
+    expect(problem((await item(claim, { categoryId: cats.MILEAGE, quantity: 10, vehicle: 'car', amount: 100, description: 'Too much' }))).detail).toMatch(/At most 95.00/);
+    expect(problem((await item(claim, { categoryId: cats.MILEAGE, quantity: 10, vehicle: 'two_wheeler', description: 'Scooter' }))).detail).toMatch(/no mileage rate for a two-wheeler/);
+    expect(problem((await item(claim, { categoryId: cats.PERDIEM, quantity: 1.25, tier: 'METRO', description: 'Odd' }))).detail).toMatch(/half days/);
+    expect(problem((await item(claim, { categoryId: cats.PERDIEM, tier: 'METRO', description: 'No days' }))).detail).toMatch(/number of days/);
 
     const detail = (await emp.get(`/api/v1/expenses/claims/${claim}`)).json();
     expect(detail.total).toBe('2550.00');
@@ -80,8 +80,8 @@ describe('allowance rates', () => {
     expect(c.statusCode, c.body).toBe(201);
     const claim = c.json().id;
     expect((await item(claim, { categoryId: cats.PERDIEM, quantity: 2, tier: 'METRO', description: 'Mumbai, two days' })).statusCode).toBe(201);
-    expect((await item(claim, { categoryId: cats.PERDIEM, quantity: 0.5, tier: 'METRO', description: 'One more' })).json().error.message).toMatch(/lasts 2 day\(s\); 2.00 already claimed/);
-    expect((await item(claim, { categoryId: cats.PERDIEM, quantity: 1, tier: 'METRO', expenseDate: plus(-1), description: 'Before' })).json().error.message).toMatch(/must fall between/);
+    expect(problem((await item(claim, { categoryId: cats.PERDIEM, quantity: 0.5, tier: 'METRO', description: 'One more' }))).detail).toMatch(/lasts 2 day\(s\); 2.00 already claimed/);
+    expect(problem((await item(claim, { categoryId: cats.PERDIEM, quantity: 1, tier: 'METRO', expenseDate: plus(-1), description: 'Before' }))).detail).toMatch(/must fall between/);
   });
 
   it('only a rate not yet in force can be withdrawn', async () => {

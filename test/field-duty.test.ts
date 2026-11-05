@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import type { FastifyInstance } from 'fastify';
-import { makeApp, createTenant, Client, ownerQuery, type TenantFixture, flags } from './helpers.js';
+import { problem, makeApp, createTenant, Client, ownerQuery, type TenantFixture, flags } from './helpers.js';
 import { lossOfPay } from '../src/modules/payroll/service.js';
 import type { Db } from '../src/db/tx.js';
 
@@ -40,9 +40,9 @@ describe('field duty', () => {
   it('checks the dates: order, halves, the window, the length', async () => {
     expect((await request(emp, { startDate: D1, endDate: D2 })).statusCode).toBe(400);                                   // end before start
     expect((await request(emp, { startDate: D2, endDate: D1, dayPart: 'first_half' })).statusCode).toBe(400);           // half over several days
-    expect((await request(emp, { startDate: workday(12), endDate: workday(12) })).json().error.message).toMatch(/7 days back/);
-    expect((await request(emp, { startDate: shift(today, 100), endDate: shift(today, 100) })).json().error.message).toMatch(/90 days ahead/);
-    expect((await request(emp, { startDate: shift(today, 1), endDate: shift(today, 40) })).json().error.message).toMatch(/at most 31 days/);
+    expect(problem((await request(emp, { startDate: workday(12), endDate: workday(12) }))).detail).toMatch(/7 days back/);
+    expect(problem((await request(emp, { startDate: shift(today, 100), endDate: shift(today, 100) }))).detail).toMatch(/90 days ahead/);
+    expect(problem((await request(emp, { startDate: shift(today, 1), endDate: shift(today, 40) }))).detail).toMatch(/at most 31 days/);
   });
 
   it('the manager approves; nobody approves their own; approved days are paid on-duty days without punches', async () => {
@@ -61,14 +61,14 @@ describe('field duty', () => {
   });
 
   it('refuses overlaps with other field duty and leave; opposite halves fit together', async () => {
-    expect((await request(emp, { startDate: D1, endDate: D1, dayPart: 'second_half' })).json().error.message).toMatch(/Overlaps approved field duty/);
+    expect(problem((await request(emp, { startDate: D1, endDate: D1, dayPart: 'second_half' }))).detail).toMatch(/Overlaps approved field duty/);
     expect((await request(emp, { startDate: D2, endDate: D2, dayPart: 'first_half' })).statusCode).toBe(201);
     expect((await request(emp, { startDate: D2, endDate: D2, dayPart: 'first_half' })).statusCode).toBe(409);
     expect((await request(emp, { startDate: D2, endDate: D2, dayPart: 'second_half' })).statusCode).toBe(201);
     const [t] = await ownerQuery<{ id: string }>(`INSERT INTO leave_types (tenant_id, code, name, paid, requires_balance, accrual_method, annual_entitlement) VALUES ($1,'LWP','Leave without pay',false,false,'none',0) RETURNING id`, [T.id]);
     await ownerQuery(`INSERT INTO leave_requests (tenant_id, employee_id, leave_type_id, leave_year, start_date, end_date, end_half, days, reason, status, requested_by)
       VALUES ($1,$2,$3,$4,$5,$5,'first_half',0.5,'Bank work','approved',$6)`, [T.id, empId, t!.id, Number(D3.slice(0, 4)), D3, T.users.employee!.id]);
-    expect((await request(emp, { startDate: D3, endDate: D3 })).json().error.message).toMatch(/Overlaps approved leave/);
+    expect(problem((await request(emp, { startDate: D3, endDate: D3 }))).detail).toMatch(/Overlaps approved leave/);
     expect((await request(emp, { startDate: D3, endDate: D3, dayPart: 'first_half' })).statusCode).toBe(409);   // the leave is the first half
     const r = await request(emp, { startDate: D3, endDate: D3, dayPart: 'second_half' });
     expect(r.statusCode, r.body).toBe(201);
@@ -117,7 +117,7 @@ describe('field duty', () => {
     expect((await emp.post(`/api/v1/field-duty/requests/${id}/report`, { outcome: 'partly_completed' })).statusCode).toBe(400);   // say what was not done
     expect((await emp.post(`/api/v1/field-duty/requests/${id}/report`, { outcome: 'partly_completed', note: 'Outlet 2 dry; resample next week' })).statusCode).toBe(200);
     expect((await emp.get(`/api/v1/field-duty/requests/${id}`)).json()).toMatchObject({ outcome: 'partly_completed', outcome_note: 'Outlet 2 dry; resample next week' });
-    expect((await emp.post(`/api/v1/field-duty/requests/${id}/cancel`, { reason: 'test' })).json().error.message).toMatch(/only by HR/);
+    expect(problem((await emp.post(`/api/v1/field-duty/requests/${id}/cancel`, { reason: 'test' }))).detail).toMatch(/only by HR/);
     expect((await hr.post(`/api/v1/field-duty/requests/${id}/cancel`, { reason: 'Recorded against the wrong person' })).statusCode).toBe(200);
     expect(await day(D1)).toMatchObject({ status: 'absent', duty_fraction: '0.00' });
   });
@@ -125,6 +125,6 @@ describe('field duty', () => {
   it('locked payroll periods cannot gain or lose field duty', async () => {
     const d = workday(2);
     await ownerQuery(`INSERT INTO attendance_period_locks (tenant_id, period_start, period_end, locked_by) VALUES ($1,$2,$2,$3)`, [T.id, d, T.users.hr!.id]);
-    expect((await request(emp, { startDate: d, endDate: d })).json().error.message).toMatch(/locked for payroll/);
+    expect(problem((await request(emp, { startDate: d, endDate: d }))).detail).toMatch(/locked for payroll/);
   });
 });

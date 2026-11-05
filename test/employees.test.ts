@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import type { FastifyInstance } from 'fastify';
-import { makeApp, createTenant, Client, ownerQuery, type TenantFixture } from './helpers.js';
+import { problem, makeApp, createTenant, Client, ownerQuery, type TenantFixture } from './helpers.js';
 
 let app: FastifyInstance; let T: TenantFixture; let hr: Client;
 beforeAll(async () => { app = await makeApp(); T = await createTenant(); hr = await Client.login(app, T.host, T.users.hr!.email); });
@@ -19,7 +19,7 @@ describe('employee master', () => {
 
     const bad = await hr.post('/api/v1/employees', { employee: { ...base(), employeeCode: 'BAD1', firstName: 'X', employmentType: 'contract', dateOfBirth: '2020-01-01' } });
     expect(bad.statusCode).toBe(400);
-    const paths = bad.json().error.details.map((d: { path: string }) => d.path);
+    const paths = problem(bad).errors.map((d: { path: string }) => d.path);
     expect(paths).toEqual(expect.arrayContaining(['employee.dateOfBirth', 'employee.contractEndDate']));
   });
 
@@ -28,7 +28,7 @@ describe('employee master', () => {
     expect((await hr.post('/api/v1/employees', { employee: { ...emp, employeeCode: 'DUP1' } })).statusCode).toBe(201);
     const dup = await hr.post('/api/v1/employees', { employee: { ...emp, employeeCode: 'DUP2' } });
     expect(dup.statusCode).toBe(409);
-    expect(dup.json().error.details.duplicates[0].reason).toBe('Same name and date of birth');
+    expect(problem(dup).duplicates[0].reason).toBe('Same name and date of birth');
     expect((await hr.post('/api/v1/employees', { employee: { ...emp, employeeCode: 'DUP2' }, confirmDuplicate: true })).statusCode).toBe(201);
     expect((await hr.post('/api/v1/employees', { employee: { ...emp, employeeCode: 'DUP1', firstName: 'Other' } })).statusCode).toBe(409);
   });
@@ -49,7 +49,7 @@ describe('employee master', () => {
     const m = (await hr.get(`/api/v1/employees/${mgr}`)).json();
     const r = await hr.patch(`/api/v1/employees/${mgr}`, { changes: { reportingManagerId: emp }, expectedVersion: m.version });
     expect(r.statusCode).toBe(400);
-    expect(r.json().error.message).toMatch(/circular/);
+    expect(problem(r).detail).toMatch(/circular/);
   });
 
   it('employees see only directory fields of colleagues but full data for themselves', async () => {
@@ -138,7 +138,7 @@ describe('PATCH status guard (AUDIT 4.2)', () => {
     const version = (await load(id)).version as number;
     const none = await hr.patch(`/api/v1/employees/${id}`, { changes: { status: 'exited' }, expectedVersion: version });
     expect(none.statusCode).toBe(400);
-    expect(none.json().error.message).toMatch(/exit date/i);
+    expect(problem(none).detail).toMatch(/exit date/i);
     const before = await hr.patch(`/api/v1/employees/${id}`, { changes: { status: 'exited' }, exitDate: '2000-01-01', expectedVersion: version });
     expect(before.statusCode).toBe(400);
     const c = await Client.login(app, T.host, T.users.other!.email);

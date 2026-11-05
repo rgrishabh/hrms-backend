@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeAll, afterAll, beforeEach } from 'vitest';
 import type { FastifyInstance } from 'fastify';
-import { Client, createTenant, makeApp, ownerQuery, PASSWORD, type TenantFixture } from './helpers.js';
+import { problem, Client, createTenant, makeApp, ownerQuery, PASSWORD, type TenantFixture } from './helpers.js';
 import { deliverOutbox } from '../src/core/notify/service.js';
 import { setMailer, type OutgoingMail } from '../src/core/notify/mailer.js';
 import { LINKS_PER_HOUR } from '../src/core/auth/links.js';
@@ -48,7 +48,7 @@ describe('password reset', () => {
     // Token reuse.
     const again = await reset(token, 'another fine passphrase', X.host);
     expect(again.statusCode).toBe(400);
-    expect(again.json().error.code).toBe('reset_link_invalid');
+    expect(problem(again).code).toBe('reset_link_invalid');
     await Client.login(app, X.host, email, NEW);
     expect((await ownerQuery(`SELECT 1 FROM audit_logs WHERE tenant_id=$1 AND action='auth.setup_link_rejected'`, [X.id])).length).toBe(1);
   });
@@ -66,7 +66,7 @@ describe('password reset', () => {
     await forgot(email, X.host);
     const token = await linkFor(email);
     await ownerQuery(`UPDATE admin_setup_tokens SET expires_at=now() - interval '1 second' WHERE user_id=$1`, [X.users.other!.id]);
-    expect((await reset(token, NEW, X.host)).json().error.code).toBe('reset_link_invalid');
+    expect(problem((await reset(token, NEW, X.host))).code).toBe('reset_link_invalid');
     await Client.login(app, X.host, email);
   });
 
@@ -115,7 +115,7 @@ describe('password reset', () => {
     await forgot(email, X.host);
     const token = await linkFor(email);
     const weak = await reset(token, 'password1234', X.host);
-    expect(weak.json().error.code).toBe('weak_password');
+    expect(problem(weak).code).toBe('weak_password');
     expect((await reset(token, NEW, X.host)).statusCode).toBe(200);
   });
 
@@ -127,7 +127,7 @@ describe('password reset', () => {
     await forgot(email, X.host);
     expect((await reset(await linkFor(email), NEW, X.host)).statusCode).toBe(200);
     const after = await Client.login(app, X.host, email, NEW);
-    expect((await after.get('/api/v1/employees')).json().error.code).toBe('mfa_required');
+    expect(problem((await after.get('/api/v1/employees'))).code).toBe('mfa_required');
   });
 
   it('a reset clears back-off held against the account', async () => {
@@ -183,7 +183,8 @@ describe('no enumeration', () => {
     expect(Math.abs(known - unknown) / known, `known ${known} ms, unknown ${unknown} ms`).toBeLessThan(0.4);
     const [a, b] = await Promise.all([raw('POST', '/api/v1/auth/login', { email: X.users.other!.email, password: 'wrong-guess-here' }, X.host), raw('POST', '/api/v1/auth/login', { email: `someone@${X.host}`, password: 'wrong-guess-here' }, X.host)]);
     expect(a.statusCode).toBe(b.statusCode);
-    expect(a.body).toBe(b.body);
+    // Apart from the request's own reference, the answers cannot be told apart.
+    expect({ ...a.json(), instance: '' }).toEqual({ ...b.json(), instance: '' });
   }, 30000);
 
   it('an invited person with no password yet looks like any wrong password', async () => {
@@ -222,7 +223,7 @@ describe('invitations replace initial passwords', () => {
   it('an administrator cannot choose a password for someone', async () => {
     const r = await create(`chosen@${X.host}`, { initialPassword: 'Initial-Password-123' });
     expect(r.statusCode).toBe(400);
-    expect(r.json().error.message).toMatch(/invitation/);
+    expect(problem(r).detail).toMatch(/invitation/);
     expect((await ownerQuery(`SELECT 1 FROM users WHERE email=$1`, [`chosen@${X.host}`])).length).toBe(0);
   });
 
@@ -238,18 +239,18 @@ describe('invitations replace initial passwords', () => {
     const token = await linkFor(email);
     // Not a reset link: the two routes do not share purposes.
     expect((await reset(token, NEW, X.host)).statusCode).toBe(400);
-    expect((await raw('POST', '/api/v1/auth/setup', { token, newPassword: 'password1234' }, X.host)).json().error.code).toBe('weak_password');
+    expect(problem((await raw('POST', '/api/v1/auth/setup', { token, newPassword: 'password1234' }, X.host))).code).toBe('weak_password');
     expect((await raw('POST', '/api/v1/auth/setup', { token, newPassword: NEW }, X.host)).statusCode).toBe(200);
     const c = await Client.login(app, X.host, email, NEW);
     expect(c.passwordChangeRequired).toBe(false);
-    expect((await raw('POST', '/api/v1/auth/setup', { token, newPassword: 'another fine passphrase' }, X.host)).json().error.code).toBe('setup_link_invalid');
+    expect(problem((await raw('POST', '/api/v1/auth/setup', { token, newPassword: 'another fine passphrase' }, X.host))).code).toBe('setup_link_invalid');
   });
 
   it('a reset link does not work at the invitation route', async () => {
     const Y = await createTenant();
     await forgot(Y.users.other!.email, Y.host);
     const token = await linkFor(Y.users.other!.email);
-    expect((await raw('POST', '/api/v1/auth/setup', { token, newPassword: NEW }, Y.host)).json().error.code).toBe('setup_link_invalid');
+    expect(problem((await raw('POST', '/api/v1/auth/setup', { token, newPassword: NEW }, Y.host))).code).toBe('setup_link_invalid');
   });
 
   it('an expired invitation is refused; resending makes a new one and ends the old; an accepted one cannot be resent', async () => {
@@ -289,7 +290,7 @@ describe('invitations replace initial passwords', () => {
       expect(r.json().inviteSent).toBe(false);
       const again = await admin.post(`/api/v1/tenant/users/${r.json().id}/invite`);
       expect(again.statusCode).toBe(409);
-      expect(again.json().error.code).toBe('feature_not_configured');
+      expect(problem(again).code).toBe('feature_not_configured');
     } finally { setMailer({ send: async (m) => { sent.push(m); } }, 'test@test'); }
   });
 

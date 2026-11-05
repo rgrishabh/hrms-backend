@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import type { FastifyInstance } from 'fastify';
-import { makeApp, createTenant, Client, ownerQuery, PASSWORD, type TenantFixture } from './helpers.js';
+import { problem, makeApp, createTenant, Client, ownerQuery, PASSWORD, type TenantFixture } from './helpers.js';
 
 let app: FastifyInstance;
 let A: TenantFixture; let B: TenantFixture;
@@ -13,7 +13,7 @@ describe('tenant resolution', () => {
     const c = new Client(app, 'evil.example.com');
     const r = await c.post('/api/v1/auth/login', { email: A.users.admin!.email, password: PASSWORD });
     expect(r.statusCode).toBe(404);
-    expect(r.json().error.code).toBe('unknown_tenant');
+    expect(problem(r).code).toBe('unknown_tenant');
   });
 
   it('does not resolve a registered but unverified/inactive domain', async () => {
@@ -93,7 +93,7 @@ describe('authentication & session security', () => {
     const csrf = c.csrf; c.csrf = '';
     const r = await c.put('/api/v1/tenant/settings/general.date_format', { value: 'YYYY-MM-DD' });
     expect(r.statusCode).toBe(403);
-    expect(r.json().error.code).toBe('csrf_failed');
+    expect(problem(r).code).toBe('csrf_failed');
     c.csrf = csrf;
     expect((await c.put('/api/v1/tenant/settings/general.date_format', { value: 'YYYY-MM-DD' })).statusCode).toBe(200);
   });

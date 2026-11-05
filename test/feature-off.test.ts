@@ -5,7 +5,7 @@ import { mkdtempSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import type { FastifyInstance } from 'fastify';
-import { makeApp, createTenant, Client, ownerQuery, flags, inApp, multipart, type TenantFixture, seal } from './helpers.js';
+import { problem, makeApp, createTenant, Client, ownerQuery, flags, inApp, multipart, type TenantFixture, seal } from './helpers.js';
 import { TINY_PNG } from './images.js';
 import { TEST_OWNER_URL } from './env.js';
 import { notifyUsers } from '../src/core/notify/service.js';
@@ -212,7 +212,7 @@ describe('on but not set up stays registered and says so', () => {
     const T = await createTenant();
     const emp = await Client.login(app, T.host, T.users.employee!.email);
     const r = await emp.get('/api/v1/overtime/eligible');
-    expect([r.statusCode, r.json().error.code]).toEqual([409, 'feature_not_configured']);
+    expect([r.statusCode, problem(r).code]).toEqual([409, 'feature_not_configured']);
     expect(app.hasRoute({ method: 'POST', url: '/api/v1/devices/events' })).toBe(true);
     await app.close();
   });

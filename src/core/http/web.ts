@@ -2,6 +2,7 @@ import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs';
 import path from 'node:path';
 import type { FastifyInstance } from 'fastify';
 import type { PublicConfig } from '../../config/installation.js';
+import { notFoundProblem } from './problem.js';
 
 /**
  * Serves the built SPA and the deployment's brand files from the API
@@ -95,6 +96,6 @@ export function registerWeb(app: FastifyInstance, distDir: string | null, cfg: P
       const f = find(req.url);
       if (f) return reply.header('content-type', f.type).header('cache-control', f.cache).header('x-content-type-options', 'nosniff').send(f.body);
     }
-    return reply.code(404).send({ error: { code: 'not_found', message: 'Not found' } });
+    return notFoundProblem(req, reply);
   });
 }

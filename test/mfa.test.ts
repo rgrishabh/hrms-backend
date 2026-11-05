@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeAll, afterAll, beforeEach } from 'vitest';
 import type { FastifyInstance } from 'fastify';
-import { makeApp, createTenant, Client, ownerQuery, PASSWORD, type TenantFixture } from './helpers.js';
+import { problem, makeApp, createTenant, Client, ownerQuery, PASSWORD, type TenantFixture } from './helpers.js';
 import { base32Decode, base32Encode, hotp, verifyTotp, timeStep } from '../src/core/auth/totp.js';
 import { deliverOutbox } from '../src/core/notify/service.js';
 import { setMailer, type OutgoingMail } from '../src/core/notify/mailer.js';
@@ -75,7 +75,7 @@ describe('MFA_AVAILABLE=false: off for everyone, whatever was enrolled', () => {
     expect(u!.mfa_secret_enc).toMatch(/^v2\./);
     expect(u!.n).toBe(10);
     const again = await Client.login(on, T.host, T.users.hr!.email);
-    expect((await again.get('/api/v1/employees')).json().error.code).toBe('mfa_required');
+    expect(problem((await again.get('/api/v1/employees'))).code).toBe('mfa_required');
     await passTime(T.users.hr!.id);
     expect((await again.post('/api/v1/auth/mfa/verify', { code: codeAt(secret, now()) })).statusCode).toBe(200);
   });
@@ -89,7 +89,7 @@ describe('MFA_AVAILABLE=false: off for everyone, whatever was enrolled', () => {
     const started = new Client(off, T.host);
     await started.post('/api/v1/auth/login', { email: T.users.hr!.email, password: PASSWORD });
     const same = new Client(on, T.host); same.cookie = started.cookie; same.csrf = started.csrf;
-    expect((await same.get('/api/v1/employees')).json().error.code).toBe('mfa_required');
+    expect(problem((await same.get('/api/v1/employees'))).code).toBe('mfa_required');
   });
 
   it('public config says off', async () => {
@@ -108,7 +108,7 @@ describe('MFA_AVAILABLE=true, MFA_ENFORCED=false: optional, per user', () => {
       const c = await Client.login(app, T.host, T.users[key]!.email);
       const me = (await c.get('/api/v1/auth/me')).json();
       expect(me.mfa.enrollmentRequired, key).toBe(false);
-      expect((await c.get('/api/v1/org/branches')).json().error?.code, key).not.toBe('mfa_enrollment_required');
+      expect(problem((await c.get('/api/v1/org/branches'))).code, key).not.toBe('mfa_enrollment_required');
     }
   });
 
@@ -161,13 +161,13 @@ describe('MFA_ENFORCED=true', () => {
     expect((await emp.get('/api/v1/auth/me')).json().mfa).toMatchObject({ enabled: false, enrollmentRequired: true, suggested: false });
     const blocked = await emp.get('/api/v1/employees');
     expect(blocked.statusCode).toBe(403);
-    expect(blocked.json().error.code).toBe('mfa_enrollment_required');
+    expect(problem(blocked).code).toBe('mfa_enrollment_required');
     expect((await emp.get('/api/v1/auth/mfa/methods')).statusCode).toBe(200);
     expect((await emp.post('/api/v1/auth/mfa/enable', { code: '123456' })).statusCode).toBe(400); // setup not started
     const { secret } = await enrol(emp);
     expect((await emp.get('/api/v1/employees')).statusCode).toBe(200);
     await passTime(T.users.employee!.id);
-    expect((await emp.post('/api/v1/auth/mfa/disable', { password: PASSWORD, code: codeAt(secret, now()) })).json().error.code).toBe('mfa_required_by_deployment');
+    expect(problem((await emp.post('/api/v1/auth/mfa/disable', { password: PASSWORD, code: codeAt(secret, now()) }))).code).toBe('mfa_required_by_deployment');
   });
 
   it('an administrator reset means enrolling again, and the person is told', async () => {
@@ -232,7 +232,7 @@ describe('TOTP sign-in and recovery codes', () => {
   it('a new sign-in needs a code; codes cannot be replayed; recovery codes work once and tell the user', async () => {
     const c = await Client.login(app, T.host, T.users.hr!.email);
     expect(c.passwordChangeRequired).toBe(false);
-    expect((await c.get('/api/v1/employees')).json().error.code).toBe('mfa_required');
+    expect(problem((await c.get('/api/v1/employees'))).code).toBe('mfa_required');
     expect((await c.get('/api/v1/auth/me')).json().permissions).toEqual([]); // nothing revealed before the code
     await passTime(T.users.hr!.id); // the code used at enrolment is in the same 30 s window
     const code = codeAt(secret, now());
@@ -298,7 +298,7 @@ describe('brute force on the second factor', () => {
     await passTime(T.users.other!.id);
     const right = await e.post('/api/v1/auth/mfa/verify', { code: codeAt(secret, now()) });
     expect(right.statusCode).toBe(429);
-    expect(right.json().error.code).toBe('mfa_locked');
+    expect(problem(right).code).toBe('mfa_locked');
     // It ends: nobody is locked out for good.
     await ownerQuery(`UPDATE users SET mfa_locked_until=now() - interval '1 second' WHERE id=$1`, [T.users.other!.id]);
     expect((await e.post('/api/v1/auth/mfa/verify', { code: codeAt(secret, now()) })).statusCode).toBe(200);
@@ -468,7 +468,7 @@ describe('email codes without a mail transport', () => {
     expect(email.reason).toMatch(/email/i);
     const refused = await other.post('/api/v1/auth/mfa/email/setup');
     expect(refused.statusCode).toBe(409);
-    expect(refused.json().error.code).toBe('feature_not_configured');
+    expect(problem(refused).code).toBe('feature_not_configured');
     const d = new Client(app, T.host);
     const login = await d.post('/api/v1/auth/login', { email: T.users.employee!.email, password: PASSWORD });
     expect(login.json()).toMatchObject({ mfaRequired: true, mfaDelivery: 'unavailable' });

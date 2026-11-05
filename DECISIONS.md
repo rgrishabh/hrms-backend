@@ -255,3 +255,13 @@ A request is an approval request (`lab_authorization`) routed to holders of `com
 **Column order** is not compared: a re-added column is at the end of its table, and only rebuilding the table would change that. Nothing depends on it. Everything else in the catalogue is.
 **Limit:** `down` restores what the previous schema could hold. Scrubbed text, dropped SMS data and deleted snapshots cannot return, and `README.md` lists them. Not run against a production-sized database, or through a built image.
 
+## D50 — RFC 7807: type as a URN, instance as the request id, details as extension members
+
+**Context.** The frontend reads `application/problem+json` and extension members such as `duplicates` at the top level. RFC 7807 wants URIs for `type` and `instance`.
+
+**Options.** `type`: `about:blank`, a URL on a domain, or a URN. `instance`: the request path, or the request id.
+
+**Decision.** `type` is `urn:hrms:problem:<code>`. `instance` is `urn:uuid:<request id>`. An object in `AppError.details` becomes extension members, which cannot overwrite a standard member. `errors` is always present.
+
+**Reason.** There is no domain common to every installation to publish a type page at. The request id is what the logs carry, so a user's reference finds the line, and it holds nothing from the address. Framework 4xx messages are replaced by fixed text because `JSON.parse` messages quote the body. Constraint names left the answers: they named the schema and nothing used them. No compatibility shape, because the frontend had already switched.
+

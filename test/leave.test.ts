@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import type { FastifyInstance } from 'fastify';
-import { makeApp, createTenant, Client, ownerQuery, type TenantFixture, flags } from './helpers.js';
+import { problem, makeApp, createTenant, Client, ownerQuery, type TenantFixture, flags } from './helpers.js';
 import { addDays, localDate, weekday } from '../src/modules/attendance/time.js';
 import { CALC_VERSION } from '../src/modules/attendance/calc.js';
 
@@ -95,14 +95,14 @@ describe('requests: day counting and validation', () => {
   });
 
   it('rejects a range with no working days, insufficient balance, and too-short notice', async () => {
-    expect((await emp.post('/api/v1/leave/requests/preview', { leaveTypeId: types.CL, startDate: addDays(MON, 2), endDate: addDays(MON, 2) })).json().error.message).toMatch(/no working days/);
+    expect(problem((await emp.post('/api/v1/leave/requests/preview', { leaveTypeId: types.CL, startDate: addDays(MON, 2), endDate: addDays(MON, 2) }))).detail).toMatch(/no working days/);
     const p = (await emp.post('/api/v1/leave/requests/preview', { leaveTypeId: types.CL, startDate: MON, endDate: addDays(MON, 20) })).json();
     expect(p.sufficient).toBe(false);
     const r = await emp.post('/api/v1/leave/requests', { leaveTypeId: types.CL, startDate: MON, endDate: addDays(MON, 20), reason: 'Long trip' });
     expect(r.statusCode).toBe(409);
     const soon = addDays(today(), 2);
     const n = await emp.post('/api/v1/leave/requests', { leaveTypeId: types.EL, startDate: soon, endDate: soon, reason: 'Short notice' });
-    if (weekday(soon) !== 0) expect(n.json().error.message).toMatch(/at least 7 day/);
+    if (weekday(soon) !== 0) expect(problem(n).detail).toMatch(/at least 7 day/);
   });
 
   it('allows leave without pay with no balance', async () => {
@@ -181,7 +181,7 @@ describe('attendance integration', () => {
     await hr.post('/api/v1/leave/accruals', { leaveYear: Number(d.slice(0, 4)) });
     const r = await hr.post('/api/v1/leave/requests', { leaveTypeId: types.LWP, startDate: d, endDate: d, reason: 'Late entry', employeeId: T.users.employee!.employeeId });
     expect(r.statusCode).toBe(409);
-    expect(r.json().error.message).toMatch(/locked for payroll/);
+    expect(problem(r).detail).toMatch(/locked for payroll/);
   });
 });
 

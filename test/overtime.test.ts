@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import type { FastifyInstance } from 'fastify';
-import { makeApp, createTenant, Client, ownerQuery, PASSWORD, type TenantFixture, flags } from './helpers.js';
+import { problem, makeApp, createTenant, Client, ownerQuery, PASSWORD, type TenantFixture, flags } from './helpers.js';
 import { hashPassword } from '../src/core/crypto/index.js';
 import { compOffDays } from '../src/modules/overtime/service.js';
 import pg from 'pg';
@@ -54,7 +54,7 @@ afterAll(async () => { await app.close(); });
 
 describe('overtime', () => {
   it('is usable only once attendance records overtime', async () => {
-    expect((await emp.get('/api/v1/overtime/eligible')).json().error.code).toBe('feature_not_configured');
+    expect(problem((await emp.get('/api/v1/overtime/eligible'))).code).toBe('feature_not_configured');
     expect((await set('attendance.overtime_enabled', true)).statusCode).toBe(200);
     const e = (await emp.get('/api/v1/overtime/eligible')).json();
     expect(e.items.map((d: { work_date: string }) => d.work_date)).toEqual([D1, D2, D3, D4]);
@@ -67,8 +67,8 @@ describe('overtime', () => {
     expect((await claim(emp, D1, 20, 'pay')).statusCode).toBe(400);            // below the 30-minute minimum
     expect((await claim(emp, back(-1), 60, 'pay')).statusCode).toBe(400);      // future
     expect((await claim(emp, back(40), 60, 'pay')).statusCode).toBe(400);      // outside the window
-    expect((await claim(emp, D1, 120, 'pay')).json().error.message).toMatch(/not set up/);
-    expect((await claim(emp, D1, 120, 'comp_off')).json().error.message).toMatch(/not offered/);
+    expect(problem((await claim(emp, D1, 120, 'pay'))).detail).toMatch(/not set up/);
+    expect(problem((await claim(emp, D1, 120, 'comp_off'))).detail).toMatch(/not offered/);
     for (const [k, v] of [['overtime.rate_multiplier', 2], ['overtime.rate_basis', 'basic'], ['overtime.days_divisor', 26], ['overtime.hours_per_day', 8], ['overtime.esi_wages', 'exclude']] as const)
       expect((await set(k, v)).statusCode, k).toBe(200);
     expect((await emp.get('/api/v1/overtime/eligible')).json().payout.pay).toBe(true);
@@ -138,7 +138,7 @@ describe('overtime', () => {
     expect((await mgr.get('/api/v1/approvals/inbox')).json().items.some((x: { entity_id: string }) => x.entity_id === r.json().id)).toBe(false);
     expect((await set('overtime.quarter_cap_hours', 1)).statusCode).toBe(200);
     expect((await claim(emp, D4, 60, 'pay')).statusCode).toBe(201);           // exactly 1 h
-    expect((await claim(emp, D3, 30, 'pay')).json().error.message).toMatch(/limit of 1 hours for the quarter/);
+    expect(problem((await claim(emp, D3, 30, 'pay'))).detail).toMatch(/limit of 1 hours for the quarter/);
   });
 });
 

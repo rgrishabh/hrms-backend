@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import type { FastifyInstance } from 'fastify';
-import { makeApp, createTenant, Client, ownerQuery, PASSWORD, type TenantFixture, flags } from './helpers.js';
+import { problem, makeApp, createTenant, Client, ownerQuery, PASSWORD, type TenantFixture, flags } from './helpers.js';
 import { hashPassword } from '../src/core/crypto/index.js';
 
 let app: FastifyInstance; let T: TenantFixture;
@@ -54,9 +54,9 @@ afterAll(async () => { await app.close(); });
 describe('advances and loans', () => {
   let adv: string;
   it('checks the policy: instalments, whole rupees, start month', async () => {
-    expect((await apply(emp, { installments: 4 })).json().error.message).toMatch(/at most 3 instalment/);
+    expect(problem((await apply(emp, { installments: 4 }))).detail).toMatch(/at most 3 instalment/);
     expect((await apply(emp, { amount: 1000.5 })).statusCode).toBe(400);
-    expect((await apply(emp, { firstPeriod: monthAfter(THIS, -1) })).json().error.message).toMatch(/past month/);
+    expect(problem((await apply(emp, { firstPeriod: monthAfter(THIS, -1) }))).detail).toMatch(/past month/);
   });
 
   it('the manager, then finance approve; nobody approves their own; one advance at a time', async () => {
@@ -64,7 +64,7 @@ describe('advances and loans', () => {
     expect(r.statusCode, r.body).toBe(201);
     expect(r.json().installmentAmount).toBe(3334);
     adv = r.json().id;
-    expect((await apply(emp, { amount: 2000, installments: 1 })).json().error.message).toMatch(/already a salary advance in progress/);
+    expect(problem((await apply(emp, { amount: 2000, installments: 1 }))).detail).toMatch(/already a salary advance in progress/);
     expect((await other.get(`/api/v1/loans/requests/${adv}?reveal=1`)).statusCode).toBe(404);
     expect((await emp.get('/api/v1/approvals/inbox')).json().items.some((x: { entity_id: string }) => x.entity_id === adv)).toBe(false);
     const step = await approve(mgr, adv);
@@ -85,7 +85,7 @@ describe('advances and loans', () => {
     expect(loanLines(item)).toEqual([expect.objectContaining({ code: 'LOAN', kind: 'deduction', amount: 3334, name: 'Salary advance recovery (1 of 3)' })]);
     expect(Number(item.net)).toBe(26000 - 3334);
     expect((await loan(adv)).balance).toMatchObject({ outstanding: '6666.00', inProgress: '3334.00', recovered: '0.00' });
-    expect((await pay.post(`/api/v1/loans/requests/${adv}/repayment`, { amount: 7000, reference: 'Cash' })).json().error.message).toMatch(/more than is outstanding .*payroll run being processed/);
+    expect(problem((await pay.post(`/api/v1/loans/requests/${adv}/repayment`, { amount: 7000, reference: 'Cash' }))).detail).toMatch(/more than is outstanding .*payroll run being processed/);
     expect((await pay.post(`/api/v1/loans/requests/${adv}/repayment`, { amount: 6666, reference: 'Cash receipt 114' })).json()).toMatchObject({ closed: false });
     // Finalize the run: then the instalment is recovered and the advance is closed.
     expect((await pay.post('/api/v1/attendance/locks', { periodStart: `${THIS}-01`, periodEnd: lastDay(THIS) })).statusCode).toBeLessThan(300);

@@ -4,7 +4,7 @@ import { mkdtempSync, readdirSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import type { FastifyInstance } from 'fastify';
-import { Client, createTenant, flags, makeApp, multipart, ownerQuery, type TenantFixture } from './helpers.js';
+import { problem, Client, createTenant, flags, makeApp, multipart, ownerQuery, type TenantFixture } from './helpers.js';
 import { ClamdScanner, setScanner, getScanner } from '../src/core/storage/clamav.js';
 import { LocalStore, setStore } from '../src/core/storage/index.js';
 import { detectFile } from '../src/core/storage/sniff.js';
@@ -133,7 +133,7 @@ describe('uploads through the app', () => {
     const before = await count();
     const r = await send('invoice.pdf', Buffer.from(`%PDF-1.7\n${EICAR}\n%%EOF\n`));
     expect(r.statusCode).toBe(422);
-    expect(r.json().error.code).toBe('malware_detected');
+    expect(problem(r).code).toBe('malware_detected');
     expect(r.body).not.toContain('EICAR');
     expect(await count()).toBe(before);
     const [row] = await ownerQuery<{ change_metadata: { signature: string } }>(`SELECT change_metadata FROM audit_logs WHERE tenant_id=$1 AND action='upload.malware_blocked'`, [T.id]);
@@ -153,7 +153,7 @@ describe('uploads through the app', () => {
     try {
       const r = await send('x.pdf', PDF);
       expect(r.statusCode).toBe(503);
-      expect(r.json().error.code).toBe('scanner_unavailable');
+      expect(problem(r).code).toBe('scanner_unavailable');
     } finally { behaviour = 'scan'; }
     expect(await count()).toBe(before);
   });
@@ -161,7 +161,7 @@ describe('uploads through the app', () => {
   it('production with no scanner refuses uploads, whichever module they belong to', async () => {
     const was = getScanner();
     setScanner(null, true);
-    try { expect((await send('x.pdf', PDF)).json().error.code).toBe('scanner_unavailable'); } finally { setScanner(was, false); }
+    try { expect(problem((await send('x.pdf', PDF))).code).toBe('scanner_unavailable'); } finally { setScanner(was, false); }
   });
 
   it('no scanner outside production: stored without scanning', async () => {

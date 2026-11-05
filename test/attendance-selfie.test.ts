@@ -3,7 +3,7 @@ import { mkdtempSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import type { FastifyInstance } from 'fastify';
-import { makeApp, createTenant, Client, ownerQuery, multipart, flags, type TenantFixture } from './helpers.js';
+import { problem, makeApp, createTenant, Client, ownerQuery, multipart, flags, type TenantFixture } from './helpers.js';
 import { TINY_PNG } from './images.js';
 import { getStore } from '../src/core/storage/index.js';
 
@@ -27,7 +27,7 @@ describe('check-in selfie', () => {
 
   it('clock-in needs a selfie, stored through the store as L3 with a retention date', async () => {
     const r = await punch(emp, 'selfie-none-1');
-    expect([r.statusCode, r.json().error.code]).toEqual([400, 'selfie_required']);
+    expect([r.statusCode, problem(r).code]).toEqual([400, 'selfie_required']);
     const up = await upload(emp, PNG);
     expect(up.statusCode).toBe(201);
     const id = up.json().id as string;
@@ -75,7 +75,7 @@ describe('selfie on without storage', () => {
     const T = await createTenant();
     const emp = await Client.login(app, T.host, T.users.employee!.email);
     const r = await upload(emp, PNG);
-    expect([r.statusCode, r.json().error.code]).toEqual([409, 'feature_not_configured']);
+    expect([r.statusCode, problem(r).code]).toEqual([409, 'feature_not_configured']);
     expect((await punch(emp, 'selfie-nostore1')).statusCode).toBe(200);
     await app.close();
   });
@@ -102,7 +102,7 @@ describe('geofence', () => {
     expect((await ownerQuery<{ outside_geofence: boolean }>('SELECT outside_geofence FROM attendance_events WHERE id=$1', [outside.json().id]))[0]!.outside_geofence).toBe(true);
     await admin.put('/api/v1/tenant/settings/attendance.geofence_enforce', { value: true });
     const refused = await at(19.1, 'geo-outside-2');
-    expect([refused.statusCode, refused.json().error.code]).toEqual([403, 'outside_geofence']);
+    expect([refused.statusCode, problem(refused).code]).toEqual([403, 'outside_geofence']);
   });
 });
 

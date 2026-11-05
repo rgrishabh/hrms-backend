@@ -5,11 +5,11 @@ import helmet from '@fastify/helmet';
 import rateLimit from '@fastify/rate-limit';
 import multipart from '@fastify/multipart';
 import { randomUUID } from 'node:crypto';
-import { ZodError } from 'zod';
 import { resolveHost } from './core/tenancy/resolve.js';
 import { loadSession, SESSION_COOKIE } from './core/auth/session.js';
 import { sha256, safeEqualHex } from './core/crypto/index.js';
 import { AppError } from './core/http/errors.js';
+import { problemErrorHandler } from './core/http/problem.js';
 import { isExportRoute, perUserLimit } from './core/http/limits.js';
 import type { AppDeps } from './core/http/context.js';
 import { initRuntime } from './core/runtime.js';
@@ -161,28 +161,7 @@ export async function buildApp(deps: AppDeps): Promise<FastifyInstance> {
     }
   });
 
-  app.setErrorHandler((err, req, reply) => {
-    if (err instanceof AppError) {
-      return reply.code(err.status).send({ error: { code: err.code, message: err.message, details: err.details } });
-    }
-    if (err instanceof ZodError) {
-      return reply.code(400).send({ error: { code: 'validation_failed', message: 'Some fields are invalid',
-        details: err.issues.map((i) => ({ path: i.path.join('.'), message: i.message })) } });
-    }
-    const e = err as { statusCode?: number; code?: string; message: string; constraint?: string };
-    if (e.statusCode === 429) return reply.code(429).send({ error: { code: 'rate_limited', message: 'Too many requests. Please slow down.' } });
-    if (e.code === '23505') {
-      return reply.code(409).send({ error: { code: 'duplicate', message: 'A record with these details already exists', details: { constraint: e.constraint } } });
-    }
-    if (e.code === '23P01') return reply.code(409).send({ error: { code: 'conflict', message: 'This overlaps an existing record', details: { constraint: e.constraint } } });
-    if (e.code === '23503') return reply.code(400).send({ error: { code: 'invalid_reference', message: 'A referenced record does not exist' } });
-    if (e.code === '23514') return reply.code(400).send({ error: { code: 'constraint_violation', message: 'The values violate a data rule', details: { constraint: e.constraint } } });
-    if (e.statusCode && e.statusCode < 500) {
-      return reply.code(e.statusCode).send({ error: { code: e.code ?? 'bad_request', message: e.message } });
-    }
-    req.log.error({ err }, 'unhandled error');
-    return reply.code(500).send({ error: { code: 'internal', message: 'Something went wrong. Reference: ' + req.id } });
-  });
+  app.setErrorHandler(problemErrorHandler);
 
   // Always on: no flag in the registry.
   await app.register(authRoutes, { prefix: '/api/v1', publicConfig });

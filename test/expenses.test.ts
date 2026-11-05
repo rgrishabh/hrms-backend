@@ -3,7 +3,7 @@ import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import type { FastifyInstance } from 'fastify';
-import { makeApp, createTenant, Client, ownerQuery, multipart, PASSWORD, type TenantFixture, flags } from './helpers.js';
+import { problem, makeApp, createTenant, Client, ownerQuery, multipart, PASSWORD, type TenantFixture, flags } from './helpers.js';
 import { LocalStore, setStore } from '../src/core/storage/index.js';
 import { hashPassword } from '../src/core/crypto/index.js';
 import { addDays, localDate } from '../src/modules/attendance/time.js';
@@ -47,12 +47,12 @@ afterAll(async () => { await app.close(); setStore(null); await makeApp().then((
 describe('claim validation', () => {
   it('enforces receipts, limits, date window and GST pairing; computes the total in decimals', async () => {
     const id = await newClaim(emp);
-    expect((await addItem(emp, id, { categoryId: cats.PPE!, expenseDate: today, amount: '120.50', description: 'Gloves' }, false)).json().error.message).toMatch(/needs a receipt/);
-    expect((await addItem(emp, id, { categoryId: cats.TRAVEL!, expenseDate: today, amount: '2500', description: 'Cab' }, false)).json().error.message).toMatch(/limited to 2000/);
+    expect(problem((await addItem(emp, id, { categoryId: cats.PPE!, expenseDate: today, amount: '120.50', description: 'Gloves' }, false))).detail).toMatch(/needs a receipt/);
+    expect(problem((await addItem(emp, id, { categoryId: cats.TRAVEL!, expenseDate: today, amount: '2500', description: 'Cab' }, false))).detail).toMatch(/limited to 2000/);
     expect((await addItem(emp, id, { categoryId: cats.TRAVEL!, expenseDate: addDays(today, 1), amount: '10', description: 'Future' }, false)).statusCode).toBe(400);
-    expect((await addItem(emp, id, { categoryId: cats.TRAVEL!, expenseDate: addDays(today, -90), amount: '10', description: 'Too old' }, false)).json().error.message).toMatch(/older than 60 days/);
+    expect(problem((await addItem(emp, id, { categoryId: cats.TRAVEL!, expenseDate: addDays(today, -90), amount: '10', description: 'Too old' }, false))).detail).toMatch(/older than 60 days/);
     expect((await addItem(emp, id, { categoryId: cats.TRAVEL!, expenseDate: today, amount: '10.123', description: 'Precision' }, false)).statusCode).toBe(400);
-    expect((await addItem(emp, id, { categoryId: cats.HOTEL!, expenseDate: today, amount: '3000', description: 'Hotel', invoiceNumber: 'INV-1' })).json().error.message).toMatch(/GSTIN/);
+    expect(problem((await addItem(emp, id, { categoryId: cats.HOTEL!, expenseDate: today, amount: '3000', description: 'Hotel', invoiceNumber: 'INV-1' }))).detail).toMatch(/GSTIN/);
     expect((await addItem(emp, id, { categoryId: cats.TRAVEL!, expenseDate: today, amount: '0.10', description: 'Auto' }, false)).statusCode).toBe(201);
     expect((await addItem(emp, id, { categoryId: cats.TRAVEL!, expenseDate: today, amount: '0.20', description: 'Auto 2' }, false)).statusCode).toBe(201);
     expect((await emp.get(`/api/v1/expenses/claims/${id}`)).json().total).toBe('0.30'); // not 0.30000000000000004
@@ -63,7 +63,7 @@ describe('claim validation', () => {
     const hotel = { categoryId: cats.HOTEL!, expenseDate: today, amount: '4200', description: 'Hotel, 1 night', gstin: '27AAAAA0000A1Z5', invoiceNumber: 'HTL/889' };
     expect((await addItem(emp, a, hotel)).statusCode).toBe(201);
     const b = await newClaim(emp, 'Hotel stay B');
-    expect((await addItem(emp, b, { ...hotel, invoiceNumber: 'htl/889' })).json().error.message).toMatch(/already been claimed/);
+    expect(problem((await addItem(emp, b, { ...hotel, invoiceNumber: 'htl/889' }))).detail).toMatch(/already been claimed/);
     const r = await addItem(emp, b, { categoryId: cats.HOTEL!, expenseDate: today, amount: '4200', description: 'Same night again', gstin: '27AAAAA0000A1Z5', invoiceNumber: 'HTL/890' });
     expect(r.json().possibleDuplicate).toBe(true);
   });

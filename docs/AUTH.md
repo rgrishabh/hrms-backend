@@ -14,7 +14,7 @@ Argon2id through `node:crypto`: 64 MiB, 3 passes, 1 lane, about 100 ms on a lapt
 | Personal | Refused if it contains the email's local part or domain name, or a part of the person's name, of 4 characters or more |
 | Repetitive | Refused under 5 distinct characters, or one block repeated |
 
-A refusal is 400 `weak_password`, with `details.problems` listing `too_short`, `too_long`, `breached`, `personal` or `too_simple`.
+A refusal is 400 `weak_password`, with `problems` listing `too_short`, `too_long`, `breached`, `personal` or `too_simple`.
 
 ### The leaked password list
 

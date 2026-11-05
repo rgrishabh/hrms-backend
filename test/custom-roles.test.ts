@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import type { FastifyInstance } from 'fastify';
-import { makeApp, createTenant, Client, ownerQuery, type TenantFixture, flags } from './helpers.js';
+import { problem, makeApp, createTenant, Client, ownerQuery, type TenantFixture, flags } from './helpers.js';
 
 // The organization's own roles: defined within the grant limits, applied at once, never a way around MFA.
 let app: FastifyInstance; let T: TenantFixture;
@@ -47,7 +47,7 @@ describe('custom roles', () => {
     let r = await admin.post('/api/v1/tenant/roles', { name: 'hr administrator', permissions: ['leave.read'] });
     expect(r.statusCode).toBe(409);
     r = await admin.post('/api/v1/tenant/roles', { name: 'FLOOR COORDINATOR', permissions: ['leave.read'] });
-    expect(r.json().error.message).toMatch(/already exists/);
+    expect(problem(r).detail).toMatch(/already exists/);
     r = await admin.post('/api/v1/tenant/roles', { name: 'Odd', permissions: ['leave.fly'] });
     expect(r.statusCode).toBe(400);
     expect((await admin.patch('/api/v1/tenant/roles/hr_admin', { name: 'X' })).statusCode).toBe(400);
@@ -57,7 +57,7 @@ describe('custom roles', () => {
   it('someone with users.manage but not an administrator works only within their own permissions', async () => {
     let r = await it_.post('/api/v1/tenant/roles', { name: 'Payroll peek', permissions: ['payroll.read'] });
     expect(r.statusCode).toBe(403);
-    expect(r.json().error.message).toMatch(/View payroll runs/);
+    expect(problem(r).detail).toMatch(/View payroll runs/);
     r = await it_.post('/api/v1/tenant/roles', { name: 'Asset desk', permissions: ['assets.manage', 'org.read'] });
     expect(r.statusCode).toBe(201);
     expect((await it_.patch(`/api/v1/tenant/roles/${key}`, { name: 'Mine now' })).statusCode).toBe(403);   // carries leave.team.read, which IT lacks
@@ -72,7 +72,7 @@ describe('custom roles', () => {
   it('a role in use cannot be deleted', async () => {
     const r = await admin.del(`/api/v1/tenant/roles/${key}`);
     expect(r.statusCode).toBe(409);
-    expect(r.json().error.message).toMatch(/1 person has this role/);
+    expect(problem(r).detail).toMatch(/1 person has this role/);
     await admin.patch(`/api/v1/tenant/users/${T.users.other!.id}`, { roles: ['employee'] });
     expect((await admin.del(`/api/v1/tenant/roles/${key}`)).statusCode).toBe(200);
     expect((await roles(admin)).custom.some((x: { key: string }) => x.key === key)).toBe(false);

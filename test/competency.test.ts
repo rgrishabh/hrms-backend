@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import type { FastifyInstance } from 'fastify';
-import { makeApp, createTenant, Client, ownerQuery, PASSWORD, type TenantFixture, flags } from './helpers.js';
+import { problem, makeApp, createTenant, Client, ownerQuery, PASSWORD, type TenantFixture, flags } from './helpers.js';
 import { hashPassword } from '../src/core/crypto/index.js';
 import { addDays, localDate } from '../src/modules/attendance/time.js';
 
@@ -78,8 +78,8 @@ describe('technical authorization', () => {
     const s = (await assess(lab, empId)).json().id;
     const r1 = await request(lab, s);
     expect(r1.statusCode).toBe(409);
-    expect(r1.json().error.code).toBe('prerequisites_missing');
-    expect(r1.json().error.message).toMatch(/PH/);
+    expect(problem(r1).code).toBe('prerequisites_missing');
+    expect(problem(r1).detail).toMatch(/PH/);
     expect((await train(empId, course.PH!)).statusCode).toBe(201);
     const r2 = await request(lab, s);
     expect(r2.statusCode).toBe(201);
@@ -115,12 +115,12 @@ describe('technical authorization', () => {
 
   it('rejects unusable assessments', async () => {
     const bad = (await assess(lab, empId, { activity: 'review', result: 'not_yet_competent' })).json().id;
-    expect((await request(lab, bad)).json().error.message).toMatch(/not find the person competent/);
+    expect(problem((await request(lab, bad))).detail).toMatch(/not find the person competent/);
     const old = (await assess(lab, empId, { activity: 'review', assessedOn: addDays(today, -200) })).json().id;
-    expect((await request(lab, old)).json().error.message).toMatch(/older than 180 days/);
+    expect(problem((await request(lab, old))).detail).toMatch(/older than 180 days/);
     const ok = (await assess(lab, empId, { activity: 'sampling', assessedOn: addDays(today, -10) })).json().id;
     await assess(lab, empId, { activity: 'sampling', assessedOn: addDays(today, -2), result: 'not_yet_competent' });
-    expect((await request(lab, ok)).json().error.message).toMatch(/later assessment/);
+    expect(problem((await request(lab, ok))).detail).toMatch(/later assessment/);
     expect((await assess(lab, empId, { assessedOn: addDays(today, 1) })).statusCode).toBe(400);
   });
 
@@ -135,7 +135,7 @@ describe('technical authorization', () => {
     expect(row.cells[methodId].perform).toMatchObject({ status: 'authorized', inForce: false });
     expect((await qm.post(`/api/v1/competency/authorizations/${authId}/suspend`, { reason: 'Training record withdrawn' })).statusCode).toBe(200);
     expect((await check(qm, empId)).json().reasons).toContain('Authorization is suspended');
-    expect((await qm.post(`/api/v1/competency/authorizations/${authId}/reinstate`, { reason: 'Back' })).json().error.code).toBe('prerequisites_missing');
+    expect(problem((await qm.post(`/api/v1/competency/authorizations/${authId}/reinstate`, { reason: 'Back' }))).code).toBe('prerequisites_missing');
     await train(empId, course.PH!);
     expect((await qm.post(`/api/v1/competency/authorizations/${authId}/reinstate`, { reason: 'Retrained and verified' })).statusCode).toBe(200);
     expect((await check(qm, empId)).json().authorized).toBe(true);

@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+### Changed (breaking)
+
+* Errors are RFC 7807 `application/problem+json` from one handler: `type`, `title`, `status`, `detail`, `instance`, `code`, `errors[]`. Removed: `{ error: { code, message, details } }`, with no compatibility shape. Object `details` are now top-level members (`duplicates`, `confirmable`, `problems`, `hiddenSubjects`).
+* Removed from error answers: database constraint names, and framework messages, which could quote the request body.
+
 ### Added
 
 * `REDIS_URL`: optional cache for settings and organization lookups, invalidated on write. Without it, or with it down, the app reads the database.

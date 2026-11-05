@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import type { FastifyInstance } from 'fastify';
-import { makeApp, createTenant, Client, ownerQuery, PASSWORD, type TenantFixture, flags } from './helpers.js';
+import { problem, makeApp, createTenant, Client, ownerQuery, PASSWORD, type TenantFixture, flags } from './helpers.js';
 import { readXlsx } from './helpers.js';
 import { hashPassword } from '../src/core/crypto/index.js';
 
@@ -105,7 +105,7 @@ describe('payroll run', () => {
     expect(l('PF_EE')).toBe(1500);             // ceiling
     expect(l('PT')).toBe(200);
     expect(item.warnings.join(' ')).toMatch(/ESI.*not deducted/); // ESI expected but no rule
-    expect((await pay.post(`/api/v1/payroll/runs/${runId}/submit`)).json().error.message).toMatch(/acknowledge/);
+    expect(problem((await pay.post(`/api/v1/payroll/runs/${runId}/submit`))).detail).toMatch(/acknowledge/);
   });
 
   it('adjustments force a recompute; LOP can be corrected', async () => {
@@ -124,10 +124,10 @@ describe('payroll run', () => {
     expect((await pay.post(`/api/v1/payroll/runs/${runId}/submit`)).statusCode).toBe(200);
     expect((await pay.get('/api/v1/approvals/inbox')).json().items.some((x: { entity_id: string }) => x.entity_id === runId)).toBe(false);
     await approve(fin, runId);
-    expect((await pay.post(`/api/v1/payroll/runs/${runId}/finalize`)).json().error.message).toMatch(/Lock attendance/);
+    expect(problem((await pay.post(`/api/v1/payroll/runs/${runId}/finalize`))).detail).toMatch(/Lock attendance/);
     await ownerQuery(`INSERT INTO attendance_period_locks (tenant_id, period_start, period_end, locked_by) VALUES ($1,'2026-09-01','2026-09-30',$2)`, [T.id, T.users.payroll!.id]);
     // The result predates the lock, so it has to be recomputed and approved again.
-    expect((await pay.post(`/api/v1/payroll/runs/${runId}/finalize`)).json().error.message).toMatch(/Reopen the run/);
+    expect(problem((await pay.post(`/api/v1/payroll/runs/${runId}/finalize`))).detail).toMatch(/Reopen the run/);
     expect((await pay.post(`/api/v1/payroll/runs/${runId}/reopen`)).statusCode).toBe(200);
     expect((await pay.post(`/api/v1/payroll/runs/${runId}/compute?reveal=1`)).statusCode).toBe(200);
     await pay.post(`/api/v1/payroll/runs/${runId}/acknowledge-warnings`, { note: 'ESI not applicable at this branch — confirmed with consultant' });
@@ -165,7 +165,7 @@ describe('payroll run', () => {
   it('F&F runs need an approved separation; module off → 403', async () => {
     expect((await pay.post('/api/v1/payroll/runs', { period: PERIOD, legalEntityId: T.legalEntityId, kind: 'fnf', employeeId: empId })).statusCode).toBe(409);
     const off = await makeApp({ ...flags('default') });
-    try { expect((await (await Client.login(off, T.host, T.users.payroll!.email)).get('/api/v1/payroll/runs?reveal=1')).json().error.code).toBe('not_found'); }
+    try { expect(problem((await (await Client.login(off, T.host, T.users.payroll!.email)).get('/api/v1/payroll/runs?reveal=1'))).code).toBe('not_found'); }
     finally { await off.close(); }
     void hr;
   });

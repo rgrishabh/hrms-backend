@@ -2,7 +2,7 @@ import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import pg from 'pg';
 import { randomUUID } from 'node:crypto';
 import type { FastifyInstance } from 'fastify';
-import { makeApp, createTenant, Client, type TenantFixture, flags } from './helpers.js';
+import { problem, makeApp, createTenant, Client, type TenantFixture, flags } from './helpers.js';
 import { TEST_OWNER_URL } from './env.js';
 import { createApprovalRequest } from '../src/core/workflow/engine.js';
 import type { Db } from '../src/db/tx.js';
@@ -30,7 +30,7 @@ describe('approval engine', () => {
     expect(await inInbox(hr, id)).toBe(false);
     const r = await hr.post(`/api/v1/approvals/${id}/act`, { action: 'approve' });
     expect(r.statusCode).toBe(403);
-    expect(r.json().error.message).toMatch(/prepared or that concerns you/);
+    expect(problem(r).detail).toMatch(/prepared or that concerns you/);
     const [n] = (await c.query(`SELECT count(*)::int AS n FROM notifications WHERE tenant_id=$1 AND user_id=$2 AND kind='approval.requested'`, [T.id, T.users.hr!.id])).rows;
     expect(n.n).toBe(0);
   });
@@ -47,6 +47,6 @@ describe('approval engine', () => {
     expect(await inInbox(hr, id)).toBe(false);
     const again = await hr.post(`/api/v1/approvals/${id}/act`, { action: 'approve' });
     expect(again.statusCode).toBe(403);
-    expect(again.json().error.message).toMatch(/different person/);
+    expect(problem(again).detail).toMatch(/different person/);
   });
 });

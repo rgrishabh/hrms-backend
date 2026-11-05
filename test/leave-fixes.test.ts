@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import type { FastifyInstance } from 'fastify';
-import { makeApp, createTenant, Client, ownerQuery, type TenantFixture, flags } from './helpers.js';
+import { problem, makeApp, createTenant, Client, ownerQuery, type TenantFixture, flags } from './helpers.js';
 
 const MODULES = 'default,payroll,payroll.payslips,payroll.statutory,overtime,core.offboarding';
 let app: FastifyInstance;
@@ -38,7 +38,7 @@ describe('F-2 year-end carry-forward', () => {
     await w.hr.post('/api/v1/leave/year-end', { leaveYear: Y });
     const r = await w.hr.post('/api/v1/leave/requests', { leaveTypeId: el, startDate: '2024-06-03', endDate: '2024-06-04', reason: 'Backdated', employeeId: w.empId });
     expect(r.statusCode).toBe(409);
-    expect(r.json().error.message).toMatch(/closed/i);
+    expect(problem(r).detail).toMatch(/closed/i);
     expect((await w.hr.post('/api/v1/leave/requests', { leaveTypeId: lwp, startDate: '2024-06-03', endDate: '2024-06-04', reason: 'Backdated unpaid', employeeId: w.empId })).statusCode).toBe(201);
     expect((await w.hr.post('/api/v1/leave/adjustments', { employeeId: w.empId, leaveTypeId: el, leaveYear: Y, days: 1, note: 'Into closed year' })).statusCode).toBe(409);
     expect((await w.hr.post('/api/v1/leave/accruals', { leaveYear: Y })).statusCode).toBe(409);
@@ -67,7 +67,7 @@ describe('F-2 year-end carry-forward', () => {
     const w = await world();
     const r = await w.hr.post('/api/v1/leave/year-end', { leaveYear: new Date().getUTCFullYear() });
     expect(r.statusCode).toBe(409);
-    expect(r.json().error.message).toMatch(/has not ended|runs until/i);
+    expect(problem(r).detail).toMatch(/has not ended|runs until/i);
   });
 
   it('caps the carried amount at max_balance and lapses the rest', async () => {

@@ -4,7 +4,7 @@ import { mkdtempSync, mkdirSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import type { FastifyInstance } from 'fastify';
-import { makeApp, Client } from './helpers.js';
+import { problem, makeApp, Client } from './helpers.js';
 import { TEST_SINGLE_APP_URL, TEST_SINGLE_OWNER_URL, TEST_SINGLE_B_APP_URL, TEST_SINGLE_B_OWNER_URL, TEST_BRAND } from './env.js';
 import { bootstrapInstallation, parseBootstrapArgs, type BootstrapOptions } from '../src/db/bootstrap.js';
 import { loadInstallationEnv } from '../src/config/env.js';
@@ -77,7 +77,7 @@ describe('bootstrap: first administrator via one-time setup link', () => {
     expect((await c.post('/api/v1/auth/setup', { token: tokenOf(setupUrl), newPassword: 'short' })).statusCode).toBe(400);
     expect((await c.post('/api/v1/auth/setup', { token: tokenOf(setupUrl), newPassword: 'Acme-Admin-Password-1' })).statusCode).toBe(200);
     const reuse = await c.post('/api/v1/auth/setup', { token: tokenOf(setupUrl), newPassword: 'Another-Password-22' });
-    expect(reuse.json().error.code).toBe('setup_link_invalid');
+    expect(problem(reuse).code).toBe('setup_link_invalid');
     const admin = await Client.login(appA, A.host, 'owner@acme-labs.test', 'Acme-Admin-Password-1');
     expect(admin.passwordChangeRequired).toBe(false);
     const audit = await q<{ action: string }>(A.owner, `SELECT action FROM audit_logs WHERE action LIKE 'auth.setup%' ORDER BY id`);
@@ -98,7 +98,7 @@ describe('bootstrap: first administrator via one-time setup link', () => {
     const r = await boot(A, envA, { resetAdmin: true });
     await q(A.owner, `UPDATE admin_setup_tokens SET expires_at = now() - interval '1 minute' WHERE used_at IS NULL`);
     const res = await new Client(appA, A.host).post('/api/v1/auth/setup', { token: tokenOf(r.setupUrl!), newPassword: 'Acme-Admin-Password-2' });
-    expect(res.json().error.code).toBe('setup_link_invalid');
+    expect(problem(res).code).toBe('setup_link_invalid');
   });
 
   it('--reset-admin recovers access: old password and sessions stop working, a new link works', async () => {
@@ -156,7 +156,7 @@ describe('bootstrap: password mode (secret store) forces a password change', () 
     expect((await c.get('/api/v1/auth/me')).json().passwordChangeRequired).toBe(true);
     const blocked = await c.get('/api/v1/employees');
     expect(blocked.statusCode).toBe(403);
-    expect(blocked.json().error.code).toBe('password_change_required');
+    expect(problem(blocked).code).toBe('password_change_required');
     expect((await c.post('/api/v1/auth/password', { currentPassword: 'From-Secrets-Manager-1', newPassword: 'From-Secrets-Manager-1' })).statusCode).toBe(400);
     expect((await c.post('/api/v1/auth/password', { currentPassword: 'From-Secrets-Manager-1', newPassword: 'Admin-Chosen-Password-4' })).statusCode).toBe(200);
     expect((await c.get('/api/v1/employees')).statusCode).toBe(200);

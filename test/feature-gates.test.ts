@@ -1,9 +1,9 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import type { FastifyInstance } from 'fastify';
-import { makeApp, createTenant, Client, type TenantFixture, flags } from './helpers.js';
+import { problem, makeApp, createTenant, Client, type TenantFixture, flags } from './helpers.js';
 
 const ID = '00000000-0000-4000-8000-000000000001';
-const code = (r: { json: () => { error?: { code?: string } } }) => r.json().error?.code;
+const code = (r: Parameters<typeof problem>[0]) => (r.statusCode >= 400 ? problem(r).code : undefined);
 
 /**
  * Every route of a module is refused while its module is off, not only the

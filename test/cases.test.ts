@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import type { FastifyInstance } from 'fastify';
-import { makeApp, createTenant, Client, ownerQuery, type TenantFixture, flags } from './helpers.js';
+import { problem, makeApp, createTenant, Client, ownerQuery, type TenantFixture, flags } from './helpers.js';
 import { addDays, localDate } from '../src/modules/attendance/time.js';
 
 const today = localDate(new Date(), 'Asia/Kolkata');
@@ -35,7 +35,7 @@ describe('POSH', () => {
     expect((await admin.get('/api/v1/cases/people?search=it')).json().items.some((u: { id: string }) => u.id === T.users.it!.id)).toBe(true);
     expect((await emp.get('/api/v1/cases/people')).statusCode).toBe(403); // composition is public within the organization
     expect((await emp.post('/api/v1/cases', { ...body, anonymous: true })).statusCode).toBe(400);
-    expect((await emp.post('/api/v1/cases', { ...body, incidentDate: addDays(today, -120) })).json().error.message).toMatch(/three months/);
+    expect(problem((await emp.post('/api/v1/cases', { ...body, incidentDate: addDays(today, -120) }))).detail).toMatch(/three months/);
     const r = await emp.post('/api/v1/cases', body);
     expect(r.statusCode).toBe(201);
     expect(r.json().reference).toBe('IC-0001');
@@ -138,7 +138,7 @@ describe('grievances', () => {
     expect((await hr.runJob('cases.deadlines')).json().status).toBe('succeeded');
     expect((await ownerQuery(`SELECT 1 FROM notifications WHERE tenant_id=$1 AND user_id=$2 AND kind='cases.deadline'`, [T.id, T.users.it!.id])).length).toBe(1);
     const off = await makeApp({ ...flags('default') });
-    try { expect((await (await Client.login(off, T.host, T.users.employee!.email)).get('/api/v1/cases?kind=grievance')).json().error.code).toBe('not_found'); }
+    try { expect(problem((await (await Client.login(off, T.host, T.users.employee!.email)).get('/api/v1/cases?kind=grievance'))).code).toBe('not_found'); }
     finally { await off.close(); }
   });
 });

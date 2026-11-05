@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import type { FastifyInstance } from 'fastify';
-import { makeApp, createTenant, Client, ownerQuery, type TenantFixture, flags } from './helpers.js';
+import { problem, makeApp, createTenant, Client, ownerQuery, type TenantFixture, flags } from './helpers.js';
 
 let app: FastifyInstance; let T: TenantFixture;
 let hr: Client; let emp: Client; let mgr: Client; let other: Client; let pay: Client;
@@ -60,8 +60,8 @@ describe('employee personal details', () => {
   });
 
   it('rejects invalid entries with a clear reason', async () => {
-    expect((await put(emp, 'addresses', [{ ...ADDRESSES[0], postalCode: '41104' }])).json().error.details).toEqual([{ path: '0.postalCode', message: 'Enter a 6-digit PIN code' }]);
-    expect((await put(emp, 'addresses', [ADDRESSES[0], ADDRESSES[0]])).json().error.message).toMatch(/once/);
+    expect(problem((await put(emp, 'addresses', [{ ...ADDRESSES[0], postalCode: '41104' }]))).errors).toEqual([{ path: '0.postalCode', message: 'Enter a 6-digit PIN code' }]);
+    expect(problem((await put(emp, 'addresses', [ADDRESSES[0], ADDRESSES[0]]))).detail).toMatch(/once/);
     expect((await put(emp, 'contacts', Array(6).fill({ name: 'Someone', relationship: 'Friend', phone: '9822012345' }))).statusCode).toBe(400);
     expect((await put(other, 'contacts', [], empId)).statusCode).toBe(404);   // not someone else's
   });
@@ -69,8 +69,8 @@ describe('employee personal details', () => {
   it('nominee changes by the employee wait for HR approval, which checks shares and minors', async () => {
     const minor = { purpose: 'pf', name: 'Aarav Kulkarni', relationship: 'Son', dateOfBirth: yearsAgo(8), sharePercent: 40 };
     const spouse = { purpose: 'pf', name: 'Meera Kulkarni', relationship: 'Spouse', dateOfBirth: yearsAgo(34), sharePercent: 60 };
-    expect((await put(emp, 'nominees', [spouse, { ...minor, sharePercent: 30, guardianName: 'Meera Kulkarni' }])).json().error.message).toMatch(/add up to 90%/);
-    expect((await put(emp, 'nominees', [spouse, minor])).json().error.message).toMatch(/minor: name a guardian/);
+    expect(problem((await put(emp, 'nominees', [spouse, { ...minor, sharePercent: 30, guardianName: 'Meera Kulkarni' }]))).detail).toMatch(/add up to 90%/);
+    expect(problem((await put(emp, 'nominees', [spouse, minor]))).detail).toMatch(/minor: name a guardian/);
     const r = await put(emp, 'nominees', [spouse, { ...minor, guardianName: 'Meera Kulkarni' }]);
     expect(r.statusCode, r.body).toBe(202);
     const { changeId } = r.json();
@@ -104,7 +104,7 @@ describe('employee personal details', () => {
   });
 
   it('HR edits directly; previous employment must end by the date of joining', async () => {
-    expect((await put(hr, 'experience', [{ employer: 'Acme Labs', designation: 'Chemist', fromDate: '2021-06-01', toDate: '2024-02-15' }])).json().error.message).toMatch(/by the date of joining/);
+    expect(problem((await put(hr, 'experience', [{ employer: 'Acme Labs', designation: 'Chemist', fromDate: '2021-06-01', toDate: '2024-02-15' }]))).detail).toMatch(/by the date of joining/);
     expect((await put(hr, 'experience', [{ employer: 'Acme Labs', designation: 'Chemist', fromDate: '2021-06-01', toDate: '2023-12-31', reasonForLeaving: 'Relocation' }])).json()).toEqual({ applied: true });
     expect((await profile(emp)).json().sections.experience).toEqual([expect.objectContaining({ employer: 'Acme Labs', toDate: '2023-12-31' })]);
     expect((await put(mgr, 'experience', [], empId)).statusCode).toBe(404);

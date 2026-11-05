@@ -3,7 +3,7 @@ import { existsSync, mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import type { FastifyInstance } from 'fastify';
-import { makeApp, createTenant, Client, ownerQuery, multipart, PASSWORD, type TenantFixture, flags } from './helpers.js';
+import { problem, makeApp, createTenant, Client, ownerQuery, multipart, PASSWORD, type TenantFixture, flags } from './helpers.js';
 import { LocalStore, setStore } from '../src/core/storage/index.js';
 import { hashPassword } from '../src/core/crypto/index.js';
 import { addDays, localDate } from '../src/modules/attendance/time.js';
@@ -71,7 +71,7 @@ describe('requisitions', () => {
 
 describe('candidates', () => {
   it('requires consent and a contact; rejects non-documents; detects duplicates; restricts CTC', async () => {
-    expect(JSON.stringify((await addCandidate(hr, { consent: 'false' })).json().error.details)).toMatch(/consent/);
+    expect(JSON.stringify(problem((await addCandidate(hr, { consent: 'false' }))).errors)).toMatch(/consent/);
     expect((await addCandidate(hr, { email: '', phone: '' })).statusCode).toBe(400);
     expect((await addCandidate(hr, {}, Buffer.from('MZ\x90\x00 binary'), 'cv.exe')).statusCode).toBe(415);
     expect((await addCandidate(hrExec, { expectedCtc: '800000' })).statusCode).toBe(403);
@@ -80,7 +80,7 @@ describe('candidates', () => {
     candId = c.json().id;
     const dup = await addCandidate(hr, { email: 'ASHA.RAO@mail.example', phone: '' });
     expect(dup.statusCode).toBe(409);
-    expect(dup.json().error.details.duplicates[0].id).toBe(candId);
+    expect(problem(dup).duplicates[0].id).toBe(candId);
     expect((await addCandidate(hr, { firstName: 'Ravi', email: 'ravi@mail.example', phone: '+91 98765 43210' })).statusCode).toBe(409); // shared phone…
     expect((await addCandidate(hr, { firstName: 'Ravi', email: 'ravi@mail.example', phone: '+91 98765 43210', confirmDuplicate: 'true' })).statusCode).toBe(201); // …confirmed
     expect((await hr.get(`/api/v1/recruitment/candidates/${candId}?reveal=1`)).json().expected_ctc).toBe('850000.00');
@@ -99,7 +99,7 @@ describe('pipeline and interviews', () => {
     appId = r.json().id;
     expect((await hr.post('/api/v1/recruitment/applications', { requisitionId: reqId, candidateId: candId })).statusCode).toBe(409);
     expect((await move('interview')).statusCode).toBe(409); // must screen first
-    expect((await move('hired')).json().error.message).toMatch(/accepted offer/);
+    expect(problem((await move('hired'))).detail).toMatch(/accepted offer/);
     expect((await move('screening')).statusCode).toBe(200);
     expect((await move('rejected')).statusCode).toBe(400);
     expect((await move('interview', { note: 'Strong CRM experience' })).statusCode).toBe(200);
@@ -221,7 +221,7 @@ describe('retention and erasure', () => {
     expect((await hrExec.post(`/api/v1/recruitment/candidates/${ravi}/anonymize`, { reason: 'Candidate asked us to delete their data' })).statusCode).toBe(200);
     expect((await hrExec.post(`/api/v1/recruitment/candidates/${ravi}/anonymize`, { reason: 'again' })).statusCode).toBe(404);
     const off = await makeApp({ ...flags('default') });
-    try { expect((await (await Client.login(off, T.host, T.users.hr!.email)).get('/api/v1/recruitment/requisitions?reveal=1')).json().error.code).toBe('not_found'); }
+    try { expect(problem((await (await Client.login(off, T.host, T.users.hr!.email)).get('/api/v1/recruitment/requisitions?reveal=1'))).code).toBe('not_found'); }
     finally { await off.close(); }
   });
 });

@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import type { FastifyInstance } from 'fastify';
-import { makeApp, createTenant, Client, ownerQuery, PASSWORD, type TenantFixture, flags } from './helpers.js';
+import { problem, makeApp, createTenant, Client, ownerQuery, PASSWORD, type TenantFixture, flags } from './helpers.js';
 import { hashPassword } from '../src/core/crypto/index.js';
 import { addDays, localDate } from '../src/modules/attendance/time.js';
 
@@ -37,7 +37,7 @@ afterAll(async () => { await app.close(); });
 
 describe('onboarding checklists', () => {
   it('needs a template; tasks are dated from the joining date and routed to their owners', async () => {
-    expect((await hr.post('/api/v1/lifecycle/checklists', { employeeId: empId })).json().error.message).toMatch(/template/);
+    expect(problem((await hr.post('/api/v1/lifecycle/checklists', { employeeId: empId }))).detail).toMatch(/template/);
     expect((await emp.post('/api/v1/lifecycle/templates', { kind: 'onboarding', name: 'x', tasks: [{ title: 'x', owner: 'hr' }] })).statusCode).toBe(403);
     const t = await hr.post('/api/v1/lifecycle/templates', { kind: 'onboarding', name: 'Lab joiner', isDefault: true, tasks: [
       { title: 'Collect ID and address proof', owner: 'hr', offsetDays: -3 }, { title: 'Create HRMS and LIMS accounts', owner: 'it', offsetDays: -1 },
@@ -141,10 +141,10 @@ describe('separations', () => {
     expect((await emp.get(`/api/v1/lifecycle/separations/${sepId}`)).json().exit_interview).toBeUndefined();
     expect((await hr.get(`/api/v1/lifecycle/separations/${sepId}`)).json().exit_interview.reason).toBe('Higher studies');
     expect((await other.get(`/api/v1/lifecycle/separations/${sepId}`)).statusCode).toBe(404);
-    expect((await hr.post(`/api/v1/lifecycle/separations/${sepId}/complete`, { rehireEligible: true })).json().error.message).toMatch(/last working day/);
+    expect(problem((await hr.post(`/api/v1/lifecycle/separations/${sepId}/complete`, { rehireEligible: true }))).detail).toMatch(/last working day/);
     await ownerQuery(`UPDATE separations SET approved_lwd=$2::date - 1, notice_date=$2::date - 31 WHERE id=$1`, [sepId, today]);
     await ownerQuery(`UPDATE employees SET date_of_joining=$2::date - 400 WHERE id=$1`, [empId, today]); // joined long before leaving
-    expect((await hr.post(`/api/v1/lifecycle/separations/${sepId}/complete`, { rehireEligible: true })).json().error.message).toMatch(/clearance task/);
+    expect(problem((await hr.post(`/api/v1/lifecycle/separations/${sepId}/complete`, { rehireEligible: true }))).detail).toMatch(/clearance task/);
     const d = (await hr.get(`/api/v1/lifecycle/separations/${sepId}`)).json();
     for (const t of d.checklist.tasks) await hr.post(`/api/v1/lifecycle/tasks/${t.id}/done`, { note: 'Cleared' });
     expect((await hr.post(`/api/v1/lifecycle/separations/${sepId}/complete`, { rehireEligible: true })).statusCode).toBe(200);
@@ -170,7 +170,7 @@ describe('separations', () => {
 
   it('module off → 403', async () => {
     const off = await makeApp({ ...flags('default') });
-    try { expect((await (await Client.login(off, T.host, T.users.hr!.email)).get('/api/v1/lifecycle/separations')).json().error.code).toBe('not_found'); }
+    try { expect(problem((await (await Client.login(off, T.host, T.users.hr!.email)).get('/api/v1/lifecycle/separations'))).code).toBe('not_found'); }
     finally { await off.close(); }
   });
 });

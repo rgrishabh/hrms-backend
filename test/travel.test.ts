@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import type { FastifyInstance } from 'fastify';
-import { makeApp, createTenant, Client, ownerQuery, PASSWORD, type TenantFixture, flags } from './helpers.js';
+import { problem, makeApp, createTenant, Client, ownerQuery, PASSWORD, type TenantFixture, flags } from './helpers.js';
 import { hashPassword } from '../src/core/crypto/index.js';
 
 let app: FastifyInstance; let T: TenantFixture;
@@ -52,10 +52,10 @@ afterAll(async () => { await app.close(); });
 
 describe('travel', () => {
   it('checks dates, length and the advance against the estimate', async () => {
-    expect((await trip(emp, { startDate: plus(-1), endDate: plus(0) })).json().error.message).toMatch(/past dates/);
+    expect(problem((await trip(emp, { startDate: plus(-1), endDate: plus(0) }))).detail).toMatch(/past dates/);
     expect((await trip(emp, { startDate: plus(3), endDate: plus(2) })).statusCode).toBe(400);
-    expect((await trip(emp, { startDate: plus(1), endDate: plus(70) })).json().error.message).toMatch(/at most 60 days/);
-    expect((await trip(emp, { advance: 5300 })).json().error.message).toMatch(/at most 80% of the estimate \(₹5,200\)/);
+    expect(problem((await trip(emp, { startDate: plus(1), endDate: plus(70) }))).detail).toMatch(/at most 60 days/);
+    expect(problem((await trip(emp, { advance: 5300 }))).detail).toMatch(/at most 80% of the estimate \(₹5,200\)/);
     expect((await trip(emp, { estimate: {}, advance: 100 })).statusCode).toBe(400);
   });
 
@@ -63,7 +63,7 @@ describe('travel', () => {
     const r = await trip(emp, {});
     expect(r.statusCode, r.body).toBe(201);
     const id = r.json().id;
-    expect((await trip(emp, { startDate: plus(11), endDate: plus(12) })).json().error.message).toMatch(/Overlaps a pending trip/);
+    expect(problem((await trip(emp, { startDate: plus(11), endDate: plus(12) }))).detail).toMatch(/Overlaps a pending trip/);
     expect((await other.get(`/api/v1/travel/requests/${id}`)).statusCode).toBe(404);
     expect((await emp.get('/api/v1/travel/requests?scope=all')).statusCode).toBe(403);
     const step = await approve(mgr, id);
@@ -98,9 +98,9 @@ describe('travel', () => {
     const claimId = await claimFor(id, 3000);
     expect(await claim(claimId)).toMatchObject({ status: 'paid', advance_adjusted: '3000.00', payment_reference: 'Set off against travel advance' });
     expect((await get(id)).settlement).toMatchObject({ advancePaid: '4000.00', claimed: '3000.00', advanceAdjusted: '3000.00', reimbursable: '0.00', outstanding: '1000.00' });
-    expect((await fin.post(`/api/v1/travel/requests/${id}/close`)).json().error.message).toMatch(/marked it completed/);
+    expect(problem((await fin.post(`/api/v1/travel/requests/${id}/close`))).detail).toMatch(/marked it completed/);
     expect((await emp.post(`/api/v1/travel/requests/${id}/complete`)).statusCode).toBe(200);
-    expect((await fin.post(`/api/v1/travel/requests/${id}/close`)).json().error.message).toMatch(/Part of the advance is still outstanding/);
+    expect(problem((await fin.post(`/api/v1/travel/requests/${id}/close`))).detail).toMatch(/Part of the advance is still outstanding/);
     expect((await fin.post(`/api/v1/travel/requests/${id}/advance-returned`, { amount: 1500, note: 'Cash' })).statusCode).toBe(400);
     expect((await fin.post(`/api/v1/travel/requests/${id}/advance-returned`, { amount: 1000, note: 'Returned in cash to accounts' })).json()).toMatchObject({ outstanding: '0.00' });
     expect((await fin.post(`/api/v1/travel/requests/${id}/close`)).statusCode).toBe(200);

@@ -2,7 +2,7 @@ import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import pg from 'pg';
 import { randomUUID } from 'node:crypto';
 import type { FastifyInstance } from 'fastify';
-import { makeApp, createTenant, Client, ownerQuery, type TenantFixture, flags } from './helpers.js';
+import { problem, makeApp, createTenant, Client, ownerQuery, type TenantFixture, flags } from './helpers.js';
 import { TEST_OWNER_URL } from './env.js';
 import { createApprovalRequest, registerApprovalHandler, type StepSpec } from '../src/core/workflow/engine.js';
 import type { Db } from '../src/db/tx.js';
@@ -55,13 +55,13 @@ describe('delegation', () => {
   it('refuses overlapping, chained, back-dated and too-long delegations', async () => {
     let r = await delegate(mgr, 'hr', day(2), day(5));
     expect(r.statusCode).toBe(409);
-    expect(r.json().error.message).toMatch(/already handed to other/);
+    expect(problem(r).detail).toMatch(/already handed to other/);
     r = await delegate(hr, 'manager', day(1), day(2));
     expect(r.statusCode).toBe(409);
-    expect(r.json().error.message).toMatch(/manager is handing over their own approvals/);
-    expect((await delegate(hr, 'other', day(-1), day(2))).json().error.message).toMatch(/cannot start in the past/);
-    expect((await delegate(hr, 'other', today, day(90))).json().error.message).toMatch(/at most 90 days/);
-    expect((await delegate(hr, 'hr')).json().error.message).toMatch(/someone else/);
+    expect(problem(r).detail).toMatch(/manager is handing over their own approvals/);
+    expect(problem((await delegate(hr, 'other', day(-1), day(2)))).detail).toMatch(/cannot start in the past/);
+    expect(problem((await delegate(hr, 'other', today, day(90)))).detail).toMatch(/at most 90 days/);
+    expect(problem((await delegate(hr, 'hr'))).detail).toMatch(/someone else/);
     // Only HR sets one up for someone else.
     r = await emp.post('/api/v1/approvals/delegations', { delegateId: T.users.other!.id, startsOn: today, endsOn: today, delegatorId: T.users.hr!.id });
     expect(r.statusCode).toBe(403);
@@ -98,7 +98,7 @@ describe('delegation', () => {
     expect(await inboxItem(other, id)).toBeUndefined();
     const x = await other.post(`/api/v1/approvals/${id}/act`, { action: 'approve' });
     expect(x.statusCode).toBe(403);
-    expect(x.json().error.message).toMatch(/covering for decided an earlier step/);
+    expect(problem(x).detail).toMatch(/covering for decided an earlier step/);
 
     await revokeAll();
     const onBehalf = await hr.post('/api/v1/approvals/delegations', { delegateId: T.users.other!.id, startsOn: today, endsOn: today, delegatorId: T.users.manager!.id });

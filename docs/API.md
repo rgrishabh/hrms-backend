@@ -4,7 +4,14 @@ Base path `/api/v1`. JSON in and out. Each installation serves one organization;
 
 **Auth:** `POST /auth/login` sets an httpOnly session cookie and returns `csrfToken`. Every `POST/PUT/PATCH/DELETE` made with the cookie must send `x-csrf-token`. Device ingestion uses `X-Device-Key` instead.
 
-**Errors:** `{ "error": { "code": "...", "message": "...", "details": ... } }`. Codes include `validation_failed` (400, details = `[{path, message}]`), `setup_link_invalid` (400), `unauthorized` (401), `forbidden` (403), `feature_not_configured` (409: the module is on but needs setting up; a module that is off has no routes and answers 404), `password_change_required` (403), `csrf_failed` (403), `not_found` / `unknown_tenant` (404), `conflict` / `duplicate` (409), `rate_limited` (429).
+**Errors:** RFC 7807, `application/problem+json`, from one handler, including 404 and rate limits:
+
+```json
+{ "type": "urn:hrms:problem:validation_failed", "title": "Bad request", "status": 400, "detail": "Some fields are invalid",
+  "instance": "urn:uuid:<request id>", "code": "validation_failed", "errors": [{ "path": "employee.firstName", "message": "Required" }] }
+```
+
+`code` is what a client branches on. `errors` is always present, empty when no field is at fault. Some codes add members beside these, such as `duplicates` and `confirmable`, `problems` on `weak_password`, `hiddenSubjects` on `requires_higher_level`, `feature` and `reason` on `feature_not_configured`. No stack trace, SQL, constraint name, file path or quoted request body appears in any of it. Codes include `validation_failed` (400), `setup_link_invalid` (400), `unauthorized` (401), `forbidden` (403), `feature_not_configured` (409: the module is on but needs setting up; a module that is off has no routes and answers 404), `password_change_required` (403), `csrf_failed` (403), `not_found` / `unknown_tenant` (404), `conflict` / `duplicate` (409), `payload_too_large` (413), `unsupported_media_type` (415), `rate_limited` (429), `internal` (500).
 
 **Pagination:** `?page=1&pageSize=25` (max 100) → `{ items, page, pageSize, total }`.
 

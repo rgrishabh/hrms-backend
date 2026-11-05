@@ -3,7 +3,7 @@ import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import type { FastifyInstance } from 'fastify';
-import { makeApp, createTenant, Client, ownerQuery, multipart, PASSWORD, type TenantFixture, flags } from './helpers.js';
+import { problem, makeApp, createTenant, Client, ownerQuery, multipart, PASSWORD, type TenantFixture, flags } from './helpers.js';
 import { readXlsx } from './helpers.js';
 import { LocalStore, setStore } from '../src/core/storage/index.js';
 import { hashPassword } from '../src/core/crypto/index.js';
@@ -43,7 +43,7 @@ describe('policies', () => {
     const p = await hr.post('/api/v1/policies', { code: 'coc', title: 'Code of conduct', category: 'code_of_conduct', owner: 'HR' });
     expect(p.statusCode).toBe(201);
     policyId = p.json().id;
-    expect((await draft(hr, policyId, {})).json().error.message).toMatch(/text, a PDF/);
+    expect(problem((await draft(hr, policyId, {}))).detail).toMatch(/text, a PDF/);
     expect((await draft(hr, policyId, {}, Buffer.from('MZ\x90\x00 not a pdf'))).statusCode).toBe(415);
     const d = await draft(hr, policyId, { body: 'Be honest. Report conflicts of interest.' }, PDF);
     expect(d.statusCode).toBe(201);
@@ -69,7 +69,7 @@ describe('policies', () => {
   });
 
   it('acknowledgement is bound to the content shown, once, and is reported', async () => {
-    expect((await emp.post(`/api/v1/policies/versions/${v1}/acknowledge`, { contentSha256: '0'.repeat(64) })).json().error.message).toMatch(/changed since you opened/);
+    expect(problem((await emp.post(`/api/v1/policies/versions/${v1}/acknowledge`, { contentSha256: '0'.repeat(64) }))).detail).toMatch(/changed since you opened/);
     const r = await ack(emp, v1);
     expect(r.json()).toMatchObject({ ok: true, alreadyAcknowledged: false });
     expect((await ack(emp, v1)).json().alreadyAcknowledged).toBe(true);
@@ -92,7 +92,7 @@ describe('policies', () => {
     const before = (await emp.get(`/api/v1/policies/versions/${v1}`)).json();
     v2 = (await draft(hr, policyId, { changeSummary: 'Added gifts section', body: 'Be honest. No gifts above ₹1000.' })).json().id;
     await qm.post(`/api/v1/policies/versions/${v2}/publish`);
-    expect((await emp.post(`/api/v1/policies/versions/${v1}/acknowledge`, { contentSha256: before.contentSha256 })).json().error.message).toMatch(/no longer current/);
+    expect(problem((await emp.post(`/api/v1/policies/versions/${v1}/acknowledge`, { contentSha256: before.contentSha256 }))).detail).toMatch(/no longer current/);
     expect((await emp.get(`/api/v1/policies/versions/${v1}`)).statusCode).toBe(200); // still readable: they acknowledged it
     expect((await other.get(`/api/v1/policies/versions/${v1}`)).statusCode).toBe(404); // superseded and never acknowledged
     const mine = (await emp.get('/api/v1/policies/mine')).json();
@@ -128,7 +128,7 @@ describe('policies', () => {
 
   it('is unavailable when the module is off', async () => {
     const off = await makeApp({ ...flags('default') });
-    try { expect((await (await Client.login(off, T.host, T.users.hr!.email)).get('/api/v1/policies')).json().error.code).toBe('not_found'); }
+    try { expect(problem((await (await Client.login(off, T.host, T.users.hr!.email)).get('/api/v1/policies'))).code).toBe('not_found'); }
     finally { await off.close(); }
   });
 });

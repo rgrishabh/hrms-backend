@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import type { FastifyInstance } from 'fastify';
-import { Client, createTenant, makeApp, ownerQuery, PASSWORD, type TenantFixture } from './helpers.js';
+import { problem, Client, createTenant, makeApp, ownerQuery, PASSWORD, type TenantFixture } from './helpers.js';
 
 let app: FastifyInstance; let T: TenantFixture;
 beforeAll(async () => { app = await makeApp(); T = await createTenant(); });
@@ -24,9 +24,9 @@ describe('session cookie', () => {
   it('unsafe requests need the CSRF token', async () => {
     const c = await Client.login(app, T.host, T.users.other!.email);
     const csrf = c.csrf; c.csrf = '';
-    expect((await c.post('/api/v1/auth/logout')).json().error.code).toBe('csrf_failed');
+    expect(problem((await c.post('/api/v1/auth/logout'))).code).toBe('csrf_failed');
     c.csrf = 'a'.repeat(64);
-    expect((await c.post('/api/v1/auth/logout')).json().error.code).toBe('csrf_failed');
+    expect(problem((await c.post('/api/v1/auth/logout'))).code).toBe('csrf_failed');
     c.csrf = csrf;
     expect((await c.post('/api/v1/auth/logout')).statusCode).toBe(200);
   });
@@ -39,16 +39,16 @@ describe('a session in the cookie does not stand in the way of signing in or of 
       const X = await createTenant(); const email = X.users.employee!.email;
       await ownerQuery(`UPDATE users SET mfa_enabled_at=now(), mfa_method='totp', mfa_secret_enc='x' WHERE id=$1`, [X.users.employee!.id]);
       const c = await Client.login(a, X.host, email);
-      expect((await c.get('/api/v1/employees')).json().error.code).toBe('mfa_required');
+      expect(problem((await c.get('/api/v1/employees'))).code).toBe('mfa_required');
       c.csrf = '';
       expect((await c.post('/api/v1/auth/password/forgot', { email })).statusCode).toBe(200);
       const old = c.cookie;
       expect((await c.post('/api/v1/auth/login', { email, password: PASSWORD })).statusCode).toBe(200);
       expect(c.cookie).not.toBe(old);
       // Everything else still needs the code and the token.
-      expect((await c.get('/api/v1/employees')).json().error.code).toBe('mfa_required');
+      expect(problem((await c.get('/api/v1/employees'))).code).toBe('mfa_required');
       c.csrf = '';
-      expect((await c.post('/api/v1/auth/logout')).json().error.code).toBe('csrf_failed');
+      expect(problem((await c.post('/api/v1/auth/logout'))).code).toBe('csrf_failed');
     } finally { await a.close(); }
   });
 });

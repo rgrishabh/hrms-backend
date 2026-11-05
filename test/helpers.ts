@@ -12,6 +12,17 @@ import { withMode } from '../src/core/policy/mode.js';
 import { runQueued } from '../src/core/jobs/scheduler.js';
 import { TEST_APP_URL, TEST_BRAND, TEST_OWNER_URL } from './env.js';
 
+/** The body of an error answer, checked to be RFC 7807 on the way. `.detail` is the message and `.errors` the field list. */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any -- extension members vary per code; tests read what they expect.
+export function problem(res: Pick<LightMyRequestResponse, 'json' | 'statusCode' | 'headers'>): Record<string, any> & { type: string; title: string; status: number; detail: string; instance: string; code: string; errors: { path: string; message: string }[] } {
+  if (res.statusCode < 400) throw new Error(`expected an error answer, got ${res.statusCode}`);
+  if (!String(res.headers['content-type']).startsWith('application/problem+json')) throw new Error(`not a problem document: ${String(res.headers['content-type'])}`);
+  const b = res.json();
+  for (const k of ['type', 'title', 'detail', 'instance', 'code']) if (typeof b[k] !== 'string' || !b[k]) throw new Error(`problem has no ${k}`);
+  if (b.status !== res.statusCode || !Array.isArray(b.errors)) throw new Error('problem status or errors are wrong');
+  return b;
+}
+
 const SILENT_LOG = { info: () => undefined, error: () => undefined };
 export const PASSWORD = 'Test-Password-123!';
 let pwHash: string | null = null;

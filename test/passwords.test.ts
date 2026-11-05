@@ -3,7 +3,7 @@ import { randomBytes, scrypt as scryptCb } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { promisify } from 'node:util';
 import type { FastifyInstance } from 'fastify';
-import { Client, createTenant, makeApp, ownerQuery, PASSWORD, type TenantFixture } from './helpers.js';
+import { problem, Client, createTenant, makeApp, ownerQuery, PASSWORD, type TenantFixture } from './helpers.js';
 import { ARGON2, hashPassword, needsRehash, verifyPassword } from '../src/core/crypto/index.js';
 import { isBreached, passwordProblems } from '../src/core/auth/password-policy.js';
 
@@ -110,7 +110,7 @@ describe('through the app', () => {
     const c = await Client.login(app, T.host, T.users.manager!.email);
     const leaked = await c.post('/api/v1/auth/password', { currentPassword: PASSWORD, newPassword: 'password1234' });
     expect(leaked.statusCode).toBe(400);
-    expect(leaked.json().error).toMatchObject({ code: 'weak_password', details: { problems: expect.arrayContaining(['breached']) } });
+    expect(problem(leaked)).toMatchObject({ code: 'weak_password', problems: expect.arrayContaining(['breached']) });
     const ok = await c.post('/api/v1/auth/password', { currentPassword: PASSWORD, newPassword: 'marble kettle orbit lantern' });
     expect(ok.statusCode, ok.body).toBe(200);
   });

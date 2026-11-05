@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import pg from 'pg';
 import type { FastifyInstance } from 'fastify';
-import { makeApp, createTenant, Client, ownerQuery, type TenantFixture, flags, inApp } from './helpers.js';
+import { problem, makeApp, createTenant, Client, ownerQuery, type TenantFixture, flags, inApp } from './helpers.js';
 import { TEST_OWNER_URL } from './env.js';
 import { plannedRecoveries } from '../src/modules/loans/service.js';
 import type { Db } from '../src/db/tx.js';
@@ -60,7 +60,7 @@ describe('leave overlap and balance under concurrency', () => {
     await req(`${year}-02-04`, { endHalf: 'first_half' });
     const r = await req(`${year}-02-04`, { startHalf: 'second_half', leaveTypeId: lwp });
     expect(r.statusCode).toBe(409);
-    expect(r.json().error.message).toMatch(/paid and an unpaid/i);
+    expect(problem(r).detail).toMatch(/paid and an unpaid/i);
   });
 
   it('the database refuses an overlap the application check missed', async () => {
@@ -102,6 +102,6 @@ describe('leave overlap and balance under concurrency', () => {
     expect(r.statusCode, r.body).toBe(201);
     const lock = await pay.post('/api/v1/attendance/locks', { periodStart: `${year}-06-01`, periodEnd: `${year}-06-30` });
     expect(lock.statusCode).toBe(409);
-    expect(lock.json().error.message).toMatch(/leave/i);
+    expect(problem(lock).detail).toMatch(/leave/i);
   });
 });

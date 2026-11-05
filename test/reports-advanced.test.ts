@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import type { FastifyInstance } from 'fastify';
-import { makeApp, createTenant, Client, ownerQuery, type TenantFixture, flags, seal } from './helpers.js';
+import { problem, makeApp, createTenant, Client, ownerQuery, type TenantFixture, flags, seal } from './helpers.js';
 import { periodParams, nextRun } from '../src/modules/reports/service.js';
 import { REPORT_MAP } from '../src/modules/reports/registry.js';
 
@@ -51,8 +51,8 @@ describe('advanced reporting', () => {
     expect((await pay.get('/api/v1/reports/saved')).json().items).toEqual([]);
     expect((await pay.del(`/api/v1/reports/saved/${id}`)).statusCode).toBe(404);
 
-    expect((await hr.put(`/api/v1/reports/saved/${id}/schedule`, { frequency: 'weekly' })).json().error.message).toMatch(/day of the week/);
-    expect((await hr.put(`/api/v1/reports/saved/${id}/schedule`, { frequency: 'daily', recipientIds: [T.users.employee!.id] })).json().error.message).toMatch(/1 recipient\(s\) cannot see/);
+    expect(problem((await hr.put(`/api/v1/reports/saved/${id}/schedule`, { frequency: 'weekly' }))).detail).toMatch(/day of the week/);
+    expect(problem((await hr.put(`/api/v1/reports/saved/${id}/schedule`, { frequency: 'daily', recipientIds: [T.users.employee!.id] }))).detail).toMatch(/1 recipient\(s\) cannot see/);
     const eligible = (await hr.get(`/api/v1/reports/saved/${id}/recipients`)).json().items.map((u: { id: string }) => u.id);
     expect(eligible).toContain(T.users.payroll!.id);
     expect(eligible).not.toContain(T.users.employee!.id);
@@ -87,7 +87,7 @@ describe('advanced reporting', () => {
     const def = REPORT_MAP.get('attendance_summary')!;
     expect(def.access.team).toBeTruthy();
     const s = (await mgr.post('/api/v1/reports/saved', { reportKey: 'attendance_summary', name: 'My team attendance' })).json().id;
-    expect((await mgr.put(`/api/v1/reports/saved/${s}/schedule`, { frequency: 'monthly', dayOfMonth: 1, period: 'last_month', recipientIds: [T.users.hr!.id] })).json().error.message)
+    expect(problem((await mgr.put(`/api/v1/reports/saved/${s}/schedule`, { frequency: 'monthly', dayOfMonth: 1, period: 'last_month', recipientIds: [T.users.hr!.id] }))).detail)
       .toMatch(/only be scheduled for yourself/);
     expect((await mgr.put(`/api/v1/reports/saved/${s}/schedule`, { frequency: 'monthly', dayOfMonth: 1, period: 'last_month' })).statusCode).toBe(200);
   });

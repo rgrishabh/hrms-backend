@@ -4,7 +4,7 @@ import { mkdtemp, rm, mkdir, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { tmpdir } from 'node:os';
 import type { FastifyInstance } from 'fastify';
-import { Client, PASSWORD, flags, makeApp, ownerQuery, seal, testCipher, inApp } from './helpers.js';
+import { problem, Client, PASSWORD, flags, makeApp, ownerQuery, seal, testCipher, inApp } from './helpers.js';
 import { LocalStore, newKey, setStore } from '../src/core/storage/index.js';
 import { hashPassword } from '../src/core/crypto/index.js';
 import { runSchedules } from '../src/modules/reports/service.js';
@@ -225,8 +225,8 @@ for (const mode of ['single', 'single_hr', 'multi'] as const) {
           for (const sp of everyone) expect(r.body.includes(w.subjects[sp.key]!.code)).toBe(true);
         } else {
           expect(r.statusCode, `${v.key} ${file}: ${r.body}`).toBe(403);
-          expect(r.json().error.code).toBe('requires_higher_level');
-          expect(r.json().error.details.hiddenSubjects).toBe(everyone.filter((sp) => !mayL4(v, sp, true)).length);
+          expect(problem(r).code).toBe('requires_higher_level');
+          expect(problem(r).hiddenSubjects).toBe(everyone.filter((sp) => !mayL4(v, sp, true)).length);
           for (const sp of everyone) expect(leaks(r.body, w.subjects[sp.key]!)).toBe(false);
         }
       }
@@ -246,7 +246,7 @@ for (const mode of ['single', 'single_hr', 'multi'] as const) {
           else { expect(r.body.includes(s.code), sp.key).toBe(true); expect(r.body.includes(s.account), `${v.key} account of ${sp.key}`).toBe(!!v.bank); }
         }
       } else {
-        expect(r.json().error.code).toBe('requires_higher_level');
+        expect(problem(r).code).toBe('requires_higher_level');
         for (const sp of everyone) expect(leaks(r.body, w.subjects[sp.key]!)).toBe(false);
       }
     });
@@ -586,7 +586,7 @@ describe('permission matrix: named negatives', () => {
     await ownerQuery(`INSERT INTO expense_claims (tenant_id, employee_id, title, purpose, status, total, created_by, approved_at, batch_id) VALUES ($1,$2,'Trip claim','Purpose here','approved',10,$3,now(),$4)`, [w.tenantId, s.super!.employeeId, s.super!.userId, batch!.id]);
     const low = await w.clients.finance!.get(`/api/v1/expenses/batches/${batch!.id}/export.csv`);
     expect(low.statusCode, low.body).toBe(403);
-    expect(low.json().error.code).toBe('requires_higher_level');
+    expect(problem(low).code).toBe('requires_higher_level');
     expect(low.body.includes(s.super!.account)).toBe(false);
   });
 
