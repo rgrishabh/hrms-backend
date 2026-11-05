@@ -393,3 +393,13 @@ So drawing the largest report allowed costs under a second of CPU, and yielding 
 
 **Not tested.** Real replication lag: the test's replica is a second connection to the same database. The indexes come from query shapes, and were not checked with `EXPLAIN` on production-sized data.
 
+## D61 — ESLint and Prettier in `tools/lint`; no hook manager; a Prettier width of 180
+
+**Context.** `typescript-eslint` needs the TypeScript compiler's JavaScript API, and only up to 6.0. The app builds with TypeScript 7, whose package has none, and Stryker hits the same wall.
+
+**Options.** Downgrade the app's compiler; npm overrides for a nested peer; a small package of its own for the tools.
+
+**Decision.** `tools/lint` has its own `package.json` and lockfile with TypeScript 5.9, ESLint and Prettier. `npm run lint` installs it on first use. Stryker is pointed at a tsconfig path that does not exist, which skips the rewrite it would otherwise fail on. `.githooks/pre-commit` with `core.hooksPath`, set by the `prepare` script, needs no extra dependency. Prettier's `printWidth` is 180 because the code was written long; a width of 80 would change every line for no reader's benefit.
+
+**Reason.** The type information ESLint sees comes from another compiler version than the build, which matters only for rules that read types: `no-floating-promises` and `no-misused-promises`. `tsc` remains the check that the code compiles. Moving to `typescript-eslint` proper is possible once it supports TypeScript 7.
+

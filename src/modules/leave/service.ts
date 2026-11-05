@@ -19,10 +19,22 @@ import { addDays, dateRange, daysBetween, weekday } from '../attendance/time.js'
  */
 
 export interface LeaveType {
-  id: string; code: string; name: string; paid: boolean; allow_half_day: boolean; requires_balance: boolean;
-  accrual_method: 'none' | 'annual' | 'monthly'; annual_entitlement: string; carry_forward_max: string; max_balance: string | null;
-  count_non_working_days: boolean; min_notice_days: number; max_consecutive_days: string | null; eligible_after_days: number;
-  applicable_employment_types: string[]; status: string;
+  id: string;
+  code: string;
+  name: string;
+  paid: boolean;
+  allow_half_day: boolean;
+  requires_balance: boolean;
+  accrual_method: 'none' | 'annual' | 'monthly';
+  annual_entitlement: string;
+  carry_forward_max: string;
+  max_balance: string | null;
+  count_non_working_days: boolean;
+  min_notice_days: number;
+  max_consecutive_days: string | null;
+  eligible_after_days: number;
+  applicable_employment_types: string[];
+  status: string;
 }
 
 export const LEAVE_TYPE_COLS = `id, code, name, description, paid, allow_half_day, requires_balance, accrual_method, annual_entitlement,
@@ -30,7 +42,8 @@ export const LEAVE_TYPE_COLS = `id, code, name, description, paid, allow_half_da
   applicable_employment_types, status, version`;
 
 export const leaveYearOf = (date: string, startMonth: number) => {
-  const y = Number(date.slice(0, 4)); const m = Number(date.slice(5, 7));
+  const y = Number(date.slice(0, 4));
+  const m = Number(date.slice(5, 7));
   return m >= startMonth ? y : y - 1;
 };
 
@@ -45,23 +58,39 @@ export async function yearStartMonth(db: Db, tenantId: string) {
 }
 
 export async function yearClosed(db: Db, tenantId: string, year: number) {
-  return ((await db.query('SELECT 1 FROM leave_year_closures WHERE tenant_id=$1 AND leave_year=$2', [tenantId, year])).rowCount ?? 0) > 0;
+  return (await db.query('SELECT 1 FROM leave_year_closures WHERE tenant_id=$1 AND leave_year=$2', [tenantId, year])).rows.length > 0;
 }
 
 /** Balance per active leave type in the leave year of `asOf` (a year's balance already includes what was carried into it). */
 export async function balancesAt(db: Db, tenantId: string, employeeId: string, asOf: string) {
   const leaveYear = leaveYearOf(asOf, await yearStartMonth(db, tenantId));
-  const items = (await db.query<{ code: string; name: string; paid: boolean; balance: string }>(`SELECT t.code, t.name, t.paid, coalesce(sum(l.days),0)::text AS balance FROM leave_types t
+  const items = (
+    await db.query<{ code: string; name: string; paid: boolean; balance: string }>(
+      `SELECT t.code, t.name, t.paid, coalesce(sum(l.days),0)::text AS balance FROM leave_types t
     LEFT JOIN leave_ledger l ON l.tenant_id=t.tenant_id AND l.leave_type_id=t.id AND l.employee_id=$2 AND l.leave_year=$3
-    WHERE t.tenant_id=$1 AND t.status='active' GROUP BY t.code, t.name, t.paid ORDER BY t.code`, [tenantId, employeeId, leaveYear])).rows;
+    WHERE t.tenant_id=$1 AND t.status='active' GROUP BY t.code, t.name, t.paid ORDER BY t.code`,
+      [tenantId, employeeId, leaveYear],
+    )
+  ).rows;
   return { leaveYear, items };
 }
 
-export interface EmployeeLite { id: string; branch_id: string; employment_type: string; date_of_joining: string; exit_date: string | null; status: string; user_id: string | null }
+export interface EmployeeLite {
+  id: string;
+  branch_id: string;
+  employment_type: string;
+  date_of_joining: string;
+  exit_date: string | null;
+  status: string;
+  user_id: string | null;
+}
 
 export async function loadEmployee(db: Db, tenantId: string, employeeId: string): Promise<EmployeeLite | null> {
-  const r = await db.query<EmployeeLite>(`SELECT id, branch_id, employment_type, date_of_joining, exit_date, status, user_id
-    FROM employees WHERE tenant_id=$1 AND id=$2`, [tenantId, employeeId]);
+  const r = await db.query<EmployeeLite>(
+    `SELECT id, branch_id, employment_type, date_of_joining, exit_date, status, user_id
+    FROM employees WHERE tenant_id=$1 AND id=$2`,
+    [tenantId, employeeId],
+  );
   return r.rows[0] ?? null;
 }
 
@@ -71,8 +100,11 @@ export async function loadEmployee(db: Db, tenantId: string, employeeId: string)
  */
 export async function nonWorkingDates(db: Db, tenantId: string, branchId: string, from: string, to: string, employeeId?: string): Promise<Set<string>> {
   const weeklyOffs = await getSettingValue<number[]>(db, tenantId, 'attendance.weekly_offs', branchId);
-  const hol = await db.query<{ holiday_date: string }>(`SELECT holiday_date FROM holidays WHERE tenant_id=$1 AND NOT optional
-    AND (branch_id IS NULL OR branch_id=$2) AND holiday_date BETWEEN $3 AND $4`, [tenantId, branchId, from, to]);
+  const hol = await db.query<{ holiday_date: string }>(
+    `SELECT holiday_date FROM holidays WHERE tenant_id=$1 AND NOT optional
+    AND (branch_id IS NULL OR branch_id=$2) AND holiday_date BETWEEN $3 AND $4`,
+    [tenantId, branchId, from, to],
+  );
   const out = new Set(hol.rows.map((h) => h.holiday_date));
   const plan = employeeId ? (await scheduleFor(db, tenantId, [employeeId], from, to)).get(employeeId) : undefined;
   for (const d of dateRange(from, to)) if (plan?.get(d)?.off ?? weeklyOffs.includes(weekday(d))) out.add(d);
@@ -103,11 +135,15 @@ export function countDays(start: string, end: string, startHalf: StartHalf, endH
 }
 
 export async function balanceOf(db: Db, tenantId: string, employeeId: string, leaveTypeId: string, year: number, excludeRequestId?: string) {
-  const r = await db.query<{ ledger: string; pending: string }>(`SELECT
+  const r = await db.query<{ ledger: string; pending: string }>(
+    `SELECT
       coalesce((SELECT sum(days) FROM leave_ledger WHERE tenant_id=$1 AND employee_id=$2 AND leave_type_id=$3 AND leave_year=$4), 0)::text AS ledger,
       coalesce((SELECT sum(days) FROM leave_requests WHERE tenant_id=$1 AND employee_id=$2 AND leave_type_id=$3 AND leave_year=$4
-        AND status='pending' AND ($5::uuid IS NULL OR id <> $5)), 0)::text AS pending`, [tenantId, employeeId, leaveTypeId, year, excludeRequestId ?? null]);
-  const ledger = new Decimal(r.rows[0]!.ledger); const pending = new Decimal(r.rows[0]!.pending);
+        AND status='pending' AND ($5::uuid IS NULL OR id <> $5)), 0)::text AS pending`,
+    [tenantId, employeeId, leaveTypeId, year, excludeRequestId ?? null],
+  );
+  const ledger = new Decimal(r.rows[0]!.ledger);
+  const pending = new Decimal(r.rows[0]!.pending);
   return { balance: ledger, pending, available: ledger.minus(pending) };
 }
 
@@ -127,14 +163,20 @@ export async function approvedLeaveByDate(db: Db, tenantId: string, employeeId: 
   const r = await db.query<{ start_date: string; end_date: string; start_half: StartHalf; end_half: EndHalf; code: string; charged_off: boolean }>(
     `SELECT r.start_date, r.end_date, r.start_half, r.end_half, t.code, (t.count_non_working_days AND NOT t.paid) AS charged_off FROM leave_requests r
        JOIN leave_types t ON t.tenant_id=r.tenant_id AND t.id=r.leave_type_id
-      WHERE r.tenant_id=$1 AND r.employee_id=$2 AND r.status='approved' AND r.start_date <= $4 AND r.end_date >= $3`, [tenantId, employeeId, from, to]);
+      WHERE r.tenant_id=$1 AND r.employee_id=$2 AND r.status='approved' AND r.start_date <= $4 AND r.end_date >= $3`,
+    [tenantId, employeeId, from, to],
+  );
   const map = new Map<string, { fraction: number; code: string; chargedOnOffDay: boolean }>();
   for (const req of r.rows) {
     for (const d of dateRange(req.start_date > from ? req.start_date : from, req.end_date < to ? req.end_date : to)) {
       const f = dateFraction(d, req);
       if (f > 0) {
         const prev = map.get(d);
-        map.set(d, { fraction: Math.min(1, (prev?.fraction ?? 0) + f), code: prev && prev.code !== req.code ? `${prev.code}+${req.code}` : req.code, chargedOnOffDay: req.charged_off });
+        map.set(d, {
+          fraction: Math.min(1, (prev?.fraction ?? 0) + f),
+          code: prev && prev.code !== req.code ? `${prev.code}+${req.code}` : req.code,
+          chargedOnOffDay: req.charged_off,
+        });
       }
     }
   }

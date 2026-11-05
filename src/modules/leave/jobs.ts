@@ -14,21 +14,35 @@ function monthEnd(year: number, startMonth: number, k: number) {
   return addDays(monthStart(year, startMonth, k + 1), -1);
 }
 
-interface Emp { id: string; employment_type: string; date_of_joining: string; exit_date: string | null }
+interface Emp {
+  id: string;
+  employment_type: string;
+  date_of_joining: string;
+  exit_date: string | null;
+}
 
 async function currentBalance(db: Db, tenantId: string, empId: string, typeId: string, year: number) {
-  const r = await db.query<{ s: string }>(`SELECT coalesce(sum(days),0)::text AS s FROM leave_ledger
-    WHERE tenant_id=$1 AND employee_id=$2 AND leave_type_id=$3 AND leave_year=$4`, [tenantId, empId, typeId, year]);
+  const r = await db.query<{ s: string }>(
+    `SELECT coalesce(sum(days),0)::text AS s FROM leave_ledger
+    WHERE tenant_id=$1 AND employee_id=$2 AND leave_type_id=$3 AND leave_year=$4`,
+    [tenantId, empId, typeId, year],
+  );
   return new Decimal(r.rows[0]!.s);
 }
 
 /** Insert a ledger entry once (by reference). Returns true if it was inserted. */
-async function credit(db: Db, tenantId: string, e: { empId: string; typeId: string; year: number; entryType: string; days: Decimal; reference: string; note?: string; actorId: string | null; requestId?: string }) {
+async function credit(
+  db: Db,
+  tenantId: string,
+  e: { empId: string; typeId: string; year: number; entryType: string; days: Decimal; reference: string; note?: string; actorId: string | null; requestId?: string },
+) {
   if (e.days.isZero()) return false;
-  const r = await db.query(`INSERT INTO leave_ledger (tenant_id, employee_id, leave_type_id, leave_year, entry_type, days, request_id, reference, note, created_by)
+  const r = await db.query(
+    `INSERT INTO leave_ledger (tenant_id, employee_id, leave_type_id, leave_year, entry_type, days, request_id, reference, note, created_by)
     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) ON CONFLICT (tenant_id, reference) DO NOTHING`,
-    [tenantId, e.empId, e.typeId, e.year, e.entryType, e.days.toFixed(2), e.requestId ?? null, e.reference, e.note ?? null, e.actorId]);
-  return (r.rowCount ?? 0) > 0;
+    [tenantId, e.empId, e.typeId, e.year, e.entryType, e.days.toFixed(2), e.requestId ?? null, e.reference, e.note ?? null, e.actorId],
+  );
+  return r.rowCount === 1;
 }
 export { credit as insertLedgerEntry };
 
@@ -59,9 +73,15 @@ export async function runAccruals(db: Db, tenantId: string, year: number, throug
   const startMonth = await yearStartMonth(db, tenantId);
   const { start: yStart, end: yEnd } = leaveYearBounds(year, startMonth);
   const types = (await db.query<LeaveType>(`SELECT ${LEAVE_TYPE_COLS} FROM leave_types WHERE tenant_id=$1 AND status='active' AND accrual_method <> 'none'`, [tenantId])).rows;
-  const emps = (await db.query<Emp>(`SELECT id, employment_type, date_of_joining, exit_date FROM employees WHERE tenant_id=$1
-    AND status IN ('active','on_notice','pre_joining') AND date_of_joining <= $3 AND (exit_date IS NULL OR exit_date >= $2)`, [tenantId, yStart, yEnd])).rows;
-  let credited = 0; let skipped = 0;
+  const emps = (
+    await db.query<Emp>(
+      `SELECT id, employment_type, date_of_joining, exit_date FROM employees WHERE tenant_id=$1
+    AND status IN ('active','on_notice','pre_joining') AND date_of_joining <= $3 AND (exit_date IS NULL OR exit_date >= $2)`,
+      [tenantId, yStart, yEnd],
+    )
+  ).rows;
+  let credited = 0;
+  let skipped = 0;
   for (const t of types) {
     const ent = new Decimal(t.annual_entitlement);
     for (const e of emps) {
@@ -75,22 +95,57 @@ export async function runAccruals(db: Db, tenantId: string, year: number, throug
           amount = ent.times(months).div(12).times(2).floor().div(2);
         }
         amount = await capped(db, tenantId, t, e.id, year, amount);
-        if (await credit(db, tenantId, { empId: e.id, typeId: t.id, year, entryType: 'accrual', days: amount, reference: `accrual:${t.id}:${e.id}:${year}`,
-          note: partYear ? 'Annual entitlement (pro-rated for months employed)' : 'Annual entitlement', actorId })) credited++; else skipped++;
+        if (
+          await credit(db, tenantId, {
+            empId: e.id,
+            typeId: t.id,
+            year,
+            entryType: 'accrual',
+            days: amount,
+            reference: `accrual:${t.id}:${e.id}:${year}`,
+            note: partYear ? 'Annual entitlement (pro-rated for months employed)' : 'Annual entitlement',
+            actorId,
+          })
+        )
+          credited++;
+        else skipped++;
       } else {
         const through = Math.min(12, throughMonth);
-        const done = (await db.query<{ through_month: number }>(`SELECT through_month FROM leave_accrual_progress WHERE tenant_id=$1 AND employee_id=$2 AND leave_type_id=$3 AND leave_year=$4`,
-          [tenantId, e.id, t.id, year])).rows[0]?.through_month ?? 0;
-        await db.query(`INSERT INTO leave_accrual_progress (tenant_id, employee_id, leave_type_id, leave_year, through_month) VALUES ($1,$2,$3,$4,$5)
+        const done =
+          (
+            await db.query<{ through_month: number }>(
+              `SELECT through_month FROM leave_accrual_progress WHERE tenant_id=$1 AND employee_id=$2 AND leave_type_id=$3 AND leave_year=$4`,
+              [tenantId, e.id, t.id, year],
+            )
+          ).rows[0]?.through_month ?? 0;
+        await db.query(
+          `INSERT INTO leave_accrual_progress (tenant_id, employee_id, leave_type_id, leave_year, through_month) VALUES ($1,$2,$3,$4,$5)
           ON CONFLICT (tenant_id, employee_id, leave_type_id, leave_year) DO UPDATE SET through_month=greatest(leave_accrual_progress.through_month, EXCLUDED.through_month), updated_at=now()`,
-          [tenantId, e.id, t.id, year, through]);
+          [tenantId, e.id, t.id, year, through],
+        );
         for (let k = 1; k <= through; k++) {
-          const ms = monthStart(year, startMonth, k); const me = monthEnd(year, startMonth, k);
+          const ms = monthStart(year, startMonth, k);
+          const me = monthEnd(year, startMonth, k);
           if (e.date_of_joining > me || (e.exit_date && e.exit_date < ms)) continue;
-          if (k <= done) { skipped++; continue; }
+          if (k <= done) {
+            skipped++;
+            continue;
+          }
           const amount = await capped(db, tenantId, t, e.id, year, monthlyCredit(ent, k));
-          if (await credit(db, tenantId, { empId: e.id, typeId: t.id, year, entryType: 'accrual', days: amount, reference: `accrual:${t.id}:${e.id}:${year}-m${k}`,
-            note: `Monthly accrual ${ms.slice(0, 7)}`, actorId })) credited++; else skipped++;
+          if (
+            await credit(db, tenantId, {
+              empId: e.id,
+              typeId: t.id,
+              year,
+              entryType: 'accrual',
+              days: amount,
+              reference: `accrual:${t.id}:${e.id}:${year}-m${k}`,
+              note: `Monthly accrual ${ms.slice(0, 7)}`,
+              actorId,
+            })
+          )
+            credited++;
+          else skipped++;
         }
       }
     }
@@ -111,20 +166,56 @@ export async function runYearEnd(db: Db, tenantId: string, year: number, actorId
   if (Number(pending.rows[0]!.n) > 0) throw conflict(`${pending.rows[0]!.n} leave request(s) for ${year} are still pending. Resolve them before closing the year.`);
   const first = await db.query(`INSERT INTO leave_year_closures (tenant_id, leave_year, closed_by) VALUES ($1,$2,$3) ON CONFLICT DO NOTHING`, [tenantId, year, actorId]);
   if (!first.rowCount) return { leaveYear: year, balancesProcessed: 0, daysCarried: '0.00', daysLapsed: '0.00', ...(await repairClosedYear(db, tenantId, year, actorId)) };
-  const rows = (await db.query<{ employee_id: string; leave_type_id: string; closing: string }>(`SELECT employee_id, leave_type_id, sum(days)::text AS closing
-    FROM leave_ledger WHERE tenant_id=$1 AND leave_year=$2 GROUP BY employee_id, leave_type_id HAVING sum(days) > 0`, [tenantId, year])).rows;
+  const rows = (
+    await db.query<{ employee_id: string; leave_type_id: string; closing: string }>(
+      `SELECT employee_id, leave_type_id, sum(days)::text AS closing
+    FROM leave_ledger WHERE tenant_id=$1 AND leave_year=$2 GROUP BY employee_id, leave_type_id HAVING sum(days) > 0`,
+      [tenantId, year],
+    )
+  ).rows;
   const types = new Map((await db.query<LeaveType>(`SELECT ${LEAVE_TYPE_COLS} FROM leave_types WHERE tenant_id=$1`, [tenantId])).rows.map((t) => [t.id, t]));
-  let carried = new Decimal(0); let lapsed = new Decimal(0); let processed = 0;
+  let carried = new Decimal(0);
+  let lapsed = new Decimal(0);
+  let processed = 0;
   for (const r of rows) {
     const t = types.get(r.leave_type_id)!;
     const closing = new Decimal(r.closing);
     const carry = await capped(db, tenantId, t, r.employee_id, year + 1, Decimal.min(closing, new Decimal(t.carry_forward_max)));
     const lapse = closing.minus(carry);
     const base = `${t.id}:${r.employee_id}:${year}`;
-    await credit(db, tenantId, { empId: r.employee_id, typeId: t.id, year, entryType: 'lapse', days: lapse.neg(), reference: `yearend:lapse:${base}`, note: `Lapsed at close of ${year}`, actorId });
-    await credit(db, tenantId, { empId: r.employee_id, typeId: t.id, year, entryType: 'carry_out', days: carry.neg(), reference: `yearend:out:${base}`, note: `Carried forward to ${year + 1}`, actorId });
-    await credit(db, tenantId, { empId: r.employee_id, typeId: t.id, year: year + 1, entryType: 'carry_forward', days: carry, reference: `yearend:carry:${base}`, note: `Carried forward from ${year}`, actorId });
-    processed++; carried = carried.plus(carry); lapsed = lapsed.plus(lapse);
+    await credit(db, tenantId, {
+      empId: r.employee_id,
+      typeId: t.id,
+      year,
+      entryType: 'lapse',
+      days: lapse.neg(),
+      reference: `yearend:lapse:${base}`,
+      note: `Lapsed at close of ${year}`,
+      actorId,
+    });
+    await credit(db, tenantId, {
+      empId: r.employee_id,
+      typeId: t.id,
+      year,
+      entryType: 'carry_out',
+      days: carry.neg(),
+      reference: `yearend:out:${base}`,
+      note: `Carried forward to ${year + 1}`,
+      actorId,
+    });
+    await credit(db, tenantId, {
+      empId: r.employee_id,
+      typeId: t.id,
+      year: year + 1,
+      entryType: 'carry_forward',
+      days: carry,
+      reference: `yearend:carry:${base}`,
+      note: `Carried forward from ${year}`,
+      actorId,
+    });
+    processed++;
+    carried = carried.plus(carry);
+    lapsed = lapsed.plus(lapse);
   }
   return { leaveYear: year, balancesProcessed: processed, daysCarried: carried.toFixed(2), daysLapsed: lapsed.toFixed(2), repaired: 0, overspent: 0 };
 }
@@ -134,14 +225,29 @@ export async function runYearEnd(db: Db, tenantId: string, year: number, actorId
  * `overspent` counts balances left negative: days spent in the closed year after they were carried, for HR to resolve.
  */
 async function repairClosedYear(db: Db, tenantId: string, year: number, actorId: string | null) {
-  const missing = (await db.query<{ employee_id: string; leave_type_id: string; days: string }>(`SELECT c.employee_id, c.leave_type_id, c.days::text FROM leave_ledger c
+  const missing = (
+    await db.query<{ employee_id: string; leave_type_id: string; days: string }>(
+      `SELECT c.employee_id, c.leave_type_id, c.days::text FROM leave_ledger c
     WHERE c.tenant_id=$1 AND c.leave_year=$2 AND c.entry_type='carry_forward' AND c.reference = 'yearend:carry:' || c.leave_type_id || ':' || c.employee_id || ':' || $3::text
       AND NOT EXISTS (SELECT 1 FROM leave_ledger o WHERE o.tenant_id=c.tenant_id AND o.reference = 'yearend:out:' || c.leave_type_id || ':' || c.employee_id || ':' || $3::text)`,
-    [tenantId, year + 1, year])).rows;
+      [tenantId, year + 1, year],
+    )
+  ).rows;
   for (const m of missing) {
-    await credit(db, tenantId, { empId: m.employee_id, typeId: m.leave_type_id, year, entryType: 'carry_out', days: new Decimal(m.days).neg(),
-      reference: `yearend:out:${m.leave_type_id}:${m.employee_id}:${year}`, note: `Carried forward to ${year + 1} (closing entry added later)`, actorId });
+    await credit(db, tenantId, {
+      empId: m.employee_id,
+      typeId: m.leave_type_id,
+      year,
+      entryType: 'carry_out',
+      days: new Decimal(m.days).neg(),
+      reference: `yearend:out:${m.leave_type_id}:${m.employee_id}:${year}`,
+      note: `Carried forward to ${year + 1} (closing entry added later)`,
+      actorId,
+    });
   }
-  const overspent = await db.query<{ n: string }>(`SELECT count(*) AS n FROM (SELECT 1 FROM leave_ledger WHERE tenant_id=$1 AND leave_year=$2 GROUP BY employee_id, leave_type_id HAVING sum(days) < 0) x`, [tenantId, year]);
+  const overspent = await db.query<{ n: string }>(
+    `SELECT count(*) AS n FROM (SELECT 1 FROM leave_ledger WHERE tenant_id=$1 AND leave_year=$2 GROUP BY employee_id, leave_type_id HAVING sum(days) < 0) x`,
+    [tenantId, year],
+  );
   return { repaired: missing.length, overspent: Number(overspent.rows[0]!.n) };
 }

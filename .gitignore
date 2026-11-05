@@ -8,6 +8,5 @@ coverage/
 *.log
 .DS_Store
 openapi.json
-coverage/
-reports/
+/reports/
 .stryker-tmp/

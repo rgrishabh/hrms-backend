@@ -1,1 +1,7 @@
 * @rgrishabh
+# Reviewed with extra care: money, access and the schema.
+/migrations/ @rgrishabh
+/src/core/policy/ @rgrishabh
+/src/core/crypto/ @rgrishabh
+/src/core/auth/ @rgrishabh
+/src/modules/payroll/ @rgrishabh

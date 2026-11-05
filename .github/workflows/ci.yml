@@ -23,16 +23,60 @@ jobs:
     permissions:
       contents: read
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5.0.0
         with:
           node-version: '24'
           cache: npm
       - run: npm ci --no-audit --no-fund
       # No database. Exits non-zero if any route has no schema; test/openapi.test.ts checks the detail.
       - run: npm run openapi
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: openapi
           path: openapi.json
           if-no-files-found: error
+  coverage:
+    name: Coverage thresholds
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    # Reports without blocking merges while branch coverage of the business rules is short of its 100% threshold: TESTING.md has the gap. Remove this line when it closes.
+    continue-on-error: true
+    permissions:
+      contents: read
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_PASSWORD: postgres
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U postgres" --health-interval 5s --health-timeout 5s --health-retries 10
+    env:
+      PGPASSWORD: postgres
+      TEST_DATABASE_MIGRATION_URL: postgres://hrms_owner:ci_owner@localhost:5432/hrms_test
+      TEST_DATABASE_URL: postgres://hrms_app:ci_app@localhost:5432/hrms_test
+      TEST_SINGLE_DATABASE_MIGRATION_URL: postgres://hrms_owner:ci_owner@localhost:5432/hrms_test_single
+      TEST_SINGLE_DATABASE_URL: postgres://hrms_app:ci_app@localhost:5432/hrms_test_single
+      TEST_SINGLE_B_DATABASE_MIGRATION_URL: postgres://hrms_owner:ci_owner@localhost:5432/hrms_test_single_b
+      TEST_SINGLE_B_DATABASE_URL: postgres://hrms_app:ci_app@localhost:5432/hrms_test_single_b
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5.0.0
+        with:
+          node-version: '24'
+          cache: npm
+      - name: Create database roles
+        run: |
+          psql -h localhost -U postgres -v ON_ERROR_STOP=1 \
+            -c "CREATE ROLE hrms_owner LOGIN PASSWORD 'ci_owner' NOSUPERUSER NOBYPASSRLS" \
+            -c "CREATE ROLE hrms_app LOGIN PASSWORD 'ci_app' NOSUPERUSER NOBYPASSRLS" \
+            -c "CREATE DATABASE hrms_test OWNER hrms_owner" \
+            -c "CREATE DATABASE hrms_test_single OWNER hrms_owner" \
+            -c "CREATE DATABASE hrms_test_single_b OWNER hrms_owner"
+      - run: npm ci --no-audit --no-fund
+      - run: npm run test:coverage

@@ -6,9 +6,11 @@
 
 - [ ] `npm run lint` and `npm test` pass locally
 - [ ] New/changed behaviour has tests
-- [ ] Migrations are forward-only and backwards compatible with the previous release (expand → migrate → contract)
+- [ ] Each new migration has a `migrations/down/` file, and works with the previous release (expand → migrate → contract). What a down cannot bring back is in the README
+- [ ] `npm run test:coverage` keeps its thresholds; a new route declares its schema, permission and feature
 
 ## Risk
 
 - [ ] Touches authentication, permissions, tenancy (RLS) or audit
-- [ ] Needs new configuration (documented in `.env.example` and hrms-deployment)
+- [ ] Needs new configuration (documented in `.env.example` and `hrms-deployment/docs/CONFIGURATION.md`)
+- [ ] Changes an answer's shape: `npm run openapi` diff read; frontend told

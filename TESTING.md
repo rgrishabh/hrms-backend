@@ -88,3 +88,39 @@ Earlier phases: see git history of this file (bootstrap uuid/text parameter, FOR
 Flags: `feature-routes.test.ts` is generated from the registry and from the routes an app really registers: for every flag, off means 404 signed in or not, and on means not 404. `feature-off.test.ts` covers everything else that follows the flags. To run something outside a request as an app would, use `inApp(app, fn)`.
 
 Redis: `test/cache-redis.test.ts` runs against a real server when `TEST_REDIS_URL` is set, and is skipped only when it is not. The rest of the suite runs without Redis.
+
+## Batch E: coverage, mutation, what is verified
+
+Run: 2026-11-05, macOS, Node 26.5, PostgreSQL 17.11. `npm run test:coverage`, `npm run test:mutation` (the second needs a database too; `tools/vitest.mutation.config.ts` picks its suites).
+
+| Measure | Result | Threshold |
+|---|---|---|
+| Lines, all of `src` | 92.36% | 85% |
+| Branches, all of `src` | 81.07% | none |
+
+Branch coverage of the business rules, threshold 100% on each:
+
+| File | Branches | Note |
+|---|---|---|
+| `payroll/calc.ts`, `payroll/sealed.ts`, `leave/jobs.ts`, `attendance/calc.ts`, `policy/salary.ts`, `policy/levels.ts`, `features/registry.ts`, `config/env.ts`, `config/installation.ts` | 100% | |
+| `leave/service.ts` | 98.07% (51 of 52) | `if (f > 0)` in `approvedLeaveByDate`. Its other side needs a one-day request made of its own two halves, which `leave_requests_check1` refuses |
+| `loans/service.ts` | 97.82% (45 of 46) | `x.run_status ?? ''` in `balanceOf`. A payroll recovery with no run is refused by `loan_recoveries_check`, and a repayment does not reach that side |
+
+**These two thresholds stay at 100% and fail.** Both sides are out of reach through the schema, and no test was written that only touches them. So `npm run test:coverage` exits non-zero, and the CI job is `continue-on-error` until they are dealt with: remove the guards, or accept them.
+
+Files at 0% lines, process entry points tested only by running them: `server.ts`, `worker.ts`, `worker-health.ts`, `core/jobs/cli.ts`, `db/provision.ts`, `db/seed.ts`, `core/db-role.ts`.
+
+**Mutation score** (Stryker, 439 mutants):
+
+| File | Score | Killed | Survived | No coverage |
+|---|---|---|---|---|
+| `payroll/calc.ts` | 67.47% | 195 | 73 | 21 |
+| `leave/service.ts` | 88.67% | 133 | 3 | 14 |
+| All | 74.72% | 328 | 76 | 35 |
+
+`payroll/calc.ts` was mutated against its pure suites, without the database integration suites, so its score is a floor. 73 mutations of the tax and statutory arithmetic pass those suites, which is the clearest place to add assertions. Taken before the last branch tests in `business-branches.test.ts`; not repeated after them.
+
+**OpenAPI.** See `npm run openapi` for current counts. Every route declares its schema; those with no input declare an empty one. Response schemas exist for L4 paths, sign-in, public config and core self-service, and are verified by the whole suite through `verifyResponses`, only for the paths tests reach. The rest have none. Refinements (such as "email or phone") have no JSON form and do not appear in the document.
+
+**Replication.** The replica test is a second connection to the same database. Real replication lag was not tested.
+
