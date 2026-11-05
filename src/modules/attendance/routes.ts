@@ -7,7 +7,7 @@ import { l3RowFilter, maskFields, policyViewer } from '../../core/policy/salary.
 import { tenantActor, tenantActorAny, requireFeature, type TenantActor, gateFeatures } from '../../core/http/context.js';
 import { audit } from '../../core/audit/audit.js';
 import { AppError, badRequest, conflict, forbidden, notFound } from '../../core/http/errors.js';
-import { IsoDate, PageQuery, offsetOf, paged, Uuid, QueryBool } from '../../core/http/pagination.js';
+import { IsoDate, PageQuery, offsetOf, paged, Uuid, QueryBool, ListQuery, pageOf } from '../../core/http/pagination.js';
 import { getSettingValue } from '../../core/settings/service.js';
 import { buildSteps, createApprovalRequest, registerApprovalHandler } from '../../core/workflow/engine.js';
 import { randomToken, sha256 } from '../../core/crypto/index.js';
@@ -302,10 +302,11 @@ export async function attendanceRoutes(app: FastifyInstance) {
     });
   });
 
-  app.get('/locks', { schema: {}, config: { permAny: ['attendance.read', 'attendance.lock'] } }, async (req) => {
+  app.get('/locks', { schema: { querystring: ListQuery }, config: { permAny: ['attendance.read', 'attendance.lock'] } }, async (req) => {
     const a = tenantActorAny(req, 'attendance.read', 'attendance.lock');
-    return a.tx(async (db) => ({ items: (await db.query(`SELECT l.id, l.period_start, l.period_end, l.locked_at, u.display_name AS locked_by
-      FROM attendance_period_locks l JOIN users u ON u.id=l.locked_by WHERE l.tenant_id=$1 ORDER BY l.period_start DESC`, [a.tenantId])).rows }));
+    const q = ListQuery.parse(req.query);
+    return a.tx((db) => pageOf(db, `SELECT l.id, l.period_start, l.period_end, l.locked_at, u.display_name AS locked_by
+      FROM attendance_period_locks l JOIN users u ON u.id=l.locked_by WHERE l.tenant_id=$1 ORDER BY l.period_start DESC`, [a.tenantId], q));
   });
 
   /** Freeze a period for payroll: calculate everything first, then lock. Corrections after this need an audited adjustment. */
@@ -388,10 +389,11 @@ export async function attendanceRoutes(app: FastifyInstance) {
   });
 
   // ------------------------------------------------------------ shifts
-  only(app, 'shifts').get('/shifts', { schema: {}, config: { permAny: ['attendance.configure', 'attendance.read', 'attendance.self'], feature: ['shifts'] } }, async (req) => {
+  only(app, 'shifts').get('/shifts', { schema: { querystring: ListQuery }, config: { permAny: ['attendance.configure', 'attendance.read', 'attendance.self'], feature: ['shifts'] } }, async (req) => {
     const a = tenantActorAny(req, 'attendance.configure', 'attendance.read', 'attendance.self');
-    return a.tx(async (db) => (await requireFeature(db, a.tenantId, 'shifts'), { items: (await db.query(`SELECT id, code, name, start_time::text, end_time::text, break_minutes, grace_minutes, early_exit_grace_minutes,
-      half_day_min_minutes, full_day_min_minutes, overtime_after_minutes, status, end_time <= start_time AS overnight FROM shifts WHERE tenant_id=$1 ORDER BY code`, [a.tenantId])).rows }));
+    const q = ListQuery.parse(req.query);
+    return a.tx(async (db) => { await requireFeature(db, a.tenantId, 'shifts'); return pageOf(db, `SELECT id, code, name, start_time::text, end_time::text, break_minutes, grace_minutes, early_exit_grace_minutes,
+      half_day_min_minutes, full_day_min_minutes, overtime_after_minutes, status, end_time <= start_time AS overnight FROM shifts WHERE tenant_id=$1 ORDER BY code`, [a.tenantId], q); });
   });
 
   const shiftCols = (s: z.infer<typeof ShiftBody>) => [s.code, s.name, s.startTime, s.endTime, s.breakMinutes, s.graceMinutes, s.earlyExitGraceMinutes,
@@ -536,10 +538,11 @@ export async function attendanceRoutes(app: FastifyInstance) {
     });
   });
 
-  only(app, 'attendance.biometric').get('/device-mappings', { schema: {}, config: { perm: ['attendance.devices.manage'] } }, async (req) => {
+  only(app, 'attendance.biometric').get('/device-mappings', { schema: { querystring: ListQuery }, config: { perm: ['attendance.devices.manage'] } }, async (req) => {
     const a = tenantActor(req, 'attendance.devices.manage');
-    return a.tx(async (db) => ({ items: (await db.query(`SELECT m.device_user_id, m.employee_id, e.employee_code, trim(e.first_name||' '||coalesce(e.last_name,'')) AS name
-      FROM device_user_mappings m JOIN employees e ON e.tenant_id=m.tenant_id AND e.id=m.employee_id WHERE m.tenant_id=$1 ORDER BY m.device_user_id`, [a.tenantId])).rows }));
+    const q = ListQuery.parse(req.query);
+    return a.tx((db) => pageOf(db, `SELECT m.device_user_id, m.employee_id, e.employee_code, trim(e.first_name||' '||coalesce(e.last_name,'')) AS name
+      FROM device_user_mappings m JOIN employees e ON e.tenant_id=m.tenant_id AND e.id=m.employee_id WHERE m.tenant_id=$1 ORDER BY m.device_user_id`, [a.tenantId], q));
   });
 
   /** Map a device enrolment id to an employee and re-process any events that were waiting in the unmapped queue. */
@@ -566,11 +569,12 @@ export async function attendanceRoutes(app: FastifyInstance) {
     });
   });
 
-  only(app, 'attendance.biometric').get('/device-events/unmapped', { schema: {}, config: { perm: ['attendance.devices.manage'] } }, async (req) => {
+  only(app, 'attendance.biometric').get('/device-events/unmapped', { schema: { querystring: ListQuery }, config: { perm: ['attendance.devices.manage'] } }, async (req) => {
     const a = tenantActor(req, 'attendance.devices.manage');
-    return a.tx(async (db) => ({ items: (await db.query(`SELECT ev.id, ev.device_user_id, ev.event_time, ev.device_time, ev.direction, ev.received_at, d.name AS device_name, d.serial_number
+    const q = ListQuery.parse(req.query);
+    return a.tx((db) => pageOf(db, `SELECT ev.id, ev.device_user_id, ev.event_time, ev.device_time, ev.direction, ev.received_at, d.name AS device_name, d.serial_number
       FROM attendance_events ev LEFT JOIN attendance_devices d ON d.tenant_id=ev.tenant_id AND d.id=ev.device_id
-      WHERE ev.tenant_id=$1 AND ev.status='unmapped' ORDER BY ev.event_time DESC LIMIT 500`, [a.tenantId])).rows }));
+      WHERE ev.tenant_id=$1 AND ev.status='unmapped' ORDER BY ev.event_time DESC`, [a.tenantId], q));
   });
 }
 

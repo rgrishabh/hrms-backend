@@ -175,7 +175,7 @@ export async function overtimeRoutes(app: FastifyInstance) {
       if (q.scope === 'all') { if (!(a.has('overtime.read') || a.has('overtime.approve') || a.has('overtime.manage'))) throw forbidden(); ids = null; }
       else if (q.scope === 'team') ids = a.user.employeeId && a.has('overtime.team.read') ? await teamEmployeeIds(db, a.tenantId, a.user.employeeId) : [];
       else ids = a.user.employeeId ? [a.user.employeeId] : [];
-      const where = `c.tenant_id=$1 AND ($2::uuid[] IS NULL OR c.employee_id = ANY($2)) AND ($3::text IS NULL OR c.status=$3) AND ($4::text IS NULL OR to_char(c.work_date,'YYYY-MM')=$4) AND ($5 OR c.payout <> 'comp_off')`;
+      const where = `c.tenant_id=$1 AND ($2::uuid[] IS NULL OR c.employee_id = ANY($2)) AND ($3::text IS NULL OR c.status=$3) AND ($4::text IS NULL OR (c.work_date >= ($4||'-01')::date AND c.work_date < ($4||'-01')::date + interval '1 month')) AND ($5 OR c.payout <> 'comp_off')`;
       const args = [a.tenantId, ids, q.status ?? null, q.period ?? null, isModuleEnabled('comp_off')];
       const total = Number((await db.query<{ n: string }>(`SELECT count(*) AS n FROM overtime_claims c WHERE ${where}`, args)).rows[0]!.n);
       const sums = (await db.query<{ status: string; minutes: string }>(`SELECT status, sum(minutes)::text AS minutes FROM overtime_claims c WHERE ${where} GROUP BY status`, args)).rows;

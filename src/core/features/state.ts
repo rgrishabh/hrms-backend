@@ -3,6 +3,7 @@ import type { Db } from '../../db/tx.js';
 import { FEATURES, FEATURE_MAP, type FeatureDefinition } from './registry.js';
 import { featureNotConfigured, notFound } from '../http/errors.js';
 import { resolveSetting } from '../settings/service.js';
+import { memoized } from '../memo.js';
 
 /**
  * Module state for this installation:
@@ -91,6 +92,10 @@ const CONFIG_CHECKS: Record<string, (db: Db, tenantId: string) => Promise<{ conf
 };
 
 export async function evaluateFeatures(db: Db, tenantId: string): Promise<Map<string, FeatureState>> {
+  return memoized(`features:${tenantId}`, () => evaluate(db, tenantId));
+}
+
+async function evaluate(db: Db, tenantId: string): Promise<Map<string, FeatureState>> {
   const out = new Map<string, FeatureState>();
   const evalOne = async (d: FeatureDefinition): Promise<FeatureState> => {
     const cached = out.get(d.key);

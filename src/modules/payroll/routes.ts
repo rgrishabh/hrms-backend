@@ -2,13 +2,12 @@ import type { FastifyInstance } from 'fastify';
 import * as R from '../../core/http/responses.js';
 import { only } from '../../core/features/routes.js';
 import { closeRepaid, enabledLoanKinds } from '../loans/service.js';
-import { featureOn } from '../lifecycle/service.js';
 import { z } from 'zod';
 import { organizationName } from '../../config/env.js';
 import { tenantActor, tenantActorAny, requireFeature, type TenantActor, gateFeatures } from '../../core/http/context.js';
 import { audit } from '../../core/audit/audit.js';
 import { badRequest, conflict, forbidden, notFound } from '../../core/http/errors.js';
-import { IsoDate, Uuid } from '../../core/http/pagination.js';
+import { IsoDate, Uuid, ListQuery, LongListQuery, pageOf, offsetOf, paged } from '../../core/http/pagination.js';
 import { createApprovalRequest, registerApprovalHandler } from '../../core/workflow/engine.js';
 import { notifyUsers } from '../../core/notify/service.js';
 import { orgToday } from '../competency/service.js';
@@ -17,7 +16,7 @@ import { RULE_PARAMS, type RuleKind } from './calc.js';
 import { attendanceLocked, computeRun, periodBounds, staleReason } from './service.js';
 import { balancesAt } from '../leave/service.js';
 import { csv } from '../../core/http/csv.js';
-import { xlsx, XLSX_TYPE } from '../../core/http/xlsx.js';
+import { xlsxAsync, XLSX_TYPE } from '../../core/http/xlsx.js';
 import { dataCipher } from '../../core/crypto/index.js';
 import { AppError } from '../../core/http/errors.js';
 import { getSettingValue } from '../../core/settings/service.js';
@@ -135,11 +134,12 @@ export async function payrollRoutes(app: FastifyInstance) {
   const cipher = app.deps.cipher;
 
   // ------------------------------------------------------------ components
-  app.get('/components', { schema: {}, config: { permAny: ['payroll.read', 'payroll.manage'], feature: [F] } }, async (req) => {
+  app.get('/components', { schema: { querystring: ListQuery }, config: { permAny: ['payroll.read', 'payroll.manage'], feature: [F] } }, async (req) => {
     const a = tenantActorAny(req, 'payroll.read', 'payroll.manage');
+    const q = ListQuery.parse(req.query);
     return a.tx(async (db) => {
       await requireFeature(db, a.tenantId, F);
-      return { items: (await db.query(`SELECT id, code, name, kind, calc, base_codes, prorate, taxable, pf_wage, esi_wage, position, status FROM pay_components WHERE tenant_id=$1 ORDER BY status, kind DESC, position, code`, [a.tenantId])).rows };
+      return pageOf(db, `SELECT id, code, name, kind, calc, base_codes, prorate, taxable, pf_wage, esi_wage, position, status FROM pay_components WHERE tenant_id=$1 ORDER BY status, kind DESC, position, code`, [a.tenantId], q);
     });
   });
   async function saveComponent(db: Db, a: TenantActor, b: z.infer<typeof ComponentBody>, id?: string) {
@@ -174,9 +174,10 @@ export async function payrollRoutes(app: FastifyInstance) {
   });
 
   // ------------------------------------------------------------ salaries (maker-checker)
-  app.get('/employees/:id/salaries', { schema: { response: { 200: R.GetPayrollEmployeesByIdSalaries200 }, params: IdParams }, config: { feature: [F] } }, async (req) => {
+  app.get('/employees/:id/salaries', { schema: { response: { 200: R.GetPayrollEmployeesByIdSalaries200 }, params: IdParams, querystring: ListQuery }, config: { feature: [F] } }, async (req) => {
     const a = tenantActor(req);
     const { id } = IdParams.parse(req.params);
+    const q = ListQuery.parse(req.query);
     return a.tx(async (db) => {
       await requireFeature(db, a.tenantId, F);
       const v = await policyViewer(db, a.tenantId, a.user);
@@ -184,12 +185,13 @@ export async function payrollRoutes(app: FastifyInstance) {
       if (!(await subjectVisible(db, a.tenantId, v, id))) throw notFound('Employee not found');
       const reveal = wantsReveal(req);
       const rows = (await db.query<{ amounts_enc: string; annual_ctc_enc: string | null } & Record<string, unknown>>(`SELECT s.id, s.effective_from::text, s.amounts_enc, s.annual_ctc_enc, s.reason, s.status, s.created_at, s.approved_at, u.display_name AS created_by_name
-        FROM employee_salaries s JOIN users u ON u.id=s.created_by WHERE s.tenant_id=$1 AND s.employee_id=$2 ORDER BY s.effective_from DESC, s.created_at DESC`, [a.tenantId, id])).rows;
+        FROM employee_salaries s JOIN users u ON u.id=s.created_by WHERE s.tenant_id=$1 AND s.employee_id=$2 ORDER BY s.effective_from DESC, s.created_at DESC LIMIT ${q.pageSize} OFFSET ${offsetOf(q)}`, [a.tenantId, id])).rows;
+      const total = Number((await db.query<{ n: string }>('SELECT count(*) AS n FROM employee_salaries WHERE tenant_id=$1 AND employee_id=$2', [a.tenantId, id])).rows[0]!.n);
       if (reveal && rows.length) await auditL4(db, readContext(req, a), 'reveal', 'payroll.salaries', [{ employeeId: id, fields: ['amounts', 'annual_ctc'] }]);
-      return { items: rows.map(({ amounts_enc, annual_ctc_enc, ...r }) => {
+      return paged(rows.map(({ amounts_enc, annual_ctc_enc, ...r }) => {
         const row = { ...r, amounts: openAmounts(amounts_enc) as Record<string, number> | null, annual_ctc: annual_ctc_enc ? Number(JSON.parse(dataCipher().decrypt(annual_ctc_enc))).toFixed(2) : null };
         return reveal ? row : maskFields(row, ['amounts', 'annual_ctc']);
-      }) };
+      }), total, q);
     });
   });
   app.post('/employees/:id/salaries', { schema: { response: { 201: R.PostPayrollEmployeesByIdSalaries201 }, params: IdParams, body: EmployeesSalariesBody }, config: { perm: ['payroll.manage'], feature: [F] } }, async (req, reply) => {
@@ -345,8 +347,9 @@ export async function payrollRoutes(app: FastifyInstance) {
   });
 
   // ------------------------------------------------------------ runs
-  app.get('/runs', { schema: { response: { 200: R.GetPayrollRuns200 },}, config: { permAny: ['payroll.read', 'payroll.manage', 'payroll.approve'], feature: [F] } }, async (req) => {
+  app.get('/runs', { schema: { querystring: ListQuery, response: { 200: R.GetPayrollRuns200 },}, config: { permAny: ['payroll.read', 'payroll.manage', 'payroll.approve'], feature: [F] } }, async (req) => {
     const a = tenantActorAny(req, 'payroll.read', 'payroll.manage', 'payroll.approve');
+    const q = ListQuery.parse(req.query);
     return a.tx(async (db) => {
       await requireFeature(db, a.tenantId, F);
       const reveal = wantsReveal(req);
@@ -354,7 +357,8 @@ export async function payrollRoutes(app: FastifyInstance) {
       const rows = (await db.query<{ id: string; totals_enc: string | null } & Record<string, unknown>>(`SELECT r.id, r.period, r.kind, r.status, r.totals_enc, r.warnings, r.warnings_acknowledged, r.computed_at, r.finalized_at, r.paid_at, r.payment_reference, (SELECT count(*)::int FROM payroll_items x WHERE x.tenant_id=r.tenant_id AND x.run_id=r.id AND x.hold_released_at IS NOT NULL) AS released_count,
           le.name AS legal_entity_name, trim(e.first_name||' '||coalesce(e.last_name,'')) AS employee_name, u.display_name AS created_by_name
         FROM payroll_runs r JOIN legal_entities le ON le.tenant_id=r.tenant_id AND le.id=r.legal_entity_id LEFT JOIN employees e ON e.tenant_id=r.tenant_id AND e.id=r.employee_id
-        JOIN users u ON u.id=r.created_by WHERE r.tenant_id=$1 ORDER BY r.period DESC, r.created_at DESC LIMIT 100`, [a.tenantId])).rows;
+        JOIN users u ON u.id=r.created_by WHERE r.tenant_id=$1 ORDER BY r.period DESC, r.created_at DESC LIMIT ${q.pageSize} OFFSET ${offsetOf(q)}`, [a.tenantId])).rows;
+      const total = Number((await db.query<{ n: string }>('SELECT count(*) AS n FROM payroll_runs WHERE tenant_id=$1', [a.tenantId])).rows[0]!.n);
       const items = [];
       const read = new Set<string>();
       for (const { totals_enc, ...r } of rows) {
@@ -365,7 +369,7 @@ export async function payrollRoutes(app: FastifyInstance) {
         items.push({ ...r, totals, excluded });
       }
       await auditL4(db, readContext(req, a), 'reveal', 'payroll.runs', [...read].map((employeeId) => ({ employeeId, fields: ['totals'] })));
-      return { items };
+      return paged(items, total, q);
     });
   });
   app.post('/runs', { schema: { body: RunsBody }, config: { perm: ['payroll.manage'], feature: [F] } }, async (req, reply) => {
@@ -407,9 +411,10 @@ export async function payrollRoutes(app: FastifyInstance) {
     });
   });
 
-  app.get('/runs/:id', { schema: { response: { 200: R.GetPayrollRunsById200 }, params: IdParams }, config: { permAny: ['payroll.read', 'payroll.manage', 'payroll.approve'], feature: [F] } }, async (req) => {
+  app.get('/runs/:id', { schema: { response: { 200: R.GetPayrollRunsById200 }, params: IdParams, querystring: LongListQuery }, config: { permAny: ['payroll.read', 'payroll.manage', 'payroll.approve'], feature: [F] } }, async (req) => {
     const a = tenantActorAny(req, 'payroll.read', 'payroll.manage', 'payroll.approve');
     const { id } = IdParams.parse(req.params);
+    const q = LongListQuery.parse(req.query);
     return a.tx(async (db) => {
       await requireFeature(db, a.tenantId, F);
       const { totals_enc, ...run } = (await db.query(`SELECT r.*, (SELECT count(*)::int FROM payroll_items x WHERE x.tenant_id=r.tenant_id AND x.run_id=r.id AND x.hold_released_at IS NOT NULL) AS released_count, le.name AS legal_entity_name FROM payroll_runs r JOIN legal_entities le ON le.tenant_id=r.tenant_id AND le.id=r.legal_entity_id WHERE r.tenant_id=$1 AND r.id=$2`, [a.tenantId, id])).rows[0] ?? {};
@@ -418,20 +423,23 @@ export async function payrollRoutes(app: FastifyInstance) {
       const v = await policyViewer(db, a.tenantId, a.user);
       // The row filter: people above this viewer are not in the answer at all, and `excluded` says how many there were.
       const rows = (await db.query<{ data_enc: string; employee_id: string; visible: boolean } & Record<string, unknown>>(`SELECT i.id, i.employee_id, e.employee_code, trim(e.first_name||' '||coalesce(e.last_name,'')) AS employee_name, i.employed_days, i.lop_days, i.paid_days,
-          i.data_enc, i.hold, i.hold_released_at, ${l4RowFilter(v, 'e')} AS visible
-        FROM payroll_items i JOIN employees e ON e.tenant_id=i.tenant_id AND e.id=i.employee_id WHERE i.tenant_id=$1 AND i.run_id=$2 ORDER BY e.employee_code`, [a.tenantId, id])).rows;
-      const shown = rows.filter((r) => r.visible);
-      const excluded = rows.length - shown.length;
+          i.data_enc, i.hold, i.hold_released_at, true AS visible
+        FROM payroll_items i JOIN employees e ON e.tenant_id=i.tenant_id AND e.id=i.employee_id WHERE i.tenant_id=$1 AND i.run_id=$2 AND ${l4RowFilter(v, 'e')} ORDER BY e.employee_code LIMIT ${q.pageSize} OFFSET ${offsetOf(q)}`, [a.tenantId, id])).rows;
+      const shown = rows;
+      const counted = (await db.query<{ n: string; visible: string }>(`SELECT count(*) AS n, count(*) FILTER (WHERE ${l4RowFilter(v, 'e')}) AS visible
+        FROM payroll_items i JOIN employees e ON e.tenant_id=i.tenant_id AND e.id=i.employee_id WHERE i.tenant_id=$1 AND i.run_id=$2`, [a.tenantId, id])).rows[0]!;
+      const page = { page: q.page, pageSize: q.pageSize, total: Number(counted.visible) };
+      const excluded = Number(counted.n) - page.total;
       const items = shown.map(({ data_enc, visible: _v, ...r }) => (reveal ? { ...r, ...itemFields(openItem(data_enc)) } : maskFields({ ...r, ...itemFields(openItem(data_enc)) }, ITEM_FIELDS)));
       const adj = (await db.query<{ data_enc: string; employee_id: string } & Record<string, unknown>>(`SELECT a.id, a.employee_id, a.kind, a.label, a.data_enc, a.taxable, u.display_name AS created_by_name FROM payroll_adjustments a JOIN users u ON u.id=a.created_by
         JOIN employees e ON e.tenant_id=a.tenant_id AND e.id=a.employee_id WHERE a.tenant_id=$1 AND a.run_id=$2 AND ${l4RowFilter(v, 'e')} ORDER BY a.created_at`, [a.tenantId, id])).rows;
       const adjustments = adj.map(({ data_enc, ...r }) => { const d = openAdjustment(data_enc); const row = { ...r, amount: d.amount.toFixed(2), note: d.note }; return reveal ? row : maskFields(row, ['amount', 'note']); });
       const locked = await attendanceLocked(db, a.tenantId, run.period);
-      if (!reveal) return { ...maskFields({ ...run, totals: openTotals(totals_enc) }, ['totals']), items, adjustments, attendanceLocked: locked, excluded };
+      if (!reveal) return { ...maskFields({ ...run, totals: openTotals(totals_enc) }, ['totals']), ...page, items, adjustments, attendanceLocked: locked, excluded };
       // Bulk reveal for the person working the run: one audit row for each person in it.
       await auditL4(db, readContext(req, a), 'reveal', 'payroll.run', shown.map((r) => ({ employeeId: r.employee_id, fields: ITEM_FIELDS })));
       const totals = totals_enc ? await visibleRunTotals(db, a.tenantId, v, id).then(({ excluded: _e, subjects: _s, ...t }) => t) : null;
-      return { ...run, totals, items, adjustments, attendanceLocked: locked, excluded };
+      return { ...run, totals, ...page, items, adjustments, attendanceLocked: locked, excluded };
     });
   });
 
@@ -624,7 +632,7 @@ export async function payrollRoutes(app: FastifyInstance) {
       if (format === 'xlsx') {
         // Employee codes and names stay text (leading zeros); amounts and days become numbers.
         const [head = [], ...body] = rows;
-        const book = xlsx([{ name: `${name} ${period}`, columns: head.map((h, i) => ({ label: String(h), type: i < 2 ? 'text' : 'auto' })), rows: body }]);
+        const book = await xlsxAsync([{ name: `${name} ${period}`, columns: head.map((h, i) => ({ label: String(h), type: i < 2 ? 'text' : 'auto' })), rows: body }]);
         return reply.header('content-type', XLSX_TYPE).header('content-disposition', `attachment; filename="${file}"`).header('cache-control', 'private, no-store').send(book);
       }
       return reply.header('content-type', 'text/csv; charset=utf-8').header('content-disposition', `attachment; filename="${file}"`).header('cache-control', 'private, no-store').send(csv(rows));
@@ -643,6 +651,10 @@ export async function payrollRoutes(app: FastifyInstance) {
     if (hidden) throw refuseHigherLevel(hidden);
     return items;
   };
+  const bankAccountsOf = async (db: Db, tenantId: string, ids: string[]) => new Map((await db.query<{ employee_id: string; account_holder: string; ifsc: string; account_last4: string; account_number_enc: string }>(
+    'SELECT employee_id, account_holder, ifsc, account_last4, account_number_enc FROM employee_bank_accounts WHERE tenant_id=$1 AND employee_id = ANY($2)', [tenantId, ids])).rows.map((r) => [r.employee_id, r]));
+  const statutoryOf = async (db: Db, tenantId: string, ids: string[]) => new Map((await db.query<{ employee_id: string; uan: string | null; esi_ip_number: string | null }>(
+    'SELECT employee_id, uan, esi_ip_number FROM employee_statutory WHERE tenant_id=$1 AND employee_id = ANY($2)', [tenantId, ids])).rows.map((r) => [r.employee_id, r]));
   const amt = (lines: { code: string; amount: number }[], code: string) => lines.find((l) => l.code === code)?.amount ?? 0;
 
   exportRun('register', async (db, a, run) => {
@@ -657,8 +669,9 @@ export async function payrollRoutes(app: FastifyInstance) {
     const full = a.has('employees.bank.read');
     const items = wholeFile((await itemsOf(db, a, run.id)).filter((i) => include(i) && Number(i.net) > 0));
     const out: unknown[][] = [['employee_code', 'name', 'amount', 'account_holder', 'ifsc', 'account_number']];
+    const accounts = await bankAccountsOf(db, a.tenantId, items.map((i) => i.employee_id));
     for (const i of items) {
-      const b = (await db.query<{ account_holder: string; ifsc: string; account_last4: string; account_number_enc: string }>(`SELECT account_holder, ifsc, account_last4, account_number_enc FROM employee_bank_accounts WHERE tenant_id=$1 AND employee_id=$2`, [a.tenantId, i.employee_id])).rows[0];
+      const b = accounts.get(i.employee_id);
       out.push([i.employee_code, i.name, i.net, b?.account_holder ?? '', b?.ifsc ?? '', b ? (full ? cipher.decrypt(b.account_number_enc) : `XXXXXX${b.account_last4}`) : 'MISSING']);
     }
     return { rows: out, subjects: items.map((i) => i.employee_id), fields: ['net', 'account_number', 'ifsc', 'account_holder'] };
@@ -669,8 +682,9 @@ export async function payrollRoutes(app: FastifyInstance) {
   exportRun('pf', async (db, a, run) => {
     const items = wholeFile((await itemsOf(db, a, run.id)).filter((i) => i.lines.some((l) => l.code === 'PF_EE')));
     const out: unknown[][] = [['uan', 'employee_code', 'name', 'gross', 'pf_employee', 'eps_employer', 'epf_employer', 'lop_days']];
+    const statutory = await statutoryOf(db, a.tenantId, items.map((i) => i.employee_id));
     for (const i of items) {
-      const s = (await db.query<{ uan: string | null }>('SELECT uan FROM employee_statutory WHERE tenant_id=$1 AND employee_id=$2', [a.tenantId, i.employee_id])).rows[0];
+      const s = statutory.get(i.employee_id);
       out.push([s?.uan ?? 'MISSING', i.employee_code, i.name, i.gross, amt(i.lines, 'PF_EE'), amt(i.lines, 'PF_EPS'), amt(i.lines, 'PF_EPF_ER'), i.lop_days]);
     }
     return { rows: out, subjects: items.map((i) => i.employee_id), fields: ['uan', 'gross', 'lines'] };
@@ -678,8 +692,9 @@ export async function payrollRoutes(app: FastifyInstance) {
   exportRun('esi', async (db, a, run) => {
     const items = wholeFile((await itemsOf(db, a, run.id)).filter((i) => i.lines.some((l) => l.code === 'ESI_EE')));
     const out: unknown[][] = [['esi_ip_number', 'employee_code', 'name', 'paid_days', 'gross', 'esi_employee', 'esi_employer']];
+    const statutory = await statutoryOf(db, a.tenantId, items.map((i) => i.employee_id));
     for (const i of items) {
-      const s = (await db.query<{ esi_ip_number: string | null }>('SELECT esi_ip_number FROM employee_statutory WHERE tenant_id=$1 AND employee_id=$2', [a.tenantId, i.employee_id])).rows[0];
+      const s = statutory.get(i.employee_id);
       out.push([s?.esi_ip_number ?? 'MISSING', i.employee_code, i.name, i.paid_days, i.gross, amt(i.lines, 'ESI_EE'), amt(i.lines, 'ESI_ER')]);
     }
     return { rows: out, subjects: items.map((i) => i.employee_id), fields: ['esi_ip_number', 'gross', 'lines'] };

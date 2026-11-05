@@ -4,6 +4,8 @@ Base path `/api/v1`. JSON in and out. Each installation serves one organization;
 
 **Auth:** `POST /auth/login` sets an httpOnly session cookie and returns `csrfToken`. Every `POST/PUT/PATCH/DELETE` made with the cookie must send `x-csrf-token`. Device ingestion uses `X-Device-Key` instead.
 
+**Lists:** `?page=&pageSize=`, answered as `{ items, page, pageSize, total }`. Default 25, cap 100 on most. Attendance locks, shifts, device mappings, unmapped events, pay components, salaries, runs, `/approvals/mine`, cases and jobs: default 100, cap 500. The inbox and a run's items: default 200, cap 500. Over the cap is 400. Reports are capped at 5,000 rows with `truncated`.
+
 **Errors:** RFC 7807, `application/problem+json`, from one handler, including 404 and rate limits:
 
 ```json

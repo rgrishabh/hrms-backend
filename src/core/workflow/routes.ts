@@ -2,7 +2,7 @@ import type { FastifyInstance } from 'fastify';
 import * as R from '../http/responses.js';
 import { z } from 'zod';
 import { tenantActor, tenantActorAny } from '../http/context.js';
-import { PageQuery, Uuid } from '../http/pagination.js';
+import { ListQuery, LongListQuery, PageQuery, Uuid, pageOf, paged } from '../http/pagination.js';
 import { actOnRequest, cancelRequest, inbox, reassignRequest, requestHistory, stuckRequests, ESCALATION_PERMISSION, offEntityTypes } from './engine.js';
 import { notFound, forbidden } from '../http/errors.js';
 import { delegationRoutes } from './delegations.js';
@@ -13,15 +13,20 @@ const ActBody = z.object({ action: z.enum(['approve', 'reject', 'return']), comm
 export async function approvalRoutes(app: FastifyInstance) {
   await delegationRoutes(app);
 
-  app.get('/inbox', { schema: { response: { 200: R.GetApprovalsInbox200 },} }, async (req) => {
+  app.get('/inbox', { schema: { querystring: LongListQuery, response: { 200: R.GetApprovalsInbox200 },} }, async (req) => {
     const a = tenantActor(req);
-    return a.tx(async (db) => ({ items: await inbox(db, a.tenantId, { userId: a.user.userId, permissions: a.user.permissions }) }));
+    const q = LongListQuery.parse(req.query);
+    return a.tx(async (db) => {
+      const { items, total } = await inbox(db, a.tenantId, { userId: a.user.userId, permissions: a.user.permissions }, undefined, q);
+      return paged(items, total, q);
+    });
   });
 
-  app.get('/mine', { schema: { response: { 200: R.GetApprovalsMine200 },} }, async (req) => {
+  app.get('/mine', { schema: { querystring: ListQuery, response: { 200: R.GetApprovalsMine200 },} }, async (req) => {
     const a = tenantActor(req);
-    return a.tx(async (db) => ({ items: (await db.query(`SELECT id, entity_type, entity_id, summary, status, created_at, decided_at
-      FROM approval_requests WHERE tenant_id=$1 AND requester_id=$2 AND NOT (entity_type = ANY($3)) ORDER BY created_at DESC LIMIT 100`, [a.tenantId, a.user.userId, offEntityTypes()])).rows }));
+    const q = ListQuery.parse(req.query);
+    return a.tx((db) => pageOf(db, `SELECT id, entity_type, entity_id, summary, status, created_at, decided_at
+      FROM approval_requests WHERE tenant_id=$1 AND requester_id=$2 AND NOT (entity_type = ANY($3)) ORDER BY created_at DESC`, [a.tenantId, a.user.userId, offEntityTypes()], q));
   });
 
   /** For whoever can sort it out: reassigning a request nobody can decide is theirs already (POST /:id/reassign). */
@@ -40,7 +45,7 @@ export async function approvalRoutes(app: FastifyInstance) {
       const rq = r.rows[0];
       if (!rq) throw notFound();
       const steps = await requestHistory(db, a.tenantId, id);
-      const mine = await inbox(db, a.tenantId, { userId: a.user.userId, permissions: a.user.permissions });
+      const { items: mine } = await inbox(db, a.tenantId, { userId: a.user.userId, permissions: a.user.permissions });
       const involved = rq.requester_id === a.user.userId || mine.some((m) => m.id === id) ||
         (await db.query('SELECT 1 FROM approval_steps WHERE tenant_id=$1 AND request_id=$2 AND (approver_user_id=$3 OR acted_by=$3 OR acted_for=$3 OR escalated_to=$3)', [a.tenantId, id, a.user.userId])).rowCount;
       if (!involved) throw forbidden();

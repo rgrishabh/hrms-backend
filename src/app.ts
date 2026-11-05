@@ -17,6 +17,7 @@ import { isExportRoute, perUserLimit } from './core/http/limits.js';
 import type { AppDeps } from './core/http/context.js';
 import { initRuntime } from './core/runtime.js';
 import { withFeatures } from './core/features/state.js';
+import { withMemo } from './core/memo.js';
 import { withMode } from './core/policy/mode.js';
 import { LOG_REDACT_PATHS, logSerializers } from './core/logging.js';
 import type { FeatureRoute } from './core/features/routes.js';
@@ -51,6 +52,7 @@ import { dashboardRoutes } from './modules/dashboard/routes.js';
 import { BRAND_MOUNT, registerWeb, registerBrandAssets, spaCsp, API_CSP, ASSET_CSP } from './core/http/web.js';
 import { allowedCorsOrigin } from './config/env.js';
 import { migrationStatus } from './db/migrate.js';
+import { createPool, readUrl } from './db/pool.js';
 
 const READINESS_TIMEOUT_MS = 2000;
 const PASSIVE_PATHS = new Set(['/api/v1/notifications/unread-count']);
@@ -70,15 +72,23 @@ export async function buildApp(deps: AppDeps): Promise<FastifyInstance> {
     genReqId: () => randomUUID(),
     bodyLimit: 1024 * 1024,
   });
+  // Reports and heavy reads, when there is a replica. Same role and database name, so RLS and grants are the primary's.
+  if (env.DB_READ_HOST) {
+    const readPool = createPool(readUrl(env.DATABASE_URL, env.DB_READ_HOST), env.DATABASE_POOL_MAX);
+    deps = { ...deps, readPool };
+    app.addHook('onClose', () => readPool.end());
+  }
   app.decorate('deps', deps);
   // Deployment configuration is validated here; an invalid module set stops the process.
   const runtime = initRuntime(env, app.log, deps);
   const { publicConfig, features } = runtime;
   app.addHook('onClose', () => runtime.close());
   // Each app's requests see its own feature set. Reading the body leaves the async context, hence the second hook.
-  const inScope = (done: () => void) => withFeatures(features, () => withMode(env.ORG_MANAGEMENT_MODE, done));
-  app.addHook('onRequest', (_req, _reply, done) => { inScope(done); });
-  app.addHook('preValidation', (_req, _reply, done) => { inScope(done); });
+  const memos = new WeakMap<object, Map<string, unknown>>();
+  const memoOf = (req: object) => { const m = memos.get(req) ?? new Map<string, unknown>(); memos.set(req, m); return m; };
+  const inScope = (req: object, done: () => void) => withMemo(memoOf(req), () => withFeatures(features, () => withMode(env.ORG_MANAGEMENT_MODE, done)));
+  app.addHook('onRequest', (req, _reply, done) => { inScope(req, done); });
+  app.addHook('preValidation', (req, _reply, done) => { inScope(req, done); });
   // What each route needs, for the test that goes through every flag.
   const featureRoutes: FeatureRoute[] = [];
   let mounting: readonly string[] | null = null;

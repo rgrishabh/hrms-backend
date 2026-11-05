@@ -8,7 +8,7 @@ import { auditL4, readContext, wantsReveal } from '../../core/policy/salary.js';
 import { audit } from '../../core/audit/audit.js';
 import { badRequest, conflict, notFound } from '../../core/http/errors.js';
 import { csv } from '../../core/http/csv.js';
-import { xlsx, XLSX_TYPE } from '../../core/http/xlsx.js';
+import { xlsxAsync, XLSX_TYPE } from '../../core/http/xlsx.js';
 import { Uuid } from '../../core/http/pagination.js';
 import { loadPdfContext, loadPdfIdentity, pdfHeaders } from '../../core/pdf/writer.js';
 import { ReportTable, type TableInput } from '../../core/pdf/table.js';
@@ -25,8 +25,8 @@ const viewer = (a: TenantActor): Viewer => ({ userId: a.user.userId, employeeId:
 const ADV = 'reports.advanced';
 
 /** The same report as an Excel workbook: typed columns (money, dates, percentages), bold header and totals. */
-function sendXlsx(reply: FastifyReply, name: string, title: string, columns: Column[], rows: Row[], totals: Row | null) {
-  const body = xlsx([{ name: title, columns: columns.map((c) => ({ label: c.label, type: c.type })), rows: rows.map((r) => columns.map((c) => r[c.key])),
+async function sendXlsx(reply: FastifyReply, name: string, title: string, columns: Column[], rows: Row[], totals: Row | null) {
+  const body = await xlsxAsync([{ name: title, columns: columns.map((c) => ({ label: c.label, type: c.type })), rows: rows.map((r) => columns.map((c) => r[c.key])),
     totals: totals ? columns.map((c, i) => (i === 0 ? 'Total' : totals[c.key])) : null }]);
   return reply.header('content-type', XLSX_TYPE).header('content-disposition', `attachment; filename="${name}.xlsx"`).header('cache-control', 'private, no-store').send(body);
 }
@@ -253,7 +253,7 @@ export async function reportRoutes(app: FastifyInstance) {
     const key = reportKey(req);
     const a = tenantActor(req);
     const reveal = wantsReveal(req);
-    const { def, subjects, ...r } = await a.tx((db) => runReport(db, a.tenantId, key, req.query, viewer(a), { reveal }));
+    const { def, subjects, ...r } = await a.read((db) => runReport(db, a.tenantId, key, req.query, viewer(a), { reveal }));
     if (def.l4 && reveal) await a.tx((db) => auditL4(db, readContext(req, a), 'reveal', `reports.${def.key}`, (subjects ?? []).map((employeeId) => ({ employeeId, fields: ['pay'] }))));
     return { key: def.key, name: def.name, generatedAt: new Date().toISOString(), ...r };
   });
@@ -262,7 +262,7 @@ export async function reportRoutes(app: FastifyInstance) {
   for (const format of ['csv', 'xlsx', 'pdf'] as const) app.get(`/:key/export.${format}`, { schema: { params: ReportKeyParams, querystring: ReportParams } }, async (req, reply) => {
     const key = reportKey(req);
     const a = tenantActor(req);
-    const { def, params, today, columns, rows, totals, scope, excluded, subjects, notes } = await a.tx((db) => runReport(db, a.tenantId, key, req.query, viewer(a), { reveal: true }));
+    const { def, params, today, columns, rows, totals, scope, excluded, subjects, notes } = await a.read((db) => runReport(db, a.tenantId, key, req.query, viewer(a), { reveal: true }));
     if (def.l4) await a.tx((db) => auditL4(db, readContext(req, a), 'export', `reports.${def.key}`, (subjects ?? []).map((employeeId) => ({ employeeId, fields: ['pay'] }))));
     await a.tx((db) => audit(db, { ...a.auditBase, userAgent: readDevice(req).userAgent, action: 'reports.exported', category: 'access', targetType: 'report', targetId: def.key, metadata: { params, scope, rows: rows.length, format, excluded: excluded ?? 0 } }));
     reply.header('x-excluded-subjects', String(excluded ?? 0));

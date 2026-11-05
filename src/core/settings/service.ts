@@ -2,6 +2,7 @@ import type { Db } from '../../db/tx.js';
 import { SETTINGS_MAP, type DeploymentLimits } from './registry.js';
 import { badRequest } from '../http/errors.js';
 import { cached, invalidate } from '../cache/index.js';
+import { clearMemo, memoized } from '../memo.js';
 
 let limits: DeploymentLimits = { sessionTtlHours: 12 };
 export function setDeploymentLimits(l: DeploymentLimits) { limits = l; }
@@ -28,6 +29,10 @@ export interface EffectiveSetting {
  * commits, so saved changes apply to the next request on every instance without restarts. Without Redis: the database.
  */
 export async function resolveSetting(db: Db, tenantId: string, key: string, branchId?: string | null): Promise<EffectiveSetting> {
+  return memoized(`setting:${tenantId}:${key}:${branchId ?? ''}`, () => readSetting(db, tenantId, key, branchId));
+}
+
+async function readSetting(db: Db, tenantId: string, key: string, branchId?: string | null): Promise<EffectiveSetting> {
   const d = SETTINGS_MAP.get(key);
   if (!d) throw new Error(`Unknown setting ${key}`);
   const { platform, rows } = await cached(db, tenantId, 'settings', `${key}:${branchId ?? ''}`, async () => ({
@@ -106,6 +111,7 @@ export async function writeSetting(db: Db, tenantId: string, w: SettingWrite, ac
       ON CONFLICT (tenant_id, setting_key, scope_type, coalesce(scope_id, '00000000-0000-0000-0000-000000000000'))
       DO UPDATE SET setting_value=EXCLUDED.setting_value, updated_by=EXCLUDED.updated_by, version=tenant_settings.version+1, updated_at=now()`, [tenantId, w.key, w.scope, scopeId, JSON.stringify(parsed.data), actorId]);
   }
+  clearMemo();
   invalidate(db, tenantId, 'settings');
   return { definition: d, previous: prev?.setting_value, value: parsed.data };
 }
@@ -115,6 +121,7 @@ export async function clearSetting(db: Db, tenantId: string, key: string, scope:
   const r = await db.query<{ setting_value: unknown }>(
     `DELETE FROM tenant_settings WHERE tenant_id=$1 AND setting_key=$2 AND scope_type=$3 AND scope_id IS NOT DISTINCT FROM $4
      RETURNING setting_value`, [tenantId, key, scope, scope === 'branch' ? branchId ?? null : null]);
+  clearMemo();
   invalidate(db, tenantId, 'settings');
   return r.rows[0]?.setting_value;
 }

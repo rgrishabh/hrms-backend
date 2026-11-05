@@ -114,6 +114,9 @@ export const GetApprovalsById200 = z.strictObject({
 });
 
 export const GetApprovalsInbox200 = z.strictObject({
+  page: z.number(),
+  pageSize: z.number(),
+  total: z.number(),
   items: z.array(z.strictObject({
     approver_kind: z.string(),
     approver_name: z.string().nullable(),
@@ -136,6 +139,9 @@ export const GetApprovalsInbox200 = z.strictObject({
 });
 
 export const GetApprovalsMine200 = z.strictObject({
+  page: z.number(),
+  pageSize: z.number(),
+  total: z.number(),
   items: z.array(z.unknown()),
 });
 
@@ -770,6 +776,9 @@ export const GetOvertimeClaimsById200 = z.strictObject({
 });
 
 export const GetPayrollEmployeesByIdSalaries200 = z.strictObject({
+  page: z.number(),
+  pageSize: z.number(),
+  total: z.number(),
   items: z.array(z.strictObject({
     amounts: z.strictObject({
       BASIC: z.number(),
@@ -880,6 +889,9 @@ export const GetPayrollPayslipsMine200 = z.strictObject({
 });
 
 export const GetPayrollRuns200 = z.strictObject({
+  page: z.number(),
+  pageSize: z.number(),
+  total: z.number(),
   items: z.array(z.strictObject({
     computed_at: z.string(),
     created_by_name: z.string(),
@@ -910,6 +922,9 @@ export const GetPayrollRuns200 = z.strictObject({
 });
 
 export const GetPayrollRunsById200 = z.strictObject({
+  page: z.number(),
+  pageSize: z.number(),
+  total: z.number(),
   adjustments: z.array(z.strictObject({
     amount: z.string(),
     created_by_name: z.string(),

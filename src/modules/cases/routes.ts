@@ -4,7 +4,7 @@ import { z } from 'zod';
 import { tenantActor, requireFeature, type TenantActor, gateFeatures } from '../../core/http/context.js';
 import { audit } from '../../core/audit/audit.js';
 import { badRequest, conflict, forbidden, notFound } from '../../core/http/errors.js';
-import { IsoDate, Uuid } from '../../core/http/pagination.js';
+import { IsoDate, Uuid, ListQuery, pageOf } from '../../core/http/pagination.js';
 import { notifyUsers, usersWithPermission } from '../../core/notify/service.js';
 import { getSettingValue } from '../../core/settings/service.js';
 import { orgToday } from '../competency/service.js';
@@ -67,7 +67,7 @@ const PostRootBody = z.object({
       kind: z.enum(['posh', 'grievance']), category: z.string(), description: z.string().trim().min(20).max(10000), incidentDate: IsoDate.nullable().default(null),
       respondentEmployeeId: Uuid.nullable().default(null), respondentText: z.string().trim().max(500).nullable().default(null), anonymous: z.boolean().default(false), lateReason: z.string().trim().max(2000).nullable().default(null),
     });
-const GetRootQuery = z.object({ kind: z.enum(['posh', 'grievance']), scope: z.enum(['mine', 'handling']).default('mine'), status: z.string().max(30).optional() });
+const GetRootQuery = ListQuery.extend({ kind: z.enum(['posh', 'grievance']), scope: z.enum(['mine', 'handling']).default('mine'), status: z.string().max(30).optional() });
 const IdParams = z.object({ id: Uuid });
 const EventsBody = z.object({ text: z.string().trim().min(2).max(10000), visibleToComplainant: z.boolean().default(false), toStatus: z.string().optional(), outcome: z.string().trim().max(10000).optional(),
       expectedVersion: z.number().int() });
@@ -176,14 +176,14 @@ export async function caseRoutes(app: FastifyInstance) {
         const ok = q.kind === 'posh' ? await isCommittee(db, a.tenantId, a.user.userId) : a.has('grievance.manage');
         if (!ok && q.kind === 'posh') throw forbidden('Only Internal Committee members can see POSH complaints');
       }
-      const rows = (await db.query(`SELECT c.id, c.kind, c.number, c.category, c.status, c.anonymous, c.received_at, c.inquiry_due::text, c.report_due::text, c.sla_due::text, c.closed_at,
+      const page = await pageOf<Record<string, unknown>>(db, `SELECT c.id, c.kind, c.number, c.category, c.status, c.anonymous, c.received_at, c.inquiry_due::text, c.report_due::text, c.sla_due::text, c.closed_at,
           c.complainant_user, c.respondent_id, CASE WHEN c.anonymous THEN NULL ELSE trim(e.first_name||' '||coalesce(e.last_name,'')) END AS complainant_name, u.display_name AS assignee_name
         FROM cases c LEFT JOIN employees e ON e.tenant_id=c.tenant_id AND e.id=c.complainant_id LEFT JOIN users u ON u.id=c.assignee_user
         WHERE c.tenant_id=$1 AND c.kind=$2 AND ($3::text IS NULL OR c.status=$3)
           AND (($4='mine' AND c.complainant_user=$5) OR ($4='handling' AND ($6 OR c.assignee_user=$5) AND c.complainant_user IS DISTINCT FROM $5 AND c.respondent_id IS DISTINCT FROM $7))
-        ORDER BY (c.status IN ('closed','withdrawn')), c.received_at DESC LIMIT 200`,
-        [a.tenantId, q.kind, q.status ?? null, q.scope, a.user.userId, q.kind === 'posh' || a.has('grievance.manage'), a.user.employeeId ?? null])).rows;
-      return { items: rows.map(({ complainant_user: _cu, respondent_id: _r, ...r }) => ({ ...r, reference: ref(r.kind as Kind, r.number as number) })) };
+        ORDER BY (c.status IN ('closed','withdrawn')), c.received_at DESC`,
+        [a.tenantId, q.kind, q.status ?? null, q.scope, a.user.userId, q.kind === 'posh' || a.has('grievance.manage'), a.user.employeeId ?? null], q);
+      return { ...page, items: page.items.map(({ complainant_user: _cu, respondent_id: _r, ...r }: Record<string, unknown>) => ({ ...r, reference: ref(r.kind as Kind, r.number as number) })) };
     });
   });
 

@@ -10,7 +10,7 @@ import { allOff, evaluateFeatures, isModuleEnabled } from '../../core/features/s
 import { FEATURE_MAP, dependentsOf } from '../../core/features/registry.js';
 import { audit } from '../../core/audit/audit.js';
 import { AppError, badRequest, conflict, forbidden, notFound } from '../../core/http/errors.js';
-import { PageQuery, offsetOf, paged, Uuid } from '../../core/http/pagination.js';
+import { PageQuery, offsetOf, paged, Uuid, ListQuery, pageOf } from '../../core/http/pagination.js';
 import type { PublicConfig } from '../../config/installation.js';
 import { SYSTEM_ROLES, SYSTEM_ROLE_MAP, PERMISSIONS, permissionFeature, roleGroup, assignableRoles, isOwnerRole, OWNER_ROLE_KEYS } from '../../core/auth/permissions.js';
 import { currentMode, isCollapsedMode } from '../../core/policy/mode.js';
@@ -115,21 +115,22 @@ export async function tenantAdminRoutes(app: FastifyInstance, opts: { publicConf
   });
 
   // ------------------------------------------------------------ scheduled jobs
-  app.get('/jobs', { schema: {}, config: { perm: ['settings.read'] } }, async (req) => {
+  app.get('/jobs', { schema: { querystring: ListQuery }, config: { perm: ['settings.read'] } }, async (req) => {
     const a = tenantActor(req, 'settings.read');
+    const q = ListQuery.parse(req.query);
     return a.tx(async (db) => {
       const states = await evaluateFeatures(db, a.tenantId);
       const tz = await getSettingValue<string>(db, a.tenantId, 'general.timezone');
       const { date, time } = localNow(tz, new Date());
-      const runs = (await db.query(`SELECT r.id, r.job_key, r.period_key, r.trigger, r.status, r.attempts, r.started_at, r.finished_at, r.next_retry_at, r.result, r.error,
+      const runs = await pageOf(db, `SELECT r.id, r.job_key, r.period_key, r.trigger, r.status, r.attempts, r.started_at, r.finished_at, r.next_retry_at, r.result, r.error,
           u.display_name AS triggered_by_name FROM job_runs r LEFT JOIN users u ON u.id=r.triggered_by
-        WHERE r.tenant_id=$1 ORDER BY r.started_at DESC LIMIT 100`, [a.tenantId])).rows;
+        WHERE r.tenant_id=$1 ORDER BY r.started_at DESC`, [a.tenantId], q);
       return {
-        timezone: tz, maxAttempts: MAX_ATTEMPTS,
+        timezone: tz, maxAttempts: MAX_ATTEMPTS, runsPage: { page: runs.page, pageSize: runs.pageSize, total: runs.total },
         items: JOBS.filter((j) => j.retention || !allOff(j.feature)).map((j) => ({
           key: j.key, name: j.name, description: j.description, schedule: j.schedule, feature: j.feature ?? null,
           active: jobActive(j, (k) => !!states.get(k)?.usable), nextRun: nextRun(j.schedule, date, time),
-          canRun: a.has(j.runPermission), recentRuns: runs.filter((r) => r.job_key === j.key).slice(0, 10),
+          canRun: a.has(j.runPermission), recentRuns: runs.items.filter((r) => r.job_key === j.key).slice(0, 10),
         })),
       };
     });

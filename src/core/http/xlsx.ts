@@ -1,4 +1,5 @@
-import { deflateRawSync } from 'node:zlib';
+import { deflateRaw, deflateRawSync } from 'node:zlib';
+import { promisify } from 'node:util';
 
 /**
  * Minimal Excel (.xlsx, Office Open XML) writer, no dependencies: one or more sheets with a bold, frozen header row,
@@ -87,7 +88,7 @@ function sheetNames(sheets: XSheet[]) {
   });
 }
 
-export function xlsx(sheets: XSheet[]): Buffer {
+function parts(sheets: XSheet[]): [string, string][] {
   const names = sheetNames(sheets);
   const files: [string, string][] = [
     ['[Content_Types].xml', `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
@@ -104,18 +105,30 @@ ${names.map((_, i) => `<Override PartName="/xl/worksheets/sheet${i + 1}.xml" Con
     ['xl/styles.xml', STYLES_XML],
     ...sheets.map((s, i): [string, string] => [`xl/worksheets/sheet${i + 1}.xml`, sheetXml(s)]),
   ];
-  return zip(files.map(([n, c]) => [n, Buffer.from(c, 'utf8')]));
+  return files;
+}
+
+export function xlsx(sheets: XSheet[]): Buffer {
+  return zip(parts(sheets).map(([n, c]) => { const data = Buffer.from(c, 'utf8'); return [n, data, deflateRawSync(data)]; }));
+}
+
+const deflateOnPool = promisify(deflateRaw);
+/** The same bytes, with compression on the thread pool: a 5,000-row workbook does not hold up other requests while it packs. */
+export async function xlsxAsync(sheets: XSheet[]): Promise<Buffer> {
+  const entries: [string, Buffer, Buffer][] = [];
+  for (const [n, c] of parts(sheets)) { const data = Buffer.from(c, 'utf8'); entries.push([n, data, await deflateOnPool(data)]); }
+  return zip(entries);
 }
 
 // ------------------------------------------------------------ ZIP (deflate), enough for OOXML packages
 const CRC_TABLE = (() => { const t = new Uint32Array(256); for (let n = 0; n < 256; n++) { let c = n; for (let k = 0; k < 8; k++) c = c & 1 ? 0xedb88320 ^ (c >>> 1) : c >>> 1; t[n] = c >>> 0; } return t; })();
 const crc32 = (b: Buffer) => { let c = 0xffffffff; for (const x of b) c = CRC_TABLE[(c ^ x) & 0xff]! ^ (c >>> 8); return (c ^ 0xffffffff) >>> 0; };
 
-function zip(entries: [string, Buffer][]): Buffer {
+function zip(entries: [string, Buffer, Buffer][]): Buffer {
   const parts: Buffer[] = []; const central: Buffer[] = []; let offset = 0;
   const DOS_TIME = 0, DOS_DATE = (2024 - 1980) << 9 | 1 << 5 | 1;   // fixed timestamp: identical input gives an identical file
-  for (const [name, data] of entries) {
-    const nameBuf = Buffer.from(name, 'utf8'); const packed = deflateRawSync(data); const crc = crc32(data);
+  for (const [name, data, packed] of entries) {
+    const nameBuf = Buffer.from(name, 'utf8'); const crc = crc32(data);
     const local = Buffer.alloc(30);
     local.writeUInt32LE(0x04034b50, 0); local.writeUInt16LE(20, 4); local.writeUInt16LE(0x0800, 6); local.writeUInt16LE(8, 8);
     local.writeUInt16LE(DOS_TIME, 10); local.writeUInt16LE(DOS_DATE, 12); local.writeUInt32LE(crc, 14);

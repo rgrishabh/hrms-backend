@@ -15,6 +15,22 @@ export async function withTenant<T>(pool: Pool, tenantId: string, fn: (db: Db) =
 }
 
 /**
+ * A read that may run on a replica. RLS applies as on the primary, and READ ONLY means a stray write fails here too, on any host.
+ * A replica that cannot be reached is not an outage: the primary answers.
+ */
+export async function withTenantRead<T>(read: Pool, primary: Pool, tenantId: string, fn: (db: Db) => Promise<T>): Promise<T> {
+  let pool = read;
+  if (read !== primary) {
+    try { (await read.connect()).release(); } catch { pool = primary; }
+  }
+  return runTx(pool, async (db) => {
+    await db.query('SET TRANSACTION READ ONLY');
+    await db.query(`SELECT set_config('app.tenant_id', $1, true)`, [tenantId]);
+    return fn(db);
+  });
+}
+
+/**
  * Explicit cross-tenant access, used ONLY for: domain->tenant resolution, login
  * lookup, device key lookup, and platform-admin operations. Every call site is
  * reviewed; grep for `withPlatformBypass` when auditing.

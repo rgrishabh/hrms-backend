@@ -339,12 +339,10 @@ export async function cancelRequest(db: Db, tenantId: string, requestId: string,
  * Pending requests whose ACTIVE step this actor can act on (never their own), with how: `via` is null when it is
  * addressed to them, 'delegation' when they cover for `on_behalf_of`, 'escalation' when it was escalated to them.
  */
-export async function inbox(db: Db, tenantId: string, actor: Actor, today?: string) {
+export async function inbox(db: Db, tenantId: string, actor: Actor, today?: string, page?: { page: number; pageSize: number }) {
   today ??= await orgToday(db, tenantId);
   const coveringHr = await coveringHrStep(db, tenantId, actor.userId, today);
-  const r = await db.query<{ id: string; approver_kind: string; approver_user_id: string | null; approver_permission: string | null; escalated_to: string | null;
-    escalated_permission: string | null; delegated_by: string | null; delegated_by_name: string | null; approver_name: string | null }>(
-    `SELECT r.id, r.entity_type, r.entity_id, r.summary, r.created_at, r.current_step, u.display_name AS requester_name,
+  const sql = `SELECT r.id, r.entity_type, r.entity_id, r.summary, r.created_at, r.current_step, u.display_name AS requester_name,
       s.approver_kind, s.approver_permission, s.approver_user_id, s.escalated_to, s.escalated_permission, s.escalated_at, au.display_name AS approver_name,
       dl.delegator_id AS delegated_by, du.display_name AS delegated_by_name
     FROM approval_requests r JOIN approval_steps s ON s.tenant_id=r.tenant_id AND s.request_id=r.id AND s.status='active'
@@ -360,13 +358,19 @@ export async function inbox(db: Db, tenantId: string, actor: Actor, today?: stri
         OR s.escalated_to=$2 OR s.escalated_permission = ANY($3))
       AND NOT EXISTS (SELECT 1 FROM approval_steps p WHERE p.tenant_id=r.tenant_id AND p.request_id=r.id AND p.acted_by IS NOT NULL
         AND (p.acted_by=$2 OR p.acted_for=$2 OR (dl.delegator_id IS NOT NULL AND s.approver_user_id IS DISTINCT FROM $2 AND p.acted_by=dl.delegator_id)))
-    ORDER BY r.created_at LIMIT 200`, [tenantId, actor.userId, [...actor.permissions], today, offEntityTypes(), coveringHr]);
-  return r.rows.map(({ delegated_by, delegated_by_name, approver_name, ...x }) => {
+    ORDER BY r.created_at`;
+  const args = [tenantId, actor.userId, [...actor.permissions], today, offEntityTypes(), coveringHr];
+  type Row = { id: string; approver_kind: string; approver_user_id: string | null; approver_permission: string | null; escalated_to: string | null;
+    escalated_permission: string | null; delegated_by: string | null; delegated_by_name: string | null; approver_name: string | null };
+  const total = page ? Number((await db.query<{ n: string }>(`SELECT count(*) AS n FROM (${sql}) counted`, args)).rows[0]!.n) : null;
+  const r = await db.query<Row>(page ? `${sql} LIMIT ${page.pageSize} OFFSET ${(page.page - 1) * page.pageSize}` : sql, args);
+  const items = r.rows.map(({ delegated_by, delegated_by_name, approver_name, ...x }) => {
     const mine = (x.approver_kind === 'permission' && actor.permissions.has(x.approver_permission!)) || x.approver_user_id === actor.userId;
     const escalated = !mine && (x.escalated_to === actor.userId || (!!x.escalated_permission && actor.permissions.has(x.escalated_permission)));
     const via = mine ? null : escalated ? 'escalation' : 'delegation';
     return { ...x, approver_name, via, on_behalf_of: via === 'escalation' ? approver_name : via === 'delegation' ? delegated_by_name : null, delegated_by: via === 'delegation' ? delegated_by : null };
   });
+  return { items, total: total ?? items.length };
 }
 
 /**

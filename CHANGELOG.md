@@ -11,6 +11,7 @@
 
 ### Added
 
+* `DB_READ_HOST`: report runs and exports read from a replica. Indexes from the audit, built concurrently (`048`). Per-request memo of settings and feature state. `page`, `pageSize`, `total` on the lists the audit named. Workbooks compress off the event loop.
 * `GET /metrics` (Prometheus text) with `METRICS_TOKEN`. `OTEL_EXPORTER_OTLP_ENDPOINT` for traces. `x-request-id` on every response. Probes are not rate limited, and readiness answers within two seconds.
 * `GET /approvals/stuck` for `users.manage`. `POST /travel/requests/:id/resubmit`. `released_count` on payroll runs and `hold_released_at` on their items. `selfie_id` on `GET /attendance/daily` with the selfie feature on.
 * Company details (Layer 3): `GET` and `PUT /tenant/company`, signature and stamp under `/tenant/company/images/:kind`, permission `company.manage`. GSTIN (with its check digit), PAN, TAN, CIN, IFSC and bank account formats are checked. PAN and the bank account number are sealed. `loadCompanyProfile` reads them.

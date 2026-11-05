@@ -378,3 +378,18 @@ So drawing the largest report allowed costs under a second of CPU, and yielding 
 
 **Reason.** The check holds for the paths tests reach, and only those: a branch no test takes is not proved. A field only ever seen as null is `unknown`. Remaining routes have no response schema, and `npm run openapi` prints the count.
 
+## D60 — Performance: memo per request, a replica for reports only, lists with generous defaults
+
+**Context.** Audit section 5: 20 to 30 statements before business logic, N+1 reads in payroll, lists without limits or with silent caps.
+
+**Decision.**
+- **Memo.** Settings and feature state are remembered per request, and per job run, through `AsyncLocalStorage` (`core/memo.ts`). `writeSetting` and `clearSetting` clear it. No TTL cache: another instance's write is seen by its next request.
+- **Payroll.** `computeRun` reads salaries, attendance, adjustments and who has loans or overtime once per run. Per person stay the item's `INSERT`, and the locked loan and overtime work for people who have any. Bank, PF and ESI files read their accounts in one query, and `closeRepaid` is one statement.
+- **Lists.** The lists the audit named answer `page`, `pageSize`, `total`, with a default of 100 or 200 and a cap of 500. A default large enough for today's screens means they keep working unchanged, and `total` shows when more exist.
+- **Replica.** `DB_READ_HOST` serves report runs and report exports only, in `READ ONLY` transactions with the tenant set. An unreachable replica falls back to the primary, checked per read with one connection attempt. Nothing that could be a read-after-write goes there.
+- **Workbooks.** `xlsxAsync` compresses on the thread pool, one part at a time. Building the XML stays on the event loop.
+
+**Left as is, with the reason.** `attendance.close_day` and `POST /attendance/recalculate` still run `recalculateRange` per employee, about 8 statements each after the memo: batching means rewriting the engine's data access, for a nightly job. Employee import stays 2 to 4 statements per row. Reports stay capped at `MAX_ROWS` with `truncated`, rather than paged: a page of a grouped report is not meaningful. Uploads stay buffered, with SHA-256 on the event loop, limited by `STORAGE_MAX_FILE_MB`.
+
+**Not tested.** Real replication lag: the test's replica is a second connection to the same database. The indexes come from query shapes, and were not checked with `EXPLAIN` on production-sized data.
+

@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto';
+import { withMemo } from '../memo.js';
 import type { Pool } from '../../db/pool.js';
 import { withPlatformBypass, withTenant } from '../../db/tx.js';
 import { getSettingValue } from '../settings/service.js';
@@ -29,7 +30,8 @@ export function localNow(tz: string, now: Date) {
 async function execute(pool: Pool, log: Log, tenantId: string, runId: string, job: JobDefinition, period: string, localDate: string, actorId: string | null) {
   const started = Date.now();
   try {
-    const result = await withTenant(pool, tenantId, (db) => job.run(db, tenantId, { period, localDate, actorId }));
+    // One memo per run: `attendance.close_day` would otherwise read the same settings for every employee.
+    const result = await withMemo(new Map(), () => withTenant(pool, tenantId, (db) => job.run(db, tenantId, { period, localDate, actorId })));
     await withTenant(pool, tenantId, (db) => db.query(`UPDATE job_runs SET status='succeeded', finished_at=now(), result=$3, error=NULL, next_retry_at=NULL
       WHERE tenant_id=$1 AND id=$2`, [tenantId, runId, JSON.stringify({ ...result, durationMs: Date.now() - started })]));
     log.info({ job: job.key, period, ms: Date.now() - started }, 'job succeeded');

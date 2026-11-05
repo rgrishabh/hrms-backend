@@ -90,10 +90,12 @@ export async function applyRecoveries(db: Db, tenantId: string, runId: string, p
 export async function closeRepaid(db: Db, tenantId: string, employeeIds?: string[]) {
   const loans = (await db.query<{ id: string }>(`SELECT id FROM employee_loans WHERE tenant_id=$1 AND status='disbursed' AND ($2::uuid[] IS NULL OR employee_id = ANY($2))`,
     [tenantId, employeeIds ?? null])).rows;
-  let closed = 0;
-  for (const l of loans) {
-    const b = await balanceOf(db, tenantId, l.id);
-    if (new Decimal(b.recovered).gte(b.amount)) { await db.query(`UPDATE employee_loans SET status='closed', closed_at=now() WHERE tenant_id=$1 AND id=$2`, [tenantId, l.id]); closed++; }
-  }
-  return closed;
+  if (!loans.length) return 0;
+  // What balanceOf calls recovered: repayments, and instalments in a final run on a slip not held.
+  const paidUp = (await db.query<{ id: string }>(`SELECT l.id FROM employee_loans l WHERE l.tenant_id=$1 AND l.id = ANY($2) AND l.amount <= coalesce((
+      SELECT sum(x.amount) FROM loan_recoveries x LEFT JOIN payroll_runs r ON r.tenant_id=x.tenant_id AND r.id=x.payroll_run_id
+        LEFT JOIN payroll_items i ON i.tenant_id=x.tenant_id AND i.run_id=x.payroll_run_id AND i.employee_id=l.employee_id
+       WHERE x.tenant_id=l.tenant_id AND x.loan_id=l.id AND (x.source='repayment' OR (r.status IN ('finalized','paid') AND NOT coalesce(i.hold, false)))), 0)`, [tenantId, loans.map((l) => l.id)])).rows.map((r) => r.id);
+  if (paidUp.length) await db.query(`UPDATE employee_loans SET status='closed', closed_at=now() WHERE tenant_id=$1 AND id = ANY($2)`, [tenantId, paidUp]);
+  return paidUp.length;
 }
