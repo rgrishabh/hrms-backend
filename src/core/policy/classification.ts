@@ -47,7 +47,9 @@ export const CLASSIFICATION: Readonly<Record<string, Readonly<Record<string, Dat
   checklist_templates: { kind: 'L1', name: 'L1', is_default: 'L1', status: 'L1' },
   checklists: { kind: 'L2', employee_id: 'L2', template_id: 'L2', separation_id: 'L2', anchor_date: 'L2', status: 'L2', created_by: 'L2', completed_at: 'L2' },
   competency_assessments: { employee_id: 'L3', method_id: 'L3', activity: 'L3', approach: 'L3', assessed_on: 'L3', result: 'L3', evidence: 'L3', assessor_id: 'L3' },
+  company_profile: { legal_name: 'L1', gstin: 'L1', pan_enc: 'L4', pan_last4: 'L4', tan: 'L1', cin: 'L1', registered_address: 'L1', pf_registration: 'L1', esi_registration: 'L1', pt_registration: 'L1', bank_account_holder: 'L4', bank_name: 'L4', bank_ifsc: 'L4', bank_account_enc: 'L4', bank_account_last4: 'L4', signatory_name: 'L1', signatory_designation: 'L1', signature_key: 'L1', signature_type: 'L1', signature_sha256: 'L1', stamp_key: 'L1', stamp_type: 'L1', stamp_sha256: 'L1', updated_by: 'L1' },
   departments: { code: 'L1', name: 'L1', parent_id: 'L1', status: 'L1' },
+  designations: { code: 'L1', name: 'L1', status: 'L1' },
   device_user_mappings: { device_user_id: 'L2', employee_id: 'L2' },
   document_categories: { code: 'L1', name: 'L1', scope: 'L1', employee_visible: 'L1', employee_upload: 'L1', restricted: 'L1', requires_expiry: 'L1', status: 'L1', payroll_related: 'L1' },
   documents: { category_id: 'L3', employee_id: 'L3', title: 'L3', file_name: 'L3', content_type: 'L3', size_bytes: 'L3', sha256: 'L3', storage_key: 'L3', expires_on: 'L3', status: 'L3', uploaded_by: 'L3', archived_at: 'L3', archived_by: 'L3' },
@@ -63,12 +65,14 @@ export const CLASSIFICATION: Readonly<Record<string, Readonly<Record<string, Dat
   employee_profile_changes: { employee_id: 'L3', section: 'L3', items: 'L3', note: 'L3', status: 'L3', requested_by: 'L3', decided_at: 'L3' },
   employee_salaries: { employee_id: 'L2', effective_from: 'L4', reason: 'L4', status: 'L4', created_by: 'L4', approved_at: 'L4', amounts_enc: 'L4', annual_ctc_enc: 'L4' },
   employee_statutory: { employee_id: 'L4', uan: 'L4', pf_member_id: 'L4', pf_excluded: 'L4', esi_ip_number: 'L4', pan_enc: 'L4', pan_last4: 'L4', tax_regime: 'L4', pt_state: 'L4', aadhaar_enc: 'L4', aadhaar_last4: 'L4' },
-  employees: { employee_code: 'L1', user_id: 'L2', first_name: 'L1', last_name: 'L1', work_email: 'L1', phone: 'L3', date_of_birth: 'L3', legal_entity_id: 'L2', branch_id: 'L2', department_id: 'L1', designation: 'L1', grade: 'L2', employment_type: 'L2', status: 'L2', reporting_manager_id: 'L2', date_of_joining: 'L2', probation_end_date: 'L2', confirmation_date: 'L2', contract_end_date: 'L2', exit_date: 'L2' },
+  employees: { employee_code: 'L1', user_id: 'L2', first_name: 'L1', last_name: 'L1', work_email: 'L1', phone: 'L3', date_of_birth: 'L3', legal_entity_id: 'L2', branch_id: 'L2', department_id: 'L1', designation: 'L1', grade: 'L2', employment_type: 'L2', status: 'L2', reporting_manager_id: 'L2', date_of_joining: 'L2', probation_end_date: 'L2', confirmation_date: 'L2', contract_end_date: 'L2', exit_date: 'L2', erased_at: 'L2' },
+  erasure_requests: { subject_type: 'L3', subject_id: 'L3', status: 'L3', reason: 'L3', requested_by: 'L3', decided_by: 'L3', decided_at: 'L3', decision_note: 'L3', completed_at: 'L3', retained_until: 'L3', retained_identity_enc: 'L4', files_pending: 'L3', report: 'L3' },
   expense_categories: { code: 'L1', name: 'L1', description: 'L1', requires_receipt: 'L1', max_amount: 'L1', gst_applicable: 'L1', status: 'L1', calc: 'L1' },
   expense_claims: { employee_id: 'L2', title: 'L2', purpose: 'L2', project: 'L2', status: 'L2', total: 'L2', currency: 'L2', created_by: 'L2', submitted_at: 'L2', approved_at: 'L2', batch_id: 'L2', paid_at: 'L2', payment_reference: 'L2', travel_request_id: 'L2', advance_adjusted: 'L2' },
   expense_items: { claim_id: 'L2', category_id: 'L2', expense_date: 'L2', amount: 'L2', description: 'L2', merchant: 'L2', invoice_number: 'L2', gstin: 'L2', receipt_key: 'L2', receipt_name: 'L2', receipt_type: 'L2', receipt_sha256: 'L2', duplicate_of: 'L2', quantity: 'L2', rate: 'L2', rate_id: 'L2', tier: 'L2', vehicle: 'L2' },
   field_duty_requests: { employee_id: 'L2', start_date: 'L2', end_date: 'L2', day_part: 'L2', purpose: 'L2', place: 'L2', client_name: 'L2', reference: 'L2', reason: 'L3', status: 'L2', outcome: 'L2', outcome_note: 'L2', reported_at: 'L2', created_by: 'L2', decided_at: 'L2', cancelled_by: 'L2', cancel_reason: 'L2', travel_request_id: 'L2' },
   goals: { cycle_id: 'L3', employee_id: 'L3', title: 'L3', description: 'L3', measure: 'L3', weight: 'L3', status: 'L3', progress: 'L3', created_by: 'L3' },
+  grades: { code: 'L1', name: 'L1', status: 'L1' },
   holidays: { branch_id: 'L1', holiday_date: 'L1', name: 'L1', optional: 'L1' },
   interview_panel: { interview_id: 'L3', user_id: 'L3', rating: 'L3', recommendation: 'L3', notes: 'L3', submitted_at: 'L3' },
   interviews: { application_id: 'L3', round: 'L3', kind: 'L3', scheduled_at: 'L3', duration_min: 'L3', location: 'L3', status: 'L3', created_by: 'L3' },
@@ -131,6 +135,6 @@ export const CLASSIFICATION: Readonly<Record<string, Readonly<Record<string, Dat
 export const levelOf = (table: string, column: string): DataLevel | undefined => CLASSIFICATION[table]?.[column];
 
 /** Field names that must never appear in logs, whatever object carries them: request bodies, errors, job results. */
-export const LOG_REDACTED_FIELDS: readonly string[] = ['phone', 'alt_phone', 'altPhone', 'dateOfBirth', 'date_of_birth', 'address', 'line1', 'line2', 'postal_code', 'reason', 'pan', 'panLast4', 'pan_last4', 'pan_enc', 'aadhaar', 'aadhaarLast4',
+export const LOG_REDACTED_FIELDS: readonly string[] = ['phone', 'alt_phone', 'altPhone', 'dateOfBirth', 'date_of_birth', 'address', 'line1', 'line2', 'postal_code', 'reason', 'pan', 'panLast4', 'pan_last4', 'pan_enc', 'bankAccountNumber', 'bank_account_number', 'bankIfsc', 'bank_ifsc', 'bankAccountHolder', 'aadhaar', 'aadhaarLast4',
   'aadhaar_last4', 'aadhaar_enc', 'accountNumber', 'account_number', 'account_number_enc', 'account_last4', 'ifsc', 'uan', 'esiIpNumber', 'esi_ip_number', 'pfMemberId', 'pf_member_id', 'amounts', 'amount', 'annualCtc', 'annual_ctc', 'gross', 'net',
   'deductions', 'employerCost', 'employer_cost', 'lines', 'totals', 'salary', 'ctc', 'expectedCtc', 'expected_ctc', 'budgetCtcMax', 'budget_ctc_max', 'password', 'newPassword', 'currentPassword'];

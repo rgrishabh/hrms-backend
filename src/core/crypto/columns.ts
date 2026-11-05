@@ -24,4 +24,7 @@ export const ENCRYPTED_COLUMNS: readonly EncryptedColumn[] = [
   { table: 'accounting_exports', column: 'total_enc', key: ['id'] },
   { table: 'report_snapshots', column: 'data_enc', key: ['id'] },
   { table: 'email_outbox', column: 'secret_enc', key: ['id'] },
+  { table: 'company_profile', column: 'pan_enc', key: ['id'] },
+  { table: 'company_profile', column: 'bank_account_enc', key: ['id'] },
+  { table: 'erasure_requests', column: 'retained_identity_enc', key: ['id'] },
 ];
