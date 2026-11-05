@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeAll, afterAll, beforeEach } from 'vitest';
 import type { FastifyInstance } from 'fastify';
-import { makeApp, createTenant, Client, ownerQuery, type TenantFixture, flags } from './helpers.js';
+import { makeApp, createTenant, Client, ownerQuery, inApp, type TenantFixture, flags } from './helpers.js';
 import { setMailer, type OutgoingMail } from '../src/core/notify/mailer.js';
 import { deliverOutbox } from '../src/core/notify/service.js';
 import { tick } from '../src/core/jobs/scheduler.js';
@@ -81,15 +81,24 @@ describe('inbox API', () => {
 });
 
 describe('email delivery', () => {
-  it('respects the per-user opt-out but keeps the in-app notification', async () => {
+  it('respects the per-user opt-out but keeps the in-app notification, except for security notices', async () => {
     await deliverOutbox(app.deps.pool, quiet); // emails queued before the opt-out are still delivered
     sent.length = 0;
     const emp = await Client.login(app, T.host, T.users.employee!.email);
     expect((await emp.put('/api/v1/auth/preferences', { emailNotifications: false })).statusCode).toBe(200);
     expect((await emp.get('/api/v1/auth/me')).json().preferences.emailNotifications).toBe(false);
-    await emp.post('/api/v1/auth/password', { currentPassword: 'Test-Password-123!', newPassword: 'Changed-Password-456!' });
+    const { notifyUsers } = await import('../src/core/notify/service.js');
+    const { withTenant } = await import('../src/db/tx.js');
+    await inApp(app, () => withTenant(app.deps.pool, T.id, (db) => notifyUsers(db, T.id, [T.users.employee!.id], { kind: 'approval.reminder', title: 'A reminder', feature: 'leave' })));
     await deliverOutbox(app.deps.pool, quiet);
     expect(sent.filter((m) => m.to === T.users.employee!.email)).toHaveLength(0);
+    expect((await inbox(emp)).items[0]).toMatchObject({ kind: 'approval.reminder' });
+    await emp.post('/api/v1/auth/password', { currentPassword: 'Test-Password-123!', newPassword: 'Changed-Password-456!' });
+    await deliverOutbox(app.deps.pool, quiet);
+    const mine = sent.filter((m) => m.to === T.users.employee!.email);
+    expect(mine).toHaveLength(1);
+    expect(mine[0]!.text).toContain('cannot be turned off');
+    expect(mine[0]!.text).not.toContain('You can turn off');
     expect((await inbox(emp)).items[0]).toMatchObject({ kind: 'security.password_changed' });
   });
 

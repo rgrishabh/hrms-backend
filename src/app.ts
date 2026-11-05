@@ -17,7 +17,7 @@ import { withMode } from './core/policy/mode.js';
 import { LOG_REDACT_PATHS, logSerializers } from './core/logging.js';
 import type { FeatureRoute } from './core/features/routes.js';
 import { authRoutes, PASSWORD_CHANGE_ALLOWED } from './modules/auth.js';
-import { MFA_PENDING_ALLOWED, MFA_ENROLL_ALLOWED } from './core/auth/mfa.js';
+import { MFA_PENDING_ALLOWED, MFA_ENROLL_ALLOWED, mfaPolicyOf } from './core/auth/mfa.js';
 import { tenantAdminRoutes } from './modules/tenant/routes.js';
 import { orgRoutes } from './modules/org/routes.js';
 import { employeeRoutes } from './modules/employees/routes.js';
@@ -82,6 +82,7 @@ export async function buildApp(deps: AppDeps): Promise<FastifyInstance> {
       featureRoutes.push({ method, url: r.url, requires: [...(mounting ? [mounting] : []), ...(r.config?.features ? [r.config.features] : [])] });
     }
   });
+  const mfaPolicy = mfaPolicyOf(env);
   const SPA_CSP = spaCsp([publicConfig.brand.logoUrl, publicConfig.brand.logoDarkUrl, publicConfig.brand.faviconUrl]);
   app.decorateRequest('ctx', null as never);
 
@@ -126,7 +127,7 @@ export async function buildApp(deps: AppDeps): Promise<FastifyInstance> {
     req.ctx = { requestId: req.id, ip: req.ip, host, user: null };
     const token = req.cookies[SESSION_COOKIE];
     if (token && host.kind === 'tenant') {
-      req.ctx.user = await loadSession(deps.pool, token, host.tenant.id);
+      req.ctx.user = await loadSession(deps.pool, token, host.tenant.id, mfaPolicy);
       // CSRF: any state-changing request authenticated by cookie must carry the session-bound token.
       if (req.ctx.user && UNSAFE.has(req.method)) {
         const header = req.headers['x-csrf-token'];
@@ -137,12 +138,12 @@ export async function buildApp(deps: AppDeps): Promise<FastifyInstance> {
       const path = req.url.split('?')[0]!;
       // Second factor first: a session with MFA enrolled is useless until the code is verified.
       if (req.ctx.user?.mfaPending && !MFA_PENDING_ALLOWED.has(path)) {
-        throw new AppError(403, 'mfa_required', 'Enter the code from your authenticator app to continue.');
+        throw new AppError(403, 'mfa_required', 'Enter your two-factor code to continue.');
       }
       if (req.ctx.user?.mfaEnrollmentRequired && !MFA_ENROLL_ALLOWED.has(path)) {
-        throw new AppError(403, 'mfa_enrollment_required', 'Your role requires two-factor authentication. Set it up to continue.');
+        throw new AppError(403, 'mfa_enrollment_required', 'This installation requires two-factor authentication. Set it up to continue.');
       }
-      // Forced password change (bootstrap admin, admin resets): nothing else until it is done.
+      // Forced password change (bootstrap password mode): nothing else until it is done.
       if (req.ctx.user?.mustChangePassword && !PASSWORD_CHANGE_ALLOWED.has(path)) {
         throw new AppError(403, 'password_change_required', 'You must change your password before continuing.');
       }
@@ -174,7 +175,8 @@ export async function buildApp(deps: AppDeps): Promise<FastifyInstance> {
 
   // Always on: no flag in the registry.
   await app.register(authRoutes, { prefix: '/api/v1', publicConfig });
-  await app.register(mfaRoutes, { prefix: '/api/v1/auth/mfa', publicConfig });
+  // MFA_AVAILABLE=false: none of it exists.
+  if (env.MFA_AVAILABLE) await app.register(mfaRoutes, { prefix: '/api/v1/auth/mfa', publicConfig });
   await app.register(tenantAdminRoutes, { prefix: '/api/v1/tenant', publicConfig });
   await app.register(orgRoutes, { prefix: '/api/v1/org' });
   await app.register(employeeRoutes, { prefix: '/api/v1/employees' });

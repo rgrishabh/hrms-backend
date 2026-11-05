@@ -7,6 +7,7 @@ import { allOff, isModuleEnabled } from '../features/state.js';
 import { getFrom, getMailer } from './mailer.js';
 import { renderEmail, type EmailBrand } from './templates.js';
 import { getPushSender, pushPayload } from './push.js';
+import { dataCipher } from '../crypto/index.js';
 
 /**
  * Notifications are written in the CALLER's transaction (outbox pattern): if the
@@ -46,6 +47,8 @@ export async function notifyUsers(db: Db, tenantId: string, userIds: string[], m
   const msg = { ...message, title: scrubAmounts(message.title), body: message.body == null ? message.body : scrubAmounts(message.body) };
   const ids = [...new Set(userIds)].filter(Boolean);
   const feature = msg.feature ?? featureOfKind(msg.kind);
+  // Security notices cannot be opted out of: someone turned off notification email, not the warning that their account changed hands.
+  const mandatory = msg.kind.startsWith('security.');
   if (!ids.length || allOff(feature)) return { inApp: 0, emails: 0 };
   const inApp = await db.query(`INSERT INTO notifications (tenant_id, user_id, kind, title, body, link, dedupe_key, feature)
     SELECT $1, u.id, $3, $4, $5, $6, $7, $8 FROM users u WHERE u.tenant_id=$1 AND u.id = ANY($2) AND u.status='active'
@@ -53,12 +56,12 @@ export async function notifyUsers(db: Db, tenantId: string, userIds: string[], m
     [tenantId, ids, msg.kind, msg.title.slice(0, 200), msg.body?.slice(0, 1000) ?? null, msg.link ?? null, msg.dedupeKey ?? null, feature ?? null]);
   let emails = 0;
   if (msg.email !== false && getMailer() && isModuleEnabled('notifications.email')) {
-    const rendered = renderEmail(brand, msg);
+    const rendered = renderEmail(brand, { ...msg, mandatory });
     const r = await db.query(`INSERT INTO email_outbox (tenant_id, to_user_id, to_email, subject, text_body, html_body, kind, dedupe_key)
       SELECT $1, u.id, u.email, $3, $4, $5, $6, $7 FROM users u
-       WHERE u.tenant_id=$1 AND u.id = ANY($2) AND u.status='active' AND u.email_notifications
+       WHERE u.tenant_id=$1 AND u.id = ANY($2) AND u.status='active' AND (u.email_notifications OR $8)
       ON CONFLICT (tenant_id, to_email, dedupe_key) WHERE dedupe_key IS NOT NULL DO NOTHING`,
-      [tenantId, ids, rendered.subject, rendered.text, rendered.html, msg.kind, msg.dedupeKey ?? null]);
+      [tenantId, ids, rendered.subject, rendered.text, rendered.html, msg.kind, msg.dedupeKey ?? null, mandatory]);
     emails = r.rowCount ?? 0;
   }
   if (msg.push !== false && getPushSender() && isModuleEnabled('notifications.push')) {
@@ -69,6 +72,21 @@ export async function notifyUsers(db: Db, tenantId: string, userIds: string[], m
       ON CONFLICT (tenant_id, to_user_id, dedupe_key) WHERE dedupe_key IS NOT NULL DO NOTHING`, [tenantId, ids, msg.kind, msg.dedupeKey ?? null]);
   }
   return { inApp: inApp.rowCount ?? 0, emails };
+}
+
+/** Where a secret goes in a body. Not something HTML escaping or a URL changes. */
+export const SECRET_PLACEHOLDER = '__SECRET__';
+
+/**
+ * An email carrying a code or a link. Nothing readable is stored: the body has a placeholder, and the secret is sealed beside it, opened only to
+ * send, and cleared after, so a copy of the outbox holds no working link. Not written as an in-app notification. Ignores the email preference,
+ * and needs a mailer: callers check.
+ */
+export async function queueSecretEmail(db: Db, tenantId: string, userId: string, msg: { kind: string; title: string; body: string; link?: string; actionLabel?: string }, secret: string, expiresAt: Date) {
+  const rendered = renderEmail(brand, { ...msg, mandatory: true });
+  await db.query(`INSERT INTO email_outbox (tenant_id, to_user_id, to_email, subject, text_body, html_body, kind, secret_enc, expires_at)
+    SELECT $1, u.id, u.email, $3, $4, $5, $6, $7, $8 FROM users u WHERE u.tenant_id=$1 AND u.id=$2`,
+    [tenantId, userId, rendered.subject, rendered.text, rendered.html, msg.kind, dataCipher().encrypt(secret), expiresAt]);
 }
 
 /** Active users holding a permission through system or custom roles. */
@@ -93,16 +111,20 @@ export async function deliverOutbox(pool: Pool, log: { error: (o: object, m?: st
   if (!mailer) return { sent: 0, failed: 0 };
   const claimed = await withPlatformBypass(pool, async (db) => {
     await db.query(`UPDATE email_outbox SET status='queued' WHERE status='sending' AND next_attempt_at < now() - interval '10 minutes'`);
-    return (await db.query<{ id: string; tenant_id: string; to_email: string; subject: string; text_body: string; html_body: string; attempts: number }>(
+    // A code or link that has already expired is not worth sending. Its secret goes.
+    await db.query(`UPDATE email_outbox SET status='failed', secret_enc=NULL, last_error='expired before it could be sent' WHERE status='queued' AND expires_at < now()`);
+    return (await db.query<{ id: string; tenant_id: string; to_email: string; subject: string; text_body: string; html_body: string; attempts: number; secret_enc: string | null }>(
       `UPDATE email_outbox SET status='sending', attempts=attempts+1, next_attempt_at=now()
         WHERE id IN (SELECT id FROM email_outbox WHERE status='queued' AND next_attempt_at <= now() ORDER BY created_at LIMIT $1 FOR UPDATE SKIP LOCKED)
-        RETURNING id, tenant_id, to_email, subject, text_body, html_body, attempts`, [limit])).rows;
+        RETURNING id, tenant_id, to_email, subject, text_body, html_body, attempts, secret_enc`, [limit])).rows;
   });
   let sent = 0; let failed = 0;
   for (const m of claimed) {
     try {
-      await mailer.send({ from: getFrom(), to: m.to_email, subject: m.subject, text: m.text_body, html: m.html_body });
-      await withPlatformBypass(pool, (db) => db.query(`UPDATE email_outbox SET status='sent', sent_at=now(), last_error=NULL WHERE id=$1`, [m.id]));
+      const secret = m.secret_enc ? dataCipher().decrypt(m.secret_enc) : null;
+      const fill = (body: string) => (secret === null ? body : body.split(SECRET_PLACEHOLDER).join(secret));
+      await mailer.send({ from: getFrom(), to: m.to_email, subject: m.subject, text: fill(m.text_body), html: fill(m.html_body) });
+      await withPlatformBypass(pool, (db) => db.query(`UPDATE email_outbox SET status='sent', sent_at=now(), last_error=NULL, secret_enc=NULL WHERE id=$1`, [m.id]));
       sent++;
     } catch (e) {
       failed++;
@@ -110,6 +132,7 @@ export async function deliverOutbox(pool: Pool, log: { error: (o: object, m?: st
       log.error({ outboxId: m.id, attempts: m.attempts, err }, 'email delivery failed');
       await withPlatformBypass(pool, (db) => db.query(`UPDATE email_outbox SET last_error=$2,
           status = CASE WHEN attempts >= ${MAX_EMAIL_ATTEMPTS} THEN 'failed' ELSE 'queued' END,
+          secret_enc = CASE WHEN attempts >= ${MAX_EMAIL_ATTEMPTS} THEN NULL ELSE secret_enc END,
           next_attempt_at = now() + make_interval(mins => power(2, attempts)::int) WHERE id=$1`, [m.id, err]));
     }
   }

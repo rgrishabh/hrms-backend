@@ -3,7 +3,6 @@ import { setBrandFormats } from './brand.js';
 import { buildPublicConfig, type PublicConfig } from '../config/installation.js';
 import { setDeploymentDefaults, setDeploymentLimits } from './settings/service.js';
 import { setEmailTransportConfigured, setPushConfigured, setStorageConfigured } from './features/state.js';
-import { setMfaFloor, type MfaLevel } from './auth/mfa.js';
 import { createPushSender, getPushSender, setPushSender } from './notify/push.js';
 import { setEmailBrand } from './notify/service.js';
 import { createMailer, getMailer, setMailer } from './notify/mailer.js';
@@ -30,9 +29,6 @@ export interface Runtime {
 
 type RuntimeLog = { warn: (o: object, m?: string) => void };
 
-/** MFA_AVAILABLE and MFA_ENFORCED onto the existing floor. A minimal mapping: the auth flows behind them come with their own batch. */
-const mfaFloorOf = (env: Pick<Env, 'MFA_AVAILABLE' | 'MFA_ENFORCED'>): MfaLevel => (env.MFA_AVAILABLE && env.MFA_ENFORCED ? 'all' : 'off');
-
 /**
  * Everything both processes need before doing any work: the API (buildApp) and the worker (worker.ts).
  * Validates the module set, so an invalid configuration stops either process.
@@ -40,7 +36,6 @@ const mfaFloorOf = (env: Pick<Env, 'MFA_AVAILABLE' | 'MFA_ENFORCED'>): MfaLevel 
 export function initRuntime(env: Env, log: RuntimeLog, overrides: RuntimeOverrides = {}): Runtime {
   if (overrides.cipher) setDataCipher(overrides.cipher);
   setDeploymentLimits({ sessionTtlHours: env.SESSION_TTL_HOURS });
-  setMfaFloor(mfaFloorOf(env));
   setDeploymentDefaults({ 'general.timezone': env.BRAND_TIMEZONE, 'general.date_format': env.BRAND_DATE_FORMAT });
   setBrandFormats(env);
   const publicConfig = buildPublicConfig(env);

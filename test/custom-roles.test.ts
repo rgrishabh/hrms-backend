@@ -25,7 +25,7 @@ describe('custom roles', () => {
     key = r.json().key;
     expect(key).toBe('custom:lab_coordinator');
     const listed = (await roles(admin)).custom.find((x: { key: string }) => x.key === key);
-    expect(listed).toMatchObject({ name: 'Lab coordinator', permissions: ['leave.team.read', 'training.manage'], users: 0, mfaRequired: false, updated_by_name: 'admin' });
+    expect(listed).toMatchObject({ name: 'Lab coordinator', permissions: ['leave.team.read', 'training.manage'], users: 0, updated_by_name: 'admin' });
 
     expect((await admin.patch(`/api/v1/tenant/users/${T.users.other!.id}`, { roles: ['employee', key] })).statusCode).toBe(200);
     const other = await login('other');
@@ -67,26 +67,6 @@ describe('custom roles', () => {
     expect(view.maxPermissions).toContain('assets.manage');
     expect(view.maxPermissions).not.toContain('payroll.read');
     expect((await roles(admin)).maxPermissions).toBeNull();
-  });
-
-  it('a role carrying privileged permissions requires two-factor authentication', async () => {
-    const r = await admin.post('/api/v1/tenant/roles', { name: 'User desk', permissions: ['users.manage'] });
-    const k = r.json().key;
-    expect((await roles(admin)).custom.find((x: { key: string }) => x.key === k).mfaRequired).toBe(true);
-    const plain = await admin.post('/api/v1/tenant/roles', { name: 'Leave viewer', permissions: ['leave.read'] });
-    expect((await roles(admin)).custom.find((x: { key: string }) => x.key === plain.json().key).mfaRequired).toBe(false);
-    await admin.patch(`/api/v1/tenant/users/${T.users.employee!.id}`, { roles: ['employee', k] });
-    await admin.patch(`/api/v1/tenant/users/${T.users.payroll!.id}`, { roles: ['employee', plain.json().key] });
-    // The organization requires MFA for privileged access (the default floor in production).
-    await ownerQuery(`INSERT INTO tenant_settings (tenant_id, setting_key, setting_value) VALUES ($1,'security.mfa_enforcement','"privileged"')`, [T.id]);
-    try {
-      const emp = await login('employee');
-      expect((await me(emp)).mfa.enrollmentRequired).toBe(true);
-      expect((await emp.get('/api/v1/tenant/users')).json().error.code).toBe('mfa_enrollment_required');
-      expect((await me(await login('payroll'))).mfa.enrollmentRequired).toBe(false);
-    } finally {
-      await ownerQuery(`DELETE FROM tenant_settings WHERE tenant_id=$1 AND setting_key='security.mfa_enforcement'`, [T.id]);
-    }
   });
 
   it('a role in use cannot be deleted', async () => {

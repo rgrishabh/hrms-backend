@@ -165,12 +165,15 @@ export function loadEnv(source: NodeJS.ProcessEnv = process.env): Env {
   }
   const { MFA_AVAILABLE, ...rest } = parsed.data;
   const prod = rest.NODE_ENV === 'production';
-  const env: Env = { ...rest, MFA_AVAILABLE: MFA_AVAILABLE === undefined ? prod : MFA_AVAILABLE === 'true', enabledFeatures: flags.features,
-    MFA_METHODS: rest.MFA_METHODS.length || !prod ? rest.MFA_METHODS : ['totp', 'email'] };
+  const mfaAvailable = MFA_AVAILABLE === undefined ? prod : MFA_AVAILABLE === 'true';
+  const env: Env = { ...rest, MFA_AVAILABLE: mfaAvailable, enabledFeatures: flags.features,
+    MFA_METHODS: rest.MFA_METHODS.length ? rest.MFA_METHODS : ['totp', 'email'] };
   const problems: string[] = [...early];
   if (!!env.KMS_KEY_ID !== !!env.DATA_KEY_CIPHERTEXT) problems.push('Set both KMS_KEY_ID and DATA_KEY_CIPHERTEXT, or neither');
   if (!env.KMS_KEY_ID && !env.DATA_ENCRYPTION_KEY) problems.push('DATA_ENCRYPTION_KEY: set it, or KMS_KEY_ID and DATA_KEY_CIPHERTEXT (generate a key: openssl rand -base64 32)');
   if (env.MFA_ENFORCED && !env.MFA_AVAILABLE) problems.push('MFA_ENFORCED=true is invalid with MFA_AVAILABLE=false');
+  // Everyone would have to enrol, in the one method nobody can complete.
+  if (env.MFA_ENFORCED && !env.MFA_METHODS.includes('totp') && !(env.SMTP_HOST && env.enabledFeatures.has('notifications.email'))) problems.push('MFA_ENFORCED=true with only email codes needs SMTP_HOST and FEATURE_EMAIL_NOTIFICATIONS=true, or nobody could enrol');
   for (const m of env.MFA_METHODS) if (m !== 'totp' && m !== 'email') problems.push(`MFA_METHODS: '${m}' is not one of totp, email`);
   if (!!env.VAPID_PUBLIC_KEY !== !!env.VAPID_PRIVATE_KEY) problems.push('Set both VAPID_PUBLIC_KEY and VAPID_PRIVATE_KEY, or neither');
   if (env.NODE_ENV === 'production') {

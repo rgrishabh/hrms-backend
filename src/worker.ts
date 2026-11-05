@@ -8,12 +8,14 @@ import { loadFieldCipher } from './core/crypto/keys.js';
 import { LOG_REDACT_PATHS, logSerializers } from './core/logging.js';
 import { unsafeDatabaseRole } from './core/db-role.js';
 import { Scheduler } from './core/jobs/scheduler.js';
+import { deliverOutbox } from './core/notify/service.js';
 import { HEARTBEAT_INTERVAL_MS, heartbeatFile, writeHeartbeat, type Heartbeat } from './core/jobs/heartbeat.js';
 
 /**
  * The background process (PROCESS_ROLE=worker, `hrms worker`): runs scheduled and queued jobs and delivers the outbox.
  * It takes no traffic. Runs are claimed in the database, so extra replicas are safe.
  */
+const FAST_MAIL_INTERVAL_MS = 5_000;
 let env: Env;
 try {
   env = loadEnv({ PROCESS_ROLE: 'worker', ...process.env });
@@ -51,6 +53,14 @@ const scheduler = new Scheduler(pool, log, env.JOBS_INTERVAL_SECONDS * 1000, {
   onPassStart: () => { beat.passStartedAt = Date.now(); },
   onPassEnd: () => { beat.passFinishedAt = Date.now(); },
 });
+// A sign-in code cannot wait for the next pass, which may be running long jobs. Claimed with SKIP LOCKED, so this overlaps safely with the pass and other workers.
+let mailing = false;
+const fastMail = setInterval(() => {
+  if (mailing) return;
+  mailing = true;
+  void deliverOutbox(pool, log, 20).catch((e: Error) => log.error({ err: e.message }, 'email delivery failed')).finally(() => { mailing = false; });
+}, FAST_MAIL_INTERVAL_MS);
+fastMail.unref();
 await writeBeat();
 const heartbeat = setInterval(() => { void writeBeat(); }, HEARTBEAT_INTERVAL_MS);
 // The whole loop runs with this deployment's feature set.
@@ -65,6 +75,7 @@ for (const sig of ['SIGTERM', 'SIGINT'] as const) {
     shuttingDown = true;
     log.info({ sig }, 'worker shutting down: waiting for the running job');
     try {
+      clearInterval(fastMail);
       await scheduler.stop();
       clearInterval(heartbeat);
       await runtime.close();

@@ -13,6 +13,9 @@ import { allOff, evaluateFeatures } from '../core/features/state.js';
 import { requireTenantHost } from '../core/http/context.js';
 import { roleGroup, viewsFor, SYSTEM_ROLE_MAP, permissionFeature } from '../core/auth/permissions.js';
 import { currentMode } from '../core/policy/mode.js';
+import { holdsL4 } from '../core/policy/salary.js';
+import { effectiveMethod, mfaPolicyOf } from '../core/auth/mfa.js';
+import { sendEmailOtp, type OtpSend } from '../core/auth/email-otp.js';
 import type { PublicConfig } from '../config/installation.js';
 import { notifyUsers } from '../core/notify/service.js';
 
@@ -21,15 +24,16 @@ const DEVICE_COOKIE_DAYS = 400;
 const INVALID = 'Invalid email or password';
 
 /** Paths a user with a pending forced password change may still call. */
-export const PASSWORD_CHANGE_ALLOWED = new Set(['/api/v1/auth/me', '/api/v1/auth/password', '/api/v1/auth/logout', '/api/v1/auth/mfa/setup', '/api/v1/auth/mfa/enable']);
+export const PASSWORD_CHANGE_ALLOWED = new Set(['/api/v1/auth/me', '/api/v1/auth/password', '/api/v1/auth/logout', '/api/v1/auth/mfa/methods', '/api/v1/auth/mfa/setup', '/api/v1/auth/mfa/enable', '/api/v1/auth/mfa/email/setup', '/api/v1/auth/mfa/email/enable']);
 
 async function passwordMinLength(db: Db, tenantId: string) {
   return getSettingValue<number>(db, tenantId, 'security.password_min_length');
 }
 
 export async function authRoutes(app: FastifyInstance, opts: { publicConfig: PublicConfig }) {
-  const { pool, env } = app.deps;
+  const { pool, env, cipher } = app.deps;
   const publicConfig = opts.publicConfig;
+  const mfaPolicy = mfaPolicyOf(env);
 
   const setCookie = (reply: FastifyReply, token: string, expires: Date) =>
     reply.setCookie(SESSION_COOKIE, token, { httpOnly: true, secure: env.COOKIE_SECURE, sameSite: 'lax', path: '/', expires });
@@ -75,8 +79,8 @@ export async function authRoutes(app: FastifyInstance, opts: { publicConfig: Pub
     }
     if (!gate.known) await perAccount(req);
     // The hash runs with no transaction open: a sign-in costs a worker thread, and never holds a database connection or a row while it does.
-    const u = await withPlatformBypass(pool, async (db) => (await db.query<{ id: string; password_hash: string | null; status: string; must_change_password: boolean; mfa_on: boolean; display_name: string }>(
-      `SELECT id, password_hash, status, must_change_password, display_name, mfa_enabled_at IS NOT NULL AS mfa_on
+    const u = await withPlatformBypass(pool, async (db) => (await db.query<{ id: string; password_hash: string | null; status: string; must_change_password: boolean; mfa_on: boolean; mfa_method: string | null; display_name: string }>(
+      `SELECT id, password_hash, status, must_change_password, display_name, mfa_enabled_at IS NOT NULL AS mfa_on, mfa_method
          FROM users WHERE tenant_id = $1 AND email = $2`, [tenantId, body.email])).rows[0]);
     const ok = await verifyPassword(body.password, u?.password_hash ?? null);
     const upgraded = ok && u?.password_hash && needsRehash(u.password_hash) ? await hashPassword(body.password) : null;
@@ -99,12 +103,17 @@ export async function authRoutes(app: FastifyInstance, opts: { publicConfig: Pub
       await audit(db, { tenantId, actorId: u.id, action: 'auth.login', category: 'auth', targetType: 'session', targetId: s.sessionId, requestId: req.id, ip: req.ip });
       const { isNew } = await rememberDevice(db, tenantId, u.id, sha256(device));
       if (isNew) await audit(db, { tenantId, actorId: u.id, action: 'auth.new_device', category: 'security', targetType: 'session', targetId: s.sessionId, requestId: req.id, ip: req.ip, userAgent: req.headers['user-agent'] });
-      return { ...s, mustChangePassword: u.must_change_password, mfaRequired: u.mfa_on };
+      const method = effectiveMethod(mfaPolicy, u.mfa_on, u.mfa_method);
+      // Email codes go out now, so the person has one by the time the next screen asks. An old one still pending is left alone by the resend limit.
+      const delivery: OtpSend | null = method === 'email' ? await sendEmailOtp(db, cipher, tenantId, u.id, 'login') : null;
+      return { ...s, mustChangePassword: u.must_change_password, mfaMethod: method, delivery: delivery?.state ?? null };
     });
     if (!result) throw unauthorized(INVALID);
     setCookie(reply, result.token, result.expiresAt);
     setDeviceCookie(reply, device);
-    return { csrfToken: result.csrf, expiresAt: result.expiresAt, passwordChangeRequired: result.mustChangePassword, mfaRequired: result.mfaRequired };
+    return { csrfToken: result.csrf, expiresAt: result.expiresAt, passwordChangeRequired: result.mustChangePassword, mfaRequired: !!result.mfaMethod, mfaMethod: result.mfaMethod,
+      // Only for email codes: 'sent', 'wait' (one went out a moment ago), or 'unavailable' (email is down, so a recovery code is the way in).
+      mfaDelivery: result.delivery };
   });
 
   app.post('/auth/logout', async (req, reply) => {
@@ -126,7 +135,7 @@ export async function authRoutes(app: FastifyInstance, opts: { publicConfig: Pub
     const token = req.cookies[SESSION_COOKIE]!;
     if (u.mfaPending) {
       return { user: { id: u.userId, email: u.email, displayName: u.displayName, employeeId: null }, passwordChangeRequired: u.mustChangePassword,
-        mfa: { enabled: true, pending: true, enrollmentRequired: false }, roles: [], permissions: [], mode: currentMode(), views: [], salaryLevel: 0, csrfToken: deriveCsrf(token),
+        mfa: { enabled: true, pending: true, enrollmentRequired: false, method: u.mfaMethod, suggested: false }, roles: [], permissions: [], mode: currentMode(), views: [], salaryLevel: 0, csrfToken: deriveCsrf(token),
         organization: { id: host.id, name: host.name }, preferences: null, capabilities: {} };
     }
     const { features, timezone, dateFormat, emailNotifications } = await withTenant(pool, u.tenantId, async (db) => ({
@@ -138,7 +147,9 @@ export async function authRoutes(app: FastifyInstance, opts: { publicConfig: Pub
     return {
       user: { id: u.userId, email: u.email, displayName: u.displayName, employeeId: u.employeeId },
       passwordChangeRequired: u.mustChangePassword,
-      mfa: { enabled: u.mfaEnabled, pending: u.mfaPending, enrollmentRequired: u.mfaEnrollmentRequired },
+      // `suggested` is a nudge for people who can read L4 data, and blocks nothing (D45).
+      mfa: { enabled: u.mfaEnabled, pending: u.mfaPending, enrollmentRequired: u.mfaEnrollmentRequired, method: u.mfaMethod,
+        suggested: env.MFA_AVAILABLE && !env.MFA_ENFORCED && !u.mfaEnabled && holdsL4({ has: (p) => u.permissions.has(p) }) },
       roles: u.roles.map((k) => ({ key: k, name: SYSTEM_ROLE_MAP.get(k)?.name ?? k, group: roleGroup(k) })),
       // One person may hold several roles: these are the views they can switch between.
       mode: currentMode(), views: viewsFor(u.roles, (p) => u.permissions.has(p) && !allOff(permissionFeature(p)), u.employeeId), salaryLevel: u.salaryLevel,

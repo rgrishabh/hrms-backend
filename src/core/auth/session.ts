@@ -4,7 +4,7 @@ import { randomToken, sha256 } from '../crypto/index.js';
 import { SYSTEM_ROLE_MAP, resolveRolePermissions } from './permissions.js';
 import { currentMode } from '../policy/mode.js';
 import { effectiveLevel } from '../policy/levels.js';
-import { effectiveMfaLevel, mfaRequiredFor } from './mfa.js';
+import { effectiveMethod, type MfaMethod, type MfaPolicy } from './mfa.js';
 
 export const SESSION_COOKIE = 'hrms_sid';
 /** A random value per browser, long-lived: tells a browser this account has used from one it has not. Never authenticates anything. */
@@ -30,9 +30,11 @@ export interface SessionUser {
   employeeId: string | null;
   mustChangePassword: boolean;
   mfaEnabled: boolean;
+  /** The method this user must answer with, or null. Null for everyone while MFA_AVAILABLE=false, enrolled or not. */
+  mfaMethod: MfaMethod | null;
   /** MFA is enrolled but this session has not presented a code yet. */
   mfaPending: boolean;
-  /** Policy requires MFA for this user and they have not enrolled. */
+  /** MFA_ENFORCED=true and this user has not enrolled. */
   mfaEnrollmentRequired: boolean;
 }
 
@@ -61,11 +63,11 @@ export async function rotateSession(db: Db, sessionId: string) {
  * tenant (or the platform); `expectedTenantId` comes from the verified host, so
  * a cookie replayed against another tenant's domain is rejected.
  */
-export async function loadSession(pool: Pool, token: string, expectedTenantId: string | null): Promise<SessionUser | null> {
+export async function loadSession(pool: Pool, token: string, expectedTenantId: string | null, mfa: MfaPolicy): Promise<SessionUser | null> {
   return withPlatformBypass(pool, async (db) => {
-    const r = await db.query<{ id: string; user_id: string; tenant_id: string | null; csrf_hash: string; email: string; display_name: string; status: string; touch: boolean; must_change_password: boolean; mfa_on: boolean; mfa_ok: boolean; salary_access_level: number }>(
+    const r = await db.query<{ id: string; user_id: string; tenant_id: string | null; csrf_hash: string; email: string; display_name: string; status: string; touch: boolean; must_change_password: boolean; mfa_on: boolean; mfa_method: string | null; mfa_ok: boolean; salary_access_level: number }>(
       `SELECT s.id, s.user_id, s.tenant_id, s.csrf_hash, u.email, u.display_name, u.status, u.must_change_password, u.salary_access_level,
-              (u.mfa_enabled_at IS NOT NULL) AS mfa_on, (s.mfa_verified_at IS NOT NULL) AS mfa_ok,
+              (u.mfa_enabled_at IS NOT NULL) AS mfa_on, u.mfa_method, (s.mfa_verified_at IS NOT NULL) AS mfa_ok,
               s.last_seen_at < now() - interval '1 minute' AS touch
          FROM sessions s JOIN users u ON u.id = s.user_id
         WHERE s.token_hash = $1 AND s.revoked_at IS NULL AND s.expires_at > now()
@@ -79,10 +81,11 @@ export async function loadSession(pool: Pool, token: string, expectedTenantId: s
       const e = await db.query<{ id: string }>(`SELECT id FROM employees WHERE tenant_id=$1 AND user_id=$2`, [s.tenant_id, s.user_id]);
       employeeId = e.rows[0]?.id ?? null;
     }
+    const method = effectiveMethod(mfa, s.mfa_on, s.mfa_method);
     return { sessionId: s.id, userId: s.user_id, tenantId: s.tenant_id, email: s.email, displayName: s.display_name,
       csrfHash: s.csrf_hash, roles, permissions, salaryLevel: effectiveLevel(s.salary_access_level, roles), employeeId, mustChangePassword: s.must_change_password,
-      mfaEnabled: s.mfa_on, mfaPending: s.mfa_on && !s.mfa_ok,
-      mfaEnrollmentRequired: !s.mfa_on && !!s.tenant_id && mfaRequiredFor(roles, permissions, await effectiveMfaLevel(db, s.tenant_id)) };
+      mfaEnabled: !!method, mfaMethod: method, mfaPending: !!method && !s.mfa_ok,
+      mfaEnrollmentRequired: !method && !!s.tenant_id && mfa.available && mfa.enforced };
   });
 }
 

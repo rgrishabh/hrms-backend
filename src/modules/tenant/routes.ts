@@ -18,9 +18,9 @@ import { anotherActiveOwner, effectiveLevel, roleFloor, SALARY_LEVEL_MAX } from 
 import { redact } from '../../core/audit/audit.js';
 import { hashPassword } from '../../core/crypto/index.js';
 import { getSettingValue } from '../../core/settings/service.js';
+import { notifyUsers } from '../../core/notify/service.js';
 import { revokeAllSessionsForUser } from '../../core/auth/session.js';
 import { clearLoginAccount } from '../../core/auth/throttle.js';
-import { PRIVILEGED_PERMISSIONS } from '../../core/auth/mfa.js';
 
 /** The modes without role screens answer 404 here, like any address that does not exist. */
 const noRoleScreens = () => { if (isCollapsedMode()) throw notFound(); };
@@ -150,8 +150,8 @@ export async function tenantAdminRoutes(app: FastifyInstance, opts: { publicConf
         system: SYSTEM_ROLES.map((r) => ({ key: r.key, name: r.name, group: roleGroup(r.key), permissions: visible(r.key === 'owner' ? SYSTEM_ROLE_MAP.get('tenant_admin')!.permissions : r.permissions), grantable: grantable(r.key, r.permissions), users: counts.get(r.key) ?? 0 })),
         custom: (await db.query<{ key: string; name: string; permissions: string[] }>(`SELECT t.key, t.name, t.description, t.permissions, t.updated_at, u.display_name AS updated_by_name
             FROM tenant_roles t LEFT JOIN users u ON u.id=coalesce(t.updated_by, t.created_by) WHERE t.tenant_id=$1 ORDER BY t.name`, [a.tenantId])).rows
-          .map((r) => ({ ...r, permissions: visible(r.permissions), grantable: grantable(r.key, r.permissions), users: counts.get(r.key) ?? 0, mfaRequired: r.permissions.some((p) => PRIVILEGED_PERMISSIONS.has(p)) })),
-        permissions: Object.entries(PERMISSIONS).filter(([key]) => !allOff(permissionFeature(key))).map(([key, label]) => ({ key, label, privileged: PRIVILEGED_PERMISSIONS.has(key) })),
+          .map((r) => ({ ...r, permissions: visible(r.permissions), grantable: grantable(r.key, r.permissions), users: counts.get(r.key) ?? 0 })),
+        permissions: Object.entries(PERMISSIONS).filter(([key]) => !allOff(permissionFeature(key))).map(([key, label]) => ({ key, label })),
         // Whether this user may create and edit roles, and with which permissions (an administrator: any).
         canManage: a.has('users.manage'), maxPermissions: isAdministrator(a) ? null : [...a.user.permissions].filter((p) => p in PERMISSIONS),
       };
@@ -379,8 +379,11 @@ export async function tenantAdminRoutes(app: FastifyInstance, opts: { publicConf
       if (body.unlock) await clearLoginAccount(db, a.tenantId, u.rows[0]!.email);
       if (body.resetMfa) {
         if (id === a.user.userId) throw conflict('You cannot reset your own two-factor authentication here');
-        await db.query(`UPDATE users SET mfa_secret_enc=NULL, mfa_pending_secret_enc=NULL, mfa_enabled_at=NULL, mfa_recovery_hashes='{}', mfa_last_step=NULL
+        // MFA_AVAILABLE=false keeps what people enrolled in, to come back if it is turned on again.
+        if (!app.deps.env.MFA_AVAILABLE) throw conflict('Two-factor authentication is off on this installation');
+        await db.query(`UPDATE users SET mfa_secret_enc=NULL, mfa_pending_secret_enc=NULL, mfa_enabled_at=NULL, mfa_method=NULL, mfa_recovery_hashes='{}', mfa_last_step=NULL, mfa_failures=0, mfa_locked_until=NULL
           WHERE tenant_id=$1 AND id=$2`, [a.tenantId, id]);
+        await notifyUsers(db, a.tenantId, [id], { kind: 'security.mfa_disabled', title: 'Two-factor authentication was turned off', body: 'An administrator reset it for your account. If you did not ask for this, contact them immediately.', link: '/account' });
       }
       if (body.status === 'disabled') await reassignStepsOf(db, a.tenantId, id);
       // Role or status changes take effect immediately: existing sessions are revoked.
