@@ -4,7 +4,7 @@ Batch F, 2026-11-05, on a laptop against local PostgreSQL 17. Scores are CVSS v3
 
 ## Summary
 
-Fixed: 28 (critical 0, high 2, medium 20, low 6). Accepted: 5, with reasons below.
+Fixed: 30 (critical 0, high 2, medium 20, low 8). Accepted: 5, with reasons below.
 
 No finding let an outsider in, or crossed organizations. Almost all need a valid session: most are staff going past what their level allows, which is the attacker this system expects most (`docs/THREAT_MODEL.md`).
 
@@ -37,9 +37,11 @@ No finding let an outsider in, or crossed organizations. Almost all need a valid
 | F-111 | `loans.manage` creates, cancels, defers or records repayment on a loan of someone above them; repayment bounds the masked balance | `CVSS:3.1/AV:N/AC:L/PR:H/UI:N/S:U/C:L/I:L/A:N` | 3.8 | Low | fixed | `POST /loans/requests {employeeId:<senior>,...}`, `/requests/:id/defer`, `/cancel` | `test/security/privilege-abuse.test.ts` |
 | F-105 | The salary-level route ignores the limit the rest of user management applies | `CVSS:3.1/AV:N/AC:L/PR:H/UI:N/S:U/C:L/I:L/A:N` | 3.8 | Low | fixed | IT administrator: `PUT /tenant/users/:id/salary-level` on a payroll manager | `test/security/privilege-abuse.test.ts` |
 | F-125 | Personal API answers carried no `Cache-Control`, so a browser or proxy could keep them | `CVSS:3.1/AV:L/AC:L/PR:L/UI:N/S:U/C:L/I:N/A:N` | 3.3 | Low | fixed | `curl -i /api/v1/payroll/employees/:id/salaries?reveal=1` | `test/security/flags-headers.test.ts` |
+| CI-1 | Recovery codes reduced a random byte modulo 31, so 8 letters were 9/8 as likely as the other 23. About 59.43 bits in place of 59.45, and it takes a password first | `CVSS:3.1/AV:N/AC:H/PR:L/UI:N/S:U/C:L/I:N/A:N` | 3.1 | Low | fixed | CodeQL `js/biased-cryptographic-random`, `src/core/auth/totp.ts` | `test/totp-recovery-codes.test.ts` |
 | F-106 | Unlock on an account above the actor clears its sign-in back-off | `CVSS:3.1/AV:N/AC:L/PR:H/UI:N/S:U/C:N/I:L/A:N` | 2.7 | Low | fixed | `PATCH /tenant/users/:ownerId {unlock:true}` | `test/security/privilege-abuse.test.ts` |
 | F-126 | A custom role could hold permissions of a module that is off, and grant them the day it comes on | `CVSS:3.1/AV:N/AC:L/PR:H/UI:N/S:U/C:L/I:N/A:N` | 2.7 | Low | fixed | `POST /tenant/roles {permissions:["payroll.read"]}` | `test/security/flags-headers.test.ts` |
 | F-124 | AES-GCM decryption accepted a shortened tag. Needs write access to the database to use | `CVSS:3.1/AV:N/AC:H/PR:H/UI:N/S:U/C:N/I:L/A:N` | 2.2 | Low | fixed | Semgrep `gcm-no-tag-length`; truncate the tag of a sealed value | `test/security/files-exports.test.ts` |
+| CI-2 | Static and brand files were checked by name, then read by name, at startup. Needs write access to the mount, which could replace the file anyway, so the gap gave nothing more | `CVSS:3.1/AV:L/AC:H/PR:H/UI:N/S:U/C:L/I:N/A:N` | 1.9 | Low | fixed | CodeQL `js/file-system-race`, `src/core/http/web.ts` | `test/web-file-race.test.ts` |
 | A-4 | Rate limits are per process, so N replicas allow N times the number | `CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:N/I:N/A:L` | 5.3 | Medium | accepted | D27. The database back-off holds across replicas | `test/rate-limit.test.ts` |
 | A-1 | Travel advance amounts are L3 by classification and shown to whoever approves or pays them, whatever their level | `CVSS:3.1/AV:N/AC:L/PR:L/UI:N/S:U/C:L/I:N/A:N` | 4.3 | Medium | accepted | Deciding and paying need the figure, and it is not pay. `GET /travel/requests?scope=all` | `code: src/modules/travel/routes.ts` |
 | A-2 | One HR holder can route a stuck approval to an accomplice | `CVSS:3.1/AV:N/AC:L/PR:L/UI:N/S:U/C:N/I:L/A:N` | 4.3 | Medium | accepted | Needs two people; audited and announced to the assignee (F-14). `POST /approvals/:id/reassign` | `test/approval-fixes.test.ts` |
@@ -62,7 +64,7 @@ Each was run here on this date. Counts are after the fixes. Reports are in `repo
 | SBOM | `trivy image --format cyclonedx`, `trivy fs --format cyclonedx` | CycloneDX 1.7: 155 components in the image, 128 in the repository. CI attaches one per image |
 | ZAP baseline | `zap-baseline.py -t http://load.test:4100/api/v1/config/public -c rules.tsv` | high 0, medium 0, low 0, informational 3. 67 rules passed, one ignored (`10049`: non-storable content is intended) |
 | ZAP authenticated | ZAP automation framework: OpenAPI import, active scan as an HR session, 296 paths, excluding routes that would end its own session | high 1, medium 0, low 0, informational 0. The one high is a false positive, below. No 5xx logged by the server |
-| CodeQL | CI only, `.github/workflows/security.yml` | **Not run.** It cannot run locally |
+| CodeQL | CI only, `.github/workflows/security.yml` | First run gave CI-1 and CI-2, both fixed. It cannot run locally, so the fixes are not yet confirmed by a run |
 
 **The image scan was of a copy.** The machine has no `docker buildx`, so the image was built with the legacy builder, from a copy of the Dockerfile without its two BuildKit-only flags (`RUN --mount` for the npm cache, `COPY --chmod`, replaced by `chmod`). The layers are otherwise the same. CI builds the real Dockerfile. No workflow has run on GitHub yet.
 
@@ -83,7 +85,7 @@ Each was run here on this date. Counts are after the fixes. Reports are in `repo
 
 ## Not covered
 
-- CodeQL and every GitHub workflow, which have not run.
+- CodeQL on the fixes for CI-1 and CI-2, until the next push.
 - An external penetration test.
 - The frontend's handling of stored text. The API stores and returns it as typed.
 - A running clamd against real malware samples: covered by `uploads.test.ts` against a fake server speaking the protocol.

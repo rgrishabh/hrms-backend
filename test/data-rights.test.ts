@@ -223,7 +223,9 @@ describe('export', () => {
     expect(section(b, 'addresses').rows).toHaveLength(1);
     expect(section(b, 'salaries').rows[0]!.amounts).toBeUndefined();
     expect(section(b, 'salaries').maskedColumns).toEqual(expect.arrayContaining(['amounts_enc']));
-    for (const s of ['987654', '876543', '234F', '5566']) expect(r.body, s).not.toContain(s);
+    // Without the ids: a random uuid holds "5566" often enough to fail a run now and then.
+    const shown = r.body.replace(/[0-9a-f]{8}(-[0-9a-f]{4}){3}-[0-9a-f]{12}/g, '');
+    for (const s of ['987654', '876543', '234F', '5566']) expect(shown, s).not.toContain(s);
     await ownerQuery(`UPDATE user_roles SET role_key='hr_admin' WHERE tenant_id=$1 AND user_id=$2 AND role_key='hr_executive'`, [T.id, T.users.hr!.id]);
   });
 

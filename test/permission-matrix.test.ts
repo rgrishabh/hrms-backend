@@ -348,7 +348,8 @@ const mayL4 = (v: Persona, s: Persona, perm: boolean | undefined) => v.key === s
 const pdfAmount = (n: number) => new Intl.NumberFormat('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 }).format(n);
 /** A problem's `instance` is a random reference: its digits can spell anything, and are not the subject's. */
 const leaks = (raw: string, s: Subject) => {
-  const body = raw.replace(/urn:uuid:[0-9a-f-]+/g, '');
+  // Ids are random hex: 3fc23cec-...-76f822215521 once held a subject's five-digit figure, 82221, and failed the run by chance.
+  const body = raw.replace(/[0-9a-f]{8}(-[0-9a-f]{4}){3}-[0-9a-f]{12}/g, '');
   return body.includes(s.figure) || body.includes(s.account) || body.includes(s.uan);
 };
 

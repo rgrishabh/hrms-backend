@@ -193,3 +193,18 @@ G-1 to G-4 were reported by other batches, G-5 came up while fixing G-4, and G-6
 |---|---|---|---|---|---|---|
 | H-1 | Lifecycle | High | Answers on file. The leaver, or `lifecycle.manage` not above the leaver, posts `/separations/:id/exit-interview` | A post replaces every answer, and these readers are not shown them. So a blank form erased what they could not see | Such a save is refused with 409 once answers exist, and `exit_interview_recorded` tells the form without giving the answers (D71). Who is shown them saves as before. The schema's `exit_interview`, which named only the keys one test used, is now a map | `test/lifecycle.test.ts`, `test/security/privilege-abuse.test.ts` |
 | H-2 | Recruitment | High | `GET /recruitment/applications/:id`, then `PUT /recruitment/offers/:id` from it | Offer rows gave `branch_name` and no `legal_entity_id`, `branch_id`, `department_id` or `contract_end_date`, all of which PUT requires or replaces. The frontend had to guess them | The rows carry all four, L2 as the row's other fields | `test/recruitment.test.ts` |
+
+## The first CI run
+
+CodeQL's first run. Each has a test that failed first.
+
+| ID | Module | Sev | Steps to reproduce | Root cause | Fix | Test |
+|---|---|---|---|---|---|---|
+| CI-1 | Auth, MFA | Low | Count the letters of 100,000 recovery codes: 1.14 between the most and least common | `byte % 31`, and 256 is not a multiple of 31 | `randomInt`. Format unchanged. Codes are checked by hash, so those already issued still work, with a test | `test/totp-recovery-codes.test.ts`, `test/mfa.test.ts` |
+| CI-2 | HTTP | Low | Replace a file in the brand mount between the loader's stat and its read: the replacement is what gets served | `statSync`, then `readFileSync`, both by name | One handle, `fstatSync` and read on it | `test/web-file-race.test.ts` |
+| CI-3 | Data rights, test | Low | Run the suite until it fails: `HR without an L4 permission` found `5566` in the user id `dee5483a-...-b55664d0c0d7` | The test looked for the bank digits in the whole body, ids included. Not a leak: the column is masked | Ids removed before looking | The test itself |
+| CI-4 | Permission matrix, test | Low | Run the suite until it fails: the audit view "shows" the auditor's figure 82221, in the entity id `3fc23cec-...-76f822215521` | The leak check removed `urn:uuid:` ids only, so any other id could hold a figure. Not a leak: found in the stored row, an id | All uuids removed before looking | The test itself |
+
+Under `TZ=UTC` the suite relies on no machine zone. CI-3 and CI-4 were the only failures, and both were chance.
+
+Security detail in `SECURITY_REPORT.md`.
