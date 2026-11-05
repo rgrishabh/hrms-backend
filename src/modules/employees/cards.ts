@@ -135,7 +135,7 @@ function idFront(w: PdfWriter, ctx: PdfContext, p: CardPerson, photo: Buffer | n
     drawLogo(w, x + 10, y + 6, inner, 26, 'center');
     const company = w.t(ctx.legalName);
     const companyEnd = put(w, company, x + 10, y + 35, { width: inner, size: fitted(w, company, BOLD, 8.5, 6.5, inner), font: BOLD, color: w.accent, align: 'center', lines: 2 });
-    const [pw, ph] = [66, 82];
+    const [pw, ph] = [74, 94];
     const [px, py] = [x + (ID_W - pw) / 2, companyEnd + 6];
     doc.save();
     doc.rect(px, py, pw, ph).clip();
@@ -222,9 +222,9 @@ function businessBack(w: PdfWriter, ctx: PdfContext, contact: Contact, x: number
     doc.rect(x, y, BC_W, BC_H).fill(w.accent);
     const [tw, th] = [84, 46];
     const tx = x + (BC_W - tw) / 2;
-    doc.roundedRect(tx, y + 14, tw, th, 6).fill('#ffffff');
-    drawLogo(w, tx + 6, y + 18, tw - 12, th - 8, 'center');
-    const at = put(w, ctx.legalName, x + 16, y + 70, { width: inner, size: 10, font: BOLD, color: w.onPrimary, align: 'center', lines: 2 }) + 6;
+    doc.roundedRect(tx, y + 28, tw, th, 6).fill('#ffffff');
+    drawLogo(w, tx + 6, y + 32, tw - 12, th - 8, 'center');
+    const at = put(w, ctx.legalName, x + 16, y + 84, { width: inner, size: 10, font: BOLD, color: w.onPrimary, align: 'center', lines: 2 }) + 6;
     put(w, [contact.phone, contact.email].filter(Boolean).join('  ·  '), x + 16, at, { width: inner, size: 7.5, color: w.onPrimary, align: 'center' });
   });
 }
