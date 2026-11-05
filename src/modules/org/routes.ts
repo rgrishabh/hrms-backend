@@ -14,6 +14,8 @@ const BranchBody = z.object({ legalEntityId: Uuid, code: Code, name: z.string().
   city: z.string().trim().max(80).nullable().optional(), status: z.enum(['active', 'inactive']).default('active') });
 const DepartmentBody = z.object({ code: Code, name: z.string().trim().min(2).max(200), parentId: Uuid.nullable().optional(), status: z.enum(['active', 'inactive']).default('active') });
 
+const MasterBody = z.object({ code: Code, name: z.string().trim().min(1).max(120), status: z.enum(['active', 'inactive']).default('active') });
+
 const IdParams = z.object({ id: Uuid });
 export async function orgRoutes(app: FastifyInstance) {
   app.get('/', { schema: {}, config: { permAny: ['org.read', 'employees.directory'] } }, async (req) => {
@@ -23,6 +25,8 @@ export async function orgRoutes(app: FastifyInstance) {
       legalEntities: (await db.query('SELECT id, name, cin, gstin, state_code, status FROM legal_entities WHERE tenant_id=$1 ORDER BY name', [a.tenantId])).rows,
       branches: (await db.query('SELECT id, legal_entity_id, code, name, state, city, status FROM branches WHERE tenant_id=$1 ORDER BY name', [a.tenantId])).rows,
       departments: (await db.query('SELECT id, code, name, parent_id, status FROM departments WHERE tenant_id=$1 ORDER BY name', [a.tenantId])).rows,
+      grades: (await db.query('SELECT id, code, name, status FROM grades WHERE tenant_id=$1 ORDER BY code', [a.tenantId])).rows,
+      designations: (await db.query('SELECT id, code, name, status FROM designations WHERE tenant_id=$1 ORDER BY name', [a.tenantId])).rows,
     })));
   });
 
@@ -60,4 +64,6 @@ export async function orgRoutes(app: FastifyInstance) {
   upsert('legal-entities', 'legal_entities', LegalEntityBody, (b) => ({ name: b.name, cin: b.cin ?? null, gstin: b.gstin ?? null, state_code: b.stateCode ?? null, status: b.status }));
   upsert('branches', 'branches', BranchBody, (b) => ({ legal_entity_id: b.legalEntityId, code: b.code, name: b.name, state: b.state, city: b.city ?? null, status: b.status }));
   upsert('departments', 'departments', DepartmentBody, (b) => ({ code: b.code, name: b.name, parent_id: b.parentId ?? null, status: b.status }));
+  upsert('grades', 'grades', MasterBody, (b) => ({ code: b.code, name: b.name, status: b.status }));
+  upsert('designations', 'designations', MasterBody, (b) => ({ code: b.code, name: b.name, status: b.status }));
 }

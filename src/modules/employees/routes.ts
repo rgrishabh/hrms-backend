@@ -1,5 +1,6 @@
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
+import { addTitle, assertKnownTitle, titleToAdd, type TitleKind } from '../org/masters.js';
 import { tenantActor, tenantActorAny } from '../../core/http/context.js';
 import { audit, redact } from '../../core/audit/audit.js';
 import { assertMayChangeSubject, auditL4, l3RowFilter, maskFields, policyViewer, readContext, subjectVisible, wantsReveal } from '../../core/policy/salary.js';
@@ -110,6 +111,8 @@ export async function employeeRoutes(app: FastifyInstance) {
     const a = tenantActor(req, 'employees.manage');
     const body = PostRootBody.parse(req.body);
     return a.tx(async (db) => {
+      await assertKnownTitle(db, a.tenantId, 'designations', body.employee.designation);
+      await assertKnownTitle(db, a.tenantId, 'grades', body.employee.grade);
       const id = await insertEmployee(db, a.tenantId, body.employee, body.confirmDuplicate);
       await audit(db, { ...a.auditBase, action: 'employee.created', targetType: 'employee', targetId: id,
         metadata: { employeeCode: body.employee.employeeCode, confirmedDuplicate: body.confirmDuplicate } });
@@ -125,6 +128,7 @@ export async function employeeRoutes(app: FastifyInstance) {
       const cur = await db.query(`SELECT * FROM employees WHERE tenant_id=$1 AND id=$2 FOR UPDATE`, [a.tenantId, id]);
       const row = cur.rows[0];
       if (!row) throw notFound('Employee not found');
+      if (row.erased_at) throw conflict('This person\'s data was erased, and the record cannot be changed.');
       if (row.version !== body.expectedVersion) throw conflict('This record was changed by someone else. Reload and try again.');
       // Rebuild the full input from current values + changes, then validate as a whole.
       const currentInput = Object.fromEntries(Object.entries(COLS).map(([k, col]) => [k, row[col]]));
@@ -139,6 +143,8 @@ export async function employeeRoutes(app: FastifyInstance) {
       if (!exiting && body.exitDate) throw badRequest('An exit date goes with changing the status to exited');
       if (body.exitDate && body.exitDate < next.dateOfJoining) throw badRequest('The exit date cannot be before the date of joining');
       if (!changed.length) return { ok: true, version: row.version, changed: [] };
+      if (changed.includes('designation')) await assertKnownTitle(db, a.tenantId, 'designations', next.designation);
+      if (changed.includes('grade')) await assertKnownTitle(db, a.tenantId, 'grades', next.grade);
       if (changed.some((k) => L3_EMPLOYEE_FIELDS.includes(k)) && !(await subjectVisible(db, a.tenantId, await policyViewer(db, a.tenantId, a.user), id, l3RowFilter))) throw notFound('Employee not found');
       if (changed.includes('workEmail') || changed.includes('phone')) {
         const d = await findDuplicates(db, a.tenantId, { workEmail: next.workEmail, phone: next.phone }, id);
@@ -194,6 +200,7 @@ export async function employeeRoutes(app: FastifyInstance) {
         report.push({ row: idx + 1, employeeCode: code, errors, warnings });
         if (!errors.length && parsed.success) valid.push({ input: parsed.data, managerCode: s('reportingManagerCode') });
       });
+      const toAdd = new Map<string, { kind: TitleKind; value: string }>();
       // DB-level checks: existing codes, duplicates.
       for (const [i, v] of valid.entries()) {
         const rep = report.find((r) => r.employeeCode === v.input.employeeCode)!;
@@ -206,17 +213,24 @@ export async function employeeRoutes(app: FastifyInstance) {
           if (!m.rowCount) rep.errors.push(`Unknown reportingManagerCode '${v.managerCode}'`);
         }
         void i;
+        // The masters must not make an import fail: a new title is added to them, and the report says so.
+        for (const [kind, value, label] of [['designations', v.input.designation, 'designation'], ['grades', v.input.grade, 'grade']] as const) {
+          if (!value || !(await titleToAdd(db, a.tenantId, kind, value))) continue;
+          rep.warnings.push(`New ${label} '${value}' will be added to the list`);
+          toAdd.set(`${kind}|${value.trim().toLowerCase()}`, { kind, value });
+        }
       }
       const errorCount = report.filter((r) => r.errors.length).length;
       const summary = { total: body.rows.length, valid: body.rows.length - errorCount, errors: errorCount, warnings: report.filter((r) => r.warnings.length).length };
       if (body.dryRun || errorCount) return { committed: false, summary, report: report.filter((r) => r.errors.length || r.warnings.length) };
+      for (const t of toAdd.values()) await addTitle(db, a.tenantId, t.kind, t.value);
       // Insert without managers first, then resolve manager codes (handles managers inside the same file).
       for (const v of valid) await insertEmployee(db, a.tenantId, { ...v.input, reportingManagerId: null }, true);
       for (const v of valid.filter((x) => x.managerCode)) {
         await db.query(`UPDATE employees e SET reporting_manager_id = m.id FROM employees m
           WHERE e.tenant_id=$1 AND m.tenant_id=$1 AND e.employee_code=$2 AND m.employee_code=$3`, [a.tenantId, v.input.employeeCode, v.managerCode]);
       }
-      await audit(db, { ...a.auditBase, action: 'employee.bulk_imported', targetType: 'employee', metadata: { count: valid.length, codes: valid.map((v) => v.input.employeeCode).slice(0, 200) } });
+      await audit(db, { ...a.auditBase, action: 'employee.bulk_imported', targetType: 'employee', metadata: { count: valid.length, codes: valid.map((v) => v.input.employeeCode).slice(0, 200), ...(toAdd.size ? { addedToLists: [...toAdd.values()].map((t) => ({ list: t.kind, name: t.value })) } : {}) } });
       return { committed: true, summary, report: report.filter((r) => r.warnings.length) };
     });
   });
