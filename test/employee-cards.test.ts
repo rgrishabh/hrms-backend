@@ -1,10 +1,11 @@
-import { mkdtemp, rm } from 'node:fs/promises';
+import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { deflateSync } from 'node:zlib';
 import type { FastifyInstance } from 'fastify';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { LocalStore, setStore } from '../src/core/storage/index.js';
+import { TEST_BRAND } from './env.js';
 import { Client, createTenant, makeApp, multipart, ownerQuery, type TenantFixture } from './helpers.js';
 import { pdfPages, pdfText } from './pdf-text.js';
 
@@ -21,6 +22,7 @@ function realPng() {
   ihdr[9] = 2;
   return Buffer.concat([Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]), chunk('IHDR', ihdr), chunk('IDAT', deflateSync(Buffer.from([0, 200, 30, 30]))), chunk('IEND', Buffer.alloc(0))]);
 }
+const T_SUPPORT = TEST_BRAND.BRAND_SUPPORT_EMAIL;
 const images = (b: Buffer) => (b.toString('latin1').match(/\/Subtype \/Image/g) ?? []).length;
 
 let app: FastifyInstance;
@@ -58,7 +60,8 @@ describe('ID card', () => {
     expect(r.headers['content-disposition']).toBe('attachment; filename="id-card.pdf"');
     const [row] = await ownerQuery<{ employee_code: string; first_name: string }>('SELECT employee_code, first_name FROM employees WHERE id=$1', [emp('employee')]);
     const text = await pdfText(r.rawPayload);
-    for (const want of [row!.first_name, row!.employee_code, 'Affix photo', 'This card is the property of', 'Date of joining']) expect(text).toContain(want);
+    const [company] = await ownerQuery<{ name: string }>('SELECT name FROM legal_entities WHERE tenant_id=$1 ORDER BY created_at LIMIT 1', [T.id]);
+    for (const want of [company!.name, row!.first_name, row!.employee_code, 'Affix photo', 'This card is the property of', 'Date of joining']) expect(text).toContain(want);
     expect((await pdfPages(r.rawPayload)).length).toBe(1);
     const rows = await audits('employee.cards_printed');
     expect(rows.length).toBe(before + 1);
@@ -108,8 +111,13 @@ describe('business card', () => {
     expect(r.statusCode, r.body).toBe(200);
     const text = await pdfText(r.rawPayload);
     expect(text.match(/Senior Analyst/g)).toHaveLength(10);
+    expect(text).toContain('Print both sides');
     expect(text).toContain('+91 90000 12345');
-    expect((await pdfPages(r.rawPayload)).length).toBe(1);
+    const pages = await pdfPages(r.rawPayload);
+    expect(pages.length).toBe(2);
+    expect(pages[0]).toContain('Senior Analyst');
+    expect(pages[1]).not.toContain('Senior Analyst');
+    expect(pages[1]).toContain(T_SUPPORT);
     expect((await audits('employee.cards_printed')).at(-1)!.change_metadata).toMatchObject({ kind: 'business', count: 1, phonesPrinted: 1 });
   });
 
@@ -137,7 +145,7 @@ describe('everyone at once', () => {
     expect((await audits('employee.cards_printed')).at(-1)).toMatchObject({ target_id: null, change_metadata: { kind: 'id', count: Number(n) } });
     const cards = await hr.get('/api/v1/employees/cards/business-cards.pdf');
     expect(cards.statusCode, cards.body).toBe(200);
-    expect((await pdfPages(cards.rawPayload)).length).toBe(Math.ceil(Number(n) / 10));
+    expect((await pdfPages(cards.rawPayload)).length).toBe(Math.ceil(Number(n) / 10) * 2);
   });
 
   it('follows the branch and department chosen, and says so when nobody matches', async () => {
@@ -146,6 +154,23 @@ describe('everyone at once', () => {
     const none = await hr.get('/api/v1/employees/cards/id-cards.pdf?departmentId=00000000-0000-4000-8000-000000000000');
     expect(none.statusCode).toBe(404);
     expect(none.json().detail).toContain('No current employees');
+  });
+});
+
+describe('a logo on many cards', () => {
+  it('is stored once in the file', async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), 'hrms-cards-brand-'));
+    await writeFile(path.join(dir, 'logo.png'), realPng());
+    const branded = await makeApp({ BRAND_LOGO_URL: '/brand/logo.png' }, { storeOverride: true, brandDirOverride: dir });
+    try {
+      const c = await Client.login(branded, T.host, T.users.hr!.email);
+      const r = await c.get(`/api/v1/employees/${emp('employee')}/business-card.pdf`);
+      expect(r.statusCode, r.body).toBe(200);
+      expect(images(r.rawPayload)).toBe(1);
+    } finally {
+      await branded.close();
+      await rm(dir, { recursive: true, force: true });
+    }
   });
 });
 

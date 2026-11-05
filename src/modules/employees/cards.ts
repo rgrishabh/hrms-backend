@@ -23,7 +23,9 @@ const BC_H = 51 * MM;
 const GAP = 6;
 const CORNER = 8;
 const GUIDE = '#c8c8c8';
-const BUSINESS_COPIES = 10;
+const ID_PER_PAGE = 4;
+const BC_ROWS = 5;
+const BC_PER_PAGE = BC_ROWS * 2;
 
 /** One file at a time: photos are held in memory while it is drawn. A bigger organization prints a branch or department at a time. */
 export const MAX_CARDS_PER_FILE = 300;
@@ -92,11 +94,23 @@ function put(w: PdfWriter, raw: unknown, x: number, y: number, o: { width: numbe
   return y + height;
 }
 
+/** The library stores a picture again each time it is given the bytes, and a sheet repeats the logo and signature on every card. */
+type Openable = { openImage(picture: Buffer): Buffer };
+const opened = new WeakMap<PdfWriter, Map<Buffer, Buffer>>();
+function shared(w: PdfWriter, picture: Buffer) {
+  const images = opened.get(w) ?? new Map<Buffer, Buffer>();
+  opened.set(w, images);
+  // Missing from the library's published types. It answers with an object that `image` accepts in place of the bytes.
+  const image = images.get(picture) ?? (w.doc as unknown as Openable).openImage(picture);
+  images.set(picture, image);
+  return image;
+}
+
 function drawLogo(w: PdfWriter, x: number, y: number, width: number, height: number, align: 'left' | 'center') {
   const { logo } = w.ctx.images;
   if (logo) {
     try {
-      w.doc.image(logo, x, y, { fit: [width, height], ...(align === 'center' ? { align } : {}), valign: 'center' });
+      w.doc.image(shared(w, logo), x, y, { fit: [width, height], ...(align === 'center' ? { align } : {}), valign: 'center' });
       return;
     } catch {
       // Falls through to the name: a card does not fail for its logo.
@@ -114,13 +128,15 @@ function outlined(w: PdfWriter, x: number, y: number, width: number, height: num
   doc.roundedRect(x, y, width, height, CORNER).lineWidth(0.5).strokeColor(GUIDE).stroke();
 }
 
-function idFront(w: PdfWriter, p: CardPerson, photo: Buffer | null, x: number, y: number) {
+function idFront(w: PdfWriter, ctx: PdfContext, p: CardPerson, photo: Buffer | null, x: number, y: number) {
   const { doc } = w;
   const inner = ID_W - 20;
   outlined(w, x, y, ID_W, ID_H, () => {
-    drawLogo(w, x + 10, y + 8, inner, 32, 'center');
+    drawLogo(w, x + 10, y + 6, inner, 26, 'center');
+    const company = w.t(ctx.legalName);
+    const companyEnd = put(w, company, x + 10, y + 35, { width: inner, size: fitted(w, company, BOLD, 8.5, 6.5, inner), font: BOLD, color: w.accent, align: 'center', lines: 2 });
     const [pw, ph] = [66, 82];
-    const [px, py] = [x + (ID_W - pw) / 2, y + 46];
+    const [px, py] = [x + (ID_W - pw) / 2, companyEnd + 6];
     doc.save();
     doc.rect(px, py, pw, ph).clip();
     let drawn = false;
@@ -168,7 +184,7 @@ function idBack(w: PdfWriter, ctx: PdfContext, p: CardPerson, contact: Contact, 
     if (room > 0) put(w, `If found, please return to: ${reach}`, left, at, { width: inner, size: 6.5, color: MUTED, lines: room });
     if (ctx.images.signature) {
       try {
-        doc.image(ctx.images.signature, left, signTop, { fit: [70, 26] });
+        doc.image(shared(w, ctx.images.signature), left, signTop, { fit: [70, 26] });
       } catch {
         // The line below still says who signs.
       }
@@ -198,45 +214,70 @@ function businessCard(w: PdfWriter, ctx: PdfContext, p: CardPerson, x: number, y
   });
 }
 
-/** Rows of cards centred on the page, so that a cut along the outlines leaves the right size. A new page once a page is full. */
+/** The same for everyone: the company, on its colour. The logo sits on a white panel, since it may not read on the colour. */
+function businessBack(w: PdfWriter, ctx: PdfContext, contact: Contact, x: number, y: number) {
+  const { doc } = w;
+  const inner = BC_W - 32;
+  outlined(w, x, y, BC_W, BC_H, () => {
+    doc.rect(x, y, BC_W, BC_H).fill(w.accent);
+    const [tw, th] = [84, 46];
+    const tx = x + (BC_W - tw) / 2;
+    doc.roundedRect(tx, y + 14, tw, th, 6).fill('#ffffff');
+    drawLogo(w, tx + 6, y + 18, tw - 12, th - 8, 'center');
+    const at = put(w, ctx.legalName, x + 16, y + 70, { width: inner, size: 10, font: BOLD, color: w.onPrimary, align: 'center', lines: 2 }) + 6;
+    put(w, [contact.phone, contact.email].filter(Boolean).join('  ·  '), x + 16, at, { width: inner, size: 7.5, color: w.onPrimary, align: 'center' });
+  });
+}
+
+/** Where each card goes on a page: rows centred on it, so that a cut along the outlines leaves the right size. */
 function grid(w: PdfWriter, o: { columns: number; rows: number; cellWidth: number; cellHeight: number; gapX: number }) {
   const { doc } = w;
   const startX = (doc.page.width - (o.columns * o.cellWidth + (o.columns - 1) * o.gapX)) / 2;
   const startY = (doc.page.height - (o.rows * o.cellHeight + (o.rows - 1) * GAP)) / 2 - 6;
-  return (i: number) => {
-    const onPage = i % (o.columns * o.rows);
-    if (i > 0 && onPage === 0) doc.addPage();
-    return { x: startX + (onPage % o.columns) * (o.cellWidth + o.gapX), y: startY + Math.floor(onPage / o.columns) * (o.cellHeight + GAP) };
-  };
+  return (i: number) => ({ x: startX + (i % o.columns) * (o.cellWidth + o.gapX), y: startY + Math.floor(i / o.columns) * (o.cellHeight + GAP) });
 }
 
 async function idCardsPdf(ctx: PdfContext, people: CardPerson[], contact: Contact) {
   const w = new PdfWriter(ctx, { title: 'ID cards', landscape: true, margin: 20 });
   const at = grid(w, { columns: 2, rows: 2, cellWidth: ID_W * 2 + GAP, cellHeight: ID_H, gapX: 20 });
   for (const [i, p] of people.entries()) {
-    const { x, y } = at(i);
-    idFront(w, p, await loadPhoto(p.photo_key), x, y);
+    if (i > 0 && i % ID_PER_PAGE === 0) w.doc.addPage();
+    const { x, y } = at(i % ID_PER_PAGE);
+    idFront(w, ctx, p, await loadPhoto(p.photo_key), x, y);
     idBack(w, ctx, p, contact, x + ID_W + GAP, y);
   }
   return finish(w);
 }
 
-function businessCardsPdf(ctx: PdfContext, people: CardPerson[]) {
+/**
+ * A page of fronts, then a page of backs, to print on both sides flipping on the long edge. That flip swaps left and right, so a back takes the
+ * mirrored place of its front, and a part-filled last sheet still lines up.
+ */
+function businessCardsPdf(ctx: PdfContext, people: CardPerson[], contact: Contact) {
   const w = new PdfWriter(ctx, { title: 'Business cards', margin: 20 });
-  const at = grid(w, { columns: 2, rows: 5, cellWidth: BC_W, cellHeight: BC_H, gapX: GAP });
+  const at = grid(w, { columns: 2, rows: BC_ROWS, cellWidth: BC_W, cellHeight: BC_H, gapX: GAP });
   // One person's card fills a sheet, which is how they are printed. Several people get one each.
-  const sheet = people.length === 1 ? Array.from({ length: BUSINESS_COPIES }, () => people[0]!) : people;
-  sheet.forEach((p, i) => {
-    const { x, y } = at(i);
-    businessCard(w, ctx, p, x, y);
-  });
-  return finish(w);
+  const sheet = people.length === 1 ? Array.from({ length: BC_PER_PAGE }, () => people[0]!) : people;
+  for (let start = 0; start < sheet.length; start += BC_PER_PAGE) {
+    if (start > 0) w.doc.addPage();
+    const page = sheet.slice(start, start + BC_PER_PAGE);
+    page.forEach((p, i) => {
+      const { x, y } = at(i);
+      businessCard(w, ctx, p, x, y);
+    });
+    w.doc.addPage();
+    page.forEach((_, i) => {
+      const { x, y } = at(i % 2 === 0 ? i + 1 : i - 1);
+      businessBack(w, ctx, contact, x, y);
+    });
+  }
+  return finish(w, ['Print both sides, flipping on the long edge, then cut along the outlines.']);
 }
 
-function finish(w: PdfWriter) {
+function finish(w: PdfWriter, notes: string[] = []) {
   w.doc.x = w.margin;
-  w.doc.y = w.bottom - 14;
-  w.closingNotes();
+  w.doc.y = w.bottom - 26;
+  w.closingNotes(notes);
   w.doc.end();
   return w.doc;
 }
@@ -261,7 +302,7 @@ export async function cardRoutes(app: FastifyInstance) {
       return { list, identity: await loadPdfIdentity(db, a.tenantId) };
     });
     const ctx = await loadPdfContext(app, identity);
-    return kind === 'id' ? idCardsPdf(ctx, list, contact) : businessCardsPdf(ctx, list);
+    return kind === 'id' ? idCardsPdf(ctx, list, contact) : businessCardsPdf(ctx, list, contact);
   }
 
   const one = (a: TenantActor, id: string) => async (db: Db) => {
