@@ -85,8 +85,8 @@ Changes to L3 and L4 record field names, not values.
 
 `audit_logs` is an append-only hash chain per tenant:
 
-- A `BEFORE INSERT` trigger takes the row lock on `audit_chain_heads` and sets `chain_seq`, `prev_hash` and `row_hash`. That lock is held until commit, so audited writes of one tenant run one at a time (D37).
-- Triggers refuse `UPDATE`, `DELETE` and `TRUNCATE` for every role. The app role has no grant on them either, and cannot read the heads.
+- A deferred trigger takes the row lock on `audit_chain_heads` inside `COMMIT` and sets `chain_seq`, `prev_hash` and `row_hash`, so audited commits of one tenant run one at a time, and the lock is never held while a transaction does other work (D37).
+- Triggers refuse `UPDATE`, `DELETE` and `TRUNCATE` for every role, except the chain trigger filling in a row that has no chain columns yet. The app role has no grant on them either, and cannot read the heads.
 - `audit_chain_verify(tenant)` walks the chain and names the first row that does not fit.
 - `GET /tenant/audit/chain` and `GET /tenant/audit/chain/verify` are for the Owner and Super-admin only.
 
