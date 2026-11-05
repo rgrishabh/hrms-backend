@@ -10,7 +10,9 @@ import { loadSession, SESSION_COOKIE } from './core/auth/session.js';
 import { sha256, safeEqualHex } from './core/crypto/index.js';
 import { AppError } from './core/http/errors.js';
 import { problemErrorHandler } from './core/http/problem.js';
-import { OPENAPI_INFO, openApiTransform } from './core/http/openapi.js';
+import { OPENAPI_INFO, openApiTransform, registerResponseCheck } from './core/http/openapi.js';
+import { registerMetrics } from './core/http/metrics.js';
+import { registerTelemetry } from './core/telemetry.js';
 import { isExportRoute, perUserLimit } from './core/http/limits.js';
 import type { AppDeps } from './core/http/context.js';
 import { initRuntime } from './core/runtime.js';
@@ -50,15 +52,18 @@ import { BRAND_MOUNT, registerWeb, registerBrandAssets, spaCsp, API_CSP, ASSET_C
 import { allowedCorsOrigin } from './config/env.js';
 import { migrationStatus } from './db/migrate.js';
 
+const READINESS_TIMEOUT_MS = 2000;
+const PASSIVE_PATHS = new Set(['/api/v1/notifications/unread-count']);
 const UNSAFE = new Set(['POST', 'PUT', 'PATCH', 'DELETE']);
 
 export async function buildApp(deps: AppDeps): Promise<FastifyInstance> {
   const { env } = deps;
   const app = Fastify({
-    logger: env.NODE_ENV === 'test' ? false : {
+    logger: env.NODE_ENV === 'test' && !deps.logStream ? false : {
       level: env.LOG_LEVEL,
       // Never log credentials or session material.
       redact: LOG_REDACT_PATHS, serializers: logSerializers,
+      ...(deps.logStream ? { stream: deps.logStream } : {}),
     },
     // Fastify treats a bare number as "trust nothing", so a hop count is expressed as a function: believe that many hops.
     trustProxy: typeof env.TRUST_PROXY === 'number' ? ((hops: number) => (_addr: string, hop: number) => hop < hops)(env.TRUST_PROXY) : env.TRUST_PROXY,
@@ -113,40 +118,54 @@ export async function buildApp(deps: AppDeps): Promise<FastifyInstance> {
   await app.register(helmet, { contentSecurityPolicy: false, crossOriginResourcePolicy: { policy: 'same-origin' } });
   app.addHook('onSend', async (req, reply) => {
     const u = req.url;
-    reply.header('content-security-policy', u.startsWith('/api/') || u.startsWith('/health') || u === '/ready' ? API_CSP : u.startsWith('/brand/') ? ASSET_CSP : SPA_CSP);
+    // The reference a problem's `instance` and every log line carry.
+    reply.header('x-request-id', req.id);
+    reply.header('content-security-policy', u.startsWith('/api/') || u.startsWith('/health') || u === '/ready' || u === '/metrics' ? API_CSP : u.startsWith('/brand/') ? ASSET_CSP : SPA_CSP);
   });
   await app.register(rateLimit, { global: true, max: env.RATE_LIMIT_PER_MINUTE, timeWindow: '1 minute' });
   await app.register(multipart, { limits: { fileSize: env.STORAGE_MAX_FILE_MB * 1024 * 1024, files: 1, fields: 10, parts: 12, fieldSize: 10_000 } });
 
   // Liveness/readiness are host-agnostic and unauthenticated; they reveal no internals.
   // `/health` and `/ready` are aliases for orchestrators and the deployment smoke tests.
+  const noLimit = { schema: {}, config: { rateLimit: false as const } };
+  registerMetrics(app, env.METRICS_TOKEN, deps.pool);
+  registerTelemetry(app, env.OTEL_EXPORTER_OTLP_ENDPOINT, env.BRAND_PRODUCT_NAME, app.log);
+  if (deps.verifyResponses) registerResponseCheck(app);
   const live = async () => ({ status: 'ok' });
   let warnedNewerSchema = false;
-  app.get('/health/live', live);
-  app.get('/health', live);
+  app.get('/health/live', noLimit, live);
+  app.get('/health', noLimit, live);
   const ready = async (_req: unknown, reply: import('fastify').FastifyReply) => {
+    // A probe must answer before the orchestrator's own timeout, also when every connection is busy.
+    let timer: NodeJS.Timeout | undefined;
+    const late = new Promise<never>((_r, reject) => { timer = setTimeout(() => { reject(new Error('readiness timed out')); }, READINESS_TIMEOUT_MS); });
     try {
-      const m = await migrationStatus(deps.pool);
+      const check = async () => {
+        const status = await migrationStatus(deps.pool);
+        const org = await deps.pool.query<{ ok: boolean }>('SELECT EXISTS (SELECT 1 FROM tenants) AS ok');
+        return { m: status, hasOrg: org.rows[0]!.ok };
+      };
+      const { m, hasOrg } = await Promise.race([check(), late]);
       // Pending migrations: this build needs a newer schema -> not ready. Unknown (newer) migrations are
       // expected after a rollback to the previous release; migrations are expand/contract, so serve.
       if (m.pending.length) return reply.code(503).send({ status: 'unavailable' });
       if (m.unknown.length && !warnedNewerSchema) { warnedNewerSchema = true; app.log.warn({ unknown: m.unknown }, 'database schema is newer than this build (rollback?)'); }
-      const org = await deps.pool.query<{ ok: boolean }>('SELECT EXISTS (SELECT 1 FROM tenants) AS ok');
-      if (!org.rows[0]!.ok) return reply.code(503).send({ status: 'unavailable' });
+      if (!hasOrg) return reply.code(503).send({ status: 'unavailable' });
       return { status: 'ready' };
-    } catch { return reply.code(503).send({ status: 'unavailable' }); }
+    } catch { return reply.code(503).send({ status: 'unavailable' }); } finally { clearTimeout(timer); }
   };
-  app.get('/health/ready', ready);
-  app.get('/ready', ready);
+  app.get('/health/ready', noLimit, ready);
+  app.get('/ready', noLimit, ready);
 
   app.addHook('onRequest', async (req) => {
-    if (req.url.startsWith('/health') || req.url === '/ready') return;
+    if (req.url.startsWith('/health') || req.url === '/ready' || req.url === '/metrics') { req.ctx = { requestId: req.id, ip: req.ip, host: { kind: 'unknown', host: '' }, user: null }; return; }
     if (!req.url.startsWith('/api/')) { req.ctx = { requestId: req.id, ip: req.ip, host: { kind: 'unknown', host: '' }, user: null }; return; }
     const host = await resolveHost(deps.pool, req.headers.host);
     req.ctx = { requestId: req.id, ip: req.ip, host, user: null };
     const token = req.cookies[SESSION_COOKIE];
     if (token && host.kind === 'tenant') {
-      req.ctx.user = await loadSession(deps.pool, token, host.tenant.id, mfaPolicy);
+      // A browser left open polls for notifications. That is not someone using it, and must not keep the session from idling out.
+      req.ctx.user = await loadSession(deps.pool, token, host.tenant.id, mfaPolicy, { passive: req.method === 'GET' && PASSIVE_PATHS.has(req.url.split('?')[0]!) });
       if (SESSIONLESS_PATHS.has(req.url.split('?')[0]!)) return;
       // CSRF: any state-changing request authenticated by cookie must carry the session-bound token.
       if (req.ctx.user && UNSAFE.has(req.method)) {

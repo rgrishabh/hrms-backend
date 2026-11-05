@@ -34,6 +34,12 @@ const schema = z.object({
   DATABASE_POOL_MAX: z.coerce.number().int().min(1).max(200).default(20),
 
   // Optional cache for config and lookups. Without it the app reads the database: slower, still correct.
+  /** Optional read replica: host or host:port, same database and role as DATABASE_URL. Reports and heavy reads go there. */
+  DB_READ_HOST: z.string().regex(/^[A-Za-z0-9.-]+(:\d{1,5})?$/, 'must be a host or host:port').optional(),
+  /** Bearer token for GET /metrics. Unset: the route does not exist. */
+  METRICS_TOKEN: z.string().min(16, 'must be at least 16 characters').optional(),
+  /** OTLP/HTTP endpoint for traces, such as http://collector:4318. Unset: no tracing. */
+  OTEL_EXPORTER_OTLP_ENDPOINT: z.url().optional(),
   REDIS_URL: z.string().regex(/^rediss?:\/\//, 'must be a redis:// or rediss:// URL').optional(),
 
   // ---- security

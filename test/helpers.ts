@@ -38,7 +38,7 @@ export function flags(spec: string): Record<string, string> {
   return Object.fromEntries(FEATURES.filter((d) => d.envName).map((d) => [d.envName!, String(on(d))]));
 }
 
-export async function makeApp(overrides: Record<string, string> = {}, opts: { mailerOverride?: boolean; storeOverride?: boolean; pushOverride?: boolean; brandDirOverride?: string } = {}): Promise<FastifyInstance> {
+export async function makeApp(overrides: Record<string, string> = {}, opts: { mailerOverride?: boolean; storeOverride?: boolean; pushOverride?: boolean; brandDirOverride?: string; logStream?: { write(line: string): unknown } } = {}): Promise<FastifyInstance> {
   const env = loadEnv({
     NODE_ENV: 'test', DATABASE_URL: TEST_APP_URL, COOKIE_SECURE: 'false', ...TEST_BRAND,
     ...flags('default,attendance.mobile,attendance.biometric'),
@@ -46,7 +46,7 @@ export async function makeApp(overrides: Record<string, string> = {}, opts: { ma
     ...overrides,
   });
   const pool = createPool(env.DATABASE_URL, 5);
-  const app = await buildApp({ env, pool, cipher: new FieldCipher(env.DATA_ENCRYPTION_KEY!), mailerOverride: opts.mailerOverride, storeOverride: opts.storeOverride, pushOverride: opts.pushOverride, brandDirOverride: opts.brandDirOverride });
+  const app = await buildApp({ env, pool, cipher: new FieldCipher(env.DATA_ENCRYPTION_KEY!), mailerOverride: opts.mailerOverride, storeOverride: opts.storeOverride, pushOverride: opts.pushOverride, brandDirOverride: opts.brandDirOverride, logStream: opts.logStream, verifyResponses: true });
   app.addHook('onClose', async () => { await pool.end(); });
   return app;
 }
