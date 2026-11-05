@@ -11,6 +11,7 @@ import { l3RowFilter, policyViewer } from '../../core/policy/salary.js';
 import { getStore, newKey } from '../../core/storage/index.js';
 import { prepareUpload } from '../../core/storage/upload.js';
 import { safeFileName } from '../../core/storage/sniff.js';
+import { getSettingValue } from '../../core/settings/service.js';
 import type { Db } from '../../db/tx.js';
 
 const MM = 72 / 25.4;
@@ -52,6 +53,34 @@ interface CardPerson {
   photo_key: string | null;
 }
 type Contact = { email: string; phone: string | undefined };
+/** What the organization has chosen for the back of its ID cards: Settings, General. */
+interface IdBack {
+  heading: string;
+  showBranch: boolean;
+  showJoiningDate: boolean;
+  terms: string;
+  returnTo: string;
+}
+
+async function loadIdBack(db: Db, tenantId: string): Promise<IdBack> {
+  return {
+    heading: await getSettingValue<string>(db, tenantId, 'cards.id_back_heading'),
+    showBranch: await getSettingValue<boolean>(db, tenantId, 'cards.id_back_show_branch'),
+    showJoiningDate: await getSettingValue<boolean>(db, tenantId, 'cards.id_back_show_joining_date'),
+    terms: await getSettingValue<string>(db, tenantId, 'cards.id_back_terms'),
+    returnTo: await getSettingValue<string>(db, tenantId, 'cards.id_back_return'),
+  };
+}
+
+/** Puts the company's details into its wording. A detail it does not have leaves no stray separator behind. Anything else in braces prints as typed. */
+export function fillCardText(template: string, values: { company: string; address: string | null; phone: string | undefined; email: string }) {
+  const filled = template.replace(/\{(company|address|phone|email)\}/g, (_, k: keyof typeof values) => values[k] ?? '');
+  return filled
+    .replace(/(\s*·\s*)+/g, ' · ')
+    .replace(/:\s*·\s*/g, ': ')
+    .replace(/^\s*·\s*|\s*·\s*$/g, '')
+    .trim();
+}
 
 async function peopleForCards(db: Db, a: TenantActor, where: string, params: unknown[]) {
   const v = await policyViewer(db, a.tenantId, a.user);
@@ -164,24 +193,28 @@ function idFront(w: PdfWriter, ctx: PdfContext, p: CardPerson, photo: Buffer | n
   });
 }
 
-function idBack(w: PdfWriter, ctx: PdfContext, p: CardPerson, contact: Contact, x: number, y: number) {
+function idBack(w: PdfWriter, ctx: PdfContext, p: CardPerson, contact: Contact, back: IdBack, x: number, y: number) {
   const { doc } = w;
   const inner = ID_W - 20;
   const left = x + 10;
   outlined(w, x, y, ID_W, ID_H, () => {
     doc.rect(x, y, ID_W, 8).fill(w.accent);
-    let at = put(w, ctx.legalName, left, y + 16, { width: inner, size: 8.5, font: BOLD, align: 'center', lines: 2 }) + 6;
+    const fill = (template: string) => fillCardText(template, { company: ctx.legalName, address: ctx.company.registeredAddress, phone: contact.phone, email: contact.email });
+    let at = y + 16;
+    const heading = fill(back.heading);
+    if (heading) at = put(w, heading, left, at, { width: inner, size: 8.5, font: BOLD, align: 'center', lines: 2 }) + 6;
     const row = (label: string, value: string) => {
       put(w, label, left, at, { width: inner, size: 6, color: MUTED });
       at = put(w, value, left, at + 7, { width: inner, size: 7.5 }) + 3;
     };
-    row('Branch', p.branch);
-    row('Date of joining', w.date(p.date_of_joining));
+    if (back.showBranch) row('Branch', p.branch);
+    if (back.showJoiningDate) row('Date of joining', w.date(p.date_of_joining));
     const signTop = y + ID_H - 44;
-    at = put(w, `This card is the property of ${ctx.legalName}. Show it on request, and return it when your employment ends.`, left, at + 2, { width: inner, size: 6.5, color: MUTED, lines: 4 }) + 3;
-    const reach = [ctx.company.registeredAddress, contact.phone, contact.email].filter(Boolean).join(' · ');
-    const room = Math.floor((signTop - at) / (6.5 * 1.25));
-    if (room > 0) put(w, `If found, please return to: ${reach}`, left, at, { width: inner, size: 6.5, color: MUTED, lines: room });
+    at += 2;
+    for (const text of [fill(back.terms), fill(back.returnTo)]) {
+      const room = Math.floor((signTop - at) / (6.5 * 1.25));
+      if (text && room > 0) at = put(w, text, left, at, { width: inner, size: 6.5, color: MUTED, lines: room }) + 3;
+    }
     if (ctx.images.signature) {
       try {
         doc.image(shared(w, ctx.images.signature), left, signTop, { fit: [70, 26] });
@@ -237,14 +270,14 @@ function grid(w: PdfWriter, o: { columns: number; rows: number; cellWidth: numbe
   return (i: number) => ({ x: startX + (i % o.columns) * (o.cellWidth + o.gapX), y: startY + Math.floor(i / o.columns) * (o.cellHeight + GAP) });
 }
 
-async function idCardsPdf(ctx: PdfContext, people: CardPerson[], contact: Contact) {
+async function idCardsPdf(ctx: PdfContext, people: CardPerson[], contact: Contact, back: IdBack) {
   const w = new PdfWriter(ctx, { title: 'ID cards', landscape: true, margin: 20 });
   const at = grid(w, { columns: 2, rows: 2, cellWidth: ID_W * 2 + GAP, cellHeight: ID_H, gapX: 20 });
   for (const [i, p] of people.entries()) {
     if (i > 0 && i % ID_PER_PAGE === 0) w.doc.addPage();
     const { x, y } = at(i % ID_PER_PAGE);
     idFront(w, ctx, p, await loadPhoto(p.photo_key), x, y);
-    idBack(w, ctx, p, contact, x + ID_W + GAP, y);
+    idBack(w, ctx, p, contact, back, x + ID_W + GAP, y);
   }
   return finish(w);
 }
@@ -289,7 +322,7 @@ export async function cardRoutes(app: FastifyInstance) {
 
   /** Reads, records and draws. A card says who someone is, so it is not printed for someone who has left. */
   async function send(a: TenantActor, kind: 'id' | 'business', people: (db: Db) => Promise<CardPerson[]>, target: { id?: string; filters?: Record<string, string | undefined> }) {
-    const { list, identity } = await a.tx(async (db) => {
+    const { list, identity, back } = await a.tx(async (db) => {
       const list = await people(db);
       await audit(db, {
         ...a.auditBase,
@@ -299,10 +332,10 @@ export async function cardRoutes(app: FastifyInstance) {
         ...(target.id ? { targetId: target.id } : {}),
         metadata: { kind, count: list.length, phonesPrinted: kind === 'business' ? list.filter((p) => p.phone).length : 0, ...(target.filters ?? {}) },
       });
-      return { list, identity: await loadPdfIdentity(db, a.tenantId) };
+      return { list, identity: await loadPdfIdentity(db, a.tenantId), back: await loadIdBack(db, a.tenantId) };
     });
     const ctx = await loadPdfContext(app, identity);
-    return kind === 'id' ? idCardsPdf(ctx, list, contact) : businessCardsPdf(ctx, list, contact);
+    return kind === 'id' ? idCardsPdf(ctx, list, contact, back) : businessCardsPdf(ctx, list, contact);
   }
 
   const one = (a: TenantActor, id: string) => async (db: Db) => {

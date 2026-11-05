@@ -16,7 +16,7 @@ export interface SettingDefinition<T = unknown> {
   group: 'general' | 'attendance' | 'security' | 'notifications' | 'retention';
   label: string;
   description: string;
-  control: 'text' | 'number' | 'boolean' | 'select' | 'weekdays' | 'timezone';
+  control: 'text' | 'textarea' | 'number' | 'boolean' | 'select' | 'weekdays' | 'timezone';
   options?: readonly { value: string; label: string }[];
   schema: z.ZodType<T>;
   default: T;
@@ -45,6 +45,61 @@ export const SETTINGS: readonly SettingDefinition[] = [
     schema: z.string().refine(isValidTimezone, 'Unknown IANA timezone'),
     default: 'Asia/Kolkata',
     scopes: ['tenant', 'branch'],
+    editPermission: 'settings.manage',
+  }),
+  def({
+    key: 'cards.id_back_heading',
+    group: 'general',
+    label: 'ID card back: heading',
+    description: 'Printed at the top of the back of every ID card. Can use {company}, {address}, {phone} and {email}. Leave empty to hide it.',
+    control: 'text',
+    schema: z.string().trim().max(120),
+    default: '{company}',
+    scopes: ['tenant'],
+    editPermission: 'settings.manage',
+  }),
+  def({
+    key: 'cards.id_back_show_branch',
+    group: 'general',
+    label: 'ID card back: show branch',
+    description: "Prints each employee's branch from their record.",
+    control: 'boolean',
+    schema: z.boolean(),
+    default: true,
+    scopes: ['tenant'],
+    editPermission: 'settings.manage',
+  }),
+  def({
+    key: 'cards.id_back_show_joining_date',
+    group: 'general',
+    label: 'ID card back: show date of joining',
+    description: "Prints each employee's date of joining from their record.",
+    control: 'boolean',
+    schema: z.boolean(),
+    default: true,
+    scopes: ['tenant'],
+    editPermission: 'settings.manage',
+  }),
+  def({
+    key: 'cards.id_back_terms',
+    group: 'general',
+    label: 'ID card back: terms',
+    description: 'Can use {company}, {address}, {phone} and {email}. Leave empty to hide it.',
+    control: 'textarea',
+    schema: z.string().trim().max(300),
+    default: 'This card is the property of {company}. Show it on request, and return it when your employment ends.',
+    scopes: ['tenant'],
+    editPermission: 'settings.manage',
+  }),
+  def({
+    key: 'cards.id_back_return',
+    group: 'general',
+    label: 'ID card back: if found',
+    description: 'Can use {company}, {address}, {phone} and {email}. Leave empty to hide it.',
+    control: 'textarea',
+    schema: z.string().trim().max(300),
+    default: 'If found, please return to: {address} · {phone} · {email}',
+    scopes: ['tenant'],
     editPermission: 'settings.manage',
   }),
   def({

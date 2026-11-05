@@ -6,6 +6,7 @@ import type { FastifyInstance } from 'fastify';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { LocalStore, setStore } from '../src/core/storage/index.js';
 import { TEST_BRAND } from './env.js';
+import { fillCardText } from '../src/modules/employees/cards.js';
 import { Client, createTenant, makeApp, multipart, ownerQuery, type TenantFixture } from './helpers.js';
 import { pdfPages, pdfText } from './pdf-text.js';
 
@@ -171,6 +172,46 @@ describe('a logo on many cards', () => {
       await branded.close();
       await rm(dir, { recursive: true, force: true });
     }
+  });
+});
+
+describe('the back of the ID card, set by the organization', () => {
+  const VALUES = { company: 'Acme Labs', address: 'Plot 1, Noida', phone: '+91 90000 00000', email: 'hr@acme.test' };
+  it('puts in the details, and leaves no stray separator for one that is missing', () => {
+    expect(fillCardText('Return to: {address} · {phone} · {email}', VALUES)).toBe('Return to: Plot 1, Noida · +91 90000 00000 · hr@acme.test');
+    expect(fillCardText('Return to: {address} · {phone} · {email}', { ...VALUES, address: null })).toBe('Return to: +91 90000 00000 · hr@acme.test');
+    expect(fillCardText('Return to: {address} · {phone} · {email}', { ...VALUES, phone: undefined })).toBe('Return to: Plot 1, Noida · hr@acme.test');
+    expect(fillCardText('{company} {unknown}', VALUES)).toBe('Acme Labs {unknown}');
+    expect(fillCardText('', VALUES)).toBe('');
+  });
+
+  it('prints the saved wording on every card, hides what is empty or off, and goes back to the default', async () => {
+    const admin = await Client.login(app, T.host, T.users.admin!.email);
+    const set = async (key: string, value: unknown) => {
+      const r = await admin.put(`/api/v1/tenant/settings/${key}`, { value });
+      expect(r.statusCode, r.body).toBe(200);
+    };
+    const card = async () => pdfText((await hr.get(`/api/v1/employees/${emp('employee')}/id-card.pdf`)).rawPayload);
+    await set('cards.id_back_heading', 'Staff of {company}');
+    await set('cards.id_back_terms', 'Wear this badge inside the laboratory at all times.');
+    await set('cards.id_back_return', '');
+    await set('cards.id_back_show_branch', false);
+    await set('cards.id_back_show_joining_date', false);
+    const text = await card();
+    expect(text).toContain('Staff of ');
+    expect(text).toContain('Wear this badge');
+    for (const gone of ['If found', 'This card is the property of', 'Branch', 'Date of joining']) expect(text).not.toContain(gone);
+    for (const key of ['heading', 'terms', 'return', 'show_branch', 'show_joining_date']) await admin.req('DELETE', `/api/v1/tenant/settings/cards.id_back_${key}`);
+    const back = await card();
+    expect(back).toContain('This card is the property of');
+    expect(back).toContain('Date of joining');
+  });
+
+  it('only someone who manages settings may change it, and only for the whole organization', async () => {
+    expect((await hr.put('/api/v1/tenant/settings/cards.id_back_terms', { value: 'x' })).statusCode).toBe(403);
+    const admin = await Client.login(app, T.host, T.users.admin!.email);
+    const tooLong = await admin.put('/api/v1/tenant/settings/cards.id_back_terms', { value: 'x'.repeat(301) });
+    expect(tooLong.statusCode).toBe(400);
   });
 });
 
