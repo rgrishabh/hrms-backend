@@ -8,7 +8,8 @@ import { AppError, badRequest, conflict, forbidden, notFound } from '../../core/
 import { IsoDate, PageQuery, offsetOf, paged, Uuid } from '../../core/http/pagination.js';
 import { createApprovalRequest, registerApprovalHandler, cancelRequest } from '../../core/workflow/engine.js';
 import { getStore, newKey } from '../../core/storage/index.js';
-import { detectFile, safeFileName } from '../../core/storage/sniff.js';
+import { safeFileName } from '../../core/storage/sniff.js';
+import { prepareUpload, type PreparedUpload } from '../../core/storage/upload.js';
 import { notifyUsers } from '../../core/notify/service.js';
 import { getSettingValue } from '../../core/settings/service.js';
 import { insertEmployee, EmployeeInput, EMPLOYMENT_TYPES } from '../employees/service.js';
@@ -311,9 +312,8 @@ export async function recruitmentRoutes(app: FastifyInstance) {
     let detected: { contentType: string; ext: string } | null = null;
     if (file) {
       if (file.buf.length > maxBytes) throw new AppError(413, 'file_too_large', `Files are limited to ${app.deps.env.STORAGE_MAX_FILE_MB} MB`);
-      const d = detectFile(file.buf, file.name);
-      if ('error' in d) throw new AppError(415, 'unsupported_file', d.error);
-      detected = d;
+      detected = await prepareUpload(req, a, file.buf, file.name);
+      file.buf = (detected as PreparedUpload).bytes;
     }
     return a.tx(async (db) => {
       await requireFeature(db, a.tenantId, FEATURE);

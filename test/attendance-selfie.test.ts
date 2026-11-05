@@ -4,9 +4,10 @@ import os from 'node:os';
 import path from 'node:path';
 import type { FastifyInstance } from 'fastify';
 import { makeApp, createTenant, Client, ownerQuery, multipart, flags, type TenantFixture } from './helpers.js';
+import { TINY_PNG } from './images.js';
 import { getStore } from '../src/core/storage/index.js';
 
-const PNG = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 1, 2, 3, 4]);
+const PNG = TINY_PNG;
 const upload = (c: Client, content: Buffer, name = 'me.png') => {
   const m = multipart({}, { name, content });
   return c.req('POST', '/api/v1/attendance/selfies', m.body, m.headers);

@@ -7,6 +7,7 @@ import { createPushSender, getPushSender, setPushSender } from './notify/push.js
 import { setEmailBrand } from './notify/service.js';
 import { createMailer, getMailer, setMailer } from './notify/mailer.js';
 import { createStore, getStore, setStore } from './storage/index.js';
+import { createScanner, setScanner } from './storage/clamav.js';
 import { registerAllApprovalHandlers } from './workflow/handlers.js';
 import { setDataCipher, type FieldCipher } from './crypto/index.js';
 import { createRedisCache, getCache, setCache } from './cache/index.js';
@@ -49,6 +50,8 @@ export function initRuntime(env: Env, log: RuntimeLog, overrides: RuntimeOverrid
   setEmailTransportConfigured(!!getMailer());
   if (!overrides.storeOverride) setStore(createStore(env));
   setStorageConfigured(!!getStore());
+  setScanner(createScanner(env), env.NODE_ENV === 'production');
+  if (!env.CLAMAV_HOST && env.NODE_ENV !== 'production') log.warn({}, 'CLAMAV_HOST is not set: uploads are not scanned for malware');
   if (!overrides.pushOverride) setPushSender(createPushSender(env));
   setPushConfigured(!!getPushSender());
   registerAllApprovalHandlers();

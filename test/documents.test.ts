@@ -4,13 +4,14 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import type { FastifyInstance } from 'fastify';
 import { makeApp, createTenant, Client, ownerQuery, multipart, type TenantFixture } from './helpers.js';
+import { TINY_PNG } from './images.js';
 import { LocalStore, setStore, assertKey } from '../src/core/storage/index.js';
 import { detectFile, safeFileName } from '../src/core/storage/sniff.js';
 import { tick } from '../src/core/jobs/scheduler.js';
 import { addDays, localDate } from '../src/modules/attendance/time.js';
 
 const PDF = Buffer.from('%PDF-1.7\n1 0 obj << /Type /Catalog >> endobj\ntrailer << /Root 1 0 R >>\n%%EOF\n');
-const PNG = Buffer.concat([Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]), Buffer.alloc(32, 1)]);
+const PNG = TINY_PNG;
 const root = mkdtempSync(path.join(tmpdir(), 'hrms-docs-'));
 const today = localDate(new Date(), 'Asia/Kolkata');
 

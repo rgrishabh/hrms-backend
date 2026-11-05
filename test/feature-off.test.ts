@@ -6,6 +6,7 @@ import os from 'node:os';
 import path from 'node:path';
 import type { FastifyInstance } from 'fastify';
 import { makeApp, createTenant, Client, ownerQuery, flags, inApp, multipart, type TenantFixture, seal } from './helpers.js';
+import { TINY_PNG } from './images.js';
 import { TEST_OWNER_URL } from './env.js';
 import { notifyUsers } from '../src/core/notify/service.js';
 import { generateDemo } from '../src/db/demo.js';
@@ -223,7 +224,7 @@ describe('retention follows the date, not the flag', () => {
     const on = await makeApp({ ...flags('default,attendance.selfie'), STORAGE_DRIVER: 'local', STORAGE_PATH: root });
     const T = await createTenant();
     const emp = await Client.login(on, T.host, T.users.employee!.email);
-    const m = multipart({}, { name: 'me.png', content: Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 9]) });
+    const m = multipart({}, { name: 'me.png', content: TINY_PNG });
     const id = (await emp.req('POST', '/api/v1/attendance/selfies', m.body, m.headers)).json().id as string;
     await on.close();
     await ownerQuery(`UPDATE attendance_selfies SET retain_until=now() - interval '1 minute' WHERE id=$1`, [id]);

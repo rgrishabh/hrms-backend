@@ -7,7 +7,7 @@ import { FEATURE_BY_ENV, FEATURE_MAP } from '../src/core/features/registry.js';
 
 const KEY = Buffer.alloc(32, 9).toString('base64');
 const base = { DATABASE_URL: 'postgres://hrms_app:pw@db:5432/hrms', DATA_ENCRYPTION_KEY: KEY, ...TEST_BRAND };
-const prod = { ...base, NODE_ENV: 'production', BRAND_DOMAIN: 'hrms.customer-a.in', DATABASE_SSL: 'disable' };
+const prod = { ...base, NODE_ENV: 'production', BRAND_DOMAIN: 'hrms.customer-a.in', DATABASE_SSL: 'disable', CLAMAV_HOST: 'clamav' };
 
 describe('deployment configuration', () => {
   it('requires everything the contract marks as required in Layer 2, naming each', () => {
@@ -95,7 +95,7 @@ describe('deployment configuration', () => {
 
   it('public config has the contract\'s shape and never includes secrets, connection details or descriptions', () => {
     const cfg = buildPublicConfig(loadEnv({ ...base, BRAND_NAME: 'Customer A', BRAND_PRODUCT_NAME: 'CustomerHR', FEATURE_LOANS: 'false' }));
-    expect(Object.keys(cfg).sort()).toEqual(['brand', 'features', 'mfa', 'mode', 'product']);
+    expect(Object.keys(cfg).sort()).toEqual(['auth', 'brand', 'features', 'mfa', 'mode', 'product']);
     expect(cfg.product).toEqual({ name: 'CustomerHR' });
     expect(cfg.brand).toMatchObject({ name: 'Customer A', legalName: 'Customer A', logoUrl: null, logoDarkUrl: null, fontFamily: null, locale: 'en-IN', domain: 'localhost' });
     expect(cfg.mode).toBe('multi');

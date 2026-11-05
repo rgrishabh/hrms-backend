@@ -9,7 +9,8 @@ import { AppError, badRequest, conflict, forbidden, notFound } from '../../core/
 import { IsoDate, PageQuery, offsetOf, paged, Uuid } from '../../core/http/pagination.js';
 import { buildSteps, createApprovalRequest, registerApprovalHandler, cancelRequest } from '../../core/workflow/engine.js';
 import { getStore, newKey } from '../../core/storage/index.js';
-import { detectFile, safeFileName } from '../../core/storage/sniff.js';
+import { safeFileName } from '../../core/storage/sniff.js';
+import { prepareUpload } from '../../core/storage/upload.js';
 import { getSettingValue } from '../../core/settings/service.js';
 import { notifyUsers } from '../../core/notify/service.js';
 import { teamEmployeeIds, employeeTimezone } from '../attendance/service.js';
@@ -197,8 +198,8 @@ export async function expenseRoutes(app: FastifyInstance) {
       merchant: z.string().trim().max(150).optional(), invoiceNumber: z.string().trim().max(50).optional(),
       gstin: z.string().trim().toUpperCase().regex(/^[0-9]{2}[A-Z0-9]{13}$/, 'GSTIN must be 15 characters').optional() }).parse(
       Object.fromEntries(Object.entries(fields).filter(([, v]) => v !== '')));
-    const detected = file ? detectFile(file.buf, file.name) : null;
-    if (detected && 'error' in detected) throw new AppError(415, 'unsupported_file', detected.error);
+    const detected = file ? await prepareUpload(req, a, file.buf, file.name) : null;
+    if (file && detected) file.buf = detected.bytes;
     return a.tx(async (db) => {
       await requireFeature(db, a.tenantId, 'expenses');
       const c = await loadClaim(db, a, id, true);
@@ -244,7 +245,7 @@ export async function expenseRoutes(app: FastifyInstance) {
         WHERE i.tenant_id=$1 AND c.employee_id=$2 AND i.expense_date=$3 AND i.amount=$4 AND i.category_id=$5 AND c.status NOT IN ('cancelled','rejected') LIMIT 1`,
         [a.tenantId, c.employee_id, b.expenseDate, amount.toFixed(2), b.categoryId]);
       let key: string | null = null;
-      if (file && detected && !('error' in detected)) {
+      if (file && detected) {
         const store = getStore();
         if (!store) throw new AppError(503, 'storage_unavailable', 'Receipt storage is not configured');
         key = newKey(a.tenantId, c.employee_id, 'expenses');
@@ -254,7 +255,7 @@ export async function expenseRoutes(app: FastifyInstance) {
           receipt_key, receipt_name, receipt_type, receipt_sha256, duplicate_of, quantity, rate, rate_id, tier, vehicle)
           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19) RETURNING id`,
         [a.tenantId, id, b.categoryId, b.expenseDate, amount.toFixed(2), b.description, b.merchant ?? null, b.invoiceNumber ?? null, b.gstin ?? null,
-         key, file && detected && !('error' in detected) ? safeFileName(file.name, detected.ext) : null, detected && !('error' in detected) ? detected.contentType : null,
+         key, file && detected ? safeFileName(file.name, detected.ext) : null, detected ? detected.contentType : null,
          file ? createHash('sha256').update(file.buf).digest('hex') : null, similar.rows[0]?.id ?? null,
          priced ? b.quantity : null, priced?.rate.rate ?? null, priced?.rate.id ?? null, priced && cat.calc === 'per_diem' ? b.tier : null, priced && cat.calc === 'mileage' ? b.vehicle : null]);
       await recomputeTotal(db, a.tenantId, id);

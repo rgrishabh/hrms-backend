@@ -8,6 +8,7 @@ import { AppError, badRequest, conflict, forbidden, notFound } from '../../core/
 import { IsoDate, PageQuery, offsetOf, paged, Uuid, QueryBool } from '../../core/http/pagination.js';
 import { getStore, newKey } from '../../core/storage/index.js';
 import { detectFile, safeFileName } from '../../core/storage/sniff.js';
+import { prepareUpload } from '../../core/storage/upload.js';
 import { notifyUsers } from '../../core/notify/service.js';
 import { orgToday } from '../competency/service.js';
 import type { Db } from '../../db/tx.js';
@@ -164,7 +165,7 @@ export async function policyRoutes(app: FastifyInstance) {
       const d = detectFile(file.buf, file.name);
       if ('error' in d) throw new AppError(415, 'unsupported_file', d.error);
       if (d.contentType !== 'application/pdf') throw new AppError(415, 'unsupported_file', 'Policy files must be PDF');
-      detected = d;
+      detected = await prepareUpload(req, a, file.buf, file.name);
     }
     return a.tx(async (db) => {
       await requireFeature(db, a.tenantId, FEATURE);

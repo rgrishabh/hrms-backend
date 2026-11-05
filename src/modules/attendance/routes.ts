@@ -16,6 +16,7 @@ import { daysBetween, localDate, addDays, zonedToInstant, todaysPunches } from '
 import { evaluateFeatures, isModuleEnabled } from '../../core/features/state.js';
 import { getStore, newKey } from '../../core/storage/index.js';
 import { detectFile } from '../../core/storage/sniff.js';
+import { prepareUpload } from '../../core/storage/upload.js';
 import { rosterRoutes, endRosters } from './roster-routes.js';
 
 const TimeOfDay = z.string().regex(/^([01]\d|2[0-3]):[0-5]\d$/, 'Use HH:MM (24-hour)');
@@ -132,14 +133,16 @@ export async function attendanceRoutes(app: FastifyInstance) {
     if (!req.isMultipart()) throw badRequest('Upload as multipart/form-data');
     const part = await req.file();
     if (!part) throw badRequest('Choose a photo');
-    const buf = await part.toBuffer().catch((e: { code?: string }) => {
+    const received = await part.toBuffer().catch((e: { code?: string }) => {
       if (e.code === 'FST_REQ_FILE_TOO_LARGE') throw new AppError(413, 'file_too_large', 'That photo is too large');
       throw e;
     });
-    if (!buf.length) throw badRequest('Choose a photo');
-    if (buf.length > MAX_SELFIE_BYTES) throw new AppError(413, 'file_too_large', 'That photo is too large');
-    const detected = detectFile(buf, part.filename || 'selfie');
-    if ('error' in detected || !detected.contentType.startsWith('image/')) throw new AppError(415, 'unsupported_file', 'A selfie must be a PNG, JPEG or WebP image');
+    if (!received.length) throw badRequest('Choose a photo');
+    if (received.length > MAX_SELFIE_BYTES) throw new AppError(413, 'file_too_large', 'That photo is too large');
+    const looksLike = detectFile(received, part.filename || 'selfie');
+    if ('error' in looksLike || !looksLike.contentType.startsWith('image/')) throw new AppError(415, 'unsupported_file', 'A selfie must be a PNG, JPEG or WebP image');
+    const detected = await prepareUpload(req, a, received, part.filename || 'selfie');
+    const buf = detected.bytes;
     const key = newKey(a.tenantId, employeeId, 'selfies');
     await getStore()!.put(key, buf, detected.contentType);
     return a.tx(async (db) => {

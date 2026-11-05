@@ -88,6 +88,10 @@ const schema = z.object({
   /** For MinIO or another S3-compatible store. */
   S3_ENDPOINT: z.url().optional(),
 
+  // ---- malware scanning of uploads. Production with documents on refuses to start without it (see loadEnv).
+  CLAMAV_HOST: z.string().optional(),
+  CLAMAV_PORT: z.coerce.number().int().min(1).max(65535).default(3310),
+
   // ---- security and modes. Dev leaves MFA off, production defaults to on (see loadEnv).
   MFA_AVAILABLE: z.enum(['true', 'false']).optional(),
   MFA_ENFORCED: bool('false'),
@@ -178,6 +182,7 @@ export function loadEnv(source: NodeJS.ProcessEnv = process.env): Env {
   if (!!env.VAPID_PUBLIC_KEY !== !!env.VAPID_PRIVATE_KEY) problems.push('Set both VAPID_PUBLIC_KEY and VAPID_PRIVATE_KEY, or neither');
   if (env.NODE_ENV === 'production') {
     if (!env.COOKIE_SECURE) problems.push('COOKIE_SECURE must be true in production (serve over HTTPS)');
+    if (env.enabledFeatures.has('core.documents') && !env.CLAMAV_HOST) problems.push('CLAMAV_HOST is required in production while FEATURE_DOCUMENTS is on: uploads must be scanned');
     if (env.SMTP_SECURE === 'none') problems.push('SMTP_SECURE=none is refused in production: use starttls or tls');
     // Must be a deliberate choice: 'disable' only for a database on a private network (Docker Compose).
     if (!env.DATABASE_SSL) problems.push("DATABASE_SSL must be set explicitly in production ('verify-full', or 'disable' for a database on a private Docker network)");

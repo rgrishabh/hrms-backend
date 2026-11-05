@@ -7,7 +7,8 @@ import { audit } from '../../core/audit/audit.js';
 import { AppError, badRequest, forbidden, notFound } from '../../core/http/errors.js';
 import { IsoDate, PageQuery, offsetOf, paged, Uuid } from '../../core/http/pagination.js';
 import { getStore, newKey } from '../../core/storage/index.js';
-import { detectFile, safeFileName } from '../../core/storage/sniff.js';
+import { safeFileName } from '../../core/storage/sniff.js';
+import { prepareUpload } from '../../core/storage/upload.js';
 import type { Db } from '../../db/tx.js';
 
 interface Category { id: string; code: string; name: string; scope: 'employee' | 'company'; employee_visible: boolean; employee_upload: boolean; restricted: boolean; requires_expiry: boolean; status: string; payroll_related: boolean }
@@ -136,8 +137,8 @@ export async function documentRoutes(app: FastifyInstance) {
     const body = z.object({ categoryId: Uuid, title: z.string().trim().min(2).max(200), employeeId: Uuid.optional(), expiresOn: IsoDate.optional() }).parse(fields);
     if (!file || !file.buf.length) throw badRequest('Choose a file to upload');
     if (file.buf.length > maxBytes) throw new AppError(413, 'file_too_large', `Files are limited to ${env.STORAGE_MAX_FILE_MB} MB`);
-    const detected = detectFile(file.buf, file.name);
-    if ('error' in detected) throw new AppError(415, 'unsupported_file', detected.error);
+    const detected = await prepareUpload(req, a, file.buf, file.name);
+    file.buf = detected.bytes;
 
     return a.tx(async (db) => {
       await requireFeature(db, a.tenantId, 'core.documents');

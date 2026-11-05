@@ -20,7 +20,7 @@ const envOf = (o: Record<string, string> = {}) => loadEnv({ DATABASE_URL: TEST_A
 
 describe('CORS', () => {
   let app: FastifyInstance;
-  beforeAll(async () => { app = await makeApp({ BRAND_DOMAIN: 'hrms.acme.test', NODE_ENV: 'production', DATABASE_SSL: 'disable', COOKIE_SECURE: 'true' }); });
+  beforeAll(async () => { app = await makeApp({ BRAND_DOMAIN: 'hrms.acme.test', NODE_ENV: 'production', DATABASE_SSL: 'disable', CLAMAV_HOST: 'clamav', COOKIE_SECURE: 'true' }); });
   afterAll(async () => { await app.close(); });
   const preflight = (origin: string) => app.inject({ method: 'OPTIONS', url: '/api/v1/config/public', headers: { host: 'hrms.acme.test', origin, 'access-control-request-method': 'POST' } });
 
