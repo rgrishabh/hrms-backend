@@ -21,6 +21,7 @@ describe('PUBLIC_URL', () => {
   });
 
   it.each([
+    ['not a url', /PUBLIC_URL/],
     ['ftp://localhost', /PUBLIC_URL/],
     ['localhost:8088', /PUBLIC_URL/],
     ['http://localhost:8088/app', /PUBLIC_URL/],
@@ -98,6 +99,9 @@ describe('the demo credentials say where to go', () => {
   });
   it('an HTTP stack is not called https', () => {
     expect(demoLoginBanner({ BRAND_DOMAIN: 'localhost', COOKIE_SECURE: 'false', NODE_ENV: 'development' }, 'x.test', 'pw', logins)).toContain('http://localhost\n');
+  });
+  it('with no BRAND_DOMAIN in its environment, the domain the data was generated for', () => {
+    expect(demoLoginBanner({}, 'demo.example.test', 'pw', logins)).toContain('https://demo.example.test\n');
   });
   it('an HTTPS one is', () => {
     expect(demoLoginBanner({ BRAND_DOMAIN: 'hr.customer.test', NODE_ENV: 'production' }, 'x.test', 'pw', logins)).toContain('https://hr.customer.test\n');
