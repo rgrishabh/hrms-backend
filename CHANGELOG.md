@@ -21,6 +21,9 @@
 * ClamAV scanning of every upload (`CLAMAV_HOST`, `CLAMAV_PORT`), metadata stripped from images. `EXPORT_RATE_LIMIT_PER_MINUTE`. `documents.payroll` and `payroll_related` on document categories. `hrms bootstrap --make-owner`, `--issue-link`.
 * `docs/AUTH.md`.
 
+* Reversible migrations: `migrations/down/` for every migration, `hrms migrate-down --steps N | --to NAME | --all`, `npm run migrate:down`. The structure returns; dropped and scrubbed data does not, see "Rolling back migrations" in `README.md` (D49).
+* `-- hrms:no-transaction` as the first line of a migration runs it statement by statement, for `CREATE INDEX CONCURRENTLY`. Such a file must be idempotent.
+
 ### Removed
 
 * MFA for privileged roles only, and the `security.mfa_enforcement` setting: the deployment decides, with `MFA_AVAILABLE` and `MFA_ENFORCED` (D45). `mfaRequired` and `privileged` in role listings.

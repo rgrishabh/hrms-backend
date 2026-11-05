@@ -143,7 +143,8 @@ Storing Aadhaar numbers is limited by Indian law: the Aadhaar Act 2016, the Supr
 
 - `042` adds columns, `043` seals in committed batches, `044` drops the plaintext and turns on the chain.
 - An interrupted run resumes: the step is recorded only when finished, and it skips sealed rows.
-- `down` puts the values back, for batch E's rollback, once a down for `044` re-adds the columns.
+- `migrations/down/044_data_policy_contract.sql` re-adds the columns, holding placeholders, and `down` then puts the sealed values back, using the key. Rollback refuses to stop between the two, and checks the key can open them before it changes anything. See "Rolling back migrations" in `README.md`.
+- Rolling back `044` ends the audit chain. Going up again chains the rows as they are then, so it would not reveal a change made in between.
 - Not reversible: text scrubbed of amounts, audit metadata scrubbed of amounts, and old `payroll_cost` and `department_overview` snapshots, which are deleted because they were made at their owner's level.
 
 ## Performance
