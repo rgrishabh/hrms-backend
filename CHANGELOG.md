@@ -2,6 +2,35 @@
 
 ## Unreleased
 
+### Contract changes in batch F
+
+Each is a security fix or a correction to what the document said. No route or field was renamed or removed.
+
+* `GET /loans/requests`, `GET /loans/requests/:id`: `installments`, `first_period`, `skip_periods`, `disbursement_reference` and `cancel_reason` are now masked with the other L4 fields: null, and named in `maskedFields`, unless `?reveal=1` and the viewer may see them.
+* `GET /lifecycle/separations/:id`: `reason` and `fnf_note` are masked for anyone but the person, HR above them, and whoever decides while it is pending. `exit_interview` and `leaveBalances` are withheld from readers without L3 reach, auditors included.
+* `GET /employees/:id/history`: `change_metadata` is null, except for the record's own changes, for readers without L3 reach. An unknown id now answers 404, not an empty list.
+* `POST /employees/import`, `POST /employees`, `PATCH /employees/:id`: duplicate warnings no longer compare phone or date of birth with people above the viewer.
+* Newly refused, with the answer named: `POST /payroll/runs/:id/adjustments`, `DELETE .../adjustments/:adjId`, `PUT /payroll/employees/:id/statutory` on your own record (403). `POST /approvals/delegations` naming yourself as delegate for someone else (403). `POST /approvals/:id/reassign` to someone delegating to you (400). `POST /tenant/users` with `employeeId` and an address not on the record, without standing (403). `PATCH /employees/:id` changing `status` or `reportingManagerId` of someone at or above you (404) or your own (403). `POST /lifecycle/separations` on someone at or above you (404). `POST /lifecycle/separations/:id/exit-interview` with `lifecycle.read` alone (403). `POST /lifecycle/tasks/:id/done` on HR, IT or finance tasks of your own exit (404). `POST /loans/requests` for, and `disburse`, `cancel`, `repayment`, `defer` on, someone above you (404). `POST /documents`, `POST /documents/:id/archive` on someone above you (404). `PUT /tenant/users/:id/salary-level` and `PATCH /tenant/users/:id {unlock}` under the limits of the rest of user management (403). `POST`/`PUT /tenant/roles` with a permission of a module that is off (400).
+* Response schemas in `openapi.json` corrected to what the app answers, where they said less: nullable fields of `GET /loans/requests`, `GET /payroll/runs`, `GET /payroll/runs/:id` when masked, plus `masked` and `maskedFields`; a null body on `GET /employees/:id/bank-account`; null `pending`; `updated_at` optional on statutory; `amounts` and `salary` as a record of any component; a nominee's `dateOfBirth` nullable; `GET /attendance/me/today` as the union with `{ linked: false }` that someone with no employee record gets; `date` and `overdue` optional on `GET /policies/mine`. A client generated earlier typed these as always present.
+* New status on any route: `400 invalid_value` for a value the database cannot take, such as a NUL byte, which used to be 500. Uploads newly refused with 415: a PDF with active content in hex-escaped names, an Office file with macros.
+
+### Security
+
+* Abuse suite in `test/security`, over real HTTP. 28 findings fixed: see `QA_REPORT.md` batch F and `SECURITY_REPORT.md`.
+* `Cache-Control: no-store` by default on the API (D64). Per-route and global rate limits count a signed-in person, not their office's address (F-127, F-128); sign-in and exports stay per address.
+* CSV: one writer for every export, stronger against formulas and forged rows. AES-GCM refuses a shortened tag.
+
+### Added
+
+* Contract tests in `test/contract`: `openapi.json` byte for byte against the code and the running app, every GET per persona against its declared response, each management mode with flags on, default and off, and every declared permission tried both ways.
+* `load/`: k6 scripts, seed and a `close_day` measurement. `.github/workflows/security.yml`: Semgrep, CodeQL, Trivy, SBOM, ZAP. `docs/THREAT_MODEL.md`, `SECURITY_REPORT.md`.
+* `openapi.json` is committed, no longer git-ignored, and CI fails on a difference.
+
+### Removed
+
+* `continue-on-error` from the coverage job: the gate is real.
+* Two guards no input can reach: `if (f > 0)` in `approvedLeaveByDate`, `?? ''` in `balanceOf`. Constraints `leave_requests_check1` and `loan_recoveries_check` make them dead.
+
 ### Changed (breaking)
 
 * `POST /loans/requests/:id/defer` refuses your own loan, like disburse and repayment.

@@ -81,46 +81,61 @@ Earlier phases: see git history of this file (bootstrap uuid/text parameter, FOR
 
 ## Not yet covered
 
-- Browser E2E (Playwright). The UI is type-checked, built and exercised over HTTP, but not driven in a real browser.
-- Performance at 1,000+ employees; backup restore on RDS; running the Compose stack on a real Docker engine (CI job added).
-- Payroll, leave, document and email branding tests: those features don't exist yet.
+- Backup restore on RDS; a sized production load test (`QA_REPORT.md` has the laptop's numbers, and says what they do not show).
 
 Flags: `feature-routes.test.ts` is generated from the registry and from the routes an app really registers: for every flag, off means 404 signed in or not, and on means not 404. `feature-off.test.ts` covers everything else that follows the flags. To run something outside a request as an app would, use `inApp(app, fn)`.
 
 Redis: `test/cache-redis.test.ts` runs against a real server when `TEST_REDIS_URL` is set, and is skipped only when it is not. The rest of the suite runs without Redis.
 
-## Batch E: coverage, mutation, what is verified
+## Batch F: abuse, contract, coverage, mutation
 
-Run: 2026-11-05, macOS, Node 26.5, PostgreSQL 17.11. `npm run test:coverage`, `npm run test:mutation` (the second needs a database too; `tools/vitest.mutation.config.ts` picks its suites).
+Run: 2026-11-05, macOS, Node 26.5, PostgreSQL 17.11, with a private Redis so that nothing is skipped, and other agents using the machine. `npm run test:coverage`, three times running:
+
+| Run | Tests | Files | Duration | Exit |
+|---|---|---|---|---|
+| 1 | 1785 passed (1785) | 98 passed (98) | 496.11 s | 0 |
+| 2 | 1785 passed (1785) | 98 passed (98) | 396.64 s | 0 |
+| 3 | 1785 passed (1785) | 98 passed (98) | 472.77 s | 0 |
+
+Without `TEST_REDIS_URL` the 6 Redis tests are skipped and the rest are the same.
 
 | Measure | Result | Threshold |
 |---|---|---|
-| Lines, all of `src` | 92.36% | 85% |
-| Branches, all of `src` | 81.08% | none |
+| Lines, all of `src` | 93.4% | 85% |
+| Branches, all of `src` | 83.68% | none |
+| Branches of each business rule file | 100% | 100%, and the CI job now fails below it |
 
-Branch coverage of the business rules, threshold 100% on each:
-
-| File | Branches | Note |
-|---|---|---|
-| `payroll/calc.ts`, `payroll/sealed.ts`, `leave/jobs.ts`, `attendance/calc.ts`, `policy/salary.ts`, `policy/levels.ts`, `features/registry.ts`, `config/env.ts`, `config/installation.ts` | 100% | |
-| `leave/service.ts` | 98.07% (51 of 52) | `if (f > 0)` in `approvedLeaveByDate`. Its other side needs a one-day request made of its own two halves, which `leave_requests_check1` refuses |
-| `loans/service.ts` | 97.82% (45 of 46) | `x.run_status ?? ''` in `balanceOf`. A payroll recovery with no run is refused by `loan_recoveries_check`, and a repayment does not reach that side |
-
-**These two thresholds stay at 100% and fail.** Both sides are out of reach through the schema, and no test was written that only touches them. So `npm run test:coverage` exits non-zero, and the CI job is `continue-on-error` until they are dealt with: remove the guards, or accept them.
-
-Files at 0% lines, process entry points tested only by running them: `server.ts`, `worker.ts`, `worker-health.ts`, `core/jobs/cli.ts`, `db/provision.ts`, `db/seed.ts`, `core/db-role.ts`.
-
-**Mutation score** (Stryker, 438 mutants):
+**Mutation score** (Stryker, `npm run test:mutation`):
 
 | File | Score | Killed | Survived | No coverage |
 |---|---|---|---|---|
-| `payroll/calc.ts` | 67.47% | 195 | 73 | 21 |
-| `leave/service.ts` | 88.59% | 132 | 3 | 14 |
-| All | 74.66% | 327 | 76 | 35 |
+| `payroll/calc.ts` | 99.31% | 287 | 2 | 0 |
+| `leave/service.ts` | 88.19% | 127 | 3 | 14 |
 
-`payroll/calc.ts` was mutated against its pure suites, without the database integration suites, so its score is a floor. 73 mutations of the tax and statutory arithmetic pass those suites, which is the clearest place to add assertions.
+`calc.ts` was 67.47%. `test/payroll-calc-exact.test.ts` asserts the exact words and boundaries the report showed nobody checked. The 2 survivors are equivalent: `upper.gt(lower)` is always true when reached, since a slab at or past the income has already broken out; and the default `warnings = []` of `componentAmounts`, which the one caller without it never reads. The 14 with no coverage in `leave/service.ts` are functions these pure suites do not reach, and the integration suites do.
 
-**OpenAPI.** See `npm run openapi` for current counts. Every route declares its schema; those with no input declare an empty one. Response schemas exist for L4 paths, sign-in, public config and core self-service, and are verified by the whole suite through `verifyResponses`, only for the paths tests reach. The rest have none. Refinements (such as "email or phone") have no JSON form and do not appear in the document.
+**New suites.**
+
+| Suite | Tests | Covers |
+|---|---|---|
+| `security/privilege-abuse` | 30 | Staff past their level: F-101 to F-118, reading a peer's pay by each path |
+| `security/session-csrf` | | Forged and tampered tokens, replay, CSRF on every unsafe route, CORS |
+| `security/brute-force` | | Sign-in and code guessing on real limits, spelling tricks, enumeration |
+| `security/files-exports` | | Upload type and size, traversal, formula injection, SSRF, XSS |
+| `security/injection` | | Hostile values in every field of the document with real ids: no crash, no database text |
+| `security/isolation` | | Another organization's ids on every route; a plain employee over every id there is |
+| `security/flags-headers` | | Off modules by API, report, job and role; headers; no-store |
+| `security/shared-address` | 4 | People behind one address |
+| `contract/openapi-drift` | 3 | The committed file against the code and the running app |
+| `contract/live-responses` | 1 | Every GET per persona, masked and revealed, against its declared response |
+| `contract/mode-flags` | 36 | Each mode with flags on, default and off |
+| `contract/route-permissions` | 3 | Every route without a session; every declared permission tried both ways |
+
+`test/security` uses `test/security/wire.ts`, the test client over a real socket.
+
+**Flaky tests fixed.** Three compared two separate timing samples, and failed when the machine got busy between them: the reset and sign-in timing tests of `links-and-notices`, and the dummy hash of `passwords`. They now measure in pairs and compare medians of the pairs. `pdf`'s longest stall is judged against the render's own length, with the old 400 ms as a floor. New tests of mine picked a random leave date that could be a weekend; they pick a weekday.
+
+**OpenAPI.** Committed. `npm run openapi` regenerates it, and a test and CI fail on a difference. 385 routes, 76 with response schemas, all of which the walk checks.
 
 **Replication.** The replica test is a second connection to the same database. Real replication lag was not tested.
 

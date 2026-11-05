@@ -96,3 +96,78 @@ Delegated: no decline path after an accepted offer (`recruitment/routes.ts:627`)
 | E-4 | Tests | Low | `permission-matrix` failed once in a full run with `leaks` true | A problem's random `instance` could spell a subject's short figure | `leaks` ignores `urn:uuid:` references | `permission-matrix.test.ts` |
 | E-5 | Tests | Low | `notifications` failed when run after files that leave mail in the outbox | The outbox is shared by every test organization | Assertion reads this organization's mail | `notifications.test.ts` |
 
+## Batch F: abuse, contract, load
+
+Every row was reproduced by a failing test over real HTTP first. Severity is the one in `SECURITY_REPORT.md`, which adds CVSS vectors. F-101 to F-118 began as hypotheses from reading the routes and were then attacked; one that did not reproduce is not here, and F-119 onward came from the suites, the scanners and k6.
+
+| ID | Module | Sev | Steps to reproduce | Root cause | Fix | Test |
+|---|---|---|---|---|---|---|
+| F-101 | Payroll | High | Payroll staff add a ₹50,000 earning to their own pay, then compute and submit. An approver at or below their level sees only a count. Also: change their own statutory record, remove a deduction someone put on them | `assertMayChangeSubject` let your own id through, though its comment said never; `DELETE` had no subject check | Refused for your own record except the owner in a collapsed mode (D62); `DELETE` uses it | `test/security/privilege-abuse.test.ts` |
+| F-102 | Approvals | High | HR: `POST /approvals/delegations {delegatorId:<approver>,delegateId:<self>}`, then decide. Or reassign to someone who already delegates to you | `actingRole` accepts a delegate; the "taking it yourself" guard looked only at the direct target | Naming yourself for someone else is 403; reassigning to someone who delegates to you is 400 | `test/security/privilege-abuse.test.ts` |
+| F-103 | Users | High | IT: `POST /tenant/users {email:<own>,employeeId:<record with no login>}`, accept, read pay and bank as self | Linking a login needs only `users.manage`, and self passes every level check | The address must be the record's, or the actor outranks the person (D63) | `test/security/privilege-abuse.test.ts` |
+| F-104 | Employees | High | HR executive: `PATCH /employees/:id {status:exited}` on a finance manager ends their login. Or makes themselves that person's manager, or picks their own | Level check only on L3 fields | Status and manager need rank; never your own (D62) | `test/security/privilege-abuse.test.ts` |
+| F-105 | Users | Medium | IT changes a payroll manager's salary level | `assertMayManage` not called on this route | Called | `test/security/privilege-abuse.test.ts` |
+| F-106 | Users | Low | IT unlocks the owner's sign-in back-off | `unlock` skipped `assertBelowActor` | Included | `test/security/privilege-abuse.test.ts` |
+| F-107 | Lifecycle | Medium | An auditor reads anyone's separation reason, F&F note and exit interview; a manager reads the reason after it is decided | `s.*` with no L3 rule | Masked: self, HR above them, who decides while pending | `test/security/privilege-abuse.test.ts` |
+| F-108 | Lifecycle | Medium | An auditor overwrites an exit interview | `lifecycle.read` counted as HR for a write | Needs `lifecycle.manage` or being the person | `test/security/privilege-abuse.test.ts` |
+| F-109 | Lifecycle | High | HR starts a termination of someone above them; a second HR approves; login ends | No level check | `assertOutranks`, 404 | `test/security/privilege-abuse.test.ts` |
+| F-110 | Lifecycle | Medium | A leaver with `lifecycle.manage` marks their own HR tasks done, which clears them for exit | `canActOnTask` did not look at whose checklist | Your own checklist: employee tasks only | `test/security/privilege-abuse.test.ts` |
+| F-111 | Loans | Medium | `loans.manage` creates, cancels or defers a loan of someone above them; `repayment` bounds a masked balance | `loadLoan` admitted creator and team; no level check on writes | `assertMayChangeSubject` on all five writes | `test/security/privilege-abuse.test.ts` |
+| F-112 | Loans | Medium | A manager reads `installments`, `first_period`, references and cancel reason of a team loan | `LOAN_FIELDS` left out L4 columns | Masked | `test/security/privilege-abuse.test.ts` |
+| F-113 | Documents | Medium | `documents.manage` archives a restricted or senior document, or plants a file on a senior's record | Writes had no level or restricted check | 404 | `test/security/privilege-abuse.test.ts` |
+| F-114 | Leave | Medium | Holder of `leave.read` and `leave.team.read`: `?scope=team&employeeId=<anyone>&status=pending` shows the reason | `employeeId` replaced the team list while the reason rule still read scope | The rule reads the team itself | `test/security/privilege-abuse.test.ts` |
+| F-115 | Employees | Medium | `POST /employees/import {dryRun:true}` with guesses: "Same name and date of birth as…" confirms the L3 value of someone above | `findDuplicates` compared all rows | Phone and birth date compared only within L3 reach | `test/security/privilege-abuse.test.ts` |
+| F-116 | Employees | Medium | `GET /employees/:id/history` shows `leave.balance_adjusted` metadata with its reason | All audit metadata returned to `employees.read` | Other modules' metadata needs L3 reach; unknown id 404 | `test/security/privilege-abuse.test.ts` |
+| F-117 | Auth | Medium | Change your password; a reset link already in the mailbox still resets it | Only the link used was burned | All open links end at any password change or finished link | `test/security/privilege-abuse.test.ts` |
+| F-118 | Performance | Low | With no reviewing manager, one HR person writes the review and finalizes it | "Different person" looked at the role, not who wrote it | `manager_submitted_by` (migration 052) | `test/security/privilege-abuse.test.ts` |
+| F-119 | HTTP | Low | `GET /employees?search=a%00b`, or a travel `estimate` of `abc`: 500 | PostgreSQL class 22 not mapped; `new Decimal` throws in validation | 400 `invalid_value`; money parsed safely | `test/security/injection.test.ts` |
+| F-120 | Uploads | Medium | Upload a PDF with `/J#61vaScript` | The check read the bytes, and a PDF name may spell characters as `#xx` | Names decoded before checking | `test/security/files-exports.test.ts` |
+| F-121 | Uploads | Medium | Upload a macro workbook named .xlsx | Only the extension and part names were read | `vbaProject.bin` refused | `test/security/files-exports.test.ts` |
+| F-122 | Exports | High | Account holder holding CR LF and a row: the reimbursement bank file gains a payment row | Two local CSV writers, weaker than `csvCell` | One writer everywhere | `test/security/files-exports.test.ts` |
+| F-123 | Exports | Medium | A cell of ` =1+1`, `\n=1+1`, `＝1+1`, or `a;=1+1` in a semicolon locale | Guard looked at the first character, of six | White space and full-width forms neutralized, `;` quoted | `test/security/files-exports.test.ts` |
+| F-124 | Crypto | Low | Shorten a sealed value's GCM tag to 4 bytes: it still opens. Needs write access to the database. Found by Semgrep | `createDecipheriv` without `authTagLength` | 16 bytes required | `test/security/files-exports.test.ts` |
+| F-125 | HTTP | Medium | Revealed salary JSON has no `Cache-Control` | Only files set it | `no-store` by default (D64) | `test/security/flags-headers.test.ts` |
+| F-126 | Roles | Low | A custom role holding `payroll.read` while payroll is off grants it the day the flag comes on | Known-permission check only | Refused while the module is off | `test/security/flags-headers.test.ts` |
+| F-127 | Attendance | High | Found by k6. Fifteen people clock in within a minute from one office address: three get 429 | Punch limit of 12 a minute counted per address | Counted per person | `test/security/shared-address.test.ts` |
+| F-128 | HTTP | High | Found by k6. An office where people together pass `RATE_LIMIT_PER_MINUTE`, default 3000: everyone gets 429 | Global limit per address | Per person when signed in; sign-in and exports stay per address | `test/security/shared-address.test.ts` |
+| F-129 | OpenAPI | Medium | A generated client types `amount` on `GET /loans/requests` as always a string; masked it is null. Eight more routes likewise | Schemas were generated from what tests saw, and tests rarely saw the masked or empty shape | Corrected, and a test walks every GET per persona | `test/contract/live-responses.test.ts` |
+| F-130 | CI | Medium | `openapi.json` was git-ignored although the frontend generates from it. CI ran on Node 22, where `crypto.argon2` does not exist | Reusable workflow's default | Committed, compared in CI and in a test; `node-version: 24` | `test/contract/openapi-drift.test.ts` |
+
+### Load
+
+k6 v2.3.0, `load/mixed.js`, `load/seed.ts`: 1000 employees of the demo generator, each with a login and a ready session, on its own database. **This is a MacBook Air (8 cores, 8 GB) with PostgreSQL's default `shared_buffers` of 128 MB, one Node process, k6 on the same machine, and a frontend agent and a deployment agent working at the same time. It is not production sizing and it does not predict one.** It finds what breaks first and what is out of proportion.
+
+Mix: 85% reads (unread count, session, dashboard, attendance, balances, leave, directory search, inbox), 15% writes (punch, leave request then cancel, read-all), one person in twenty doing HR lists and reports, 1 to 3 seconds between actions, and a steady few real sign-ins. Ramp 30 s, hold 2 min, ramp down 15 s. Times in ms.
+
+| Users | Req/s | Requests | Read: median / p95 / max | Write: median / p95 / max | HR p95 | Sign-in p95 | Failed | Thresholds |
+|---|---|---|---|---|---|---|---|---|
+| 100 | 46 | 7622 | 4 / 15 / 107 | 8 / 24 / 148 | 68 | 205 | 0% | p95 read under 300, write under 600: **pass** |
+| 1000 | 445 | 74620 | 3 / 9 / 644 | 5 / 14 / 670 | 66 | 215 | 0% | p95 read under 1500, write under 2500: **pass** |
+
+Without pauses (`THINK=0`), 100 users saturate this one process at about 698 requests a second, read p95 169 ms. That is the ceiling of a single Node process here. Rate-limit refusals are expected in that run, since nobody punches that fast.
+
+**Three runs at 1000 users that tell the rest of the story.** The table is the best of the batch's clean runs, after the fixes. Before the inbox fix, with the machine similarly quiet: read p95 202 ms, write 217 ms, max about 2 s. With the inbox fix, while another agent's test suite and a Colima VM drove the machine's load average to 28: read p95 9,393 ms, write 10,080 ms, sign-in 16,650 ms, 129 requests a second, and the thresholds **failed**. So the same code on the same machine ranges over three orders of magnitude depending on what else runs. Nothing here can say how close production is to that edge. A deployment needs its own run.
+
+
+`attendance.close_day` at 999 employees, `load/close-day.ts`, on the same seeded data: 11 statements each, not the 8 D60 estimated, 11,005 in all, 1.3 s total in one transaction, p95 1.5 ms per person. **Left as is:** a nightly job of about a second at this size is not worth rewriting the engine's data access for. `POST /attendance/recalculate` is the same loop per person per date. At 10,000 employees the same cost would be about 13 seconds holding a transaction; look again there.
+
+Bottlenecks found and fixed: F-127 and F-128, the per-address limits, which refused an office; and every inbox joining all pending requests (33 ms at 7,000 pending, now picked by step first).
+
+Not measured: more than one process, a real network, PDF generation, payroll compute, read replicas, sustained hours.
+
+### Reviewed, not exploitable
+
+| Area | Why |
+|---|---|
+| JWT | There are none (D5). A token is random, hashed at rest, and looked up. Forged and `alg:none` tokens are tested anyway |
+| SQL injection | Parameters only, and `test/security/injection.test.ts` puts hostile values in every field of the document. Semgrep agrees |
+| NoSQL operators | No such store, and an object where a string belongs fails zod |
+| Prototype pollution | Fastify refuses `__proto__` and `constructor` in JSON. Tested |
+| SSRF | No setting or module fetches what a client sends. The only fetches are push, an allow-list with redirects refused, and telemetry, set by the deployment. A test lists them |
+| XLSX formulas | Text is always an inline string, with no `<f>`. Tested |
+| Stored XSS | Stored as typed, by design: the API answers JSON under `default-src 'none'`, `nosniff`, and mail escapes. Whether the frontend escapes is the frontend's to test |
+| Path traversal | Keys are generated and validated, brand files come from a map built at start. Tested |
+
+### Accepted
+
+See A-1 to A-5 in `SECURITY_REPORT.md`.

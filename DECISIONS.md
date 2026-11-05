@@ -403,3 +403,51 @@ So drawing the largest report allowed costs under a second of CPU, and yielding 
 
 **Reason.** The type information ESLint sees comes from another compiler version than the build, which matters only for rules that read types: `no-floating-promises` and `no-misused-promises`. `tsc` remains the check that the code compiles. Moving to `typescript-eslint` proper is possible once it supports TypeScript 7.
 
+
+## D62 — Writes on a person follow the same hierarchy as reads
+
+**Context.** D40 said nobody changes someone at or above them, and the rule was enforced on role and salary routes. The abuse suite found other write paths with no level check at all: employee status and manager, separations, loans, documents (QA_REPORT batch F).
+
+**Options.** A rule per module; one helper; only the audit log and a human review.
+
+**Decision.** `assertOutranks` in `core/policy/salary.ts` answers the same 404 as a read, for anything that ends access, moves approvals or changes money. `assertMayChangeSubject` now does what its comment always said: never your own, through a staff route. In `single` and `single_hr` the owner is the exception, since nobody sits above them. Other edits to someone above you, such as their department or designation, stay allowed: they neither end access nor move an approval, and HR needs them.
+
+**Reason.** Status and reporting manager are the two employee fields with power over someone. The rule belongs in one place, because a module of its own is how the gaps appeared.
+
+## D63 — A login on a record goes to the address on the record, or to someone who can vouch
+
+**Context.** `POST /tenant/users` with `employeeId` lets a `users.manage` holder attach a login to a record that has none. The record's pay and bank details are then read as "self", which passes every level check.
+
+**Options.** Refuse linking for anyone without `employees.manage`, which breaks IT onboarding; require a second person; compare the address.
+
+**Decision.** The login's email must equal the record's `work_email`, or the actor holds `employees.manage` or is an administrator, and outranks the person.
+
+**Reason.** The invitation goes to the login's address, so the person the record names receives it. IT keeps its onboarding. Changing a record's work email is itself HR's, so taking a record over now takes two people.
+
+## D64 — `no-store` on the API by default
+
+**Context.** Files were `no-store`. JSON, including revealed salaries, had no `Cache-Control`.
+
+**Decision.** Every `/api/` answer gets `Cache-Control: no-store` unless its route set one. Public config keeps `no-cache`.
+
+**Reason.** Almost everything here is personal, so the safe default costs little: the app has no HTTP caching to lose.
+
+## D65 — CI: reusable workflows stay, pinned, with the scans beside them
+
+**Context.** CI, image build, Trivy, SBOM, cosign and the dispatch to the deployment repository already exist as reusable workflows in `hrms-deployment`. The brief asks for all of it in this repository's `.github/workflows`, with SHAs pinned, GHCR multi-arch and a GitOps PR.
+
+**Options.** Copy everything here and drop the reusable workflows; keep them and add what is missing.
+
+**Decision.** Keep them, called at a pinned commit. Add `security.yml` here (Semgrep, CodeQL, Trivy on the repository, SBOM, ZAP baseline, nightly full ZAP). `publish-develop.yml` passes both platforms, so develop images match releases. The GitOps step is the existing `repository_dispatch`: `deploy-dev` commits the version, `release-prod` opens the version PR, both in the deployment repository.
+
+**Conflicts found.** Three: the reusable default of Node 22 cannot pass the suite, which needs `crypto.argon2`, so callers now pass 24. `@main` was not a pin. And `openapi.json` was git-ignored while the frontend generates from it, so it is now committed and CI fails on a difference.
+
+**Reason.** Copying would give two copies of the publish logic for backend and frontend to drift apart. No long-lived cloud key exists: signing uses the OIDC token, GHCR the job token. Cross-repository dispatch still needs a GitHub App key or a PAT, which is not a cloud key. Dependabot stays; a second bot would only add noise.
+
+## D66 — Load tests use ready sessions, on their own database
+
+**Context.** 1000 virtual users signing in at once measure 1000 Argon2 hashes, on purpose slow, and not the API.
+
+**Decision.** `load/seed.ts` writes a session per person directly. `mixed.js` adds a small steady rate of real sign-ins as its own scenario. It refuses any database not named `hrms_load`.
+
+**Reason.** Numbers about the API, with sign-in reported on its own. Think time of 1 to 3 seconds per user, so 1000 users is about 500 requests a second, which is what 1000 people at work would be at their busiest and well beyond what one customer of this product has.

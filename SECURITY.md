@@ -30,22 +30,43 @@ Report vulnerabilities privately to the repository owner. Do not open public iss
 | Restricted data | Bank account numbers AES-256-GCM encrypted; masked in API; every view audited; tenant admin cannot view | `employees.test.ts` |
 | Audit | Append-only (DB grants); same transaction as the change; secrets redacted from metadata | several |
 | Device auth | Per-device key (prefix + secret, secret stored hashed), rotation, disable | `attendance-flows.test.ts` |
-| Input validation | zod on every body/query/param; DB constraints as a backstop | — |
-| SQL injection | Parameterized queries only. Dynamic identifiers only from fixed code maps | Code review |
-| Headers | Helmet: CSP `default-src 'none'` on API responses, nosniff, frame-ancestors none | `tenancy-security.test.ts` |
-| Logging | Cookie, authorization, device key and CSRF headers redacted. No request bodies logged | — |
+| Input validation | zod on every body/query/param; DB constraints as a backstop; bad values answer 400, never 500 | `security/injection.test.ts` |
+| SQL injection | Parameterized queries only. Dynamic identifiers only from fixed code maps | `security/injection.test.ts` (hostile values in every field of the document), Semgrep |
+| Headers | Helmet: CSP `default-src 'none'` on API responses, nosniff, frame-ancestors none; `Cache-Control: no-store` by default on the API (D64) | `security/flags-headers.test.ts` |
+| Logging | Cookie, authorization, device key and CSRF headers redacted. No request bodies logged | `logging-redaction.test.ts` |
+| Writes on a person | Status, manager, separation, loan and document changes need rank over the subject; nobody changes their own pay inputs (D62) | `security/privilege-abuse.test.ts` |
+| Taking over a record | A login on an employee record goes to that record's address, or someone who outranks them vouches (D63) | `security/privilege-abuse.test.ts` |
+| Choosing your approver | Nobody delegates someone else's approvals to themselves, or reassigns to someone who delegates to them | `security/privilege-abuse.test.ts` |
+| Uploads | Content decides type; no active PDF content, including hex-escaped names; no macros; generated keys; attachments | `security/files-exports.test.ts`, `uploads.test.ts` |
+| Spreadsheet exports | One CSV writer: formulas neutralized, including leading white space and full-width forms, and separators quoted. XLSX has inline strings only | `security/files-exports.test.ts` |
+| SSRF | No setting is fetched. Push endpoints are an allow-list, redirects refused. A test lists every outbound fetch in the code | `security/files-exports.test.ts` |
+| Permissions on routes | Every declared permission tried: refused with nothing, allowed with exactly it. Every route 401 without a session | `contract/route-permissions.test.ts` |
 | Location privacy | Mobile location stored only when tenant policy asks, captured only at punch time | `attendance-flows.test.ts` |
+
+## Reports
+
+- [`SECURITY_REPORT.md`](SECURITY_REPORT.md): findings with CVSS and status, and scanner results.
+- [`docs/THREAT_MODEL.md`](docs/THREAT_MODEL.md): STRIDE for the API. The infrastructure's is in `hrms-deployment/docs/THREAT_MODEL.md`.
+- `test/security/`: the abuse suite. `load/`: the k6 scripts. Results are in `QA_REPORT.md`.
+
+## Scanning
+
+| Tool | Where | Gate |
+|---|---|---|
+| `npm audit --omit=dev` | Reusable CI | High and above |
+| Gitleaks | Reusable CI | Any finding |
+| Trivy, repository | `security.yml` | Fixable high or critical |
+| Trivy, image | Reusable CI and publish | Fixable critical |
+| Semgrep: `p/owasp-top-ten`, `p/nodejs`, `p/typescript` | `security.yml` | `ERROR` |
+| CodeQL, `security-extended` | `security.yml` | Reports to code scanning |
+| ZAP baseline, per pull request; full, nightly | `security.yml` | Rules in `.zap/rules.tsv` |
+| SBOM, CycloneDX | `security.yml`, and attached to images | None |
 
 ## Outstanding (must be done before production)
 
 1. Required MFA for people who read L4 data: not done, by the owner's decision, and `MFA_ENFORCED=true` gives it to everyone (D45). Still open: WebAuthn/passkeys; SSO via an external identity provider.
-2. **Secrets.** Load `DATABASE_URL` from AWS Secrets Manager at task start. Field encryption uses a KMS-wrapped data key, with key ids in the ciphertext and a rotation command: see docs/DATA_SECURITY.md.
-4. **File uploads.** Not implemented. When added: type/size allow-lists, malware scanning, private S3 with tenant-prefixed keys and short-lived signed URLs.
-5. **Dependency and container scanning.** `npm audit` runs in CI. Add container image scanning (ECR/Trivy) once images are built.
-6. **Password policy.** A forced change exists for bootstrap administrators. Users created by admins don't have it yet. Add a breached-password check and a self-service password reset by email (needs the email module).
-7. **Session listing / remote sign-out UI** for users and admins (the API supports revoke-all for oneself).
-8. **Data protection (DPDP Act 2023).** Technical safeguards exist. Privacy notice, consent and purpose records, retention schedules, and data-principal request workflows are **not** implemented. Legal applicability and the current status of rules and commencement must be verified by counsel. Technical controls alone do not establish compliance.
-9. **Penetration test and threat model review** before go-live.
+2. **Data protection (DPDP Act 2023).** Technical safeguards exist. Legal applicability and the current status of rules and commencement must be verified by counsel. Technical controls alone do not establish compliance.
+3. **An external penetration test** before go-live. Nothing so far has been tested by anyone outside this project.
 
 ## Data minimization
 

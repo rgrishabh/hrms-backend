@@ -60,8 +60,13 @@ With several roles the highest floor and highest ceiling count. Employee and man
 | Notifications, email, approval summaries | No figures: callers no longer write them, and `scrubAmounts` removes what gets through |
 | Search, dashboards | Carry no L4; the matrix test asserts it |
 | Overtime and field-duty reasons | Self, HR above them, and who decides while pending. Everyone else who can read the request gets it masked |
+| Separation reason, F&F note, exit interview | The same rule. The exit interview also needs HR above them, so an auditor does not read it |
+| Employee history | Other modules' audit metadata needs L3 reach. The record's own changes hold L1 and L2 only |
+| Duplicate warnings | Phone and date of birth compared only with people the viewer can read |
 | Documents | Level check on HR access, including the direct download URL |
 | Recruitment CTC | `recruitment.compensation`, then masked unless revealed. Candidates have no level |
+
+**Writes.** Whatever ends someone's access, moves their approvals or changes their money needs rank over them, and the answer is the same 404 as a read (D62): employee status and reporting manager, starting a separation, loans, documents. Nobody changes their own pay inputs or manager through a staff route. In `single` and `single_hr` the owner is the exception. A login on a record that has none goes to the address on the record, or someone with rank vouches (D63).
 
 **Files.** Payslips, letters and report exports exist as PDF (D52). A file shows the figures, so reading one is audited before the first byte leaves. PAN and bank number print as the last four at most. File names, URLs and the document's title hold no name, figure or identifier: `payslip-2026-01.pdf`. Responses are `Cache-Control: private, no-store`. Nothing is stored: each file is drawn for its request. Not stored means not revocable once downloaded: a PDF on someone's disk is outside these controls.
 

@@ -112,7 +112,7 @@ A route that rotates answers with `csrfToken` and sets the cookie. `GET /auth/se
 
 ## Links
 
-Invitations and resets share `admin_setup_tokens` with the bootstrap link, by `purpose`. By email only, single use, a new link ends the last of its kind, three per hour per person, and the token is hashed at rest and kept in the URL fragment.
+Invitations and resets share `admin_setup_tokens` with the bootstrap link, by `purpose`. By email only, single use, a new link ends the last of its kind, a password change or a finished link ends all of them, three per hour per person, and the token is hashed at rest and kept in the URL fragment.
 
 | | Expires | Page | Finished at |
 |---|---|---|---|
@@ -134,7 +134,9 @@ These go out whatever `email_notifications` says, and say they cannot be turned 
 
 ## Rate limits
 
-Per process (D27), on top of the database counters above.
+Per process (D27), on top of the database counters above. Everything else counts a signed-in person as themselves and an anonymous request by address, because an office is one address: 12 punches a minute per address stopped a whole office at the door (F-127). Sign-in and exports stay per address, so that a session buys no extra guesses.
+
+**Sign-in behind a shared address.** `AUTH_RATE_LIMIT_PER_MINUTE` defaults to 20 per address. A site where more than 20 people sign in within a minute from one address needs it raised, and `TRUST_PROXY` set correctly. A browser that has signed in before is exempt from the per-account limit, not from this one.
 
 | Path | Per address | Per user or account |
 |---|---|---|
