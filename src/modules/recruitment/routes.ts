@@ -705,7 +705,12 @@ export async function recruitmentRoutes(app: FastifyInstance) {
 export async function anonymizeCandidate(db: Db, tenantId: string, id: string): Promise<boolean> {
   const c = (await db.query<{ resume_key: string | null }>(`SELECT resume_key FROM candidates WHERE tenant_id=$1 AND id=$2 AND status='active' FOR UPDATE`, [tenantId, id])).rows[0];
   if (!c) return false;
-  if (c.resume_key) await getStore()?.delete(c.resume_key);
+  if (c.resume_key) {
+    const store = getStore();
+    // Clearing the key with the file still there would leave a resume nothing can find. Stop instead: the job fails on the record, and runs again.
+    if (!store) throw new AppError(503, 'storage_unavailable', 'A resume is due for deletion but file storage is not configured');
+    await store.delete(c.resume_key);
+  }
   await db.query(`UPDATE candidates SET first_name='Anonymized', last_name=NULL, email=NULL, phone=NULL, referred_by=NULL, current_company=NULL, current_designation=NULL,
       expected_ctc=NULL, location=NULL, qualification=NULL, resume_key=NULL, resume_name=NULL, resume_type=NULL, resume_sha256=NULL, status='anonymized' WHERE tenant_id=$1 AND id=$2`, [tenantId, id]);
   await db.query(`UPDATE interview_panel p SET notes=NULL FROM interviews i JOIN job_applications ap ON ap.tenant_id=i.tenant_id AND ap.id=i.application_id

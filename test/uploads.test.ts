@@ -211,7 +211,7 @@ describe('no upload goes around the checks', () => {
   it('whatever stores a file a person sent has been through prepareUpload', () => {
     const root = 'src/modules';
     const users = readdirSync(root, { recursive: true, encoding: 'utf8' }).filter((f) => f.endsWith('.ts')).map((f) => path.join(root, f)).filter((f) => /\.put\(key,/.test(readFileSync(f, 'utf8')));
-    expect(users.sort()).toEqual(['attendance/routes.ts', 'documents/routes.ts', 'expenses/routes.ts', 'policies/routes.ts', 'recruitment/routes.ts'].map((f) => path.join(root, f)));
+    expect(users.sort()).toEqual(['attendance/routes.ts', 'documents/routes.ts', 'expenses/routes.ts', 'policies/routes.ts', 'recruitment/routes.ts', 'tenant/company.ts'].map((f) => path.join(root, f)));
     for (const f of users) expect(readFileSync(f, 'utf8'), f).toMatch(/await prepareUpload\(req, a,/);
   });
 });

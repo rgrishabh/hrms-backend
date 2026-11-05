@@ -438,6 +438,35 @@ for (const mode of ['single', 'single_hr', 'multi'] as const) {
       }
     });
 
+    it.each(viewers.map((v) => [v.key, v] as const))('data export: self, and HR above them; L4 only with an L4 permission, as %s', async (_k, v) => {
+      const executes = ['owner', 'super'].includes(v.key);
+      const readsL4 = !!(v.payroll || v.bank || v.loans || v.pay || v.accounting);
+      for (const sp of everyone) {
+        const s = w.subjects[sp.key]!;
+        const self = v.key === sp.key;
+        const allowed = self || ((!!v.hrL3 || executes) && v.level > sp.level);
+        const label = `${v.key} -> ${sp.key}`;
+        const r = await w.clients[v.key]!.get(`/api/v1/tenant/data-rights/employees/${s.employeeId}/export`);
+        expect(r.statusCode, label).toBe(allowed ? 200 : 404);
+        if (!allowed) { expect(leaks(r.body, s), label).toBe(false); continue; }
+        const mayL4 = self || readsL4;
+        expect(r.body.includes(s.figure), `${label} salary`).toBe(mayL4);
+        expect(r.body.includes(s.uan), `${label} uan`).toBe(mayL4);
+        expect(r.body.includes(s.phone), `${label} phone`).toBe(true);
+        expect(r.body.includes(s.account), `${label} account never whole`).toBe(false);
+      }
+    });
+
+    it.each(viewers.map((v) => [v.key, v] as const))('company details: who may change them, and the sealed values, as %s', async (_k, v) => {
+      const manages = mode === 'multi' ? ['owner', 'super', 'finance'].includes(v.key) : v.key === 'owner';
+      const c = w.clients[v.key]!;
+      expect((await c.put('/api/v1/tenant/company', {})).statusCode, 'edit').toBe(manages ? 200 : 403);
+      expect((await c.get('/api/v1/tenant/company?reveal=1')).statusCode === 200, 'reveal').toBe(manages);
+      // Who may edit, or print: payroll documents and letters.
+      const prints = mode === 'multi' ? ['owner', 'super', 'finance', 'seniorPayroll', 'payroll', 'hrCapped', 'hrA', 'hrB', 'hrExec'].includes(v.key) : mode === 'single_hr' ? ['owner', 'hrA', 'hrB'].includes(v.key) : v.key === 'owner';
+      expect((await c.get('/api/v1/tenant/company/images/signature')).statusCode !== 403, 'image').toBe(prints);
+    });
+
     it.each(viewers.map((v) => [v.key, v] as const))('L2 and L1: everyone sees the directory; only full readers see joining date, as %s', async (_k, v) => {
       for (const sp of everyone) {
         const s = w.subjects[sp.key]!;

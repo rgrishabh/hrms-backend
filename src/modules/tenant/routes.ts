@@ -18,6 +18,8 @@ import { anotherActiveOwner, effectiveLevel, roleFloor, SALARY_LEVEL_MAX } from 
 import { redact } from '../../core/audit/audit.js';
 import { emailLink } from '../../core/auth/links.js';
 import { getSettingValue } from '../../core/settings/service.js';
+import { companyRoutes } from './company.js';
+import { dataRightsRoutes } from '../data-rights/routes.js';
 import { notifyUsers } from '../../core/notify/service.js';
 import { revokeAllSessionsForUser } from '../../core/auth/session.js';
 import { clearLoginAccount } from '../../core/auth/throttle.js';
@@ -37,6 +39,8 @@ const UsersSalaryLevelBody = z.object({ level: z.number().int().min(0).max(SALAR
 const AuditQuery = PageQuery.extend({ category: z.enum(['auth', 'configuration', 'data', 'security', 'access']).optional(),
       targetType: z.string().max(50).optional(), targetId: z.string().max(100).optional(), action: z.string().max(80).optional() });
 export async function tenantAdminRoutes(app: FastifyInstance, opts: { publicConfig: PublicConfig }) {
+  await app.register(companyRoutes);
+  await app.register(dataRightsRoutes, { prefix: '/data-rights' });
 
   // ------------------------------------------------------------ settings
   app.get('/settings', { schema: { querystring: SettingsQuery }, config: { perm: ['settings.read'] } }, async (req) => {

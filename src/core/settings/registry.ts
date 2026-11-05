@@ -13,7 +13,7 @@ import { z } from 'zod';
  */
 export interface SettingDefinition<T = unknown> {
   key: string;
-  group: 'general' | 'attendance' | 'security' | 'notifications';
+  group: 'general' | 'attendance' | 'security' | 'notifications' | 'retention';
   label: string;
   description: string;
   control: 'text' | 'number' | 'boolean' | 'select' | 'weekdays' | 'timezone';
@@ -142,6 +142,22 @@ export const SETTINGS: readonly SettingDefinition[] = [
     control: 'boolean', schema: z.boolean(), default: true, scopes: ['tenant'], editPermission: 'payroll.manage' }),
   def({ key: 'grievance.response_days', group: 'general', feature: 'grievance', label: 'Grievance response target (days)', description: 'Handlers are reminded when a grievance is open longer than this.',
     control: 'number', schema: z.number().int().min(1).max(90), default: 15, scopes: ['tenant'], editPermission: 'grievance.manage' }),
+  // Retention (docs/DATA_RIGHTS.md). The defaults are the longest period commonly cited for each record as best known, and are not legal advice.
+  def({ key: 'retention.payroll_years', group: 'retention', label: 'Keep payroll and statutory records for (financial years)', description: 'Payroll, payslips, TDS, PF, ESI, loans, expense vouchers and the identity they need stay this long after someone leaves, whatever an erasure request says. Default 8: the Companies Act 2013 keeps books of account for 8 financial years. This is not legal advice: confirm it with your advisers.',
+    control: 'number', schema: z.number().int().min(1).max(30), default: 8, scopes: ['tenant'], editPermission: 'settings.manage' }),
+  def({ key: 'retention.attendance_years', group: 'retention', label: 'Keep attendance and leave registers for (financial years)', description: 'Attendance and leave records stay this long after someone leaves, without their name. Default 5, the period labour registers are commonly kept. This is not legal advice: confirm it for your state and establishment.',
+    control: 'number', schema: z.number().int().min(1).max(30), default: 5, scopes: ['tenant'], editPermission: 'settings.manage' }),
+  def({ key: 'retention.claims_years', group: 'retention', label: 'Keep records needed for disputes for (financial years)', description: 'Separation records, grievance and POSH cases, acknowledgements, assets and competence records stay this long after someone leaves or a case closes. Default 3: the usual limitation period under the Limitation Act 1963. This is not legal advice.',
+    control: 'number', schema: z.number().int().min(1).max(30), default: 3, scopes: ['tenant'], editPermission: 'settings.manage' }),
+  def({ key: 'retention.documents_after_exit_months', group: 'retention', label: 'Keep documents after exit for (months)', description: 'Employee documents are deleted this long after the last working day. Those in payroll categories follow the payroll period instead. 0 keeps them until someone asks for erasure.',
+    control: 'number', schema: z.number().int().min(0).max(360), default: 36, scopes: ['tenant'], editPermission: 'settings.manage' }),
+  def({ key: 'retention.notifications_days', group: 'retention', label: 'Keep notifications for (days)', description: 'In-app notifications older than this are deleted, read or not.',
+    control: 'number', schema: z.number().int().min(30).max(3650), default: 365, scopes: ['tenant'], editPermission: 'settings.manage' }),
+  def({ key: 'retention.email_outbox_days', group: 'retention', label: 'Keep sent email and push records for (days)', description: 'Sent and failed email and push records older than this are deleted. Mail still waiting to go is never deleted.',
+    control: 'number', schema: z.number().int().min(7).max(3650), default: 90, scopes: ['tenant'], editPermission: 'settings.manage' }),
+  def({ key: 'retention.job_runs_days', group: 'retention', label: 'Keep job history for (days)', description: 'Finished background job runs older than this are deleted.',
+    control: 'number', schema: z.number().int().min(30).max(3650), default: 365, scopes: ['tenant'], editPermission: 'settings.manage' }),
+
   def({ key: 'security.manager_team_salaries', group: 'security', feature: 'payroll', label: 'Managers can see team salaries', description: 'Off: managers see no salary, loan or payslip of their team. On: they can, for people below their own salary level.',
     control: 'boolean', schema: z.boolean(), default: false, scopes: ['tenant'], editPermission: 'security.manage' }),
   def({ key: 'security.aadhaar_collection', group: 'security', feature: 'payroll.statutory', label: 'Collect Aadhaar numbers', description: 'Off by default. Indian law limits who may ask for and keep an Aadhaar number: turn this on only with legal advice and a lawful basis. Numbers are encrypted and only their last four digits are ever shown.',

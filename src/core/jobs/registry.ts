@@ -14,6 +14,7 @@ import { caseDeadlines } from '../../modules/cases/routes.js';
 import { assetsDaily } from '../../modules/assets/routes.js';
 import { runSchedules } from '../../modules/reports/service.js';
 import { purgeThrottle } from '../auth/throttle.js';
+import { erasureFollowUp, purgeDocumentsAfterExit, purgeOperational } from '../../modules/data-rights/service.js';
 import { escalateOverdue, reassignStranded, stepRecipients, blockedUsers, handlerFeature, offEntityTypes } from '../workflow/engine.js';
 
 /**
@@ -201,6 +202,33 @@ export const JOBS: readonly JobDefinition[] = [
       }
       return { erased: due.rowCount };
     },
+  },
+  {
+    key: 'retention.operational',
+    name: 'Notifications, outbox and job history retention',
+    description: 'Deletes old notifications, sent and failed email and push records, finished job runs and expired report copies, by the periods in Settings. The audit log is never touched.',
+    schedule: { kind: 'daily', at: '04:30' },
+    retention: true,
+    runPermission: 'settings.manage',
+    run: async (db, tenantId) => ({ ...(await purgeOperational(db, tenantId)) }),
+  },
+  {
+    key: 'retention.documents_after_exit',
+    name: 'Documents after exit',
+    description: 'Deletes the documents of people who left longer ago than the period in Settings. Payroll categories follow the payroll period.',
+    schedule: { kind: 'daily', at: '04:45' },
+    retention: true,
+    runPermission: 'settings.manage',
+    run: (db, tenantId, ctx) => purgeDocumentsAfterExit(db, tenantId, ctx.localDate),
+  },
+  {
+    key: 'data_rights.erasure_followup',
+    name: 'Erasure follow-up',
+    description: 'Finishes file deletions left over from an erasure, and ends carve-outs whose legal period has passed.',
+    schedule: { kind: 'daily', at: '05:00' },
+    retention: true,
+    runPermission: 'settings.manage',
+    run: async (db, tenantId, ctx) => ({ ...(await erasureFollowUp(db, tenantId, ctx.localDate)) }),
   },
   {
     key: 'lifecycle.daily',
