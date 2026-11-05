@@ -1,4 +1,4 @@
-import { createHmac, randomBytes, timingSafeEqual } from 'node:crypto';
+import { createHmac, randomBytes, randomInt, timingSafeEqual } from 'node:crypto';
 
 /** RFC 6238 TOTP (HMAC-SHA1, 30 s, 6 digits) and RFC 4648 base32 — Node crypto only. */
 const ALPHABET = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ234567';
@@ -74,8 +74,7 @@ export function otpauthUri(secret: string, account: string, issuer: string) {
 export function newRecoveryCodes(n = 10): string[] {
   const alphabet = 'abcdefghjkmnpqrstuvwxyz23456789';
   return Array.from({ length: n }, () => {
-    const b = randomBytes(12);
-    const chars = [...b].map((x) => alphabet[x % alphabet.length]).join('');
+    const chars = Array.from({ length: 12 }, () => alphabet[randomInt(alphabet.length)]).join('');
     return `${chars.slice(0, 4)}-${chars.slice(4, 8)}-${chars.slice(8, 12)}`;
   });
 }

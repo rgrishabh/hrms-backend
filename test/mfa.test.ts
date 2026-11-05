@@ -2,6 +2,7 @@ import { describe, it, expect, beforeAll, afterAll, beforeEach } from 'vitest';
 import type { FastifyInstance } from 'fastify';
 import { problem, makeApp, createTenant, Client, ownerQuery, PASSWORD, type TenantFixture } from './helpers.js';
 import { base32Decode, base32Encode, hotp, verifyTotp, timeStep } from '../src/core/auth/totp.js';
+import { sha256 } from '../src/core/crypto/index.js';
 import { deliverOutbox } from '../src/core/notify/service.js';
 import { setMailer, type OutgoingMail } from '../src/core/notify/mailer.js';
 import { loadEnv } from '../src/config/env.js';
@@ -293,6 +294,13 @@ describe('TOTP sign-in and recovery codes', () => {
     old.cookie = cookie;
     expect((await old.get('/api/v1/auth/me')).statusCode).toBe(401);
     expect((await c.get('/api/v1/employees')).statusCode).toBe(200);
+  });
+
+  it('a recovery code stored before the generator changed still works', async () => {
+    const issued = '7f3k-9q2m-x4bd';
+    await ownerQuery(`UPDATE users SET mfa_recovery_hashes = array_append(mfa_recovery_hashes, $2) WHERE id=$1`, [T.users.hr!.id, sha256(issued)]);
+    const c = await Client.login(app, T.host, T.users.hr!.email);
+    expect((await c.post('/api/v1/auth/mfa/verify', { code: issued })).json().method).toBe('recovery');
   });
 });
 
