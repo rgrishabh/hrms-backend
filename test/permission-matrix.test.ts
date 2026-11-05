@@ -8,6 +8,7 @@ import { problem, Client, PASSWORD, flags, makeApp, ownerQuery, seal, testCipher
 import { LocalStore, newKey, setStore } from '../src/core/storage/index.js';
 import { hashPassword } from '../src/core/crypto/index.js';
 import { runSchedules } from '../src/modules/reports/service.js';
+import { pdfText } from './pdf-text.js';
 
 /**
  * The permission matrix: every mode, every role, every data level, by real requests against the app. The expectation is written out here
@@ -51,7 +52,7 @@ const PEOPLE: Record<Mode, Persona[]> = {
     { key: 'nologin', roles: [], level: 0, login: false },
   ],
 };
-const FLAGS = 'default,payroll,payroll.payslips,payroll.statutory,loans,salary_advance,reports.advanced,accounting_exports,expenses,recruitment,core.offboarding';
+const FLAGS = 'default,payroll,payroll.payslips,payroll.statutory,loans,salary_advance,reports.advanced,accounting_exports,expenses,recruitment,core.onboarding,core.offboarding';
 const PERIOD = '2026-01';
 
 interface Subject extends Persona { employeeId: string; userId: string | null; code: string; gross: number; figure: string; account: string; uan: string; itemId: string; loanId: string; docId: string; payDocId: string; phone: string }
@@ -137,6 +138,7 @@ async function build(mode: Mode, env: Record<string, string> = {}): Promise<Worl
 }
 
 const mayL4 = (v: Persona, s: Persona, perm: boolean | undefined) => v.key === s.key || (!!perm && v.level > s.level);
+const pdfAmount = (n: number) => new Intl.NumberFormat('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 }).format(n);
 const leaks = (body: string, s: Subject) => body.includes(s.figure) || body.includes(s.account) || body.includes(s.uan);
 
 for (const mode of ['single', 'single_hr', 'multi'] as const) {
@@ -172,6 +174,60 @@ for (const mode of ['single', 'single_hr', 'multi'] as const) {
         }
       });
     }
+
+    // The file answers exactly as the JSON route with reveal does, and shows the figure it was allowed to. Its body is searched as text.
+    it.each(viewers.map((v) => [v.key, v] as const))('L4 payslip PDF as %s', async (_k, v) => {
+      for (const sp of everyone) {
+        const s = w.subjects[sp.key]!;
+        const r = await w.clients[v.key]!.get(`/api/v1/payroll/payslips/${s.itemId}/payslip.pdf`);
+        const label = `${mode}: ${v.key} -> ${sp.key} payslip PDF`;
+        if (mayL4(v, sp, v.payroll)) {
+          expect(r.statusCode, `${label}: ${r.body.slice(0, 200)}`).toBe(200);
+          expect(r.headers['content-disposition']).toBe(`attachment; filename="payslip-${PERIOD}.pdf"`);
+          const text = await pdfText(r.rawPayload);
+          expect(text, label).toContain(pdfAmount(s.gross));
+          expect(text, label).not.toContain(s.account);
+        } else {
+          expect(r.statusCode, `${label}: ${r.statusCode}`).toBe(404);
+          expect(leaks(r.body, s), `${label} leaked`).toBe(false);
+        }
+      }
+    });
+
+    it.each(viewers.map((v) => [v.key, v] as const))('L4 report PDF exports leave out who is above, and say so, as %s', async (_k, v) => {
+      const c = w.clients[v.key]!;
+      const r = await c.get(`/api/v1/reports/payroll_cost/export.pdf?from=${PERIOD}&to=${PERIOD}`);
+      if (!v.payroll) { expect(r.statusCode, v.key).toBe(403); return; }
+      expect(r.statusCode, v.key).toBe(200);
+      const visible = everyone.filter((sp) => mayL4(v, sp, true));
+      const hidden = everyone.length - visible.length;
+      expect(r.headers['x-excluded-subjects']).toBe(String(hidden));
+      const text = await pdfText(r.rawPayload);
+      const sum = visible.reduce((t, sp) => t + w.subjects[sp.key]!.gross, 0);
+      expect(text.includes(pdfAmount(sum)), v.key).toBe(!(hidden && visible.length < 3));
+      const all = everyone.reduce((t, sp) => t + w.subjects[sp.key]!.gross, 0);
+      if (hidden) expect(text.includes(pdfAmount(all)), `${v.key} total of everyone`).toBe(false);
+    });
+
+    // Letters are HR's, above the person. The experience letter is also the person's own. A figure on a letter needs L4 on top.
+    it.each(viewers.map((v) => [v.key, v] as const))('L3 letters as %s', async (_k, v) => {
+      for (const sp of everyone) {
+        const s = w.subjects[sp.key]!;
+        const label = `${mode}: ${v.key} -> ${sp.key}`;
+        const above = !!v.hrL3 && v.key !== sp.key && v.level > sp.level;
+        const appointment = await w.clients[v.key]!.get(`/api/v1/lifecycle/employees/${s.employeeId}/letters/appointment.pdf?salary=1`);
+        if (!v.hrL3) expect(appointment.statusCode, `${label} appointment`).toBe(403);
+        else expect(appointment.statusCode, `${label} appointment`).toBe(above ? 200 : 404);
+        if (appointment.statusCode === 200) {
+          const paid = !!v.payroll && v.level > sp.level;
+          expect(appointment.headers['x-salary-included'], `${label} salary`).toBe(paid ? '1' : '0');
+          expect((await pdfText(appointment.rawPayload)).includes(pdfAmount(s.gross * 12)), `${label} figure`).toBe(paid);
+        } else expect(leaks(appointment.body, s), label).toBe(false);
+        const experience = await w.clients[v.key]!.get(`/api/v1/lifecycle/employees/${s.employeeId}/letters/experience.pdf`);
+        expect(experience.statusCode, `${label} experience`).toBe(above || v.key === sp.key ? 200 : 404);
+        if (experience.statusCode === 200) expect(await pdfText(experience.rawPayload), label).not.toContain('Fixture reason');
+      }
+    });
 
     it.each(viewers.map((v) => [v.key, v] as const))('L4 fields are masked without reveal, even for the person themselves, as %s', async (_k, v) => {
       const s = w.subjects[v.key]!;
