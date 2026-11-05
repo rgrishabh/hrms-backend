@@ -4,6 +4,7 @@
 #   docker run IMAGE            -> API server (default)
 #   docker run IMAGE worker     -> jobs and email (PROCESS_ROLE=worker); `worker-health` is its probe
 #   docker run IMAGE migrate    -> apply pending migrations, then exit
+#   docker run IMAGE migrate-down --steps N | --to NAME | --all   -> undo migrations, then exit
 #   docker run IMAGE migrate-status | provision | bootstrap [--reset-admin --admin-email ...]
 
 FROM node:24-alpine AS build

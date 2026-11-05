@@ -17,6 +17,7 @@
     "bootstrap": "tsx --env-file-if-exists=.env src/db/bootstrap.ts",
     "lint": "tsc -p tsconfig.json --noEmit",
     "migrate:status": "tsx --env-file-if-exists=.env src/db/migrate.ts --status",
+    "migrate:down": "tsx --env-file-if-exists=.env src/db/migrate.ts --rollback",
     "rotate-keys": "tsx --env-file-if-exists=.env src/db/rotate-keys.ts"
   },
   "type": "module",

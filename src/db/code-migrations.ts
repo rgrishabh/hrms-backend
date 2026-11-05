@@ -13,7 +13,7 @@ export interface CodeMigrationContext {
 
 /**
  * A migration SQL cannot express, because it needs the application's key. `up` must be safe to run again after being
- * interrupted at any point. `down` undoes it: batch E's rollback calls it after re-adding what the later SQL dropped.
+ * interrupted at any point. `down` undoes it: rollback calls it after the later SQL's down file has re-added what that SQL dropped.
  */
 export interface CodeMigration {
   name: string;
@@ -21,6 +21,10 @@ export interface CodeMigration {
   checksum: string;
   up: (ctx: CodeMigrationContext) => Promise<void>;
   down: (ctx: CodeMigrationContext) => Promise<void>;
+  /** Checked by rollback before its first change, so a missing or wrong key refuses instead of stopping half way. */
+  checkDown?: (ctx: CodeMigrationContext) => Promise<void>;
+  /** A migration whose down leaves work that only this step's down finishes. Rollback refuses to stop between the two. */
+  rollsBackWith?: string;
 }
 
 const BATCH = 500;
@@ -122,8 +126,24 @@ async function encryptUp(ctx: CodeMigrationContext) {
   }
 }
 
+const SEALED_COLUMNS = [['employee_salaries', 'amounts_enc'], ['employee_salaries', 'annual_ctc_enc'], ['payroll_items', 'data_enc'], ['payroll_runs', 'totals_enc'], ['payroll_adjustments', 'data_enc'], ['accounting_exports', 'total_enc'], ['report_snapshots', 'data_enc']] as const;
+
+/** Opens one value of each sealed column. True if there was any, so an empty database needs no key, as going up. */
+async function encryptDownCheck(ctx: CodeMigrationContext): Promise<boolean> {
+  let found = false;
+  for (const [table, column] of SEALED_COLUMNS) {
+    const r = await ctx.client.query<{ v: string }>(`SELECT ${column} AS v FROM ${table} WHERE ${column} IS NOT NULL LIMIT 1`);
+    if (!r.rowCount) continue;
+    found = true;
+    const c = await ctx.cipher();
+    try { c.decrypt(r.rows[0]!.v); } catch (e) { throw new Error(`the data key cannot open ${table}.${column}: ${(e as Error).message}`); }
+  }
+  return found;
+}
+
 /** Puts the sealed values back in the plaintext columns. Text and audit metadata that were cleaned stay clean, and old pay-report snapshots stay gone. */
 async function encryptDown(ctx: CodeMigrationContext) {
+  if (!(await encryptDownCheck(ctx))) return;
   const c = await ctx.cipher();
   const open = <T>(v: string) => JSON.parse(c.decrypt(v)) as T;
   await batches(ctx, null, async (db) => {
@@ -162,5 +182,5 @@ async function encryptDown(ctx: CodeMigrationContext) {
 }
 
 export const CODE_MIGRATIONS: readonly CodeMigration[] = [
-  { name: '043_encrypt_l4_data.code', checksum: 'code:043:v1', up: encryptUp, down: encryptDown },
+  { name: '043_encrypt_l4_data.code', checksum: 'code:043:v1', up: encryptUp, down: encryptDown, checkDown: async (ctx) => { await encryptDownCheck(ctx); }, rollsBackWith: '044_data_policy_contract.sql' },
 ];
