@@ -16,8 +16,17 @@
 * Aadhaar: encrypted, last four only, off until `security.aadhaar_collection` is on. `security.manager_team_salaries`.
 * `docs/DATA_SECURITY.md`.
 
+* Argon2id passwords with upgrade from scrypt at sign-in, a password policy with a bundled leaked-password list, back-off by who is failing, a list of sessions with revoke one and log out everywhere, an idle timeout, token rotation.
+* Password reset and invitations by email. Email one-time codes (`MFA_METHODS=email`). `/auth/me` carries `mfa.suggested`. Security email that cannot be opted out of, including a new-device notice.
+* ClamAV scanning of every upload (`CLAMAV_HOST`, `CLAMAV_PORT`), metadata stripped from images. `EXPORT_RATE_LIMIT_PER_MINUTE`. `documents.payroll` and `payroll_related` on document categories. `hrms bootstrap --make-owner`, `--issue-link`.
+* `docs/AUTH.md`.
+
 ### Removed
 
+* MFA for privileged roles only, and the `security.mfa_enforcement` setting: the deployment decides, with `MFA_AVAILABLE` and `MFA_ENFORCED` (D45). `mfaRequired` and `privileged` in role listings.
+* `initialPassword` on `POST /tenant/users`: people choose their own from an invitation.
+* An administrator appointing a peer administrator (D40). `documents.read` for payroll managers and auditors (D43).
+* The account lock after failed sign-ins (`users.failed_logins` and `locked_until` are unused, and stay for a rollback).
 * Plaintext columns: `employee_salaries.amounts`, `annual_ctc`; `payroll_items.lines`, `gross`, `deductions`, `net`, `employer_cost`, `warnings`; `payroll_runs.totals`; `payroll_adjustments.amount`, `note`; `accounting_exports.total`; `report_snapshots.rows`, `totals`.
 * Amounts in loan, travel and expense approval summaries and notifications, in audit metadata, and in loan and travel error messages. Existing rows are scrubbed, which cannot be undone.
 * Stored snapshots of `payroll_cost` and `department_overview`, which were made at their owner's level. They are deleted by the migration.

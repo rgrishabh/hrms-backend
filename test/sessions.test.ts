@@ -32,6 +32,27 @@ describe('session cookie', () => {
   });
 });
 
+describe('a session in the cookie does not stand in the way of signing in or of a link', () => {
+  it('a session waiting for its code, with no CSRF token, can still sign in again or ask for a reset', async () => {
+    const a = await makeApp({ MFA_AVAILABLE: 'true', MFA_METHODS: 'totp' });
+    try {
+      const X = await createTenant(); const email = X.users.employee!.email;
+      await ownerQuery(`UPDATE users SET mfa_enabled_at=now(), mfa_method='totp', mfa_secret_enc='x' WHERE id=$1`, [X.users.employee!.id]);
+      const c = await Client.login(a, X.host, email);
+      expect((await c.get('/api/v1/employees')).json().error.code).toBe('mfa_required');
+      c.csrf = '';
+      expect((await c.post('/api/v1/auth/password/forgot', { email })).statusCode).toBe(200);
+      const old = c.cookie;
+      expect((await c.post('/api/v1/auth/login', { email, password: PASSWORD })).statusCode).toBe(200);
+      expect(c.cookie).not.toBe(old);
+      // Everything else still needs the code and the token.
+      expect((await c.get('/api/v1/employees')).json().error.code).toBe('mfa_required');
+      c.csrf = '';
+      expect((await c.post('/api/v1/auth/logout')).json().error.code).toBe('csrf_failed');
+    } finally { await a.close(); }
+  });
+});
+
 describe('idle and absolute limits', () => {
   it('an idle session ends, activity keeps it going, and the limit comes from the setting', async () => {
     const admin = await Client.login(app, T.host, T.users.admin!.email);

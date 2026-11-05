@@ -45,6 +45,8 @@ const schema = z.object({
   AUTH_RATE_LIMIT_PER_MINUTE: z.coerce.number().int().min(1).max(10000).default(20),
   // Sign-in attempts on one account per minute, whatever address they come from.
   AUTH_ACCOUNT_RATE_LIMIT_PER_MINUTE: z.coerce.number().int().min(1).max(10000).default(10),
+  // CSV, Excel and journal exports per user per minute. Per address, four times this.
+  EXPORT_RATE_LIMIT_PER_MINUTE: z.coerce.number().int().min(1).max(100000).default(30),
   SESSION_TTL_HOURS: z.coerce.number().int().min(1).max(24 * 30).default(12),
   COOKIE_SECURE: bool('true'),
   // Whose X-Forwarded-For to believe: false, a number of proxy hops in front of the app, or comma-separated proxy

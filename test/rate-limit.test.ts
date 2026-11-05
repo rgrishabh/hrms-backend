@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import type { FastifyInstance } from 'fastify';
-import { makeApp, createTenant, Client, ownerQuery, PASSWORD, type TenantFixture } from './helpers.js';
+import { makeApp, createTenant, Client, flags, ownerQuery, PASSWORD, type TenantFixture } from './helpers.js';
 
 let app: FastifyInstance; let T: TenantFixture;
 beforeAll(async () => { app = await makeApp({ AUTH_RATE_LIMIT_PER_MINUTE: '3' }); T = await createTenant(); });
@@ -65,6 +65,66 @@ describe('F-15 proxy trust and per-account login limits', () => {
     expect((await attempt(a, t.host, t.users.other!.email, '198.51.100.100', PASSWORD)).statusCode).toBe(200);
     const [{ locked }] = (await ownerQuery<{ locked: boolean }>(`SELECT locked_until IS NOT NULL AS locked FROM users WHERE id=$1`, [t.users.employee!.id])) as [{ locked: boolean }];
     expect(locked).toBe(false);
+    await a.close();
+  });
+});
+
+describe('tighter limits on what is worth abusing', () => {
+  const as = (a: FastifyInstance, c: Client, url: string, method: 'GET' | 'POST', ip: string, payload?: unknown) =>
+    a.inject({ method, url, payload: payload as never, headers: { host: c.host, cookie: c.cookie, 'x-csrf-token': c.csrf, 'x-forwarded-for': ip } });
+  const statuses = async (n: number, fn: (i: number) => Promise<{ statusCode: number }>) => { const out: number[] = []; for (let i = 0; i < n; i++) out.push((await fn(i)).statusCode); return out; };
+
+  it('an export per user: spreading over addresses does not help, and someone else is not affected', async () => {
+    const a = await makeApp({ ...flags('default,payroll,reports.advanced'), TRUST_PROXY: '1', EXPORT_RATE_LIMIT_PER_MINUTE: '3' });
+    const t = await createTenant();
+    const hr = await Client.login(a, t.host, t.users.hr!.email);
+    const other = await Client.login(a, t.host, t.users.payroll!.email);
+    const url = '/api/v1/reports/payroll_cost/export.csv';
+    const codes = await statuses(5, (i) => as(a, hr, url, 'GET', `198.51.100.${i}`));
+    expect(codes.slice(0, 3)).toEqual([200, 200, 200]);
+    expect(codes[3]).toBe(429);
+    expect((await as(a, other, url, 'GET', '198.51.100.50')).statusCode).toBe(200);
+    // An ordinary read by the limited person still works.
+    expect((await as(a, hr, '/api/v1/employees', 'GET', '198.51.100.1')).statusCode).toBe(200);
+    await a.close();
+  }, 20000);
+
+  it('an export per address: an office shares four times the per-user limit', async () => {
+    const a = await makeApp({ ...flags('default,payroll'), TRUST_PROXY: '1', EXPORT_RATE_LIMIT_PER_MINUTE: '1' });
+    const t = await createTenant();
+    const users = await Promise.all(['admin', 'hr', 'payroll'].map((k) => Client.login(a, t.host, t.users[k]!.email)));
+    const url = '/api/v1/reports/payroll_cost/export.csv';
+    const codes = await statuses(6, (i) => as(a, users[i % 3]!, url, 'GET', '198.51.100.9'));
+    expect(codes.slice(0, 3)).toEqual([200, 200, 200]);
+    expect(codes[5]).toBe(429);
+    await a.close();
+  }, 20000);
+
+  it('every export route has the limit', async () => {
+    const a = await makeApp(flags('default,payroll,reports.advanced,accounting_exports,expenses'));
+    const { isExportRoute } = await import('../src/core/http/limits.js');
+    const urls = a.featureRoutes.filter((r) => isExportRoute(r.method, r.url)).map((r) => r.url);
+    for (const u of ['/api/v1/payroll/runs/:id/bank.csv', '/api/v1/payroll/runs/:id/register.xlsx', '/api/v1/reports/:key/export.csv', '/api/v1/reports/snapshots/:id/export.xlsx', '/api/v1/accounting/payroll-runs/:id/export', '/api/v1/expenses/batches/:id/export.csv']) expect(urls, u).toContain(u);
+    await a.close();
+  });
+
+  it('OTP guesses per user: spreading over addresses does not get more', async () => {
+    const a = await makeApp({ TRUST_PROXY: '1', MFA_AVAILABLE: 'true', MFA_METHODS: 'totp' });
+    const t = await createTenant();
+    const c = await Client.login(a, t.host, t.users.employee!.email);
+    const codes = await statuses(12, (i) => as(a, c, '/api/v1/auth/mfa/enable', 'POST', `198.51.100.${i}`, { code: '000000' }));
+    expect(codes.slice(0, 10).every((x) => x === 400)).toBe(true);
+    expect(codes[10]).toBe(429);
+    await a.close();
+  });
+
+  it('changing a password per user', async () => {
+    const a = await makeApp({ TRUST_PROXY: '1' });
+    const t = await createTenant();
+    const c = await Client.login(a, t.host, t.users.employee!.email);
+    const codes = await statuses(7, (i) => as(a, c, '/api/v1/auth/password', 'POST', `198.51.100.${i}`, { currentPassword: 'not-the-password', newPassword: 'marble kettle orbit lantern' }));
+    expect(codes.slice(0, 5).every((x) => x === 400)).toBe(true);
+    expect(codes[5]).toBe(429);
     await a.close();
   });
 });

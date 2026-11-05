@@ -31,7 +31,7 @@ export async function makeApp(overrides: Record<string, string> = {}, opts: { ma
   const env = loadEnv({
     NODE_ENV: 'test', DATABASE_URL: TEST_APP_URL, COOKIE_SECURE: 'false', ...TEST_BRAND,
     ...flags('default,attendance.mobile,attendance.biometric'),
-    DATA_ENCRYPTION_KEY: Buffer.alloc(32, 7).toString('base64'), SESSION_TTL_HOURS: '24', AUTH_RATE_LIMIT_PER_MINUTE: '10000', AUTH_ACCOUNT_RATE_LIMIT_PER_MINUTE: '10000',
+    DATA_ENCRYPTION_KEY: Buffer.alloc(32, 7).toString('base64'), SESSION_TTL_HOURS: '24', AUTH_RATE_LIMIT_PER_MINUTE: '10000', AUTH_ACCOUNT_RATE_LIMIT_PER_MINUTE: '10000', EXPORT_RATE_LIMIT_PER_MINUTE: '10000',
     ...overrides,
   });
   const pool = createPool(env.DATABASE_URL, 5);

@@ -10,6 +10,7 @@ import { revokeOtherSessions, rotateSession, SESSION_COOKIE } from '../core/auth
 import { sendEmailOtp, verifyEmailOtp, type OtpSend } from '../core/auth/email-otp.js';
 import { notifyUsers } from '../core/notify/service.js';
 import { getMailer } from '../core/notify/mailer.js';
+import { perUserLimit } from '../core/http/limits.js';
 import type { PublicConfig } from '../config/installation.js';
 
 const MAX_FAILURES = 5;
@@ -26,6 +27,8 @@ export async function mfaRoutes(app: FastifyInstance, opts: { publicConfig: Publ
   const issuer = opts.publicConfig.product.name;
   const policy = mfaPolicyOf(env);
   const offers = (m: MfaMethod) => policy.methods.includes(m);
+  const guesses = perUserLimit(app, 'mfa-guess', 10);
+  const sends = perUserLimit(app, 'mfa-send', 5);
 
   const actor = (req: FastifyRequest) => {
     const u = req.ctx.user;
@@ -76,7 +79,7 @@ export async function mfaRoutes(app: FastifyInstance, opts: { publicConfig: Publ
       methods: policy.methods.map((method) => (method === 'email' && !getMailer() ? { method, usable: false, reason: NO_EMAIL } : { method, usable: true })) };
   });
 
-  app.post('/verify', { config: { rateLimit: { max: 10, timeWindow: '1 minute' } } }, async (req, reply) => {
+  app.post('/verify', { config: { rateLimit: { max: 10, timeWindow: '1 minute' } }, preHandler: guesses }, async (req, reply) => {
     const { u, tenantId, base } = actor(req);
     const { code } = z.object({ code: Code }).parse(req.body);
     if (!u.mfaPending) throw conflict('This session does not need a code');
@@ -140,7 +143,7 @@ export async function mfaRoutes(app: FastifyInstance, opts: { publicConfig: Publ
       });
     });
 
-    app.post('/enable', { config: { rateLimit: { max: 10, timeWindow: '1 minute' } } }, async (req, reply) => {
+    app.post('/enable', { config: { rateLimit: { max: 10, timeWindow: '1 minute' } }, preHandler: guesses }, async (req, reply) => {
       const { u, tenantId, base } = actor(req);
       const { code } = z.object({ code: Code }).parse(req.body);
       const { codes, rotated } = await withPlatformBypass(pool, async (db) => {
@@ -159,7 +162,7 @@ export async function mfaRoutes(app: FastifyInstance, opts: { publicConfig: Publ
 
   if (offers('email')) {
     /** Sends a code to the account's address, to prove it receives mail before relying on it. */
-    app.post('/email/setup', { config: { rateLimit: { max: 5, timeWindow: '1 minute' } } }, async (req, reply) => {
+    app.post('/email/setup', { config: { rateLimit: { max: 5, timeWindow: '1 minute' } }, preHandler: sends }, async (req, reply) => {
       const { u, tenantId, base } = actor(req);
       const s = await withPlatformBypass(pool, async (db) => {
         assertNotEnrolled(await loadMfa(db, u.userId));
@@ -171,7 +174,7 @@ export async function mfaRoutes(app: FastifyInstance, opts: { publicConfig: Publ
       return { sent: true };
     });
 
-    app.post('/email/enable', { config: { rateLimit: { max: 10, timeWindow: '1 minute' } } }, async (req, reply) => {
+    app.post('/email/enable', { config: { rateLimit: { max: 10, timeWindow: '1 minute' } }, preHandler: guesses }, async (req, reply) => {
       const { u, tenantId, base } = actor(req);
       const { code } = z.object({ code: Code }).parse(req.body);
       // A wrong code is kept: the guess must count, so the answer comes after the commit.
@@ -186,7 +189,7 @@ export async function mfaRoutes(app: FastifyInstance, opts: { publicConfig: Publ
     });
 
     /** Another code, for a sign-in in progress or for turning this off. */
-    app.post('/email/send', { config: { rateLimit: { max: 5, timeWindow: '1 minute' } } }, async (req, reply) => {
+    app.post('/email/send', { config: { rateLimit: { max: 5, timeWindow: '1 minute' } }, preHandler: sends }, async (req, reply) => {
       const { u, tenantId } = actor(req);
       if (u.mfaMethod !== 'email') throw conflict('This account does not use email codes');
       waitOr(reply, await withPlatformBypass(pool, (db) => sendEmailOtp(db, cipher, tenantId, u.userId, 'login')));
@@ -194,7 +197,7 @@ export async function mfaRoutes(app: FastifyInstance, opts: { publicConfig: Publ
     });
   }
 
-  app.post('/recovery-codes', { config: { rateLimit: { max: 5, timeWindow: '1 minute' } } }, async (req) => {
+  app.post('/recovery-codes', { config: { rateLimit: { max: 5, timeWindow: '1 minute' } }, preHandler: sends }, async (req) => {
     const { u, base } = actor(req);
     const { code } = z.object({ code: Code }).parse(req.body);
     const out = await withPlatformBypass(pool, async (db) => {
@@ -213,7 +216,7 @@ export async function mfaRoutes(app: FastifyInstance, opts: { publicConfig: Publ
     return { recoveryCodes: out };
   });
 
-  app.post('/disable', { config: { rateLimit: { max: 5, timeWindow: '1 minute' } } }, async (req, reply) => {
+  app.post('/disable', { config: { rateLimit: { max: 5, timeWindow: '1 minute' } }, preHandler: sends }, async (req, reply) => {
     const { u, tenantId, base } = actor(req);
     const body = z.object({ password: z.string().min(1), code: Code }).parse(req.body);
     if (policy.enforced) throw new AppError(403, 'mfa_required_by_deployment', 'Two-factor authentication is required on this installation; it cannot be turned off.');

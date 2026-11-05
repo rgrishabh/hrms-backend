@@ -19,6 +19,12 @@ export function effectiveMethod(p: MfaPolicy, enabledAt: unknown, method: string
   return method as MfaMethod;
 }
 
+/**
+ * Paths that do not act for the session in the cookie: someone at a sign-in or reset page, or following a link from an email, may well still hold
+ * one. They need no CSRF token, and no pending step of that session stands in their way. A cross-site form cannot send the cookie anyway (SameSite).
+ */
+export const SESSIONLESS_PATHS = new Set(['/api/v1/auth/login', '/api/v1/auth/password/forgot', '/api/v1/auth/password/reset', '/api/v1/auth/setup']);
+
 /** Paths usable while a session still needs its MFA code. */
 export const MFA_PENDING_ALLOWED = new Set(['/api/v1/auth/me', '/api/v1/auth/mfa/verify', '/api/v1/auth/mfa/email/send', '/api/v1/auth/logout']);
 /** Paths usable while a user must enrol before doing anything else. */

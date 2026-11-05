@@ -391,21 +391,27 @@ describe('email codes', () => {
     await allowAnother(T.users.employee!.id);
   });
 
-  it(`a code dies after ${OTP_MAX_ATTEMPTS} wrong guesses, even the right digits after that`, async () => {
-    const c = new Client(app, T.host);
-    await c.post('/api/v1/auth/login', { email: T.users.employee!.email, password: PASSWORD });
-    const code = await lastCode();
+  it(`a code dies after ${OTP_MAX_ATTEMPTS} wrong guesses across sessions, even the right digits after that`, async () => {
+    const X = await createTenant(); const email = X.users.employee!.email;
+    const a = await fresh(ON, { mailerOverride: true });
+    sent.length = 0;
+    const first = await Client.login(a, X.host, email);
+    await first.post('/api/v1/auth/mfa/email/setup');
+    await deliverOutbox(a.deps.pool, SILENT);
+    const enrolCode = sent.filter((m) => m.to === email).map((m) => /Your code is (\d{6})/.exec(m.text)).filter(Boolean).at(-1)![1]!;
+    expect((await first.post('/api/v1/auth/mfa/email/enable', { code: enrolCode })).statusCode).toBe(200);
+    await ownerQuery(`UPDATE email_otps SET created_at = created_at - interval '2 minutes' WHERE user_id=$1`, [X.users.employee!.id]);
+    // The code from this sign-in. A second sign-in inside the minute sends none, so both sessions guess at the same one.
+    const c = await Client.login(a, X.host, email);
+    await deliverOutbox(a.deps.pool, SILENT);
+    const code = sent.filter((m) => m.to === email).map((m) => /Your code is (\d{6})/.exec(m.text)).filter(Boolean).at(-1)![1]!;
     const wrong = code === '000000' ? '000001' : '000000';
-    for (let i = 0; i < 4; i++) expect((await c.post('/api/v1/auth/mfa/verify', { code: wrong })).statusCode).toBe(400);
-    const d = new Client(app, T.host);
-    await allowAnother(T.users.employee!.id);
-    await ownerQuery(`UPDATE email_otps SET consumed_at=NULL, attempts=${OTP_MAX_ATTEMPTS - 1} WHERE id = (SELECT id FROM email_otps WHERE user_id=$1 ORDER BY created_at DESC LIMIT 1)`, [T.users.employee!.id]);
-    await ownerQuery(`UPDATE users SET mfa_failures=0 WHERE id=$1`, [T.users.employee!.id]);
-    d.cookie = c.cookie; d.csrf = c.csrf;
-    await ownerQuery(`UPDATE sessions SET mfa_failures=0 WHERE user_id=$1`, [T.users.employee!.id]);
-    expect((await d.post('/api/v1/auth/mfa/verify', { code: wrong })).statusCode).toBe(400);
+    const d = new Client(a, X.host);
+    expect((await d.post('/api/v1/auth/login', { email, password: PASSWORD })).json().mfaDelivery).toBe('wait');
+    for (let i = 0; i < 3; i++) expect((await c.post('/api/v1/auth/mfa/verify', { code: wrong })).statusCode).toBe(400);
+    for (let i = 3; i < OTP_MAX_ATTEMPTS; i++) expect((await d.post('/api/v1/auth/mfa/verify', { code: wrong })).statusCode).toBe(400);
     expect((await d.post('/api/v1/auth/mfa/verify', { code })).statusCode).toBe(400);
-    await ownerQuery(`UPDATE users SET mfa_failures=0 WHERE id=$1`, [T.users.employee!.id]);
+    await a.close();
   });
 
   it('resending waits a minute, and stops after the hourly limit', async () => {

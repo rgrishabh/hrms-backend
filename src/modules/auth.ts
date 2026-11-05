@@ -8,6 +8,7 @@ import { clearLoginAccount, clearLoginPair, loginBlockedFor, loginKeys, recordLo
 import { audit } from '../core/audit/audit.js';
 import { AppError, badRequest, notFound, unauthorized } from '../core/http/errors.js';
 import { Uuid } from '../core/http/pagination.js';
+import { perUserLimit } from '../core/http/limits.js';
 import { getSettingValue } from '../core/settings/service.js';
 import { allOff, evaluateFeatures } from '../core/features/state.js';
 import { requireTenantHost } from '../core/http/context.js';
@@ -107,7 +108,7 @@ export async function authRoutes(app: FastifyInstance, opts: { publicConfig: Pub
       if (isNew) {
         await audit(db, { tenantId, actorId: u.id, action: 'auth.new_device', category: 'security', targetType: 'session', targetId: s.sessionId, requestId: req.id, ip: req.ip, userAgent: req.headers['user-agent'] });
         await notifyUsers(db, tenantId, [u.id], { kind: 'security.new_device', title: 'New sign-in to your account',
-          body: `From a browser we have not seen for this account, at address ${req.ip}${req.headers['user-agent'] ? ` (${req.headers['user-agent'].slice(0, 120)})` : ''}. If this was not you, change your password now and sign out your other sessions.`, link: '/account', actionLabel: 'Review account' });
+          body: `From a browser we have not seen for this account, at address ${req.ip}${req.headers['user-agent'] ? ` (${req.headers['user-agent'].replace(/[^\x20-\x7e]/g, '').slice(0, 120)})` : ''}. If this was not you, change your password now and sign out your other sessions.`, link: '/account', actionLabel: 'Review account' });
       }
       const method = effectiveMethod(mfaPolicy, u.mfa_on, u.mfa_method);
       // Email codes go out now, so the person has one by the time the next screen asks. An old one still pending is left alone by the resend limit.
@@ -169,7 +170,7 @@ export async function authRoutes(app: FastifyInstance, opts: { publicConfig: Pub
   });
 
   const PasswordBody = z.object({ currentPassword: z.string().min(1), newPassword: z.string().min(1).max(256) });
-  app.post('/auth/password', { config: { rateLimit: { max: Math.min(5, env.AUTH_RATE_LIMIT_PER_MINUTE), timeWindow: '1 minute' } } }, async (req, reply) => {
+  app.post('/auth/password', { config: { rateLimit: { max: Math.min(5, env.AUTH_RATE_LIMIT_PER_MINUTE), timeWindow: '1 minute' } }, preHandler: perUserLimit(app, 'password', 5) }, async (req, reply) => {
     const u = req.ctx.user;
     if (!u || !u.tenantId) throw unauthorized();
     const body = PasswordBody.parse(req.body);

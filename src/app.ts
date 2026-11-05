@@ -10,6 +10,7 @@ import { resolveHost } from './core/tenancy/resolve.js';
 import { loadSession, SESSION_COOKIE } from './core/auth/session.js';
 import { sha256, safeEqualHex } from './core/crypto/index.js';
 import { AppError } from './core/http/errors.js';
+import { isExportRoute, perUserLimit } from './core/http/limits.js';
 import type { AppDeps } from './core/http/context.js';
 import { initRuntime } from './core/runtime.js';
 import { withFeatures } from './core/features/state.js';
@@ -17,7 +18,7 @@ import { withMode } from './core/policy/mode.js';
 import { LOG_REDACT_PATHS, logSerializers } from './core/logging.js';
 import type { FeatureRoute } from './core/features/routes.js';
 import { authRoutes, PASSWORD_CHANGE_ALLOWED } from './modules/auth.js';
-import { MFA_PENDING_ALLOWED, MFA_ENROLL_ALLOWED, mfaPolicyOf } from './core/auth/mfa.js';
+import { MFA_PENDING_ALLOWED, MFA_ENROLL_ALLOWED, SESSIONLESS_PATHS, mfaPolicyOf } from './core/auth/mfa.js';
 import { tenantAdminRoutes } from './modules/tenant/routes.js';
 import { orgRoutes } from './modules/org/routes.js';
 import { employeeRoutes } from './modules/employees/routes.js';
@@ -76,10 +77,19 @@ export async function buildApp(deps: AppDeps): Promise<FastifyInstance> {
   const featureRoutes: FeatureRoute[] = [];
   let mounting: readonly string[] | null = null;
   app.decorate('featureRoutes', featureRoutes);
+  // Exports carry many people's data and cost the most, so each gets a tighter limit, per address and per user, wherever it is declared.
+  // Before the rate limit plugin registers, so that its own hook sees the config.
+  const exportsPerUser = () => perUserLimit(app, 'export', env.EXPORT_RATE_LIMIT_PER_MINUTE);
+  let exportLimit: ReturnType<typeof exportsPerUser> | null = null;
   app.addHook('onRoute', (r) => {
     for (const method of [r.method].flat()) {
       if (method === 'HEAD' || method === 'OPTIONS') continue;
       featureRoutes.push({ method, url: r.url, requires: [...(mounting ? [mounting] : []), ...(r.config?.features ? [r.config.features] : [])] });
+      if (isExportRoute(method, r.url)) {
+        r.config = { ...r.config, rateLimit: { max: env.EXPORT_RATE_LIMIT_PER_MINUTE * 4, timeWindow: '1 minute' } };
+        exportLimit ??= exportsPerUser();
+        r.preHandler = [...[r.preHandler ?? []].flat(), exportLimit];
+      }
     }
   });
   const mfaPolicy = mfaPolicyOf(env);
@@ -128,6 +138,7 @@ export async function buildApp(deps: AppDeps): Promise<FastifyInstance> {
     const token = req.cookies[SESSION_COOKIE];
     if (token && host.kind === 'tenant') {
       req.ctx.user = await loadSession(deps.pool, token, host.tenant.id, mfaPolicy);
+      if (SESSIONLESS_PATHS.has(req.url.split('?')[0]!)) return;
       // CSRF: any state-changing request authenticated by cookie must carry the session-bound token.
       if (req.ctx.user && UNSAFE.has(req.method)) {
         const header = req.headers['x-csrf-token'];

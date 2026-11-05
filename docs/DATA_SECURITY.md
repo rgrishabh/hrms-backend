@@ -110,6 +110,7 @@ AES-256-GCM at application level. Each token names its key: `v2.<keyId>.<iv>.<ta
 | Adjustment amount and note | `payroll_adjustments.data_enc` |
 | Journal total | `accounting_exports.total_enc` |
 | Report rows and totals | `report_snapshots.data_enc` |
+| Codes and links in mail not yet sent | `email_outbox.secret_enc`, cleared after sending |
 
 F&F is held in the same run and item tables. Loans stay plaintext under access control. Candidate CTC, UAN, PF and ESI numbers also stay plaintext.
 
