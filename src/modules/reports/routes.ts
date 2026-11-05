@@ -9,6 +9,8 @@ import { badRequest, conflict, notFound } from '../../core/http/errors.js';
 import { csv } from '../../core/http/csv.js';
 import { xlsx, XLSX_TYPE } from '../../core/http/xlsx.js';
 import { Uuid } from '../../core/http/pagination.js';
+import { loadPdfContext, loadPdfIdentity, pdfHeaders } from '../../core/pdf/writer.js';
+import { ReportTable, type TableInput } from '../../core/pdf/table.js';
 import { allOff, evaluateFeatures } from '../../core/features/state.js';
 import { orgToday } from '../competency/service.js';
 import { REPORTS, REPORT_MAP, type Column, type Row } from './registry.js';
@@ -34,6 +36,18 @@ function sendCsv(reply: FastifyReply, name: string, columns: Column[], rows: Row
   if (totals) lines.push(columns.map((c, i) => (i === 0 ? 'Total' : cell(c.type, totals[c.key]))));
   return reply.header('content-type', 'text/csv; charset=utf-8').header('content-disposition', `attachment; filename="${name}.csv"`)
     .header('cache-control', 'private, no-store').send('﻿' + csv(lines));
+}
+
+/**
+ * The report as a PDF, as a stream: the first page is drawn before the answer starts, so a mistake there is still an error answer. After that a failure
+ * can only break the download, which a reader notices, and is logged. Nothing here holds a database connection.
+ */
+async function sendPdf(req: FastifyRequest, reply: FastifyReply, a: TenantActor, name: string, input: TableInput) {
+  const identity = await a.tx((db) => loadPdfIdentity(db, a.tenantId));
+  const table = new ReportTable(await loadPdfContext(req.server, identity), input);
+  table.start();
+  table.finish().catch((err: unknown) => { req.log.error({ err }, 'report pdf failed while drawing'); table.w.doc.destroy(err instanceof Error ? err : new Error('report pdf failed')); });
+  return pdfHeaders(reply, `${name}.pdf`).send(table.w.doc);
 }
 
 const SavedBody = z.object({ reportKey: z.string().max(60), name: z.string().trim().min(2).max(100), params: z.record(z.string(), z.union([z.string(), z.number()])).default({}) });
@@ -213,13 +227,15 @@ export async function reportRoutes(app: FastifyInstance) {
     await auditSnapshot(req, a, s, 'read');
     return { id: s.id, key: s.report_key, name: s.name, params: s.params, scope: s.scope, columns: s.columns, rows: s.rows, totals: s.totals, notes: s.notes, generatedAt: s.generated_at };
   });
-  for (const format of ['csv', 'xlsx'] as const) app.get(`/snapshots/:id/export.${format}`, { schema: { params: IdParams } }, async (req, reply) => {
+  for (const format of ['csv', 'xlsx', 'pdf'] as const) app.get(`/snapshots/:id/export.${format}`, { schema: { params: IdParams } }, async (req, reply) => {
     const a = tenantActor(req);
     const { id } = IdParams.parse(req.params);
     const s = await loadSnapshot(a, id);
     await a.tx((db) => audit(db, { ...a.auditBase, action: 'reports.exported', category: 'access', targetType: 'report_snapshot', targetId: id, metadata: { report: s.report_key, rows: s.rows.length, format } }));
     await auditSnapshot(req, a, s, 'export');
-    const name = `${s.report_key}-${new Date(s.generated_at).toISOString().slice(0, 10)}`;
+    const generated = new Date(s.generated_at).toISOString().slice(0, 10);
+    const name = `${s.report_key}-${generated}`;
+    if (format === 'pdf') return sendPdf(req, reply, a, name, { title: s.name, subtitle: [`Generated ${generated}`], notes: s.notes, columns: s.columns, rows: s.rows, totals: s.totals });
     return format === 'csv' ? sendCsv(reply, name, s.columns, s.rows, s.totals) : sendXlsx(reply, name, s.name, s.columns, s.rows, s.totals);
   });
 
@@ -241,14 +257,15 @@ export async function reportRoutes(app: FastifyInstance) {
     return { key: def.key, name: def.name, generatedAt: new Date().toISOString(), ...r };
   });
 
-  /** CSV or Excel export: audited (who exported which report with which parameters, in which format). */
-  for (const format of ['csv', 'xlsx'] as const) app.get(`/:key/export.${format}`, { schema: { params: ReportKeyParams, querystring: ReportParams } }, async (req, reply) => {
+  /** CSV, Excel or PDF export: audited (who exported which report with which parameters, in which format). */
+  for (const format of ['csv', 'xlsx', 'pdf'] as const) app.get(`/:key/export.${format}`, { schema: { params: ReportKeyParams, querystring: ReportParams } }, async (req, reply) => {
     const key = reportKey(req);
     const a = tenantActor(req);
-    const { def, params, today, columns, rows, totals, scope, excluded, subjects } = await a.tx((db) => runReport(db, a.tenantId, key, req.query, viewer(a), { reveal: true }));
+    const { def, params, today, columns, rows, totals, scope, excluded, subjects, notes } = await a.tx((db) => runReport(db, a.tenantId, key, req.query, viewer(a), { reveal: true }));
     if (def.l4) await a.tx((db) => auditL4(db, readContext(req, a), 'export', `reports.${def.key}`, (subjects ?? []).map((employeeId) => ({ employeeId, fields: ['pay'] }))));
     await a.tx((db) => audit(db, { ...a.auditBase, userAgent: readDevice(req).userAgent, action: 'reports.exported', category: 'access', targetType: 'report', targetId: def.key, metadata: { params, scope, rows: rows.length, format, excluded: excluded ?? 0 } }));
     reply.header('x-excluded-subjects', String(excluded ?? 0));
+    if (format === 'pdf') return sendPdf(req, reply, a, `${def.key}-${today}`, { title: def.name, subtitle: [`Generated ${today}`, Object.entries(params).map(([k, v]) => `${k}: ${v}`).join('  ·  ')].filter(Boolean), notes, columns, rows, totals });
     return format === 'csv' ? sendCsv(reply, `${def.key}-${today}`, columns, rows, totals) : sendXlsx(reply, `${def.key}-${today}`, def.name, columns, rows, totals);
   });
 }
