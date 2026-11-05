@@ -892,7 +892,8 @@ export async function recruitmentRoutes(app: FastifyInstance) {
           : (
               await db.query(
                 `SELECT o.id, o.designation, o.employment_type, o.annual_ctc, o.joining_date::text, o.probation_months, o.status,
-          o.above_budget, o.notes, o.created_at, o.approved_at, o.sent_at, o.responded_at, o.employee_id, b.name AS branch_name
+          o.above_budget, o.notes, o.created_at, o.approved_at, o.sent_at, o.responded_at, o.employee_id, b.name AS branch_name,
+          o.legal_entity_id, o.branch_id, o.department_id, o.contract_end_date::text
         FROM job_offers o JOIN branches b ON b.tenant_id=o.tenant_id AND b.id=o.branch_id WHERE o.tenant_id=$1 AND o.application_id=$2 ORDER BY o.created_at DESC`,
                 [a.tenantId, id],
               )

@@ -273,6 +273,7 @@ describe('separations', () => {
     await person(T, 'aud', ['auditor', 'employee']);
     await person(T, 'exec', ['hr_executive', 'employee']);
     await person(T, 'fin', ['finance_manager', 'employee']);
+    await person(T, 'finleaver', ['finance_manager', 'employee']);
     await person(T, 'emp', ['employee'], { managerId: T.users.mgr!.employeeId });
     await person(T, 'emp2', ['employee']);
     await person(T, 'hrleaver', ['hr_admin', 'employee']);
@@ -308,6 +309,20 @@ describe('separations', () => {
     await ownerQuery(`UPDATE separations SET status='approved', approved_lwd=$2 WHERE id=$1`, [id, addDays(today, 40)]);
     const aud = await as(T, 'aud');
     expect((await aud.post(`/api/v1/lifecycle/separations/${id}/exit-interview`, { answers: { why: 'Overwritten' } })).statusCode).toBe(403);
+  });
+
+  it('H-1 exit interview: HR who cannot see the recorded answers cannot replace them, and may record when nothing is on file', async () => {
+    const id = await resign('finleaver');
+    await ownerQuery(`UPDATE separations SET status='approved', approved_lwd=$2 WHERE id=$1`, [id, addDays(today, 40)]);
+    const exec = await as(T, 'exec');
+    const before = (await exec.get(`/api/v1/lifecycle/separations/${id}`)).json();
+    expect(before.exit_interview).toBeUndefined();
+    expect(before.exit_interview_recorded).toBe(false);
+    expect((await exec.post(`/api/v1/lifecycle/separations/${id}/exit-interview`, { answers: { why: 'Taken down on paper' } })).statusCode).toBe(200);
+    expect((await exec.get(`/api/v1/lifecycle/separations/${id}`)).json().exit_interview_recorded).toBe(true);
+    expect((await exec.post(`/api/v1/lifecycle/separations/${id}/exit-interview`, { answers: { why: 'Over the top' } })).statusCode).toBe(409);
+    const [stored] = await ownerQuery<{ exit_interview: { why: string } }>(`SELECT exit_interview FROM separations WHERE id=$1`, [id]);
+    expect(stored!.exit_interview.why).toBe('Taken down on paper');
   });
 
   it('F-109 HR cannot start a termination of someone at or above their level', async () => {

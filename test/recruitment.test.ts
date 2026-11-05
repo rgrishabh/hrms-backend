@@ -211,6 +211,9 @@ describe('offers and hire', () => {
     const o = await hr.post(`/api/v1/recruitment/applications/${appId}/offers`, body);
     expect(o.json()).toMatchObject({ aboveBudget: true });
     offerId = o.json().id;
+    // PUT replaces the whole offer, so what the application answers must carry everything needed to send it back.
+    const saved = (await hr.get(`/api/v1/recruitment/applications/${appId}?reveal=1`)).json().offers[0];
+    expect(saved).toMatchObject({ legal_entity_id: T.legalEntityId, branch_id: T.branchId, department_id: T.deptId, contract_end_date: null });
     expect((await hr.post(`/api/v1/recruitment/applications/${appId}/offers`, body)).statusCode).toBe(409); // one live offer
     expect((await hr.post(`/api/v1/recruitment/offers/${offerId}/submit`)).statusCode).toBe(200);
     const inbox = (await hrHead.get('/api/v1/approvals/inbox')).json().items.find((x: { entity_id: string }) => x.entity_id === offerId);

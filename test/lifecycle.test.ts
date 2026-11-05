@@ -177,9 +177,20 @@ describe('separations', () => {
   });
 
   it('exit interview is visible to HR only; completion needs the LWD and every clearance task; then access ends', async () => {
+    expect((await emp.get(`/api/v1/lifecycle/separations/${sepId}`)).json().exit_interview_recorded).toBe(false);
     expect((await emp.post(`/api/v1/lifecycle/separations/${sepId}/exit-interview`, { answers: { reason: 'Higher studies', wouldReturn: 'Yes' } })).statusCode).toBe(200);
     expect((await emp.get(`/api/v1/lifecycle/separations/${sepId}`)).json().exit_interview).toBeUndefined();
     expect((await hr.get(`/api/v1/lifecycle/separations/${sepId}`)).json().exit_interview.reason).toBe('Higher studies');
+    // Saving never erases what the saver cannot see: the leaver's blank form cannot replace answers hidden from them.
+    expect((await emp.get(`/api/v1/lifecycle/separations/${sepId}`)).json().exit_interview_recorded).toBe(true);
+    const overwrite = await emp.post(`/api/v1/lifecycle/separations/${sepId}/exit-interview`, { answers: { reason: 'Blank form' } });
+    expect(overwrite.statusCode).toBe(409);
+    expect(problem(overwrite).detail).toMatch(/already recorded/);
+    expect((await hr.get(`/api/v1/lifecycle/separations/${sepId}`)).json().exit_interview).toMatchObject({ reason: 'Higher studies', wouldReturn: 'Yes' });
+    expect((await hr.get(`/api/v1/lifecycle/separations/${sepId}`)).json().exit_interview_recorded).toBe(true);
+    // Someone who sees the answers can still correct them.
+    expect((await hr.post(`/api/v1/lifecycle/separations/${sepId}/exit-interview`, { answers: { reason: 'Higher studies abroad', wouldReturn: 'Yes' } })).statusCode).toBe(200);
+    expect((await hr.get(`/api/v1/lifecycle/separations/${sepId}`)).json().exit_interview.reason).toBe('Higher studies abroad');
     expect((await other.get(`/api/v1/lifecycle/separations/${sepId}`)).statusCode).toBe(404);
     expect(problem(await hr.post(`/api/v1/lifecycle/separations/${sepId}/complete`, { rehireEligible: true })).detail).toMatch(/last working day/);
     await ownerQuery(`UPDATE separations SET approved_lwd=$2::date - 1, notice_date=$2::date - 31 WHERE id=$1`, [sepId, today]);

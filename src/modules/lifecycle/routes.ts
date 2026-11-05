@@ -645,6 +645,8 @@ export async function lifecycleRoutes(app: FastifyInstance) {
         return {
           ...(l3 || decides ? s : maskFields(s, ['reason', 'fnf_note'])),
           exit_interview: hr && l3 ? s.exit_interview : undefined,
+          // Whether answers are on file, without the answers: a form the reader cannot fill from them must not replace them.
+          exit_interview_recorded: hr || emp.user_id === a.user.userId ? s.exit_interview !== null : undefined,
           employee: { id: emp.id, name: emp.name, status: emp.status },
           checklist: checklist ? await checklistDetail(db, a, checklist.id) : null,
           leaveBalances: leave,
@@ -727,9 +729,15 @@ export async function lifecycleRoutes(app: FastifyInstance) {
       const { id } = IdParams.parse(req.params);
       const b = SeparationsExitInterviewBody.parse(req.body);
       return a.tx(async (db) => {
-        const { s, emp } = await loadSeparation(db, a, id, true);
+        const { s, emp, hr } = await loadSeparation(db, a, id, true);
         if (!a.has('lifecycle.manage') && emp.user_id !== a.user.userId) throw forbidden('Only the employee or HR can record the exit interview');
         if (!['approved', 'completed'].includes(s.status)) throw conflict('The exit interview is recorded after the separation is approved');
+        // This replaces every answer, so only someone shown them may do it (D71). The same test as the read above.
+        const seesAnswers = hr && (await subjectVisible(db, a.tenantId, await policyViewer(db, a.tenantId, a.user), emp.id, l3RowFilter));
+        if (!seesAnswers) {
+          const on = await db.query(`SELECT 1 FROM separations WHERE tenant_id=$1 AND id=$2 AND exit_interview IS NOT NULL`, [a.tenantId, id]);
+          if (on.rowCount) throw conflict('The exit interview is already recorded, and only HR above this person can change it');
+        }
         await db.query(`UPDATE separations SET exit_interview=$3 WHERE tenant_id=$1 AND id=$2`, [
           a.tenantId,
           id,

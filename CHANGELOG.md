@@ -6,6 +6,14 @@
 
 * `PUT /api/v1/recruitment/candidates/{id}/resume` (`recruitment.manage`): add or replace the resume of an active candidate, audited as `recruitment.resume_replaced`. The replaced file is deleted from storage.
 
+### Contract changes in batch H
+
+No route or field was renamed or removed.
+
+* `GET /recruitment/applications/:id`: `offers[]` also has `legal_entity_id`, `branch_id`, `department_id` and `contract_end_date`.
+* `GET /lifecycle/separations/:id`: new `exit_interview_recorded`, for HR and the person. `exit_interview` in the document is now a map of strings: it named two keys.
+* Newly refused: `POST /lifecycle/separations/:id/exit-interview` over existing answers by someone not shown them (409).
+
 ### Contract changes in batch G
 
 No route or field was renamed or removed.

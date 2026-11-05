@@ -491,3 +491,13 @@ So drawing the largest report allowed costs under a second of CPU, and yielding 
 **Decision.** The first hook, before anything waits, keeps `req.clientAddress`; limits, sessions and the audit trail read that. If it is already gone, which leaves nobody to answer, the request counts in one shared budget, `no-address`. Addresses go through the plugin's `normalizeIP`.
 
 **Reason.** A dropped request is not an error, and hanging up must not be a way to spend no budget. Since `limitKey` replaced the plugin's own generator it had also stopped normalizing, so an IPv6 client had a new budget per address of its network: restored here.
+
+## D71 — An exit interview cannot be saved by someone who cannot read it
+
+**Context.** `exit_interview` is L3, shown to HR with reach over the person (F-107). The leaver and HR without reach can still post, because the leaver is the one being interviewed. A post replaces all answers, so their blank form erased what they could not see.
+
+**Options.** Merge by key: an answer to the same question still overwrites an answer the saver never saw. Open the answers to the leaver: a wider read than D39 allows, and HR's notes are in the same record. Refuse a save over existing answers from anyone not shown them, as the masked F&F note does on screen.
+
+**Decision.** Refuse, in the API (409), and the screen disables the button and says why. Nothing on file: anyone allowed may record. `exit_interview_recorded` is sent to HR and the person, not the manager, who has no use for it.
+
+**Reason.** The rule belongs in the API, as a disabled button protects nobody calling the route. The cost is that a leaver cannot amend their own answers after saving and has to ask HR. Existence is all it discloses, and only to those who could already post.

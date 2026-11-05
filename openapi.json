@@ -42600,11 +42600,26 @@
                               "null"
                             ]
                           },
+                          "branch_id": {
+                            "type": "string"
+                          },
                           "branch_name": {
                             "type": "string"
                           },
+                          "contract_end_date": {
+                            "type": [
+                              "string",
+                              "null"
+                            ]
+                          },
                           "created_at": {
                             "type": "string"
+                          },
+                          "department_id": {
+                            "type": [
+                              "string",
+                              "null"
+                            ]
                           },
                           "designation": {
                             "type": "string"
@@ -42622,6 +42637,9 @@
                             "type": "string"
                           },
                           "joining_date": {
+                            "type": "string"
+                          },
+                          "legal_entity_id": {
                             "type": "string"
                           },
                           "masked": {
@@ -42665,13 +42683,17 @@
                           "above_budget",
                           "annual_ctc",
                           "approved_at",
+                          "branch_id",
                           "branch_name",
+                          "contract_end_date",
                           "created_at",
+                          "department_id",
                           "designation",
                           "employee_id",
                           "employment_type",
                           "id",
                           "joining_date",
+                          "legal_entity_id",
                           "notes",
                           "probation_months",
                           "responded_at",
@@ -48024,32 +48046,20 @@
                       "anyOf": [
                         {
                           "type": "object",
-                          "properties": {
-                            "_at": {
-                              "type": "string"
-                            },
-                            "_recorded_by": {
-                              "type": "string"
-                            },
-                            "reason": {
-                              "type": "string"
-                            },
-                            "wouldReturn": {
-                              "type": "string"
-                            }
+                          "propertyNames": {
+                            "type": "string"
                           },
-                          "required": [
-                            "_at",
-                            "_recorded_by",
-                            "reason",
-                            "wouldReturn"
-                          ],
-                          "additionalProperties": false
+                          "additionalProperties": {
+                            "type": "string"
+                          }
                         },
                         {
                           "type": "null"
                         }
                       ]
+                    },
+                    "exit_interview_recorded": {
+                      "type": "boolean"
                     },
                     "fnf_note": {
                       "type": [
