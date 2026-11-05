@@ -48,6 +48,8 @@ Modules: `payroll` (components, salaries, runs, exports), `payroll.payslips` (em
 - Bank file: full account numbers only with `employees.bank.read`, otherwise masked.
 - PF and ESI contribution files: inputs to the portal formats. Check them against the current ECR / ESI upload specification before uploading.
 
+**Payslip PDF:** `GET /payroll/payslips/:id/payslip.pdf`, under the same rule as the JSON route, with feature `payroll.payslips`: the employee's own once final and not held, or anyone with a pay permission above them. For staff, a held slip or an unfinished run says `ON HOLD` or `NOT FINAL` on the page. It shows the brand, employer details from Settings, Company, earnings and deductions, and PAN and account number as the last four. Employer contributions are left off. Amounts print with the ISO code, `INR 68,200.00`, since the standard PDF fonts have no rupee sign. Audited as `l4.export`, one row, and limited as an export. See D52, including what happens to names the fonts cannot draw.
+
 **Held pay:** an item on hold stays out of the bank file and payslips, and a loan instalment in it stays in progress, not recovered, so the loan does not close. After finalize, a `payroll.approve` holder releases it (`POST /payroll/runs/:id/items/:employeeId/release`, with a reason): the payslip appears, loans are re-checked, and the money goes out in `bank-released.csv` while `bank.csv` stays as it was.
 
 **Stale results:** finalize refuses a run computed before attendance was locked, computed by an older calculation version, or (F&F) computed before the leaver's attendance last changed. `POST /payroll/runs/:id/reopen` takes an approved run back to draft to recompute and approve again.
@@ -77,7 +79,7 @@ Modules: `payroll` (components, salaries, runs, exports), `payroll.payslips` (em
 
 ## Not included
 
-Form 16 / 24Q / ECR file generation, investment declarations and proofs, loans and advances, bonus and gratuity calculators, multi-period arrears computation, payslip PDF (the browser print view is provided), and accounting journal export.
+Form 16 / 24Q / ECR file generation, investment declarations and proofs, loans and advances, bonus and gratuity calculators, multi-period arrears computation, and accounting journal export.
 
 ## Overtime
 

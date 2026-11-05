@@ -49,6 +49,9 @@ Base path `/api/v1`. JSON in and out. Each installation serves one organization;
 | POST `/payroll/runs/:id/reopen` | `payroll.manage` | Approved run back to draft |
 | POST `/payroll/runs/:id/items/:employeeId/release` | `payroll.approve` | Release held pay after finalize |
 | GET `/payroll/runs/:id/bank-released.csv` | `payroll.read` | Held pay released after finalize |
+| GET `/payroll/payslips/:id/payslip.pdf` | Own (`payslips.self`, final and not held), or a pay permission above them | Branded PDF, `payslip-<yyyy-mm>.pdf`; 404 otherwise, or with `payroll.payslips` off; audited `l4.export`; limited as an export |
+| GET `/lifecycle/employees/:id/letters/appointment.pdf` | `employees.manage`, above them | With `core.onboarding`. `?salary=1` adds the annual CTC only for a pay permission above them (then `l4.export`); `x-salary-included` says whether it did. Audited `lifecycle.letter_issued` |
+| GET `/lifecycle/employees/:id/letters/experience.pdf` · `relieving.pdf` | `employees.manage` above them, or the person (`lifecycle.self`) | With `core.offboarding`. 409 before the last working day of an approved separation, and for a relieving letter before it is completed. Audited `lifecycle.letter_issued` |
 | POST `/approvals/:id/reassign` | `approvals.escalations`, or `users.manage` when nobody can act | Hand the active step to a named person |
 | GET `/employees/:id/profile` | profile.self (own) / employees.read | Personal details `{sections: {contacts, addresses, nominees, education, experience}, pending, missing, edit}`; see EMPLOYEE_RECORD.md |
 | PUT `/employees/:id/profile/:section` | employees.manage / profile.self (own) | Replace a section `{items, note?}`: applied (200), or for the employee's own nominees, education and employment history a change for HR approval (202 `{changeId, approvalId}`) |
@@ -105,7 +108,7 @@ Base path `/api/v1`. JSON in and out. Each installation serves one organization;
 | GET / POST `/reports/saved` · DELETE `/reports/saved/:id` | can run the report | My saved reports `{reportKey, name, params}` |
 | GET `/reports/saved/:id/recipients` | owner | Who may receive it (organization-wide access) |
 | PUT / DELETE `/reports/saved/:id/schedule` | owner | `{frequency, weekday?, dayOfMonth?, period, recipientIds, enabled}`; recipients need organization-wide access |
-| GET `/reports/snapshots` · `/reports/snapshots/:id` · `/reports/snapshots/:id/export.csv` / `.xlsx` | recipient with access | Scheduled reports sent to me |
+| GET `/reports/snapshots` · `/reports/snapshots/:id` · `/reports/snapshots/:id/export.csv` / `.xlsx` / `.pdf` | recipient with access | Scheduled reports sent to me |
 | **Overtime** (module `overtime`; see OVERTIME.md) | | |
 | GET `/overtime/eligible` | overtime.self | My days with recorded overtime still to claim, and the payout options |
 | POST `/overtime/claims` | overtime.self | Claim `{workDate, minutes, payout, reason}` → manager, then HR approval |
@@ -121,4 +124,4 @@ Base path `/api/v1`. JSON in and out. Each installation serves one organization;
 | **Reports** (see REPORTS.md) | | |
 | GET `/reports` | session | Reports the caller may run (permission + module), with `scope` (`all` or `team`) and parameter definitions with defaults |
 | GET `/reports/:key?…params` | the report's permissions | `{columns, rows, totals, notes, scope, params, truncated}`; ≤ 5000 rows |
-| GET `/reports/:key/export.csv?…params` · `/reports/:key/export.xlsx?…params` | the report's permissions | Same data as CSV (UTF-8 BOM, formulas neutralized) or Excel (typed columns, totals; text never a formula); `no-store`; audited `reports.exported` with the format |
+| GET `/reports/:key/export.csv?…params` · `/reports/:key/export.xlsx?…params` · `/reports/:key/export.pdf?…params` | the report's permissions | Same data as CSV (UTF-8 BOM, formulas neutralized), Excel (typed columns, totals; text never a formula) or PDF (landscape, header on every page, long text cut with a note); `no-store`; audited `reports.exported` with the format |

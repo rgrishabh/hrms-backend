@@ -9,6 +9,8 @@
 
 ### Added
 
+* PDF documents, branded from Layer 2 and Settings, Company (D52): `GET /payroll/payslips/:id/payslip.pdf`; `GET /lifecycle/employees/:id/letters/appointment.pdf`, `experience.pdf`, `relieving.pdf`; `GET /reports/:key/export.pdf` and `/reports/snapshots/:id/export.pdf`. All audited, and counted as exports for the rate limit. Amounts print with the ISO currency code. Adds `pdfkit`.
+
 * `npm run openapi` writes `openapi.json` from the code with no database. CI publishes it as an artifact. Every route declares its input, permission and feature metadata.
 * `REDIS_URL`: optional cache for settings and organization lookups, invalidated on write. Without it, or with it down, the app reads the database.
 * `BRAND_LOGO_DARK_URL`, `BRAND_FONT_FAMILY`, `BRAND_LOCALE`, `S3_ENDPOINT` for MinIO, CORS limited to `BRAND_DOMAIN`. Amounts in messages follow `BRAND_CURRENCY` and `BRAND_LOCALE`; payslips carry the brand.

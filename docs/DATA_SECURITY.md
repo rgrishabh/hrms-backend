@@ -51,8 +51,10 @@ With several roles the highest floor and highest ceiling count. Employee and man
 | Salaries, payslips, statutory, bank, loans, F&F suggestions | Subject out of reach: 404. Otherwise masked, or revealed and audited |
 | `GET /payroll/runs`, `/runs/:id`, compute | Hidden people are left out of items and totals; `excluded` gives the count |
 | Register CSV and XLSX | Hidden people left out; `x-excluded-subjects` header gives the count |
+| Payslip PDF | The same rule as the payslip API: 404 out of reach, a held or unfinished slip 404 for the employee. Always `l4.export`, one row |
+| Letters | HR above them; the person for their own experience and relieving letters. Salary on an appointment letter needs the L4 rule and a pay permission, and is then `l4.export` |
 | Bank, bank-released, PF, ESI files; reimbursement bank file; journal and its export | Whole or refused: 403 `requires_higher_level` (D38) |
-| `payroll_cost`, `department_overview`, their exports | Added up in Node over visible people, with `excluded` and a note. A group with someone hidden and fewer than 3 visible people has its amounts withheld, and they leave the totals too |
+| `payroll_cost`, `department_overview`, their exports, including PDF | Added up in Node over visible people, with `excluded` and a note. A group with someone hidden and fewer than 3 visible people has its amounts withheld, and they leave the totals too |
 | Scheduled reports | A report with pay is run again per recipient at their level and sealed for them. A reader whose level has since dropped gets 404 |
 | Audit views | Amount and identity keys are removed when written, were removed from old rows by the migration, and are removed again on read |
 | Notifications, email, approval summaries | No figures: callers no longer write them, and `scrubAmounts` removes what gets through |
@@ -61,7 +63,7 @@ With several roles the highest floor and highest ceiling count. Employee and man
 | Documents | Level check on HR access, including the direct download URL |
 | Recruitment CTC | `recruitment.compensation`, then masked unless revealed. Candidates have no level |
 
-No payslip file and no PDF export exist: printing a payslip happens in the browser from the payslip API.
+**Files.** Payslips, letters and report exports exist as PDF (D52). A file shows the figures, so reading one is audited before the first byte leaves. PAN and bank number print as the last four at most. File names, URLs and the document's title hold no name, figure or identifier: `payslip-2026-01.pdf`. Responses are `Cache-Control: private, no-store`. Nothing is stored: each file is drawn for its request. Not stored means not revocable once downloaded: a PDF on someone's disk is outside these controls.
 
 ## Masking
 
