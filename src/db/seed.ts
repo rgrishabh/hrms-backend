@@ -1,4 +1,5 @@
 import { contentHash } from '../modules/policies/routes.js';
+import { say, complain } from './cli-output.js';
 import pg from 'pg';
 import { resolveFeatures } from '../core/features/registry.js';
 import { hashPassword } from '../core/crypto/index.js';
@@ -30,7 +31,7 @@ async function main() {
     await c.query('DROP SCHEMA IF EXISTS public CASCADE');
     await c.query('CREATE SCHEMA public');
     await c.end();
-    console.log('local dev schema dropped');
+    say('local dev schema dropped');
   }
   await migrate(url, () => undefined);
 
@@ -47,7 +48,7 @@ async function main() {
     if ((await c.query('SELECT 1 FROM legal_entities WHERE tenant_id=$1', [tid])).rowCount) {
       await seedModules(c, tid, adminEmail.split('@')[1]!);
       await c.query('COMMIT');
-      console.log('Demo data already present (leave, expense, competency and policy demo data ensured).');
+      say('Demo data already present (leave, expense, competency and policy demo data ensured).');
       return;
     }
     const pw = await hashPassword(DEV_PASSWORD);
@@ -94,9 +95,9 @@ async function main() {
     for (let i = 4; i <= 40; i++) await mkEmp(i, 'Synthetic', `Employee${String(i).padStart(3, '0')}`, ['WATER', 'AIR', 'SOIL', 'QA'][i % 4]!, designations[i % 6]!, i % 3 === 0 ? labMgr : null);
     await seedModules(c, tid, domain);
     await c.query('COMMIT');
-    console.log(`Seeded ${env.BRAND_NAME} (40 synthetic employees) at ${appUrl(env)}`);
-    console.log(`Users: admin@, hr@, manager@, employee@, payroll@, finance@, quality@, auditor@${domain}`);
-    console.log(`Development password for all seeded users: ${DEV_PASSWORD}`);
+    say(`Seeded ${env.BRAND_NAME} (40 synthetic employees) at ${appUrl(env)}`);
+    say(`Users: admin@, hr@, manager@, employee@, payroll@, finance@, quality@, auditor@${domain}`);
+    say(`Development password for all seeded users: ${DEV_PASSWORD}`);
   } finally {
     await c.end();
   }
@@ -182,7 +183,7 @@ async function seedLeave(c: pg.Client, tid: string) {
   const { runAccruals } = await import('../modules/leave/jobs.js');
   const year = new Date().getFullYear(); // leave year default starts in January
   const r = await runAccruals(c as never, tid, year, new Date().getMonth() + 1, null);
-  console.log(`Leave demo policies created; accruals credited: ${r.credited}`);
+  say(`Leave demo policies created; accruals credited: ${r.credited}`);
 }
 
-main().catch((e) => { console.error(e.message ?? e); process.exit(1); });
+main().catch((e) => { complain(e.message ?? e); process.exit(1); });

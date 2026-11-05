@@ -50,6 +50,8 @@ const Education = z.object({
 });
 const Experience = z.object({ employer: text(2, 200), designation: text(2, 120), fromDate: IsoDate, toDate: IsoDate, reasonForLeaving: optText(300) });
 
+/** One parsed entry of a section: the section's own schema decided its fields. */
+type SectionItem = Record<string, unknown>;
 const ITEM: Record<Section, z.ZodTypeAny> = { contacts: Contact, addresses: Address, nominees: Nominee, education: Education, experience: Experience };
 const MAX: Record<Section, number> = { contacts: 5, addresses: 2, nominees: 12, education: 15, experience: 20 };
 
@@ -62,14 +64,14 @@ const yearsOld = (dob: string, on: string) => {
 
 /** Validate a whole section against the employee and today; returns the parsed items. */
 export function validateSection(section: Section, raw: unknown, e: Pick<Emp, 'date_of_joining'>, today: string) {
-  const items = z.array(ITEM[section]).max(MAX[section], `At most ${MAX[section]} entries`).parse(raw) as Record<string, any>[];
+  const items = z.array(ITEM[section]).max(MAX[section], `At most ${MAX[section]} entries`).parse(raw) as SectionItem[];
   if (section === 'addresses') {
-    const kinds = items.map((x) => x.kind);
+    const kinds = items.map((x) => x['kind']);
     if (new Set(kinds).size !== kinds.length) throw badRequest('Give each kind of address (current, permanent) once');
   }
   if (section === 'nominees') {
     const totals = new Map<string, number>();
-    for (const n of items) {
+    for (const n of items as z.output<typeof Nominee>[]) {
       if (n.dateOfBirth && n.dateOfBirth > today) throw badRequest(`${n.name}: the date of birth is in the future`);
       if (n.dateOfBirth && yearsOld(n.dateOfBirth, today) < 18 && !n.guardianName) throw badRequest(`${n.name} is a minor: name a guardian`);
       totals.set(n.purpose, Math.round(((totals.get(n.purpose) ?? 0) + n.sharePercent) * 100) / 100);
@@ -78,10 +80,10 @@ export function validateSection(section: Section, raw: unknown, e: Pick<Emp, 'da
   }
   if (section === 'education') {
     const year = Number(today.slice(0, 4));
-    for (const x of items) if (x.yearOfPassing && x.yearOfPassing > year + 1) throw badRequest(`${x.qualification}: the year of passing is too far ahead`);
+    for (const x of items as z.output<typeof Education>[]) if (x.yearOfPassing && x.yearOfPassing > year + 1) throw badRequest(`${x.qualification}: the year of passing is too far ahead`);
   }
   if (section === 'experience') {
-    for (const x of items) {
+    for (const x of items as z.output<typeof Experience>[]) {
       if (x.toDate < x.fromDate) throw badRequest(`${x.employer}: the end date is before the start date`);
       if (x.toDate > e.date_of_joining) throw badRequest(`${x.employer}: previous employment must end by the date of joining (${e.date_of_joining})`);
     }
@@ -90,16 +92,16 @@ export function validateSection(section: Section, raw: unknown, e: Pick<Emp, 'da
 }
 
 /** Replace a section with already validated items. */
-export async function replaceSection(db: Db, tenantId: string, employeeId: string, section: Section, items: Record<string, any>[]) {
+export async function replaceSection(db: Db, tenantId: string, employeeId: string, section: Section, items: SectionItem[]) {
   const T = { contacts: 'employee_emergency_contacts', addresses: 'employee_addresses', nominees: 'employee_nominees', education: 'employee_education', experience: 'employee_experience' }[section];
   await db.query(`DELETE FROM ${T} WHERE tenant_id=$1 AND employee_id=$2`, [tenantId, employeeId]);
   for (const [i, x] of items.entries()) {
     const ins = (cols: string[], vals: unknown[]) => db.query(`INSERT INTO ${T} (tenant_id, employee_id, ${cols.join(',')}) VALUES ($1,$2,${cols.map((_, j) => `$${j + 3}`).join(',')})`, [tenantId, employeeId, ...vals]);
-    if (section === 'contacts') await ins(['position', 'name', 'relationship', 'phone', 'alt_phone'], [i + 1, x.name, x.relationship, x.phone, x.altPhone]);
-    if (section === 'addresses') await ins(['kind', 'line1', 'line2', 'city', 'state', 'postal_code', 'country'], [x.kind, x.line1, x.line2, x.city, x.state, x.postalCode, x.country]);
-    if (section === 'nominees') await ins(['purpose', 'name', 'relationship', 'date_of_birth', 'share_percent', 'guardian_name', 'address'], [x.purpose, x.name, x.relationship, x.dateOfBirth, x.sharePercent, x.guardianName, x.address]);
-    if (section === 'education') await ins(['level', 'qualification', 'institution', 'university', 'year_of_passing', 'score'], [x.level, x.qualification, x.institution, x.university, x.yearOfPassing, x.score]);
-    if (section === 'experience') await ins(['employer', 'designation', 'from_date', 'to_date', 'reason_for_leaving'], [x.employer, x.designation, x.fromDate, x.toDate, x.reasonForLeaving]);
+    if (section === 'contacts') await ins(['position', 'name', 'relationship', 'phone', 'alt_phone'], [i + 1, x['name'], x['relationship'], x['phone'], x['altPhone']]);
+    if (section === 'addresses') await ins(['kind', 'line1', 'line2', 'city', 'state', 'postal_code', 'country'], [x['kind'], x['line1'], x['line2'], x['city'], x['state'], x['postalCode'], x['country']]);
+    if (section === 'nominees') await ins(['purpose', 'name', 'relationship', 'date_of_birth', 'share_percent', 'guardian_name', 'address'], [x['purpose'], x['name'], x['relationship'], x['dateOfBirth'], x['sharePercent'], x['guardianName'], x['address']]);
+    if (section === 'education') await ins(['level', 'qualification', 'institution', 'university', 'year_of_passing', 'score'], [x['level'], x['qualification'], x['institution'], x['university'], x['yearOfPassing'], x['score']]);
+    if (section === 'experience') await ins(['employer', 'designation', 'from_date', 'to_date', 'reason_for_leaving'], [x['employer'], x['designation'], x['fromDate'], x['toDate'], x['reasonForLeaving']]);
   }
 }
 
@@ -138,7 +140,7 @@ export function registerProfileApprovals() {
   registerApprovalHandler('employee_profile_change', {
     label: 'Personal details change', requesterLink: '/profile',
     async onApproved(db, tenantId, id) {
-      const c = (await db.query<{ employee_id: string; section: Section; items: Record<string, any>[]; status: string }>(
+      const c = (await db.query<{ employee_id: string; section: Section; items: SectionItem[]; status: string }>(
         `SELECT employee_id, section, items, status FROM employee_profile_changes WHERE tenant_id=$1 AND id=$2 FOR UPDATE`, [tenantId, id])).rows[0];
       if (!c || c.status !== 'pending') throw conflict('This change is no longer pending');
       const e = await loadEmployee(db, tenantId, c.employee_id);

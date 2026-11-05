@@ -1,4 +1,5 @@
 import { readdir, readFile } from 'node:fs/promises';
+import { say, complain } from './cli-output.js';
 import { existsSync } from 'node:fs';
 import { createHash } from 'node:crypto';
 import path from 'node:path';
@@ -160,7 +161,7 @@ async function runFile(client: pg.Client, sql: string, record: () => Promise<unk
  * (code-migrations.ts) for what SQL cannot do. A code step commits its own batches and is only recorded when it finishes, so an
  * interrupted one resumes on the next run. `rollback` below goes the other way.
  */
-export async function migrate(connectionString: string, log: (m: string) => void = console.log, opts: MigrateOptions = {}): Promise<void> {
+export async function migrate(connectionString: string, log: (m: string) => void = say, opts: MigrateOptions = {}): Promise<void> {
   const dir = opts.dir ?? MIGRATIONS_DIR;
   const client = new pg.Client({ connectionString, ssl: pgSsl() });
   await client.connect();
@@ -236,7 +237,7 @@ function rollbackPlan(applied: string[], opts: RollbackOptions): string[] {
  * pair that must go together, and a key that cannot open what a code step has to open. Returns the names rolled back.
  * An interrupted rollback is resumed by asking again: what finished is no longer applied, and a code step skips what it already did.
  */
-export async function rollback(connectionString: string, log: (m: string) => void = console.log, opts: RollbackOptions = {}): Promise<string[]> {
+export async function rollback(connectionString: string, log: (m: string) => void = say, opts: RollbackOptions = {}): Promise<string[]> {
   const dir = opts.dir ?? MIGRATIONS_DIR;
   const client = new pg.Client({ connectionString, ssl: pgSsl() });
   await client.connect();
@@ -325,18 +326,18 @@ export function parseRollbackArgs(argv: readonly string[]): RollbackOptions {
 
 if (process.argv[1] && fileURLToPath(import.meta.url) === path.resolve(process.argv[1])) {
   const url = process.env.DATABASE_MIGRATION_URL;
-  if (!url) { console.error('DATABASE_MIGRATION_URL is required'); process.exit(1); }
+  if (!url) { complain('DATABASE_MIGRATION_URL is required'); process.exit(1); }
   if (process.argv.includes('--status')) {
     // Exit 0 when up to date, 2 when migrations are pending, 3 when the database is ahead of this build.
     const c = new pg.Client({ connectionString: url, ssl: pgSsl() });
     c.connect().then(() => migrationStatus(c)).then((st) => {
-      console.log(JSON.stringify(st));
+      say(JSON.stringify(st));
       process.exitCode = st.unknown.length ? 3 : st.pending.length ? 2 : 0;
-    }).catch((e) => { console.error(e.message); process.exitCode = 1; }).finally(() => c.end());
+    }).catch((e) => { complain(e.message); process.exitCode = 1; }).finally(() => c.end());
   } else if (process.argv.includes('--rollback')) {
-    Promise.resolve().then(() => rollback(url, console.log, parseRollbackArgs(process.argv.slice(2))))
-      .then((done) => console.log(`rolled back ${done.length} migration(s)`)).catch((e) => { console.error(e.message); process.exit(1); });
+    Promise.resolve().then(() => rollback(url, say, parseRollbackArgs(process.argv.slice(2))))
+      .then((done) => say(`rolled back ${done.length} migration(s)`)).catch((e) => { complain(e.message); process.exit(1); });
   } else {
-    migrate(url).then(() => console.log('migrations complete')).catch((e) => { console.error(e.message); process.exit(1); });
+    migrate(url).then(() => say('migrations complete')).catch((e) => { complain(e.message); process.exit(1); });
   }
 }

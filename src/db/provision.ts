@@ -1,4 +1,5 @@
 import pg from 'pg';
+import { say, complain } from './cli-output.js';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { pgSsl } from './ssl.js';
@@ -16,7 +17,7 @@ import { pgSsl } from './ssl.js';
  */
 const ROLES = ['hrms_owner', 'hrms_app'] as const;
 
-export async function provisionDatabase(env: NodeJS.ProcessEnv = process.env, log: (m: string) => void = console.log) {
+export async function provisionDatabase(env: NodeJS.ProcessEnv = process.env, log: (m: string) => void = say) {
   const need = (k: string) => { const v = env[k]; if (!v) throw new Error(`${k} is required`); return v; };
   const host = need('DB_HOST'); const port = Number(env.DB_PORT ?? 5432); const dbName = env.DB_NAME ?? 'hrms';
   if (!/^[a-z_][a-z0-9_]{0,62}$/.test(dbName)) throw new Error('DB_NAME must be a simple lowercase identifier');
@@ -53,5 +54,5 @@ export async function provisionDatabase(env: NodeJS.ProcessEnv = process.env, lo
 }
 
 if (process.argv[1] && fileURLToPath(import.meta.url) === path.resolve(process.argv[1])) {
-  provisionDatabase().then(() => console.log('provisioning complete')).catch((e) => { console.error(`provisioning failed: ${(e as Error).message}`); process.exit(1); });
+  provisionDatabase().then(() => say('provisioning complete')).catch((e) => { complain(`provisioning failed: ${(e as Error).message}`); process.exit(1); });
 }

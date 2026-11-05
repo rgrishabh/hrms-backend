@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import type { FastifyInstance } from 'fastify';
-import { problem, makeApp, createTenant, Client, ownerQuery, type TenantFixture, flags } from './helpers.js';
+import { problem, makeApp, createTenant, Client, type TenantFixture, flags } from './helpers.js';
 
 // The organization's own roles: defined within the grant limits, applied at once, never a way around MFA.
 let app: FastifyInstance; let T: TenantFixture;

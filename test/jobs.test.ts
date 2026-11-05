@@ -8,7 +8,7 @@ import { addDays, localDate } from '../src/modules/attendance/time.js';
 const quiet = { info: () => undefined, error: () => undefined };
 const today = localDate(new Date(), 'Asia/Kolkata');
 const at = (date: string, hhmm: string) => new Date(`${date}T${hhmm}:00+05:30`);
-const runsOf = (tenantId: string) => ownerQuery<{ job_key: string; period_key: string; status: string; attempts: number; error: string | null; result: any }>(
+const runsOf = (tenantId: string) => ownerQuery<{ job_key: string; period_key: string; status: string; attempts: number; error: string | null; result: Record<string, number> }>(
   `SELECT job_key, period_key, status, attempts, error, result FROM job_runs WHERE tenant_id=$1 ORDER BY job_key, started_at`, [tenantId]);
 
 let app: FastifyInstance;

@@ -31,7 +31,7 @@ afterAll(async () => { await app.close(); });
 describe('allowance rates', () => {
   it('finance sets effective-dated rates; nothing is assumed', async () => {
     const claim = await newClaim();
-    let r = await item(claim, { categoryId: cats.PERDIEM, quantity: 1, tier: 'METRO', description: 'Mumbai, client audit' });
+    const r = await item(claim, { categoryId: cats.PERDIEM, quantity: 1, tier: 'METRO', description: 'Mumbai, client audit' });
     expect(problem(r).detail).toMatch(/no per-diem rate for METRO/);
 
     expect((await rate({ kind: 'per_diem', tier: 'metro', rate: 1200, effectiveFrom: plus(-30) })).statusCode).toBe(201);

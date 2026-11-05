@@ -436,7 +436,7 @@ export async function competencyRoutes(app: FastifyInstance) {
         FROM lab_authorizations z JOIN employees e ON e.tenant_id=z.tenant_id AND e.id=z.employee_id
         WHERE z.tenant_id=$1 AND z.method_id = ANY($2::uuid[]) AND z.status IN ('pending','authorized','suspended') AND e.status <> 'exited'
           AND ($4::uuid IS NULL OR e.branch_id=$4)
-        ORDER BY e.first_name, e.employee_code`, [a.tenantId, ids, today, q.branchId ?? null])).rows as any[];
+        ORDER BY e.first_name, e.employee_code`, [a.tenantId, ids, today, q.branchId ?? null])).rows as { employee_id: string; employee_code: string; employee_name: string; method_id: string; activity: string; status: string; review_due: string; missing_training: number }[];
       type Cell = { status: string; reviewDue: string | null; inForce: boolean };
       type Row = { employeeId: string; employeeCode: string; name: string; cells: Record<string, Record<string, Cell>> };
       const rows = new Map<string, Row>();

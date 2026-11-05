@@ -87,7 +87,7 @@ export async function loadPdfContext(app: FastifyInstance, identity: PdfIdentity
 const WIN_ANSI_EXTRA = new Set([0x20ac, 0x201a, 0x192, 0x201e, 0x2026, 0x2020, 0x2021, 0x2c6, 0x2030, 0x160, 0x2039, 0x152, 0x17d, 0x2018, 0x2019, 0x201c, 0x201d, 0x2022, 0x2013, 0x2014, 0x2dc, 0x2122, 0x161, 0x203a, 0x153, 0x17e, 0x178]);
 const printable = (code: number) => (code >= 0x20 && code <= 0x7e) || (code >= 0xa0 && code <= 0xff) || WIN_ANSI_EXTRA.has(code);
 const PLAIN = /^[\x20-\x7e]*$/;
-const SPACES = /[\t\r\n   -   　]+/g;
+const SPACES = /[\t\r\n\u00a0\u1680\u2000-\u200a\u202f\u205f\u3000]+/g;
 const MARKS = /\p{M}+/gu;
 
 /** Text the standard fonts can draw, and whether anything had to go. Accents that have no glyph come off (`ā` to `a`); anything else becomes `?`. */

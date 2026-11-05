@@ -1,4 +1,5 @@
 import pg from 'pg';
+import { say, complain } from './cli-output.js';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { hashPassword, randomToken, sha256 } from '../core/crypto/index.js';
@@ -177,11 +178,11 @@ if (process.argv[1] && fileURLToPath(import.meta.url) === path.resolve(process.a
     await c.connect();
     try {
       const { setupUrl, ...r } = await bootstrapInstallation(c, env, opts);
-      console.log(JSON.stringify({ ok: true, ...r }));
+      say(JSON.stringify({ ok: true, ...r }));
       if (setupUrl) {
         // Printed for the operator only (single use, expires). Do not paste it into tickets or chat.
         process.stdout.write(`\nOne-time setup link (valid until ${r.setupExpiresAt}):\n${setupUrl}\n\n`);
       }
     } finally { await c.end(); }
-  })().catch((e) => { console.error(JSON.stringify({ ok: false, error: (e as Error).message })); process.exit(1); });
+  })().catch((e) => { complain(JSON.stringify({ ok: false, error: (e as Error).message })); process.exit(1); });
 }

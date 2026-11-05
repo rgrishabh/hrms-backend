@@ -12,7 +12,7 @@ try {
   if (env.PROCESS_ROLE !== 'api') throw new Error('Invalid deployment configuration:\n  - PROCESS_ROLE: this command is the API, but PROCESS_ROLE says worker. Run `hrms worker` instead.');
 } catch (e) {
   // Configuration errors are listed field by field; secrets are never echoed.
-  console.error((e as Error).message);
+  process.stderr.write(`${(e as Error).message}\n`);
   process.exit(1);
 }
 
@@ -21,7 +21,7 @@ let app: Awaited<ReturnType<typeof buildApp>>;
 try {
   app = await buildApp({ env, pool, cipher: await loadFieldCipher(env) });
 } catch (e) {
-  console.error(`Startup failed: ${(e as Error).message}`);
+  process.stderr.write(`Startup failed: ${(e as Error).message}\n`);
   process.exit(1);
 }
 

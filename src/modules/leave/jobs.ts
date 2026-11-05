@@ -75,8 +75,8 @@ export async function runAccruals(db: Db, tenantId: string, year: number, throug
           amount = ent.times(months).div(12).times(2).floor().div(2);
         }
         amount = await capped(db, tenantId, t, e.id, year, amount);
-        (await credit(db, tenantId, { empId: e.id, typeId: t.id, year, entryType: 'accrual', days: amount, reference: `accrual:${t.id}:${e.id}:${year}`,
-          note: partYear ? 'Annual entitlement (pro-rated for months employed)' : 'Annual entitlement', actorId })) ? credited++ : skipped++;
+        if (await credit(db, tenantId, { empId: e.id, typeId: t.id, year, entryType: 'accrual', days: amount, reference: `accrual:${t.id}:${e.id}:${year}`,
+          note: partYear ? 'Annual entitlement (pro-rated for months employed)' : 'Annual entitlement', actorId })) credited++; else skipped++;
       } else {
         const through = Math.min(12, throughMonth);
         const done = (await db.query<{ through_month: number }>(`SELECT through_month FROM leave_accrual_progress WHERE tenant_id=$1 AND employee_id=$2 AND leave_type_id=$3 AND leave_year=$4`,
@@ -89,8 +89,8 @@ export async function runAccruals(db: Db, tenantId: string, year: number, throug
           if (e.date_of_joining > me || (e.exit_date && e.exit_date < ms)) continue;
           if (k <= done) { skipped++; continue; }
           const amount = await capped(db, tenantId, t, e.id, year, monthlyCredit(ent, k));
-          (await credit(db, tenantId, { empId: e.id, typeId: t.id, year, entryType: 'accrual', days: amount, reference: `accrual:${t.id}:${e.id}:${year}-m${k}`,
-            note: `Monthly accrual ${ms.slice(0, 7)}`, actorId })) ? credited++ : skipped++;
+          if (await credit(db, tenantId, { empId: e.id, typeId: t.id, year, entryType: 'accrual', days: amount, reference: `accrual:${t.id}:${e.id}:${year}-m${k}`,
+            note: `Monthly accrual ${ms.slice(0, 7)}`, actorId })) credited++; else skipped++;
         }
       }
     }
