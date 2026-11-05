@@ -180,6 +180,7 @@ describe('authentication & session security', () => {
     const admin = await Client.login(app, A.host, A.users.admin!.email);
     const body = (await admin.get('/api/v1/tenant/users')).body;
     expect(body).not.toContain('scrypt$');
+    expect(body).not.toContain('argon2id$');
     expect(body).not.toContain('password');
   });
 

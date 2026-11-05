@@ -154,7 +154,7 @@ export const SETTINGS: readonly SettingDefinition[] = [
     schema: z.enum(['off', 'privileged', 'all']), default: 'off', scopes: ['tenant'], editPermission: 'security.manage' }),
   def({ key: 'security.max_failed_logins', group: 'security', label: 'Failed sign-ins before lockout', description: 'Account is locked for 15 minutes after this many consecutive failures.',
     control: 'number', schema: z.number().int().min(3).max(10), default: 5, scopes: ['tenant'], editPermission: 'security.manage' }),
-  def({ key: 'security.password_min_length', group: 'security', label: 'Minimum password length', description: 'Platform floor is 12 characters; tenants may require longer.',
+  def({ key: 'security.password_min_length', group: 'security', label: 'Minimum password length', description: 'At least 12 characters, whatever is set here. Leaked passwords, and ones made of your name or email address, are always refused.',
     control: 'number', schema: z.number().int().min(12).max(128), default: 12, scopes: ['tenant'], editPermission: 'security.manage' }),
 ];
 

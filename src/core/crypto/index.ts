@@ -1,28 +1,52 @@
-import { createCipheriv, createDecipheriv, createHash, randomBytes, scrypt as scryptCb, timingSafeEqual } from 'node:crypto';
+import { argon2 as argon2Cb, createCipheriv, createDecipheriv, createHash, createHmac, hkdfSync, randomBytes, scrypt as scryptCb, timingSafeEqual } from 'node:crypto';
 
-const SCRYPT = { N: 1 << 15, r: 8, p: 1, maxmem: 64 * 1024 * 1024 };
-const DUMMY_HASH = `scrypt$32768$8$1$${Buffer.alloc(16).toString('base64')}$${Buffer.alloc(32).toString('base64')}`;
+/** RFC 9106's second recommendation for memory, one lane so that a sign-in costs one worker thread. About 100 ms on a laptop core; product constants. */
+export const ARGON2 = { memory: 65536, passes: 3, parallelism: 1, tagLength: 32 } as const;
+
+function argon2id(password: string, salt: Buffer, p: { memory: number; passes: number; parallelism: number; tagLength: number }): Promise<Buffer> {
+  return new Promise((resolve, reject) => argon2Cb('argon2id', { message: password, nonce: salt, ...p }, (err, key) => (err ? reject(err) : resolve(key))));
+}
 
 function scrypt(pw: string, salt: Buffer, len: number, opts: { N: number; r: number; p: number; maxmem: number }): Promise<Buffer> {
   return new Promise((resolve, reject) => scryptCb(pw, salt, len, opts, (err, key) => (err ? reject(err) : resolve(key))));
 }
 
+const b64 = (b: Buffer) => b.toString('base64').replace(/=+$/, '');
+const PHC = /^\$argon2id\$v=19\$m=(\d+),t=(\d+),p=(\d+)\$([A-Za-z0-9+/]+)\$([A-Za-z0-9+/]+)$/;
+const CURRENT_PREFIX = `$argon2id$v=19$m=${ARGON2.memory},t=${ARGON2.passes},p=${ARGON2.parallelism}$`;
+const DUMMY_SALT = Buffer.alloc(16, 0x5a);
+
+/** New hashes are Argon2id in the PHC string format. */
 export async function hashPassword(password: string): Promise<string> {
   const salt = randomBytes(16);
-  const hash = await scrypt(password, salt, 32, SCRYPT);
-  return ['scrypt', SCRYPT.N, SCRYPT.r, SCRYPT.p, salt.toString('base64'), hash.toString('base64')].join('$');
+  return `${CURRENT_PREFIX}${b64(salt)}$${b64(await argon2id(password, salt, ARGON2))}`;
 }
 
+/**
+ * Verifies against Argon2id, or scrypt for a hash not yet upgraded. With no hash to check (unknown user, invitation not accepted) the same
+ * Argon2id work runs on a fixed salt and the answer is false, so the time taken does not say whether the account exists. A not-yet-upgraded
+ * hash can take a different time: that says only that an account is old, and goes away at its next sign-in.
+ */
 export async function verifyPassword(password: string, stored: string | null): Promise<boolean> {
-  // Always do the work so response timing does not reveal whether the account exists.
-  const parts = (stored ?? DUMMY_HASH).split('$');
-  if (parts.length !== 6 || parts[0] !== 'scrypt') return false;
-  const [, n, r, p, salt, hash] = parts as [string, string, string, string, string, string];
-  const expected = Buffer.from(hash, 'base64');
-  const actual = await scrypt(password, Buffer.from(salt, 'base64'), expected.length,
-    { N: Number(n), r: Number(r), p: Number(p), maxmem: 128 * 1024 * 1024 });
-  return stored !== null && timingSafeEqual(expected, actual);
+  const phc = stored ? PHC.exec(stored) : null;
+  if (phc) {
+    const expected = Buffer.from(phc[5]!, 'base64');
+    const actual = await argon2id(password, Buffer.from(phc[4]!, 'base64'), { memory: Number(phc[1]), passes: Number(phc[2]), parallelism: Number(phc[3]), tagLength: expected.length });
+    return timingSafeEqual(expected, actual);
+  }
+  const parts = stored?.split('$') ?? [];
+  if (parts.length === 6 && parts[0] === 'scrypt') {
+    const [, n, r, p, salt, hash] = parts as [string, string, string, string, string, string];
+    const expected = Buffer.from(hash, 'base64');
+    const actual = await scrypt(password, Buffer.from(salt, 'base64'), expected.length, { N: Number(n), r: Number(r), p: Number(p), maxmem: 128 * 1024 * 1024 });
+    return timingSafeEqual(expected, actual);
+  }
+  await argon2id(password, DUMMY_SALT, ARGON2);
+  return false;
 }
+
+/** A stored hash that is not Argon2id at the current cost: replaced when the password is next proved right. */
+export const needsRehash = (stored: string) => !stored.startsWith(CURRENT_PREFIX);
 
 export const randomToken = (bytes = 32) => randomBytes(bytes).toString('base64url');
 export const sha256 = (v: string) => createHash('sha256').update(v).digest('hex');
@@ -72,6 +96,11 @@ export class FieldCipher {
       throw new Error('No loaded key opens this ciphertext');
     }
     throw new Error('Unsupported ciphertext');
+  }
+  /** Keyed hash for short-lived secrets too small to hash plainly, such as a six-digit code. Rotating the key only ends codes in flight. */
+  mac(purpose: string, value: string): string {
+    const key = Buffer.from(hkdfSync('sha256', this.keys.get(this.activeKeyId)!, Buffer.alloc(0), `hrms:${purpose}`, 32));
+    return createHmac('sha256', key).update(value).digest('hex');
   }
   /** Whether a stored value is not yet sealed with the active key. */
   isStale(token: string) { return !token.startsWith(`v2.${this.activeKeyId}.`); }

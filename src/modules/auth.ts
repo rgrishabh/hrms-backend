@@ -1,7 +1,8 @@
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import { z } from 'zod';
 import { withPlatformBypass, withTenant } from '../db/tx.js';
-import { hashPassword, verifyPassword, sha256 } from '../core/crypto/index.js';
+import { hashPassword, verifyPassword, needsRehash, sha256 } from '../core/crypto/index.js';
+import { assertStrongPassword } from '../core/auth/password-policy.js';
 import { createSession, deriveCsrf, revokeSession, revokeAllSessionsForUser, SESSION_COOKIE } from '../core/auth/session.js';
 import { audit } from '../core/audit/audit.js';
 import { AppError, badRequest, unauthorized } from '../core/http/errors.js';
@@ -53,12 +54,13 @@ export async function authRoutes(app: FastifyInstance, opts: { publicConfig: Pub
     const body = LoginBody.parse(req.body);
     const tenant = requireTenantHost(req);
     const tenantId = tenant.id;
+    // The hash runs with no transaction open: a sign-in costs a worker thread, and never holds a database connection or a row while it does.
+    const u = await withPlatformBypass(pool, async (db) => (await db.query<{ id: string; password_hash: string | null; status: string; failed_logins: number; locked: boolean; must_change_password: boolean; mfa_on: boolean }>(
+      `SELECT id, password_hash, status, failed_logins, must_change_password, mfa_enabled_at IS NOT NULL AS mfa_on, coalesce(locked_until > now(), false) AS locked
+         FROM users WHERE tenant_id = $1 AND email = $2`, [tenantId, body.email])).rows[0]);
+    const ok = await verifyPassword(body.password, u?.password_hash ?? null);
+    const upgraded = ok && u?.password_hash && needsRehash(u.password_hash) ? await hashPassword(body.password) : null;
     const result = await withPlatformBypass(pool, async (db) => {
-      const r = await db.query<{ id: string; password_hash: string | null; status: string; failed_logins: number; locked: boolean; must_change_password: boolean; mfa_on: boolean }>(
-        `SELECT id, password_hash, status, failed_logins, must_change_password, mfa_enabled_at IS NOT NULL AS mfa_on, coalesce(locked_until > now(), false) AS locked
-           FROM users WHERE tenant_id = $1 AND email = $2 FOR UPDATE`, [tenantId, body.email]);
-      const u = r.rows[0];
-      const ok = await verifyPassword(body.password, u?.password_hash ?? null);
       const maxFailed = await getSettingValue<number>(db, tenantId, 'security.max_failed_logins');
       if (!u || !ok || u.status !== 'active' || u.locked) {
         if (u && !ok && !u.locked) {
@@ -75,6 +77,8 @@ export async function authRoutes(app: FastifyInstance, opts: { publicConfig: Pub
         return null;
       }
       await db.query('UPDATE users SET failed_logins = 0, locked_until = NULL, last_login_at = now() WHERE id = $1', [u.id]);
+      // Only if nobody changed it meanwhile.
+      if (upgraded) await db.query('UPDATE users SET password_hash=$2 WHERE id=$1 AND password_hash=$3', [u.id, upgraded, u.password_hash]);
       const ttl = await getSettingValue<number>(db, tenantId, 'security.session_ttl_hours');
       const s = await createSession(db, u.id, tenantId, Math.min(ttl, env.SESSION_TTL_HOURS), req.ip, req.headers['user-agent']);
       await audit(db, { tenantId, actorId: u.id, action: 'auth.login', category: 'auth', targetType: 'session', targetId: s.sessionId, requestId: req.id, ip: req.ip });
@@ -136,7 +140,7 @@ export async function authRoutes(app: FastifyInstance, opts: { publicConfig: Pub
     const body = PasswordBody.parse(req.body);
     await withPlatformBypass(pool, async (db) => {
       const minLen = await passwordMinLength(db, u.tenantId!);
-      if (body.newPassword.length < minLen) throw badRequest(`Password must be at least ${minLen} characters`);
+      assertStrongPassword(body.newPassword, { minLength: minLen, email: u.email, displayName: u.displayName });
       if (body.newPassword === body.currentPassword) throw badRequest('The new password must be different from the current one');
       const r = await db.query<{ password_hash: string | null }>('SELECT password_hash FROM users WHERE id = $1', [u.userId]);
       if (!(await verifyPassword(body.currentPassword, r.rows[0]?.password_hash ?? null))) throw badRequest('Current password is incorrect');
@@ -178,7 +182,7 @@ export async function authRoutes(app: FastifyInstance, opts: { publicConfig: Pub
       const row = t.rows[0];
       if (!row) return false;
       const minLen = await passwordMinLength(db, tenant.id);
-      if (body.newPassword.length < minLen) throw badRequest(`Password must be at least ${minLen} characters`);
+      assertStrongPassword(body.newPassword, { minLength: minLen, email: row.email });
       await db.query('UPDATE admin_setup_tokens SET used_at = now() WHERE id = $1', [row.id]);
       await db.query(`UPDATE users SET password_hash = $2, must_change_password = false, failed_logins = 0, locked_until = NULL, updated_at = now()
         WHERE tenant_id = $1 AND id = $3`, [tenant.id, await hashPassword(body.newPassword), row.user_id]);

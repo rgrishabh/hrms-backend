@@ -12,7 +12,7 @@ let app: FastifyInstance; let T: TenantFixture; let admin: Client;
 beforeAll(async () => { app = await makeApp(); T = await createTenant(); admin = await Client.login(app, T.host, T.users.admin!.email); });
 afterAll(async () => { await app.close(); });
 
-const AUDIT = (action: string) => [`INSERT INTO audit_logs (tenant_id, actor_type, action, category) VALUES ($1,'system',$2,'data')`, [T.id, action]] as const;
+const AUDIT = (action: string): [string, string[]] => [`INSERT INTO audit_logs (tenant_id, actor_type, action, category) VALUES ($1,'system',$2,'data')`, [T.id, action]];
 const connect = async () => { const c = new pg.Client({ connectionString: TEST_APP_URL }); await c.connect(); await c.query('BEGIN'); await c.query(`SELECT set_config('app.tenant_id',$1,true)`, [T.id]); return c; };
 const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
