@@ -121,21 +121,30 @@ export async function createTenant(): Promise<TenantFixture> {
 
 /** Authenticated client bound to one host. Sends cookie + CSRF automatically. */
 export class Client {
-  cookie = ''; csrf = ''; passwordChangeRequired = false;
+  cookie = ''; csrf = ''; passwordChangeRequired = false; device = '';
+  /** A person keeps their browser: each sign-in of one account in a test comes from the same one, unless the test says otherwise. */
+  private static devices = new Map<string, string>();
   constructor(private app: FastifyInstance, public host: string) {}
   static async login(app: FastifyInstance, host: string, email: string, password = PASSWORD) {
     const c = new Client(app, host);
+    const key = `${host}|${email.toLowerCase()}`;
+    c.device = Client.devices.get(key) ?? '';
     const r = await c.req('POST', '/api/v1/auth/login', { email, password });
     if (r.statusCode !== 200) throw new Error(`login failed for ${email}@${host}: ${r.statusCode} ${r.body}`);
+    if (c.device) Client.devices.set(key, c.device);
     return c;
   }
   async req(method: 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE', url: string, payload?: unknown, headers: Record<string, string> = {}): Promise<LightMyRequestResponse> {
     const r = await this.app.inject({ method, url, payload: payload as never, headers: {
-      host: this.host, ...(this.cookie ? { cookie: this.cookie } : {}), ...(this.csrf ? { 'x-csrf-token': this.csrf } : {}), ...headers } });
+      host: this.host, ...(this.cookie || this.device ? { cookie: [this.cookie, this.device].filter(Boolean).join('; ') } : {}), ...(this.csrf ? { 'x-csrf-token': this.csrf } : {}), ...headers } });
     const set = r.headers['set-cookie'];
-    const sc = Array.isArray(set) ? set[0] : set;
-    if (sc?.startsWith('hrms_sid=')) this.cookie = sc.split(';')[0]!;
+    for (const sc of [set ?? []].flat()) {
+      if (sc.startsWith('hrms_sid=')) this.cookie = sc.split(';')[0]!;
+      if (sc.startsWith('hrms_did=')) this.device = sc.split(';')[0]!;
+    }
     if (url === '/api/v1/auth/login' && r.statusCode === 200) { this.csrf = r.json().csrfToken; this.passwordChangeRequired = r.json().passwordChangeRequired; }
+    // A rotated token comes with its new CSRF token.
+    else if (set && r.statusCode < 300 && String(r.headers['content-type']).includes('json') && r.json().csrfToken) this.csrf = r.json().csrfToken;
     return r;
   }
   /** "Run now": the API queues it, so this plays the worker's part and answers with the finished run. */

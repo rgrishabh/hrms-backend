@@ -466,7 +466,9 @@ describe('permission matrix: named negatives', () => {
     expect(ok.statusCode, ok.body).toBe(200);
     const [row] = await ownerQuery<{ change_metadata: { from: number; to: number } }>(`SELECT change_metadata FROM audit_logs WHERE tenant_id=$1 AND action='user.salary_level_changed' AND target_id=$2`, [w.tenantId, s.peer!.userId]);
     expect(row!.change_metadata).toMatchObject({ from: 0, to: 5 });
-    // The employee can no longer be read by a level-5 peer's level, and the peer has no L4 permission anyway.
+    // A level change ends that person's sessions. The employee can no longer be read by a level-5 peer's level, and the peer has no L4 permission anyway.
+    expect((await w.clients.peer!.get('/api/v1/auth/me')).statusCode).toBe(401);
+    w.clients.peer = await Client.login(w.app, w.host, `peer@${w.host}`);
     expect((await w.clients.peer!.get(`/api/v1/payroll/employees/${s.employee!.employeeId}/salaries?reveal=1`)).statusCode).toBe(403);
     // A role whose floor is at or above you cannot be granted, nor can you raise your own.
     expect((await it_.patch(`/api/v1/tenant/users/${s.peer!.userId}`, { roles: ['owner', 'employee'] })).statusCode).toBe(403);

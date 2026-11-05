@@ -1,11 +1,13 @@
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import { z } from 'zod';
-import { withPlatformBypass, withTenant } from '../db/tx.js';
-import { hashPassword, verifyPassword, needsRehash, sha256 } from '../core/crypto/index.js';
+import { withPlatformBypass, withTenant, type Db } from '../db/tx.js';
+import { hashPassword, randomToken, verifyPassword, needsRehash, sha256 } from '../core/crypto/index.js';
 import { assertStrongPassword } from '../core/auth/password-policy.js';
-import { createSession, deriveCsrf, revokeSession, revokeAllSessionsForUser, SESSION_COOKIE } from '../core/auth/session.js';
+import { createSession, deriveCsrf, rememberDevice, revokeOtherSessions, revokeSession, revokeAllSessionsForUser, rotateSession, DEVICE_COOKIE, SESSION_COOKIE } from '../core/auth/session.js';
+import { clearLoginAccount, clearLoginPair, loginBlockedFor, loginKeys, recordLoginFailure } from '../core/auth/throttle.js';
 import { audit } from '../core/audit/audit.js';
-import { AppError, badRequest, unauthorized } from '../core/http/errors.js';
+import { AppError, badRequest, notFound, unauthorized } from '../core/http/errors.js';
+import { Uuid } from '../core/http/pagination.js';
 import { getSettingValue } from '../core/settings/service.js';
 import { allOff, evaluateFeatures } from '../core/features/state.js';
 import { requireTenantHost } from '../core/http/context.js';
@@ -15,13 +17,13 @@ import type { PublicConfig } from '../config/installation.js';
 import { notifyUsers } from '../core/notify/service.js';
 
 const LoginBody = z.object({ email: z.string().trim().toLowerCase().pipe(z.email()), password: z.string().min(1).max(256) });
-const LOCK_MINUTES = 15;
+const DEVICE_COOKIE_DAYS = 400;
 const INVALID = 'Invalid email or password';
 
 /** Paths a user with a pending forced password change may still call. */
 export const PASSWORD_CHANGE_ALLOWED = new Set(['/api/v1/auth/me', '/api/v1/auth/password', '/api/v1/auth/logout', '/api/v1/auth/mfa/setup', '/api/v1/auth/mfa/enable']);
 
-async function passwordMinLength(db: import('../db/tx.js').Db, tenantId: string) {
+async function passwordMinLength(db: Db, tenantId: string) {
   return getSettingValue<number>(db, tenantId, 'security.password_min_length');
 }
 
@@ -31,6 +33,12 @@ export async function authRoutes(app: FastifyInstance, opts: { publicConfig: Pub
 
   const setCookie = (reply: FastifyReply, token: string, expires: Date) =>
     reply.setCookie(SESSION_COOKIE, token, { httpOnly: true, secure: env.COOKIE_SECURE, sameSite: 'lax', path: '/', expires });
+  const setDeviceCookie = (reply: FastifyReply, token: string) =>
+    reply.setCookie(DEVICE_COOKIE, token, { httpOnly: true, secure: env.COOKIE_SECURE, sameSite: 'lax', path: '/', maxAge: DEVICE_COOKIE_DAYS * 86400 });
+  const sessionLimits = async (db: Db, tenantId: string) => ({
+    ttlHours: Math.min(await getSettingValue<number>(db, tenantId, 'security.session_ttl_hours'), env.SESSION_TTL_HOURS),
+    idleMinutes: await getSettingValue<number>(db, tenantId, 'security.session_idle_minutes'),
+  });
 
   /**
    * Runtime configuration for the web app: brand, feature flags, mode and MFA from deployment configuration.
@@ -42,50 +50,60 @@ export async function authRoutes(app: FastifyInstance, opts: { publicConfig: Pub
     return publicConfig;
   });
 
-  // Per address (route config) and per account (preHandler, once the body is parsed): spreading guesses over many
-  // addresses does not get more of them, and the hashing cost of each attempt stays bounded for any one account.
+  // Per address (route config), then per account: spreading guesses over many addresses does not get more of them, and the hashing cost of
+  // each attempt stays bounded for any one account. The account limit is not spent by an address already backing off, or by a browser the
+  // account already knows, so it does not hand a stranger a way to keep the owner out.
   const accountLimit = app.createRateLimit({ max: env.AUTH_ACCOUNT_RATE_LIMIT_PER_MINUTE, timeWindow: '1 minute',
     keyGenerator: (req) => `login:${req.headers.host ?? ''}:${String((req.body as { email?: unknown } | null)?.email ?? '').trim().toLowerCase()}` });
   const perAccount = async (req: FastifyRequest) => {
     const r = await accountLimit(req);
     if (!r.isAllowed && r.isExceeded) throw new AppError(429, 'rate_limited', 'Too many requests. Please slow down.');
   };
-  app.post('/auth/login', { config: { rateLimit: { max: env.AUTH_RATE_LIMIT_PER_MINUTE, timeWindow: '1 minute' } }, preHandler: perAccount }, async (req, reply) => {
+  app.post('/auth/login', { config: { rateLimit: { max: env.AUTH_RATE_LIMIT_PER_MINUTE, timeWindow: '1 minute' } } }, async (req, reply) => {
     const body = LoginBody.parse(req.body);
     const tenant = requireTenantHost(req);
     const tenantId = tenant.id;
+    const keys = loginKeys(tenantId, body.email, req.ip);
+    const deviceToken = req.cookies[DEVICE_COOKIE];
+    const gate = await withPlatformBypass(pool, async (db) => {
+      const known = !!deviceToken && !!(await db.query(`SELECT 1 FROM user_devices d JOIN users u ON u.id=d.user_id WHERE u.tenant_id=$1 AND u.email=$2 AND d.device_hash=$3`, [tenantId, body.email, sha256(deviceToken)])).rowCount;
+      return { known, wait: await loginBlockedFor(db, tenantId, keys, known) };
+    });
+    if (gate.wait) {
+      reply.header('retry-after', String(gate.wait));
+      throw new AppError(429, 'rate_limited', 'Too many attempts. Wait a moment and try again.');
+    }
+    if (!gate.known) await perAccount(req);
     // The hash runs with no transaction open: a sign-in costs a worker thread, and never holds a database connection or a row while it does.
-    const u = await withPlatformBypass(pool, async (db) => (await db.query<{ id: string; password_hash: string | null; status: string; failed_logins: number; locked: boolean; must_change_password: boolean; mfa_on: boolean }>(
-      `SELECT id, password_hash, status, failed_logins, must_change_password, mfa_enabled_at IS NOT NULL AS mfa_on, coalesce(locked_until > now(), false) AS locked
+    const u = await withPlatformBypass(pool, async (db) => (await db.query<{ id: string; password_hash: string | null; status: string; must_change_password: boolean; mfa_on: boolean; display_name: string }>(
+      `SELECT id, password_hash, status, must_change_password, display_name, mfa_enabled_at IS NOT NULL AS mfa_on
          FROM users WHERE tenant_id = $1 AND email = $2`, [tenantId, body.email])).rows[0]);
     const ok = await verifyPassword(body.password, u?.password_hash ?? null);
     const upgraded = ok && u?.password_hash && needsRehash(u.password_hash) ? await hashPassword(body.password) : null;
+    const device = deviceToken ?? randomToken(24);
     const result = await withPlatformBypass(pool, async (db) => {
-      const maxFailed = await getSettingValue<number>(db, tenantId, 'security.max_failed_logins');
-      if (!u || !ok || u.status !== 'active' || u.locked) {
-        if (u && !ok && !u.locked) {
-          const failed = u.failed_logins + 1;
-          if (failed >= maxFailed) {
-            await db.query(`UPDATE users SET failed_logins = 0, locked_until = now() + make_interval(mins => $2) WHERE id = $1`, [u.id, LOCK_MINUTES]);
-          } else {
-            await db.query('UPDATE users SET failed_logins = $2 WHERE id = $1', [u.id, failed]);
-          }
-        }
+      if (!u || !ok || u.status !== 'active') {
+        await recordLoginFailure(db, tenantId, keys, await getSettingValue<number>(db, tenantId, 'security.max_failed_logins'));
         await audit(db, { tenantId, actorId: u?.id ?? null, action: 'auth.login_failed', category: 'auth',
-          metadata: { email: body.email, reason: !u ? 'unknown_user' : u.locked ? 'locked' : u.status !== 'active' ? 'inactive' : 'bad_password' },
+          metadata: { email: body.email, reason: !u ? 'unknown_user' : u.status !== 'active' ? 'inactive' : 'bad_password', backingOff: !!(await loginBlockedFor(db, tenantId, keys, false)) },
           requestId: req.id, ip: req.ip });
         return null;
       }
-      await db.query('UPDATE users SET failed_logins = 0, locked_until = NULL, last_login_at = now() WHERE id = $1', [u.id]);
+      await clearLoginPair(db, tenantId, keys);
+      await db.query('UPDATE users SET last_login_at = now() WHERE id = $1', [u.id]);
       // Only if nobody changed it meanwhile.
       if (upgraded) await db.query('UPDATE users SET password_hash=$2 WHERE id=$1 AND password_hash=$3', [u.id, upgraded, u.password_hash]);
-      const ttl = await getSettingValue<number>(db, tenantId, 'security.session_ttl_hours');
-      const s = await createSession(db, u.id, tenantId, Math.min(ttl, env.SESSION_TTL_HOURS), req.ip, req.headers['user-agent']);
+      // Signing in replaces whatever session this browser came with, so a token planted before sign-in is worth nothing after it.
+      if (req.ctx.user) await revokeSession(db, req.ctx.user.sessionId);
+      const s = await createSession(db, u.id, tenantId, await sessionLimits(db, tenantId), req.ip, req.headers['user-agent']);
       await audit(db, { tenantId, actorId: u.id, action: 'auth.login', category: 'auth', targetType: 'session', targetId: s.sessionId, requestId: req.id, ip: req.ip });
+      const { isNew } = await rememberDevice(db, tenantId, u.id, sha256(device));
+      if (isNew) await audit(db, { tenantId, actorId: u.id, action: 'auth.new_device', category: 'security', targetType: 'session', targetId: s.sessionId, requestId: req.id, ip: req.ip, userAgent: req.headers['user-agent'] });
       return { ...s, mustChangePassword: u.must_change_password, mfaRequired: u.mfa_on };
     });
     if (!result) throw unauthorized(INVALID);
     setCookie(reply, result.token, result.expiresAt);
+    setDeviceCookie(reply, device);
     return { csrfToken: result.csrf, expiresAt: result.expiresAt, passwordChangeRequired: result.mustChangePassword, mfaRequired: result.mfaRequired };
   });
 
@@ -134,25 +152,27 @@ export async function authRoutes(app: FastifyInstance, opts: { publicConfig: Pub
   });
 
   const PasswordBody = z.object({ currentPassword: z.string().min(1), newPassword: z.string().min(1).max(256) });
-  app.post('/auth/password', { config: { rateLimit: { max: Math.min(5, env.AUTH_RATE_LIMIT_PER_MINUTE), timeWindow: '1 minute' } } }, async (req) => {
+  app.post('/auth/password', { config: { rateLimit: { max: Math.min(5, env.AUTH_RATE_LIMIT_PER_MINUTE), timeWindow: '1 minute' } } }, async (req, reply) => {
     const u = req.ctx.user;
     if (!u || !u.tenantId) throw unauthorized();
     const body = PasswordBody.parse(req.body);
-    await withPlatformBypass(pool, async (db) => {
-      const minLen = await passwordMinLength(db, u.tenantId!);
-      assertStrongPassword(body.newPassword, { minLength: minLen, email: u.email, displayName: u.displayName });
-      if (body.newPassword === body.currentPassword) throw badRequest('The new password must be different from the current one');
-      const r = await db.query<{ password_hash: string | null }>('SELECT password_hash FROM users WHERE id = $1', [u.userId]);
-      if (!(await verifyPassword(body.currentPassword, r.rows[0]?.password_hash ?? null))) throw badRequest('Current password is incorrect');
-      await db.query('UPDATE users SET password_hash = $2, must_change_password = false, updated_at = now() WHERE id = $1', [u.userId, await hashPassword(body.newPassword)]);
-      // Changing a password signs out every other session.
-      await db.query('UPDATE sessions SET revoked_at = now() WHERE user_id = $1 AND id <> $2 AND revoked_at IS NULL', [u.userId, u.sessionId]);
+    const current = await withPlatformBypass(pool, async (db) => (await db.query<{ password_hash: string | null }>('SELECT password_hash FROM users WHERE id = $1', [u.userId])).rows[0]?.password_hash ?? null);
+    const minLen = await withPlatformBypass(pool, (db) => passwordMinLength(db, u.tenantId!));
+    assertStrongPassword(body.newPassword, { minLength: minLen, email: u.email, displayName: u.displayName });
+    if (body.newPassword === body.currentPassword) throw badRequest('The new password must be different from the current one');
+    if (!(await verifyPassword(body.currentPassword, current))) throw badRequest('Current password is incorrect');
+    const hash = await hashPassword(body.newPassword);
+    const rotated = await withPlatformBypass(pool, async (db) => {
+      await db.query('UPDATE users SET password_hash = $2, must_change_password = false, updated_at = now() WHERE id = $1', [u.userId, hash]);
+      // Changing a password signs out every other session, and this one gets a new token.
+      await revokeOtherSessions(db, u.userId, u.sessionId);
       await audit(db, { tenantId: u.tenantId, actorId: u.userId, action: 'auth.password_changed', category: 'security', requestId: req.id, ip: req.ip });
-      // Security notice: always in-app; by email unless the user opted out of email notifications.
       await notifyUsers(db, u.tenantId!, [u.userId], { kind: 'security.password_changed', title: 'Your password was changed',
         body: 'If this was not you, contact your administrator immediately. All your other sessions were signed out.', link: '/account', actionLabel: 'Review account' });
+      return rotateSession(db, u.sessionId);
     });
-    return { ok: true };
+    setCookie(reply, rotated.token, rotated.expiresAt);
+    return { ok: true, csrfToken: rotated.csrf };
   });
 
   app.put('/auth/preferences', async (req) => {
@@ -187,6 +207,7 @@ export async function authRoutes(app: FastifyInstance, opts: { publicConfig: Pub
       await db.query(`UPDATE users SET password_hash = $2, must_change_password = false, failed_logins = 0, locked_until = NULL, updated_at = now()
         WHERE tenant_id = $1 AND id = $3`, [tenant.id, await hashPassword(body.newPassword), row.user_id]);
       await revokeAllSessionsForUser(db, row.user_id);
+      await clearLoginAccount(db, tenant.id, row.email);
       await audit(db, { tenantId: tenant.id, actorId: row.user_id, action: 'auth.setup_completed', category: 'security', targetType: 'user', targetId: row.user_id, requestId: req.id, ip: req.ip });
       return true;
     });
@@ -198,6 +219,29 @@ export async function authRoutes(app: FastifyInstance, opts: { publicConfig: Pub
     return { ok: true };
   });
 
+  /** This user's active sessions, newest first. */
+  app.get('/auth/sessions', async (req) => {
+    const u = req.ctx.user;
+    if (!u) throw unauthorized();
+    return withPlatformBypass(pool, async (db) => ({ items: (await db.query(`SELECT id, ip, user_agent, created_at, last_seen_at, expires_at, id = $2 AS current, mfa_verified_at IS NOT NULL AS mfa_verified
+      FROM sessions WHERE user_id=$1 AND revoked_at IS NULL AND expires_at > now() AND last_seen_at > now() - make_interval(mins => idle_timeout_minutes) ORDER BY last_seen_at DESC LIMIT 100`, [u.userId, u.sessionId])).rows }));
+  });
+
+  /** End one of this user's sessions. Someone else's does not exist. */
+  app.delete('/auth/sessions/:id', async (req, reply) => {
+    const u = req.ctx.user;
+    if (!u) throw unauthorized();
+    const { id } = z.object({ id: Uuid }).parse(req.params);
+    await withPlatformBypass(pool, async (db) => {
+      const r = await db.query('UPDATE sessions SET revoked_at=now() WHERE id=$1 AND user_id=$2 AND revoked_at IS NULL', [id, u.userId]);
+      if (!r.rowCount) throw notFound('Session not found');
+      await audit(db, { tenantId: u.tenantId, actorId: u.userId, action: 'auth.session_revoked', category: 'security', targetType: 'session', targetId: id, requestId: req.id, ip: req.ip });
+    });
+    if (id === u.sessionId) reply.clearCookie(SESSION_COOKIE, { path: '/' });
+    return { ok: true };
+  });
+
+  /** Log out everywhere, this browser included. */
   app.post('/auth/sessions/revoke-all', async (req, reply) => {
     const u = req.ctx.user;
     if (!u) throw unauthorized();

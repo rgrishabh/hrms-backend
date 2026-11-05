@@ -7,6 +7,8 @@ import { effectiveLevel } from '../policy/levels.js';
 import { effectiveMfaLevel, mfaRequiredFor } from './mfa.js';
 
 export const SESSION_COOKIE = 'hrms_sid';
+/** A random value per browser, long-lived: tells a browser this account has used from one it has not. Never authenticates anything. */
+export const DEVICE_COOKIE = 'hrms_did';
 
 /**
  * CSRF token bound to the session token. A cross-site attacker cannot read the
@@ -34,14 +36,24 @@ export interface SessionUser {
   mfaEnrollmentRequired: boolean;
 }
 
-export async function createSession(db: Db, userId: string, tenantId: string | null, ttlHours: number, ip?: string, ua?: string) {
+export interface SessionLimits { ttlHours: number; idleMinutes: number }
+
+export async function createSession(db: Db, userId: string, tenantId: string | null, limits: SessionLimits, ip?: string, ua?: string) {
   const token = randomToken(32);
   const csrf = deriveCsrf(token);
   const r = await db.query<{ id: string; expires_at: Date }>(
-    `INSERT INTO sessions (token_hash, csrf_hash, user_id, tenant_id, ip, user_agent, expires_at)
-     VALUES ($1,$2,$3,$4,$5,$6, now() + make_interval(hours => $7)) RETURNING id, expires_at`,
-    [sha256(token), sha256(csrf), userId, tenantId, ip ?? null, (ua ?? '').slice(0, 300), ttlHours]);
+    `INSERT INTO sessions (token_hash, csrf_hash, user_id, tenant_id, ip, user_agent, expires_at, idle_timeout_minutes)
+     VALUES ($1,$2,$3,$4,$5,$6, now() + make_interval(hours => $7), $8) RETURNING id, expires_at`,
+    [sha256(token), sha256(csrf), userId, tenantId, ip ?? null, (ua ?? '').slice(0, 300), limits.ttlHours, limits.idleMinutes]);
   return { token, csrf, sessionId: r.rows[0]!.id, expiresAt: r.rows[0]!.expires_at };
+}
+
+/** A new token for the same session, after anything that raises what it can do. The old token stops working at once; the absolute expiry does not move. */
+export async function rotateSession(db: Db, sessionId: string) {
+  const token = randomToken(32);
+  const csrf = deriveCsrf(token);
+  const r = await db.query<{ expires_at: Date }>('UPDATE sessions SET token_hash=$2, csrf_hash=$3 WHERE id=$1 AND revoked_at IS NULL RETURNING expires_at', [sessionId, sha256(token), sha256(csrf)]);
+  return { token, csrf, expiresAt: r.rows[0]!.expires_at };
 }
 
 /**
@@ -54,9 +66,10 @@ export async function loadSession(pool: Pool, token: string, expectedTenantId: s
     const r = await db.query<{ id: string; user_id: string; tenant_id: string | null; csrf_hash: string; email: string; display_name: string; status: string; touch: boolean; must_change_password: boolean; mfa_on: boolean; mfa_ok: boolean; salary_access_level: number }>(
       `SELECT s.id, s.user_id, s.tenant_id, s.csrf_hash, u.email, u.display_name, u.status, u.must_change_password, u.salary_access_level,
               (u.mfa_enabled_at IS NOT NULL) AS mfa_on, (s.mfa_verified_at IS NOT NULL) AS mfa_ok,
-              s.last_seen_at < now() - interval '5 minutes' AS touch
+              s.last_seen_at < now() - interval '1 minute' AS touch
          FROM sessions s JOIN users u ON u.id = s.user_id
-        WHERE s.token_hash = $1 AND s.revoked_at IS NULL AND s.expires_at > now()`, [sha256(token)]);
+        WHERE s.token_hash = $1 AND s.revoked_at IS NULL AND s.expires_at > now()
+          AND s.last_seen_at > now() - make_interval(mins => s.idle_timeout_minutes)`, [sha256(token)]);
     const s = r.rows[0];
     if (!s || s.status !== 'active' || s.tenant_id !== expectedTenantId) return null;
     if (s.touch) await db.query('UPDATE sessions SET last_seen_at = now() WHERE id = $1', [s.id]);
@@ -97,4 +110,16 @@ export async function revokeSession(db: Db, sessionId: string) {
 
 export async function revokeAllSessionsForUser(db: Db, userId: string) {
   await db.query('UPDATE sessions SET revoked_at = now() WHERE user_id = $1 AND revoked_at IS NULL', [userId]);
+}
+
+export async function revokeOtherSessions(db: Db, userId: string, keepSessionId: string) {
+  await db.query('UPDATE sessions SET revoked_at = now() WHERE user_id = $1 AND id <> $2 AND revoked_at IS NULL', [userId, keepSessionId]);
+}
+
+/** Records a sign-in from this browser. New means this account has used another browser before and never this one: a first sign-in is not news. */
+export async function rememberDevice(db: Db, tenantId: string, userId: string, deviceHash: string): Promise<{ isNew: boolean }> {
+  const before = await db.query<{ here: boolean }>('SELECT device_hash = $2 AS here FROM user_devices WHERE user_id=$1', [userId, deviceHash]);
+  await db.query(`INSERT INTO user_devices (tenant_id, user_id, device_hash) VALUES ($1,$2,$3)
+    ON CONFLICT (user_id, device_hash) DO UPDATE SET last_seen_at=now()`, [tenantId, userId, deviceHash]);
+  return { isNew: before.rows.length > 0 && !before.rows.some((r) => r.here) };
 }

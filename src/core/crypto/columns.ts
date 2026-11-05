@@ -23,4 +23,5 @@ export const ENCRYPTED_COLUMNS: readonly EncryptedColumn[] = [
   { table: 'payroll_adjustments', column: 'data_enc', key: ['id'], guardTrigger: 'payroll_adjustments_guard' },
   { table: 'accounting_exports', column: 'total_enc', key: ['id'] },
   { table: 'report_snapshots', column: 'data_enc', key: ['id'] },
+  { table: 'email_outbox', column: 'secret_enc', key: ['id'] },
 ];

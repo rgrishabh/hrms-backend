@@ -19,8 +19,11 @@ export const SYSTEM_TABLES: ReadonlySet<string> = new Set(['schema_migrations', 
 
 export const CLASSIFICATION: Readonly<Record<string, Readonly<Record<string, DataLevel>>>> = {
   accounting_exports: { source_type: 'L2', source_id: 'L2', format: 'L2', voucher_date: 'L2', exported_by: 'L2', total_enc: 'L4' },
+  auth_throttle: { key_hash: 'L3', subject_hash: 'L3', failures: 'L3', blocked_until: 'L3' },
+  user_devices: { user_id: 'L3', device_hash: 'L3', first_seen_at: 'L3', last_seen_at: 'L3' },
+  email_otps: { user_id: 'L3', purpose: 'L3', code_hash: 'L4', attempts: 'L3', expires_at: 'L3', consumed_at: 'L3' },
   accounting_ledger_map: { map_key: 'L1', ledger_name: 'L1', updated_by: 'L1' },
-  admin_setup_tokens: { user_id: 'L3', token_hash: 'L4', expires_at: 'L3', used_at: 'L3' },
+  admin_setup_tokens: { user_id: 'L3', token_hash: 'L4', expires_at: 'L3', used_at: 'L3', purpose: 'L3' },
   allowance_rates: { kind: 'L1', tier: 'L1', grade: 'L1', vehicle: 'L1', rate: 'L1', effective_from: 'L1', note: 'L1', created_by: 'L1' },
   approval_delegations: { delegator_id: 'L2', delegate_id: 'L2', starts_on: 'L2', ends_on: 'L2', note: 'L2', created_by: 'L2', revoked_at: 'L2', revoked_by: 'L2' },
   approval_requests: { entity_type: 'L2', entity_id: 'L2', requester_id: 'L2', status: 'L2', current_step: 'L2', summary: 'L3', decided_at: 'L2', excluded_user_ids: 'L2', self_approver_id: 'L2' },
@@ -48,7 +51,7 @@ export const CLASSIFICATION: Readonly<Record<string, Readonly<Record<string, Dat
   device_user_mappings: { device_user_id: 'L2', employee_id: 'L2' },
   document_categories: { code: 'L1', name: 'L1', scope: 'L1', employee_visible: 'L1', employee_upload: 'L1', restricted: 'L1', requires_expiry: 'L1', status: 'L1', payroll_related: 'L1' },
   documents: { category_id: 'L3', employee_id: 'L3', title: 'L3', file_name: 'L3', content_type: 'L3', size_bytes: 'L3', sha256: 'L3', storage_key: 'L3', expires_on: 'L3', status: 'L3', uploaded_by: 'L3', archived_at: 'L3', archived_by: 'L3' },
-  email_outbox: { to_user_id: 'L3', to_email: 'L3', subject: 'L3', text_body: 'L3', html_body: 'L3', kind: 'L3', dedupe_key: 'L3', status: 'L3', attempts: 'L3', next_attempt_at: 'L3', last_error: 'L3', sent_at: 'L3' },
+  email_outbox: { to_user_id: 'L3', to_email: 'L3', subject: 'L3', text_body: 'L3', html_body: 'L3', kind: 'L3', dedupe_key: 'L3', status: 'L3', attempts: 'L3', next_attempt_at: 'L3', last_error: 'L3', sent_at: 'L3', secret_enc: 'L4', expires_at: 'L3' },
   employee_addresses: { employee_id: 'L3', kind: 'L3', line1: 'L3', line2: 'L3', city: 'L3', state: 'L3', postal_code: 'L3', country: 'L3' },
   employee_bank_accounts: { employee_id: 'L4', account_holder: 'L4', account_number_enc: 'L4', account_last4: 'L4', ifsc: 'L4', bank_name: 'L4', updated_by: 'L4' },
   employee_bank_changes: { employee_id: 'L4', account_holder: 'L4', account_number_enc: 'L4', account_last4: 'L4', ifsc: 'L4', bank_name: 'L4', status: 'L4', requested_by: 'L4', decided_at: 'L4' },
@@ -108,7 +111,7 @@ export const CLASSIFICATION: Readonly<Record<string, Readonly<Record<string, Dat
   roster_patterns: { code: 'L1', name: 'L1', days: 'L1', status: 'L1', created_by: 'L1' },
   saved_reports: { owner_id: 'L3', report_key: 'L3', name: 'L3', params: 'L3' },
   separations: { employee_id: 'L3', kind: 'L3', reason: 'L3', notice_date: 'L3', requested_lwd: 'L3', notice_days_required: 'L3', approved_lwd: 'L3', shortfall_days: 'L3', waive_shortfall: 'L3', rehire_eligible: 'L3', status: 'L3', exit_interview: 'L3', fnf_status: 'L3', fnf_note: 'L3', initiated_by: 'L3', completed_at: 'L3' },
-  sessions: { token_hash: 'L4', csrf_hash: 'L4', user_id: 'L3', ip: 'L3', user_agent: 'L3', last_seen_at: 'L3', expires_at: 'L3', revoked_at: 'L3', mfa_verified_at: 'L3', mfa_failures: 'L3' },
+  sessions: { token_hash: 'L4', csrf_hash: 'L4', user_id: 'L3', ip: 'L3', user_agent: 'L3', last_seen_at: 'L3', expires_at: 'L3', revoked_at: 'L3', mfa_verified_at: 'L3', mfa_failures: 'L3', idle_timeout_minutes: 'L3' },
   shift_assignments: { employee_id: 'L2', shift_id: 'L2', effective_from: 'L2', effective_to: 'L2', created_by: 'L2' },
   shifts: { code: 'L1', name: 'L1', start_time: 'L1', end_time: 'L1', break_minutes: 'L1', grace_minutes: 'L1', early_exit_grace_minutes: 'L1', half_day_min_minutes: 'L1', full_day_min_minutes: 'L1', overtime_after_minutes: 'L1', status: 'L1' },
   statutory_rules: { kind: 'L1', scope: 'L1', effective_from: 'L1', effective_to: 'L1', params: 'L1', source_reference: 'L1', status: 'L1', created_by: 'L1', verified_by: 'L1', verified_at: 'L1' },
@@ -122,7 +125,7 @@ export const CLASSIFICATION: Readonly<Record<string, Readonly<Record<string, Dat
   training_records: { employee_id: 'L2', course_id: 'L2', completed_on: 'L2', expires_on: 'L2', result: 'L2', trainer: 'L2', provider: 'L2', hours: 'L2', notes: 'L2', status: 'L2', revoked_reason: 'L2', recorded_by: 'L2' },
   travel_requests: { employee_id: 'L2', purpose: 'L2', trip_type: 'L2', origin: 'L2', destination: 'L2', start_date: 'L2', end_date: 'L2', travel_mode: 'L2', accommodation: 'L2', project: 'L2', estimate_travel: 'L2', estimate_stay: 'L2', estimate_local: 'L2', estimate_meals: 'L2', estimate_other: 'L2', estimate_total: 'L2', advance_requested: 'L3', mark_on_duty: 'L2', on_duty_note: 'L2', status: 'L2', advance_paid_amount: 'L3', advance_paid_at: 'L2', advance_paid_by: 'L2', advance_reference: 'L2', recovered_amount: 'L3', recovered_note: 'L2', created_by: 'L2', decided_at: 'L2', completed_at: 'L2', closed_at: 'L2', closed_by: 'L2', cancelled_by: 'L2', cancel_reason: 'L2' },
   user_roles: { user_id: 'L2', role_key: 'L2', scope_type: 'L2', scope_id: 'L2', granted_by: 'L2' },
-  users: { email: 'L1', display_name: 'L1', password_hash: 'L4', status: 'L2', failed_logins: 'L2', locked_until: 'L2', mfa_required: 'L2', last_login_at: 'L2', must_change_password: 'L2', email_notifications: 'L2', mfa_secret_enc: 'L4', mfa_pending_secret_enc: 'L4', mfa_enabled_at: 'L2', mfa_recovery_hashes: 'L4', mfa_last_step: 'L2', salary_access_level: 'L4' },
+  users: { email: 'L1', display_name: 'L1', password_hash: 'L4', status: 'L2', failed_logins: 'L2', locked_until: 'L2', mfa_required: 'L2', last_login_at: 'L2', must_change_password: 'L2', email_notifications: 'L2', mfa_secret_enc: 'L4', mfa_pending_secret_enc: 'L4', mfa_enabled_at: 'L2', mfa_recovery_hashes: 'L4', mfa_last_step: 'L2', salary_access_level: 'L4', mfa_method: 'L2', mfa_failures: 'L2', mfa_locked_until: 'L2' },
 };
 
 export const levelOf = (table: string, column: string): DataLevel | undefined => CLASSIFICATION[table]?.[column];

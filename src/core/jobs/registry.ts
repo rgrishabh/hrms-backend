@@ -13,6 +13,7 @@ import { lifecycleDaily } from '../../modules/lifecycle/routes.js';
 import { caseDeadlines } from '../../modules/cases/routes.js';
 import { assetsDaily } from '../../modules/assets/routes.js';
 import { runSchedules } from '../../modules/reports/service.js';
+import { purgeThrottle } from '../auth/throttle.js';
 import { escalateOverdue, reassignStranded, stepRecipients, blockedUsers, handlerFeature, offEntityTypes } from '../workflow/engine.js';
 
 /**
@@ -240,11 +241,14 @@ export const JOBS: readonly JobDefinition[] = [
   {
     key: 'sessions.cleanup',
     name: 'Session cleanup',
-    description: 'Deletes sessions that expired or were revoked more than 7 days ago.',
+    description: 'Deletes sessions that expired or were revoked more than 7 days ago, old email codes, sign-in counters and browsers not seen for a year.',
     schedule: { kind: 'daily', at: '03:00' },
     runPermission: 'security.manage',
     async run(db, tenantId) {
       const r = await db.query(`DELETE FROM sessions WHERE tenant_id=$1 AND (expires_at < now() - interval '7 days' OR revoked_at < now() - interval '7 days')`, [tenantId]);
+      await db.query(`DELETE FROM email_otps WHERE tenant_id=$1 AND expires_at < now() - interval '1 day'`, [tenantId]);
+      await db.query(`DELETE FROM user_devices WHERE tenant_id=$1 AND last_seen_at < now() - interval '1 year'`, [tenantId]);
+      await purgeThrottle(db, tenantId);
       return { deleted: r.rowCount };
     },
   },

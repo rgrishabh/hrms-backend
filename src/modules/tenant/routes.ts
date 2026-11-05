@@ -19,6 +19,7 @@ import { redact } from '../../core/audit/audit.js';
 import { hashPassword } from '../../core/crypto/index.js';
 import { getSettingValue } from '../../core/settings/service.js';
 import { revokeAllSessionsForUser } from '../../core/auth/session.js';
+import { clearLoginAccount } from '../../core/auth/throttle.js';
 import { PRIVILEGED_PERMISSIONS } from '../../core/auth/mfa.js';
 
 /** The modes without role screens answer 404 here, like any address that does not exist. */
@@ -248,7 +249,7 @@ export async function tenantAdminRoutes(app: FastifyInstance, opts: { publicConf
     return a.tx(async (db) => {
       const where = `u.tenant_id=$1 AND ($2::text IS NULL OR u.email ILIKE '%'||$2||'%' OR u.display_name ILIKE '%'||$2||'%')`;
       const total = Number((await db.query<{ n: string }>(`SELECT count(*) AS n FROM users u WHERE ${where}`, [a.tenantId, q.search ?? null])).rows[0]!.n);
-      const rows = await db.query<{ salary_access_level: number; roles: string[] } & Record<string, unknown>>(`SELECT u.id, u.email, u.display_name, u.status, u.salary_access_level, u.last_login_at, u.locked_until > now() AS locked, u.mfa_enabled_at IS NOT NULL AS mfa_enabled,
+      const rows = await db.query<{ salary_access_level: number; roles: string[] } & Record<string, unknown>>(`SELECT u.id, u.email, u.display_name, u.status, u.salary_access_level, u.last_login_at, EXISTS (SELECT 1 FROM auth_throttle th WHERE th.tenant_id=u.tenant_id AND th.subject_hash=encode(sha256(convert_to(u.tenant_id::text||'|'||u.email,'UTF8')),'hex') AND th.blocked_until > now()) AS locked, u.mfa_enabled_at IS NOT NULL AS mfa_enabled,
           coalesce(array_agg(r.role_key ORDER BY r.role_key) FILTER (WHERE r.role_key IS NOT NULL), '{}') AS roles,
           e.id AS employee_id, e.employee_code
         FROM users u LEFT JOIN user_roles r ON r.user_id=u.id AND r.tenant_id=u.tenant_id
@@ -352,7 +353,7 @@ export async function tenantAdminRoutes(app: FastifyInstance, opts: { publicConf
     const { id } = z.object({ id: Uuid }).parse(req.params);
     const body = z.object({ status: z.enum(['active', 'disabled']).optional(), roles: RoleKeys.optional(), unlock: z.boolean().optional(), resetMfa: z.boolean().optional() }).parse(req.body);
     return a.tx(async (db) => {
-      const u = await db.query<{ status: string }>('SELECT status FROM users WHERE tenant_id=$1 AND id=$2 FOR UPDATE', [a.tenantId, id]);
+      const u = await db.query<{ status: string; email: string }>('SELECT status, email FROM users WHERE tenant_id=$1 AND id=$2 FOR UPDATE', [a.tenantId, id]);
       if (!u.rowCount) throw notFound('User not found');
       const prevRoles = (await db.query<{ role_key: string }>('SELECT role_key FROM user_roles WHERE tenant_id=$1 AND user_id=$2', [a.tenantId, id])).rows.map((r) => r.role_key);
       if (id === a.user.userId && (body.status === 'disabled' || (body.roles && !body.roles.some(isOwnerRole) && prevRoles.some(isOwnerRole)))) {
@@ -375,7 +376,7 @@ export async function tenantAdminRoutes(app: FastifyInstance, opts: { publicConf
         if (Number(admins.rows[0]!.n) === 0) throw conflict('At least one active Tenant Administrator is required');
       }
       if (body.status) await db.query('UPDATE users SET status=$3, updated_at=now() WHERE tenant_id=$1 AND id=$2', [a.tenantId, id, body.status]);
-      if (body.unlock) await db.query('UPDATE users SET locked_until=NULL, failed_logins=0 WHERE tenant_id=$1 AND id=$2', [a.tenantId, id]);
+      if (body.unlock) await clearLoginAccount(db, a.tenantId, u.rows[0]!.email);
       if (body.resetMfa) {
         if (id === a.user.userId) throw conflict('You cannot reset your own two-factor authentication here');
         await db.query(`UPDATE users SET mfa_secret_enc=NULL, mfa_pending_secret_enc=NULL, mfa_enabled_at=NULL, mfa_recovery_hashes='{}', mfa_last_step=NULL
@@ -409,6 +410,8 @@ export async function tenantAdminRoutes(app: FastifyInstance, opts: { publicConf
       if (level >= a.user.salaryLevel) throw forbidden('You can only set a salary level below your own');
       await db.query('UPDATE users SET salary_access_level=$3, updated_at=now() WHERE tenant_id=$1 AND id=$2', [a.tenantId, id, level]);
       const after = effectiveLevel(level, roles);
+      // What this person can read has changed: they sign in again, like after a role change.
+      await revokeAllSessionsForUser(db, id);
       await audit(db, { ...a.auditBase, action: 'user.salary_level_changed', category: 'security', targetType: 'user', targetId: id, metadata: { from: u.salary_access_level, to: level, effectiveFrom: before, effectiveTo: after } });
       return { ok: true, level, effectiveLevel: after };
     });

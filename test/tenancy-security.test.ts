@@ -98,16 +98,14 @@ describe('authentication & session security', () => {
     expect((await c.put('/api/v1/tenant/settings/general.date_format', { value: 'YYYY-MM-DD' })).statusCode).toBe(200);
   });
 
-  it('locks the account after repeated failures and records audit events', async () => {
+  it('backs off after repeated failures from one address and records audit events', async () => {
     const T = await createTenant();
     const c = new Client(app, T.host);
     for (let i = 0; i < 5; i++) expect((await c.post('/api/v1/auth/login', { email: T.users.other!.email, password: 'wrong-password' })).statusCode).toBe(401);
-    // Correct password is refused while locked.
-    expect((await c.post('/api/v1/auth/login', { email: T.users.other!.email, password: PASSWORD })).statusCode).toBe(401);
-    const [u] = await ownerQuery<{ locked: boolean }>(`SELECT locked_until > now() AS locked FROM users WHERE id=$1`, [T.users.other!.id]);
-    expect(u!.locked).toBe(true);
+    // Correct password is refused from this address while it waits. test/sessions.test.ts covers everyone else getting in.
+    expect((await c.post('/api/v1/auth/login', { email: T.users.other!.email, password: PASSWORD })).statusCode).toBe(429);
     const logs = await ownerQuery(`SELECT 1 FROM audit_logs WHERE tenant_id=$1 AND action='auth.login_failed'`, [T.id]);
-    expect(logs.length).toBe(6);
+    expect(logs.length).toBe(5);
   });
 
   it('logout revokes the session server-side', async () => {
