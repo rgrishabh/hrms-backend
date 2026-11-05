@@ -37,7 +37,10 @@ describe('approval notifications', () => {
     expect(n.items[0].title).toMatch(/Attendance correction from employee needs your approval/);
     expect((await mgr.get('/api/v1/notifications/unread-count')).json().unread).toBe(1);
     expect((await inbox(emp)).items).toHaveLength(0); // requester is not notified of their own request
+    // The outbox is shared by every organization in this test database: another file's mail may still be waiting.
     await deliverOutbox(app.deps.pool, quiet);
+    const mine = sent.filter((m) => m.to === T.users.manager!.email);
+    sent.length = 0; sent.push(...mine);
     expect(sent).toHaveLength(1);
     expect(sent[0]).toMatchObject({ to: T.users.manager!.email, from: '"Acme Labs" <hr@acme.test>' });
     expect(sent[0]!.subject).toMatch(/needs your approval · Acme Labs$/);

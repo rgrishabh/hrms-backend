@@ -1,4 +1,5 @@
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
+import * as R from '../core/http/responses.js';
 import { z } from 'zod';
 import { withPlatformBypass, type Db } from '../db/tx.js';
 import { AppError, badRequest, conflict, unauthorized } from '../core/http/errors.js';
@@ -74,14 +75,14 @@ export async function mfaRoutes(app: FastifyInstance, opts: { publicConfig: Publ
   const invalidCode = (hint = 'Check your code and try again.') => new AppError(400, 'mfa_invalid', `That code is not valid. ${hint}`);
 
   /** What this deployment offers, and whether each can be used right now: the enrolment screen says so before anyone tries. */
-  app.get('/methods', { schema: {} }, async (req) => {
+  app.get('/methods', { schema: { response: { 200: R.GetAuthMfaMethods200 },} }, async (req) => {
     const { u } = actor(req);
     const left = await withPlatformBypass(pool, async (db) => (await db.query<{ n: number }>('SELECT cardinality(mfa_recovery_hashes) AS n FROM users WHERE id=$1', [u.userId])).rows[0]!.n);
     return { enabled: u.mfaEnabled, method: u.mfaMethod, recoveryCodesLeft: u.mfaEnabled ? left : 0, enforced: policy.enforced,
       methods: policy.methods.map((method) => (method === 'email' && !getMailer() ? { method, usable: false, reason: NO_EMAIL } : { method, usable: true })) };
   });
 
-  app.post('/verify', { schema: { body: VerifyBody }, config: { rateLimit: { max: 10, timeWindow: '1 minute' } }, preHandler: guesses }, async (req, reply) => {
+  app.post('/verify', { schema: { response: { 200: R.PostAuthMfaVerify200 }, body: VerifyBody }, config: { rateLimit: { max: 10, timeWindow: '1 minute' } }, preHandler: guesses }, async (req, reply) => {
     const { u, tenantId, base } = actor(req);
     const { code } = VerifyBody.parse(req.body);
     if (!u.mfaPending) throw conflict('This session does not need a code');
@@ -134,7 +135,7 @@ export async function mfaRoutes(app: FastifyInstance, opts: { publicConfig: Publ
   };
 
   if (offers('totp')) {
-    app.post('/setup', { schema: {} }, async (req) => {
+    app.post('/setup', { schema: { response: { 200: R.PostAuthMfaSetup200 },} }, async (req) => {
       const { u, base } = actor(req);
       return withPlatformBypass(pool, async (db) => {
         assertNotEnrolled(await loadMfa(db, u.userId));
@@ -145,7 +146,7 @@ export async function mfaRoutes(app: FastifyInstance, opts: { publicConfig: Publ
       });
     });
 
-    app.post('/enable', { schema: { body: VerifyBody }, config: { rateLimit: { max: 10, timeWindow: '1 minute' } }, preHandler: guesses }, async (req, reply) => {
+    app.post('/enable', { schema: { response: { 200: R.PostAuthMfaEnable200 }, body: VerifyBody }, config: { rateLimit: { max: 10, timeWindow: '1 minute' } }, preHandler: guesses }, async (req, reply) => {
       const { u, tenantId, base } = actor(req);
       const { code } = VerifyBody.parse(req.body);
       const { codes, rotated } = await withPlatformBypass(pool, async (db) => {
@@ -164,7 +165,7 @@ export async function mfaRoutes(app: FastifyInstance, opts: { publicConfig: Publ
 
   if (offers('email')) {
     /** Sends a code to the account's address, to prove it receives mail before relying on it. */
-    app.post('/email/setup', { schema: {}, config: { rateLimit: { max: 5, timeWindow: '1 minute' } }, preHandler: sends }, async (req, reply) => {
+    app.post('/email/setup', { schema: { response: { 200: R.PostAuthMfaEmailSetup200 },}, config: { rateLimit: { max: 5, timeWindow: '1 minute' } }, preHandler: sends }, async (req, reply) => {
       const { u, tenantId, base } = actor(req);
       const s = await withPlatformBypass(pool, async (db) => {
         assertNotEnrolled(await loadMfa(db, u.userId));
@@ -176,7 +177,7 @@ export async function mfaRoutes(app: FastifyInstance, opts: { publicConfig: Publ
       return { sent: true };
     });
 
-    app.post('/email/enable', { schema: { body: VerifyBody }, config: { rateLimit: { max: 10, timeWindow: '1 minute' } }, preHandler: guesses }, async (req, reply) => {
+    app.post('/email/enable', { schema: { response: { 200: R.PostAuthMfaEmailEnable200 }, body: VerifyBody }, config: { rateLimit: { max: 10, timeWindow: '1 minute' } }, preHandler: guesses }, async (req, reply) => {
       const { u, tenantId, base } = actor(req);
       const { code } = VerifyBody.parse(req.body);
       // A wrong code is kept: the guess must count, so the answer comes after the commit.
@@ -218,7 +219,7 @@ export async function mfaRoutes(app: FastifyInstance, opts: { publicConfig: Publ
     return { recoveryCodes: out };
   });
 
-  app.post('/disable', { schema: { body: DisableBody }, config: { rateLimit: { max: 5, timeWindow: '1 minute' } }, preHandler: sends }, async (req, reply) => {
+  app.post('/disable', { schema: { response: { 200: R.PostAuthMfaDisable200 }, body: DisableBody }, config: { rateLimit: { max: 5, timeWindow: '1 minute' } }, preHandler: sends }, async (req, reply) => {
     const { u, tenantId, base } = actor(req);
     const body = DisableBody.parse(req.body);
     if (policy.enforced) throw new AppError(403, 'mfa_required_by_deployment', 'Two-factor authentication is required on this installation; it cannot be turned off.');

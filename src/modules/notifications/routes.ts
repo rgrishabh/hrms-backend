@@ -1,4 +1,5 @@
 import type { FastifyInstance } from 'fastify';
+import * as R from '../../core/http/responses.js';
 import { only } from '../../core/features/routes.js';
 import { z } from 'zod';
 import { tenantActor, requireFeature } from '../../core/http/context.js';
@@ -15,7 +16,7 @@ const IdParams = z.object({ id: Uuid });
 const PushUnsubscribeBody = z.object({ endpoint: z.string().max(1000) });
 /** A user's own in-app notifications. Every query is scoped to (organization, user). */
 export async function notificationRoutes(app: FastifyInstance) {
-  app.get('/', { schema: { querystring: GetRootQuery } }, async (req) => {
+  app.get('/', { schema: { response: { 200: R.GetNotifications200 }, querystring: GetRootQuery } }, async (req) => {
     const a = tenantActor(req);
     const q = GetRootQuery.parse(req.query);
     return a.tx(async (db) => {
@@ -28,13 +29,13 @@ export async function notificationRoutes(app: FastifyInstance) {
     });
   });
 
-  app.get('/unread-count', { schema: {} }, async (req) => {
+  app.get('/unread-count', { schema: { response: { 200: R.GetNotificationsUnreadCount200 },} }, async (req) => {
     const a = tenantActor(req);
     return a.tx(async (db) => ({ unread: Number((await db.query<{ n: string }>(
       `SELECT count(*) AS n FROM notifications WHERE tenant_id=$1 AND user_id=$2 AND read_at IS NULL AND (feature IS NULL OR feature = ANY($3))`, [a.tenantId, a.user.userId, enabledFeatures()])).rows[0]!.n) }));
   });
 
-  app.post('/:id/read', { schema: { params: IdParams } }, async (req) => {
+  app.post('/:id/read', { schema: { response: { 200: R.PostNotificationsByIdRead200 }, params: IdParams } }, async (req) => {
     const a = tenantActor(req);
     const { id } = IdParams.parse(req.params);
     return a.tx(async (db) => {
@@ -44,7 +45,7 @@ export async function notificationRoutes(app: FastifyInstance) {
     });
   });
 
-  app.post('/read-all', { schema: {} }, async (req) => {
+  app.post('/read-all', { schema: { response: { 200: R.PostNotificationsReadAll200 },} }, async (req) => {
     const a = tenantActor(req);
     return a.tx(async (db) => ({ updated: (await db.query(`UPDATE notifications SET read_at=now() WHERE tenant_id=$1 AND user_id=$2 AND read_at IS NULL AND (feature IS NULL OR feature = ANY($3))`,
       [a.tenantId, a.user.userId, enabledFeatures()])).rowCount }));
@@ -55,7 +56,7 @@ export async function notificationRoutes(app: FastifyInstance) {
   const Subscribe = z.object({ endpoint: z.url().max(1000), keys: z.object({ p256dh: PushKey.max(200), auth: PushKey.max(100) }) });
 
   /** The application server key a browser needs to subscribe. */
-  only(app, 'notifications.push').get('/push/public-key', { schema: {}, config: { feature: ['notifications.push'] } }, async (req) => {
+  only(app, 'notifications.push').get('/push/public-key', { schema: { response: { 200: R.GetNotificationsPushPublicKey200 },}, config: { feature: ['notifications.push'] } }, async (req) => {
     const a = tenantActor(req);
     return a.tx(async (db) => {
       await requireFeature(db, a.tenantId, 'notifications.push');
@@ -63,7 +64,7 @@ export async function notificationRoutes(app: FastifyInstance) {
     });
   });
 
-  only(app, 'notifications.push').post('/push/subscribe', { schema: { body: Subscribe }, config: { feature: ['notifications.push'] } }, async (req, reply) => {
+  only(app, 'notifications.push').post('/push/subscribe', { schema: { response: { 201: R.PostNotificationsPushSubscribe201 }, body: Subscribe }, config: { feature: ['notifications.push'] } }, async (req, reply) => {
     const a = tenantActor(req);
     const b = Subscribe.parse(req.body);
     if (!isAllowedEndpoint(b.endpoint)) throw badRequest('This is not a browser push service');

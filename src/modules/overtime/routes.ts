@@ -1,4 +1,5 @@
 import type { FastifyInstance } from 'fastify';
+import * as R from '../../core/http/responses.js';
 import { z } from 'zod';
 import { Decimal } from 'decimal.js';
 import { tenantActor, tenantActorAny, gateFeatures, requireFeature, type TenantActor } from '../../core/http/context.js';
@@ -166,7 +167,7 @@ export async function overtimeRoutes(app: FastifyInstance) {
     });
   });
 
-  app.get('/claims', { schema: { querystring: ClaimsQuery }, config: { permAny: ['overtime.self', 'overtime.team.read', 'overtime.read', 'overtime.approve', 'overtime.manage'] } }, async (req) => {
+  app.get('/claims', { schema: { response: { 200: R.GetOvertimeClaims200 }, querystring: ClaimsQuery }, config: { permAny: ['overtime.self', 'overtime.team.read', 'overtime.read', 'overtime.approve', 'overtime.manage'] } }, async (req) => {
     const a = tenantActorAny(req, 'overtime.self', 'overtime.team.read', 'overtime.read', 'overtime.approve', 'overtime.manage');
     const q = ClaimsQuery.parse(req.query);
     return a.tx(async (db) => {
@@ -185,7 +186,7 @@ export async function overtimeRoutes(app: FastifyInstance) {
     });
   });
 
-  app.get('/claims/:id', { schema: { params: IdParams } }, async (req) => {
+  app.get('/claims/:id', { schema: { response: { 200: R.GetOvertimeClaimsById200 }, params: IdParams } }, async (req) => {
     const a = tenantActor(req);
     const { id } = IdParams.parse(req.params);
     return a.tx(async (db) => {

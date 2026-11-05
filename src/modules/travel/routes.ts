@@ -1,4 +1,5 @@
 import type { FastifyInstance } from 'fastify';
+import * as R from '../../core/http/responses.js';
 import { z } from 'zod';
 import { Decimal } from 'decimal.js';
 import { tenantActor, tenantActorAny, gateFeatures, type TenantActor } from '../../core/http/context.js';
@@ -126,51 +127,78 @@ const RequestsAdvanceReturnedBody = z.object({ amount: z.union([z.number(), z.st
 export async function travelRoutes(app: FastifyInstance) {
   gateFeatures(app, F);
 
+  /** A trip's rules, and its approval from the start. A new trip, or a returned one sent again in place: its old approval stays as history. */
+  const submitTrip = async (db: Db, a: TenantActor, b: z.output<typeof Body>, empId: string, existingId: string | null) => {
+    if (b.endDate < b.startDate) throw badRequest('The return date is before the start date');
+    const est = b.estimate;
+    const total = est.travel.plus(est.stay).plus(est.local).plus(est.meals).plus(est.other);
+    const today = await orgToday(db, a.tenantId);
+    const notice = await getSettingValue<number>(db, a.tenantId, 'travel.min_notice_days');
+    const maxDays = await getSettingValue<number>(db, a.tenantId, 'travel.max_days');
+    const maxPct = await getSettingValue<number>(db, a.tenantId, 'travel.max_advance_percent');
+    const threshold = await getSettingValue<number | null>(db, a.tenantId, 'travel.finance_approval_above');
+    if (b.startDate < addDays(today, notice)) throw badRequest(notice ? `Request travel at least ${notice} day(s) before it starts` : 'Travel cannot be requested for past dates');
+    if (daysBetween(b.startDate, b.endDate) + 1 > maxDays) throw badRequest(`A trip can last at most ${maxDays} days; split longer travel`);
+    if (b.advance.gt(total.times(maxPct).div(100))) throw badRequest(`The advance can be at most ${maxPct}% of the estimate (${money(total.times(maxPct).div(100))})`);
+    if (b.advance.gt(0) && total.lte(0)) throw badRequest('Enter the estimated costs to ask for an advance');
+    const e = (await db.query<{ status: string; name: string; user_id: string | null; mgr_user: string | null; exit_date: string | null }>(
+      `SELECT e.status, e.user_id, e.exit_date::text, trim(e.first_name||' '||coalesce(e.last_name,'')) AS name, CASE WHEN m.status IN ('active','on_notice') THEN m.user_id END AS mgr_user
+       FROM employees e LEFT JOIN employees m ON m.tenant_id=e.tenant_id AND m.id=e.reporting_manager_id WHERE e.tenant_id=$1 AND e.id=$2`, [a.tenantId, empId])).rows[0]!;
+    if (e.exit_date && b.endDate > e.exit_date) throw badRequest('The trip ends after your last working day');
+    const overlap = await db.query<{ start_date: string; end_date: string; status: string }>(`SELECT start_date::text, end_date::text, status FROM travel_requests
+      WHERE tenant_id=$1 AND employee_id=$2 AND status IN ('pending','approved') AND start_date <= $4 AND end_date >= $3`, [a.tenantId, empId, b.startDate, b.endDate]);
+    if (overlap.rowCount) throw conflict(`Overlaps a ${overlap.rows[0]!.status} trip (${overlap.rows[0]!.start_date} to ${overlap.rows[0]!.end_date})`);
+    if (existingId) {
+      await db.query(`UPDATE travel_requests SET purpose=$3, trip_type=$4, origin=$5, destination=$6, start_date=$7, end_date=$8, travel_mode=$9, accommodation=$10, project=$11,
+          estimate_travel=$12, estimate_stay=$13, estimate_local=$14, estimate_meals=$15, estimate_other=$16, advance_requested=$17, mark_on_duty=$18, status='pending', decided_at=NULL
+        WHERE tenant_id=$1 AND id=$2 AND status='returned'`,
+        [a.tenantId, existingId, b.purpose, b.tripType, b.origin, b.destination, b.startDate, b.endDate, b.travelMode, b.accommodation, b.project,
+         est.travel.toFixed(2), est.stay.toFixed(2), est.local.toFixed(2), est.meals.toFixed(2), est.other.toFixed(2), b.advance.toFixed(2), b.markOnDuty]);
+    }
+    const id = existingId ?? (await db.query<{ id: string }>(`INSERT INTO travel_requests (tenant_id, employee_id, purpose, trip_type, origin, destination, start_date, end_date, travel_mode, accommodation, project,
+        estimate_travel, estimate_stay, estimate_local, estimate_meals, estimate_other, advance_requested, mark_on_duty, created_by)
+      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19) RETURNING id`,
+      [a.tenantId, empId, b.purpose, b.tripType, b.origin, b.destination, b.startDate, b.endDate, b.travelMode, b.accommodation, b.project,
+       est.travel.toFixed(2), est.stay.toFixed(2), est.local.toFixed(2), est.meals.toFixed(2), est.other.toFixed(2), b.advance.toFixed(2), b.markOnDuty, a.user.userId])).rows[0]!.id;
+    // The manager approves the trip; finance too when money goes out before it (an advance), it goes abroad, or the estimate is large.
+    const mgr = e.mgr_user && e.mgr_user !== a.user.userId ? e.mgr_user : null;
+    const finance = !mgr || b.advance.gt(0) || b.tripType === 'international' || (threshold != null && total.gte(threshold));
+    const steps = buildSteps({ requesterId: a.user.userId, managerUserId: mgr, then: finance ? ['travel.approve'] : [] });
+    const days = daysBetween(b.startDate, b.endDate) + 1;
+    const approvalId = await createApprovalRequest(db, a.tenantId, { entityType: 'travel_request', entityId: id, requesterId: a.user.userId,
+      summary: `${e.name}: ${b.origin} → ${b.destination}, ${b.startDate}${days > 1 ? ` to ${b.endDate}` : ''}${b.advance.gt(0) ? ', with an advance' : ''}`,
+      steps, excludeUserIds: [a.user.userId] });
+    await audit(db, { ...a.auditBase, action: existingId ? 'travel.resubmitted' : 'travel.requested', targetType: 'travel_request', targetId: id,
+      metadata: { startDate: b.startDate, endDate: b.endDate, tripType: b.tripType, estimate: total.toFixed(2), advance: b.advance.toFixed(2), approvalId } });
+    return id;
+  };
+
   app.post('/requests', { schema: { body: Body }, config: { perm: ['travel.self'] } }, async (req, reply) => {
     const a = tenantActor(req, 'travel.self');
     const b = Body.parse(req.body);
     const empId = a.user.employeeId;
     if (!empId) throw badRequest('Your account is not linked to an employee record');
-    if (b.endDate < b.startDate) throw badRequest('The return date is before the start date');
-    const est = b.estimate;
-    const total = est.travel.plus(est.stay).plus(est.local).plus(est.meals).plus(est.other);
     return a.tx(async (db) => {
-      const today = await orgToday(db, a.tenantId);
-      const notice = await getSettingValue<number>(db, a.tenantId, 'travel.min_notice_days');
-      const maxDays = await getSettingValue<number>(db, a.tenantId, 'travel.max_days');
-      const maxPct = await getSettingValue<number>(db, a.tenantId, 'travel.max_advance_percent');
-      const threshold = await getSettingValue<number | null>(db, a.tenantId, 'travel.finance_approval_above');
-      if (b.startDate < addDays(today, notice)) throw badRequest(notice ? `Request travel at least ${notice} day(s) before it starts` : 'Travel cannot be requested for past dates');
-      if (daysBetween(b.startDate, b.endDate) + 1 > maxDays) throw badRequest(`A trip can last at most ${maxDays} days; split longer travel`);
-      if (b.advance.gt(total.times(maxPct).div(100))) throw badRequest(`The advance can be at most ${maxPct}% of the estimate (${money(total.times(maxPct).div(100))})`);
-      if (b.advance.gt(0) && total.lte(0)) throw badRequest('Enter the estimated costs to ask for an advance');
-      const e = (await db.query<{ status: string; name: string; user_id: string | null; mgr_user: string | null; exit_date: string | null }>(
-        `SELECT e.status, e.user_id, e.exit_date::text, trim(e.first_name||' '||coalesce(e.last_name,'')) AS name, CASE WHEN m.status IN ('active','on_notice') THEN m.user_id END AS mgr_user
-         FROM employees e LEFT JOIN employees m ON m.tenant_id=e.tenant_id AND m.id=e.reporting_manager_id WHERE e.tenant_id=$1 AND e.id=$2`, [a.tenantId, empId])).rows[0]!;
-      if (e.exit_date && b.endDate > e.exit_date) throw badRequest('The trip ends after your last working day');
-      const overlap = await db.query<{ start_date: string; end_date: string; status: string }>(`SELECT start_date::text, end_date::text, status FROM travel_requests
-        WHERE tenant_id=$1 AND employee_id=$2 AND status IN ('pending','approved') AND start_date <= $4 AND end_date >= $3`, [a.tenantId, empId, b.startDate, b.endDate]);
-      if (overlap.rowCount) throw conflict(`Overlaps a ${overlap.rows[0]!.status} trip (${overlap.rows[0]!.start_date} to ${overlap.rows[0]!.end_date})`);
-      const id = (await db.query<{ id: string }>(`INSERT INTO travel_requests (tenant_id, employee_id, purpose, trip_type, origin, destination, start_date, end_date, travel_mode, accommodation, project,
-          estimate_travel, estimate_stay, estimate_local, estimate_meals, estimate_other, advance_requested, mark_on_duty, created_by)
-        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19) RETURNING id`,
-        [a.tenantId, empId, b.purpose, b.tripType, b.origin, b.destination, b.startDate, b.endDate, b.travelMode, b.accommodation, b.project,
-         est.travel.toFixed(2), est.stay.toFixed(2), est.local.toFixed(2), est.meals.toFixed(2), est.other.toFixed(2), b.advance.toFixed(2), b.markOnDuty, a.user.userId])).rows[0]!.id;
-      // The manager approves the trip; finance too when money goes out before it (an advance), it goes abroad, or the estimate is large.
-      const mgr = e.mgr_user && e.mgr_user !== a.user.userId ? e.mgr_user : null;
-      const finance = !mgr || b.advance.gt(0) || b.tripType === 'international' || (threshold != null && total.gte(threshold));
-      const steps = buildSteps({ requesterId: a.user.userId, managerUserId: mgr, then: finance ? ['travel.approve'] : [] });
-      const days = daysBetween(b.startDate, b.endDate) + 1;
-      const approvalId = await createApprovalRequest(db, a.tenantId, { entityType: 'travel_request', entityId: id, requesterId: a.user.userId,
-        summary: `${e.name}: ${b.origin} → ${b.destination}, ${b.startDate}${days > 1 ? ` to ${b.endDate}` : ''}${b.advance.gt(0) ? ', with an advance' : ''}`,
-        steps, excludeUserIds: [a.user.userId] });
-      await audit(db, { ...a.auditBase, action: 'travel.requested', targetType: 'travel_request', targetId: id,
-        metadata: { startDate: b.startDate, endDate: b.endDate, tripType: b.tripType, estimate: total.toFixed(2), advance: b.advance.toFixed(2), approvalId } });
+      const id = await submitTrip(db, a, b, empId, null);
       reply.code(201); return { id };
     });
   });
 
-  app.get('/requests', { schema: { querystring: RequestsQuery }, config: { permAny: ['travel.self', 'travel.team.read'] } }, async (req) => {
+  /** A trip sent back for changes: the traveller corrects it and it goes round again, as a new approval. */
+  app.post('/requests/:id/resubmit', { schema: { params: IdParams, body: Body }, config: { perm: ['travel.self'] } }, async (req) => {
+    const a = tenantActor(req, 'travel.self');
+    const { id } = IdParams.parse(req.params);
+    const b = Body.parse(req.body);
+    return a.tx(async (db) => {
+      const t = await loadTrip(db, a, id, true);
+      if (t.employee_id !== a.user.employeeId) throw forbidden('Only the traveller can send this again');
+      if (t.status !== 'returned') throw conflict(`This request is ${t.status}`);
+      await submitTrip(db, a, b, t.employee_id, id);
+      return { ok: true };
+    });
+  });
+
+  app.get('/requests', { schema: { response: { 200: R.GetTravelRequests200 }, querystring: RequestsQuery }, config: { permAny: ['travel.self', 'travel.team.read'] } }, async (req) => {
     const a = tenantActorAny(req, 'travel.self', 'travel.team.read', ...READ_ALL);
     const q = RequestsQuery.parse(req.query);
     return a.tx(async (db) => {
@@ -189,7 +217,7 @@ export async function travelRoutes(app: FastifyInstance) {
     });
   });
 
-  app.get('/requests/:id', { schema: { params: IdParams } }, async (req) => {
+  app.get('/requests/:id', { schema: { response: { 200: R.GetTravelRequestsById200 }, params: IdParams } }, async (req) => {
     const a = tenantActor(req);
     const { id } = IdParams.parse(req.params);
     return a.tx(async (db) => {

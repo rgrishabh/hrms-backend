@@ -1,4 +1,5 @@
 import { maskFields, policyViewer, reasonVisibleSql } from '../../core/policy/salary.js';
+import * as R from '../../core/http/responses.js';
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import { tenantActor, tenantActorAny, gateFeatures, type TenantActor } from '../../core/http/context.js';
@@ -126,7 +127,7 @@ export async function fieldDutyRoutes(app: FastifyInstance) {
     });
   });
 
-  app.get('/requests', { schema: { querystring: RequestsQuery }, config: { permAny: ['field_duty.self', 'field_duty.team.read'] } }, async (req) => {
+  app.get('/requests', { schema: { response: { 200: R.GetFieldDutyRequests200 }, querystring: RequestsQuery }, config: { permAny: ['field_duty.self', 'field_duty.team.read'] } }, async (req) => {
     const a = tenantActorAny(req, 'field_duty.self', 'field_duty.team.read', ...READ_ALL);
     const q = RequestsQuery.parse(req.query);
     return a.tx(async (db) => {
@@ -147,7 +148,7 @@ export async function fieldDutyRoutes(app: FastifyInstance) {
     });
   });
 
-  app.get('/requests/:id', { schema: { params: IdParams } }, async (req) => {
+  app.get('/requests/:id', { schema: { response: { 200: R.GetFieldDutyRequestsById200 }, params: IdParams } }, async (req) => {
     const a = tenantActor(req);
     const { id } = IdParams.parse(req.params);
     return a.tx(async (db) => {

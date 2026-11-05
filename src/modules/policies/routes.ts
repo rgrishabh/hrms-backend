@@ -1,4 +1,5 @@
 import type { FastifyInstance, FastifyRequest } from 'fastify';
+import * as R from '../../core/http/responses.js';
 import { xlsx, XLSX_TYPE } from '../../core/http/xlsx.js';
 import { z } from 'zod';
 import { createHash } from 'node:crypto';
@@ -85,7 +86,7 @@ export async function policyRoutes(app: FastifyInstance) {
   const maxBytes = app.deps.env.STORAGE_MAX_FILE_MB * 1024 * 1024;
 
   // ------------------------------------------------------------ policies
-  app.get('/', { schema: { querystring: GetRootQuery }, config: { perm: ['policies.read'], feature: [FEATURE] } }, async (req) => {
+  app.get('/', { schema: { response: { 200: R.GetPolicies200 }, querystring: GetRootQuery }, config: { perm: ['policies.read'], feature: [FEATURE] } }, async (req) => {
     const a = tenantActor(req, 'policies.read');
     const q = GetRootQuery.parse(req.query);
     return a.tx(async (db) => {
@@ -317,7 +318,7 @@ export async function policyRoutes(app: FastifyInstance) {
   });
 
   /** Current policies that apply to me, with acknowledgement status. */
-  app.get('/mine', { schema: {}, config: { perm: ['policies.self'], feature: [FEATURE] } }, async (req) => {
+  app.get('/mine', { schema: { response: { 200: R.GetPoliciesMine200 },}, config: { perm: ['policies.self'], feature: [FEATURE] } }, async (req) => {
     const a = tenantActor(req, 'policies.self');
     if (!a.user.employeeId) return { items: [], pending: 0 };
     return a.tx(async (db) => {

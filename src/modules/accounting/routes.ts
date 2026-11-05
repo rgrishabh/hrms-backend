@@ -1,4 +1,5 @@
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
+import * as R from '../../core/http/responses.js';
 import { z } from 'zod';
 import { tenantActor, tenantActorAny, gateFeatures } from '../../core/http/context.js';
 import { audit } from '../../core/audit/audit.js';
@@ -21,7 +22,7 @@ export async function accountingRoutes(app: FastifyInstance) {
   gateFeatures(app, 'accounting_exports');
 
   /** The organization's ledger names, and the heads this installation uses (to map). */
-  app.get('/ledger-map', { schema: {}, config: { permAny: ['accounting.export', 'accounting.configure'] } }, async (req) => {
+  app.get('/ledger-map', { schema: { response: { 200: R.GetAccountingLedgerMap200 },}, config: { permAny: ['accounting.export', 'accounting.configure'] } }, async (req) => {
     const a = tenantActorAny(req, 'accounting.export', 'accounting.configure');
     return a.tx(async (db) => {
       const items = (await db.query(`SELECT map_key, ledger_name, updated_at FROM accounting_ledger_map WHERE tenant_id=$1 ORDER BY map_key`, [a.tenantId])).rows;
@@ -61,7 +62,7 @@ export async function accountingRoutes(app: FastifyInstance) {
   });
 
   /** What can be exported, with the last export of each. */
-  app.get('/sources', { schema: {}, config: { perm: ['accounting.export'] } }, async (req) => {
+  app.get('/sources', { schema: { response: { 200: R.GetAccountingSources200 },}, config: { perm: ['accounting.export'] } }, async (req) => {
     const a = tenantActor(req, 'accounting.export');
     return a.tx(async (db) => {
       const last = `(SELECT json_build_object('at', x.created_at, 'format', x.format, 'by', u.display_name) FROM accounting_exports x JOIN users u ON u.id=x.exported_by
@@ -122,7 +123,7 @@ export async function accountingRoutes(app: FastifyInstance) {
 
   for (const [path, kind] of [['payroll-runs', 'payroll_run'], ['reimbursement-batches', 'reimbursement_batch']] as const) {
     /** Preview: the voucher, its entries and any heads still to map. */
-    app.get(`/${path}/:id/journal`, { schema: { params: IdParams }, config: { perm: ['accounting.export'] } }, async (req) => {
+    app.get(`/${path}/:id/journal`, { schema: { ...(kind === 'payroll_run' ? { response: { 200: R.GetAccountingPayrollRunsByIdJournal200 } } : {}), params: IdParams }, config: { perm: ['accounting.export'] } }, async (req) => {
       const a = tenantActor(req, 'accounting.export');
       return (await load(req, a, kind, 'read')).j;
     });

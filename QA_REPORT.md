@@ -85,3 +85,14 @@ Delegated: no decline path after an accepted offer (`recruitment/routes.ts:627`)
 | E7-1 | Reports, retention | S3 | Turn `FEATURE_REPORTS_ADVANCED` off with scheduled copies stored; pass their expiry: sealed copies with L4 stay indefinitely | The purge lived in `reports.scheduled`, which is not a retention job and stops with its module | `retention.operational` removes expired copies whatever the flag | `data-rights.test.ts`: report copies past their date |
 | E7-2 | Jobs | no change | AUDIT said the retention job skips when modules are off | Out of date: `jobActive` and `runQueued` both let `retention` jobs through, since batch B. Scheduled, retry and queued paths agree | Not a bug now. Proved by the data being gone in all three | `data-rights.test.ts`: with every module off |
 | E7-3 | Recruitment | S3 | With no storage configured, a candidate's retention or erasure passes: the record says no resume, and the file stays | `getStore()?.delete` skipped the delete and the key was cleared anyway | Stops with 503; the job fails on the record and retries, as the selfie job does | `data-rights.test.ts`: a resume with no store |
+
+## Batch E
+
+| ID | Module | Sev | Steps to reproduce | Root cause | Fix | Test |
+|---|---|---|---|---|---|---|
+| E-1 | Settings | Medium | Two administrators save the first value of a setting at the same moment: one gets 409 | `SELECT ... FOR UPDATE` finds no row to wait on, so both insert and `tenant_settings_uq` refuses the second | Insert with `ON CONFLICT ... DO UPDATE`, counted as a version on top of the first | `backend-gaps.test.ts` |
+| E-2 | Sessions | Medium | Leave a tab open: the 60-second unread-count poll keeps the session from ever idling out | Every request moved `last_seen_at` | `GET /notifications/unread-count` is passive: checked against the idle limit, without moving it | `backend-gaps.test.ts` |
+| E-3 | Loans | High | A `loans.manage` holder defers their own recovery through the API | Only the UI hid the button; disburse and repayment had the check, defer did not | Same refusal in the route; the owner in a collapsed mode stays allowed | `backend-gaps.test.ts` |
+| E-4 | Tests | Low | `permission-matrix` failed once in a full run with `leaks` true | A problem's random `instance` could spell a subject's short figure | `leaks` ignores `urn:uuid:` references | `permission-matrix.test.ts` |
+| E-5 | Tests | Low | `notifications` failed when run after files that leave mail in the outbox | The outbox is shared by every test organization | Assertion reads this organization's mail | `notifications.test.ts` |
+

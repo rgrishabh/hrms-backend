@@ -100,8 +100,11 @@ export async function writeSetting(db: Db, tenantId: string, w: SettingWrite, ac
     await db.query(`UPDATE tenant_settings SET setting_value=$1, version=version+1, updated_by=$2, updated_at=now() WHERE id=$3`,
       [JSON.stringify(parsed.data), actorId, prev.id]);
   } else {
+    // Two people saving the first value at once: no row for FOR UPDATE to wait on. The second then counts as a change on top of the first.
     await db.query(`INSERT INTO tenant_settings (tenant_id, setting_key, scope_type, scope_id, setting_value, updated_by)
-      VALUES ($1,$2,$3,$4,$5,$6)`, [tenantId, w.key, w.scope, scopeId, JSON.stringify(parsed.data), actorId]);
+      VALUES ($1,$2,$3,$4,$5,$6)
+      ON CONFLICT (tenant_id, setting_key, scope_type, coalesce(scope_id, '00000000-0000-0000-0000-000000000000'))
+      DO UPDATE SET setting_value=EXCLUDED.setting_value, updated_by=EXCLUDED.updated_by, version=tenant_settings.version+1, updated_at=now()`, [tenantId, w.key, w.scope, scopeId, JSON.stringify(parsed.data), actorId]);
   }
   invalidate(db, tenantId, 'settings');
   return { definition: d, previous: prev?.setting_value, value: parsed.data };

@@ -1,4 +1,5 @@
 import type { FastifyInstance } from 'fastify';
+import * as R from '../../core/http/responses.js';
 import { only } from '../../core/features/routes.js';
 import { closeRepaid, enabledLoanKinds } from '../loans/service.js';
 import { featureOn } from '../lifecycle/service.js';
@@ -173,7 +174,7 @@ export async function payrollRoutes(app: FastifyInstance) {
   });
 
   // ------------------------------------------------------------ salaries (maker-checker)
-  app.get('/employees/:id/salaries', { schema: { params: IdParams }, config: { feature: [F] } }, async (req) => {
+  app.get('/employees/:id/salaries', { schema: { response: { 200: R.GetPayrollEmployeesByIdSalaries200 }, params: IdParams }, config: { feature: [F] } }, async (req) => {
     const a = tenantActor(req);
     const { id } = IdParams.parse(req.params);
     return a.tx(async (db) => {
@@ -191,7 +192,7 @@ export async function payrollRoutes(app: FastifyInstance) {
       }) };
     });
   });
-  app.post('/employees/:id/salaries', { schema: { params: IdParams, body: EmployeesSalariesBody }, config: { perm: ['payroll.manage'], feature: [F] } }, async (req, reply) => {
+  app.post('/employees/:id/salaries', { schema: { response: { 201: R.PostPayrollEmployeesByIdSalaries201 }, params: IdParams, body: EmployeesSalariesBody }, config: { perm: ['payroll.manage'], feature: [F] } }, async (req, reply) => {
     const a = tenantActor(req, 'payroll.manage');
     const { id } = IdParams.parse(req.params);
     const b = EmployeesSalariesBody.parse(req.body);
@@ -219,7 +220,7 @@ export async function payrollRoutes(app: FastifyInstance) {
   });
 
   // ------------------------------------------------------------ employee statutory details
-  only(app, 'payroll.statutory').get('/employees/:id/statutory', { schema: { params: IdParams }, config: { feature: [F] } }, async (req) => {
+  only(app, 'payroll.statutory').get('/employees/:id/statutory', { schema: { response: { 200: R.GetPayrollEmployeesByIdStatutory200 }, params: IdParams }, config: { feature: [F] } }, async (req) => {
     const a = tenantActor(req);
     const { id } = IdParams.parse(req.params);
     return a.tx(async (db) => {
@@ -238,7 +239,7 @@ export async function payrollRoutes(app: FastifyInstance) {
       return row;
     });
   });
-  only(app, 'payroll.statutory').put('/employees/:id/statutory', { schema: { params: IdParams, body: EmployeesStatutoryBody }, config: { perm: ['payroll.manage'], feature: [F] } }, async (req) => {
+  only(app, 'payroll.statutory').put('/employees/:id/statutory', { schema: { response: { 200: R.PutPayrollEmployeesByIdStatutory200 }, params: IdParams, body: EmployeesStatutoryBody }, config: { perm: ['payroll.manage'], feature: [F] } }, async (req) => {
     const a = tenantActor(req, 'payroll.manage');
     const { id } = IdParams.parse(req.params);
     // Only what is sent changes: an omitted field keeps its value, null clears it.
@@ -344,13 +345,13 @@ export async function payrollRoutes(app: FastifyInstance) {
   });
 
   // ------------------------------------------------------------ runs
-  app.get('/runs', { schema: {}, config: { permAny: ['payroll.read', 'payroll.manage', 'payroll.approve'], feature: [F] } }, async (req) => {
+  app.get('/runs', { schema: { response: { 200: R.GetPayrollRuns200 },}, config: { permAny: ['payroll.read', 'payroll.manage', 'payroll.approve'], feature: [F] } }, async (req) => {
     const a = tenantActorAny(req, 'payroll.read', 'payroll.manage', 'payroll.approve');
     return a.tx(async (db) => {
       await requireFeature(db, a.tenantId, F);
       const reveal = wantsReveal(req);
       const v = await policyViewer(db, a.tenantId, a.user);
-      const rows = (await db.query<{ id: string; totals_enc: string | null } & Record<string, unknown>>(`SELECT r.id, r.period, r.kind, r.status, r.totals_enc, r.warnings, r.warnings_acknowledged, r.computed_at, r.finalized_at, r.paid_at, r.payment_reference,
+      const rows = (await db.query<{ id: string; totals_enc: string | null } & Record<string, unknown>>(`SELECT r.id, r.period, r.kind, r.status, r.totals_enc, r.warnings, r.warnings_acknowledged, r.computed_at, r.finalized_at, r.paid_at, r.payment_reference, (SELECT count(*)::int FROM payroll_items x WHERE x.tenant_id=r.tenant_id AND x.run_id=r.id AND x.hold_released_at IS NOT NULL) AS released_count,
           le.name AS legal_entity_name, trim(e.first_name||' '||coalesce(e.last_name,'')) AS employee_name, u.display_name AS created_by_name
         FROM payroll_runs r JOIN legal_entities le ON le.tenant_id=r.tenant_id AND le.id=r.legal_entity_id LEFT JOIN employees e ON e.tenant_id=r.tenant_id AND e.id=r.employee_id
         JOIN users u ON u.id=r.created_by WHERE r.tenant_id=$1 ORDER BY r.period DESC, r.created_at DESC LIMIT 100`, [a.tenantId])).rows;
@@ -389,7 +390,7 @@ export async function payrollRoutes(app: FastifyInstance) {
     });
   });
 
-  app.post('/runs/:id/compute', { schema: { params: IdParams }, config: { perm: ['payroll.manage'], feature: [F] } }, async (req) => {
+  app.post('/runs/:id/compute', { schema: { response: { 200: R.PostPayrollRunsByIdCompute200 }, params: IdParams }, config: { perm: ['payroll.manage'], feature: [F] } }, async (req) => {
     const a = tenantActor(req, 'payroll.manage');
     const { id } = IdParams.parse(req.params);
     return a.tx(async (db) => {
@@ -406,18 +407,18 @@ export async function payrollRoutes(app: FastifyInstance) {
     });
   });
 
-  app.get('/runs/:id', { schema: { params: IdParams }, config: { permAny: ['payroll.read', 'payroll.manage', 'payroll.approve'], feature: [F] } }, async (req) => {
+  app.get('/runs/:id', { schema: { response: { 200: R.GetPayrollRunsById200 }, params: IdParams }, config: { permAny: ['payroll.read', 'payroll.manage', 'payroll.approve'], feature: [F] } }, async (req) => {
     const a = tenantActorAny(req, 'payroll.read', 'payroll.manage', 'payroll.approve');
     const { id } = IdParams.parse(req.params);
     return a.tx(async (db) => {
       await requireFeature(db, a.tenantId, F);
-      const { totals_enc, ...run } = (await db.query(`SELECT r.*, le.name AS legal_entity_name FROM payroll_runs r JOIN legal_entities le ON le.tenant_id=r.tenant_id AND le.id=r.legal_entity_id WHERE r.tenant_id=$1 AND r.id=$2`, [a.tenantId, id])).rows[0] ?? {};
+      const { totals_enc, ...run } = (await db.query(`SELECT r.*, (SELECT count(*)::int FROM payroll_items x WHERE x.tenant_id=r.tenant_id AND x.run_id=r.id AND x.hold_released_at IS NOT NULL) AS released_count, le.name AS legal_entity_name FROM payroll_runs r JOIN legal_entities le ON le.tenant_id=r.tenant_id AND le.id=r.legal_entity_id WHERE r.tenant_id=$1 AND r.id=$2`, [a.tenantId, id])).rows[0] ?? {};
       if (!run.id) throw notFound('Payroll run not found');
       const reveal = wantsReveal(req);
       const v = await policyViewer(db, a.tenantId, a.user);
       // The row filter: people above this viewer are not in the answer at all, and `excluded` says how many there were.
       const rows = (await db.query<{ data_enc: string; employee_id: string; visible: boolean } & Record<string, unknown>>(`SELECT i.id, i.employee_id, e.employee_code, trim(e.first_name||' '||coalesce(e.last_name,'')) AS employee_name, i.employed_days, i.lop_days, i.paid_days,
-          i.data_enc, i.hold, ${l4RowFilter(v, 'e')} AS visible
+          i.data_enc, i.hold, i.hold_released_at, ${l4RowFilter(v, 'e')} AS visible
         FROM payroll_items i JOIN employees e ON e.tenant_id=i.tenant_id AND e.id=i.employee_id WHERE i.tenant_id=$1 AND i.run_id=$2 ORDER BY e.employee_code`, [a.tenantId, id])).rows;
       const shown = rows.filter((r) => r.visible);
       const excluded = rows.length - shown.length;
@@ -685,7 +686,7 @@ export async function payrollRoutes(app: FastifyInstance) {
   });
 
   // ------------------------------------------------------------ payslips
-  only(app, 'payroll.payslips').get('/payslips/mine', { schema: {}, config: { perm: ['payslips.self'], feature: ['payroll.payslips'] } }, async (req) => {
+  only(app, 'payroll.payslips').get('/payslips/mine', { schema: { response: { 200: R.GetPayrollPayslipsMine200 },}, config: { perm: ['payslips.self'], feature: ['payroll.payslips'] } }, async (req) => {
     const a = tenantActor(req, 'payslips.self');
     if (!a.user.employeeId) return { items: [] };
     return a.tx(async (db) => {
@@ -698,7 +699,7 @@ export async function payrollRoutes(app: FastifyInstance) {
       return { items: rows.map(({ data_enc, ...r }) => { const d = itemFields(openItem(data_enc)); const row = { ...r, gross: d.gross, deductions: d.deductions, net: d.net }; return reveal ? row : maskFields(row, fields); }) };
     });
   });
-  only(app, 'payroll.payslips').get('/payslips/:id', { schema: { params: IdParams }, config: { feature: ['payroll.payslips'] } }, async (req) => {
+  only(app, 'payroll.payslips').get('/payslips/:id', { schema: { response: { 200: R.GetPayrollPayslipsById200 }, params: IdParams }, config: { feature: ['payroll.payslips'] } }, async (req) => {
     const a = tenantActor(req);
     const { id } = IdParams.parse(req.params);
     return a.tx(async (db) => {
@@ -734,7 +735,7 @@ export async function payrollRoutes(app: FastifyInstance) {
 
   // ------------------------------------------------------------ F&F helper
   /** Suggested F&F inputs for a leaver (HR confirms each as an adjustment). */
-  app.get('/fnf-suggestions/:employeeId', { schema: { params: FnfSuggestionsParams }, config: { perm: ['payroll.manage'] } }, async (req) => {
+  app.get('/fnf-suggestions/:employeeId', { schema: { response: { 200: R.GetPayrollFnfSuggestionsByEmployeeId200 }, params: FnfSuggestionsParams }, config: { perm: ['payroll.manage'] } }, async (req) => {
     const a = tenantActor(req, 'payroll.manage');
     const { employeeId } = FnfSuggestionsParams.parse(req.params);
     return a.tx(async (db) => {

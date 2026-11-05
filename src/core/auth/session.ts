@@ -63,7 +63,7 @@ export async function rotateSession(db: Db, sessionId: string) {
  * tenant (or the platform); `expectedTenantId` comes from the verified host, so
  * a cookie replayed against another tenant's domain is rejected.
  */
-export async function loadSession(pool: Pool, token: string, expectedTenantId: string | null, mfa: MfaPolicy): Promise<SessionUser | null> {
+export async function loadSession(pool: Pool, token: string, expectedTenantId: string | null, mfa: MfaPolicy, opts: { passive?: boolean } = {}): Promise<SessionUser | null> {
   return withPlatformBypass(pool, async (db) => {
     const r = await db.query<{ id: string; user_id: string; tenant_id: string | null; csrf_hash: string; email: string; display_name: string; status: string; touch: boolean; must_change_password: boolean; mfa_on: boolean; mfa_method: string | null; mfa_ok: boolean; salary_access_level: number }>(
       `SELECT s.id, s.user_id, s.tenant_id, s.csrf_hash, u.email, u.display_name, u.status, u.must_change_password, u.salary_access_level,
@@ -74,7 +74,7 @@ export async function loadSession(pool: Pool, token: string, expectedTenantId: s
           AND s.last_seen_at > now() - make_interval(mins => s.idle_timeout_minutes)`, [sha256(token)]);
     const s = r.rows[0];
     if (!s || s.status !== 'active' || s.tenant_id !== expectedTenantId) return null;
-    if (s.touch) await db.query('UPDATE sessions SET last_seen_at = now() WHERE id = $1', [s.id]);
+    if (s.touch && !opts.passive) await db.query('UPDATE sessions SET last_seen_at = now() WHERE id = $1', [s.id]);
     const { roles, permissions } = await loadPermissions(db, s.user_id, s.tenant_id);
     let employeeId: string | null = null;
     if (s.tenant_id) {

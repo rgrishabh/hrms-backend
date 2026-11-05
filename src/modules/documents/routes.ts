@@ -1,4 +1,5 @@
 import type { FastifyInstance } from 'fastify';
+import * as R from '../../core/http/responses.js';
 import { z } from 'zod';
 import { subjectLevelSql } from '../../core/policy/salary.js';
 import { createHash } from 'node:crypto';
@@ -59,7 +60,7 @@ export async function documentRoutes(app: FastifyInstance) {
   const maxBytes = env.STORAGE_MAX_FILE_MB * 1024 * 1024;
 
   // ------------------------------------------------------------ categories
-  app.get('/categories', { schema: {}, config: { feature: ['core.documents'] } }, async (req) => {
+  app.get('/categories', { schema: { response: { 200: R.GetDocumentsCategories200 },}, config: { feature: ['core.documents'] } }, async (req) => {
     const a = tenantActor(req);
     return a.tx(async (db) => {
       await requireFeature(db, a.tenantId, 'core.documents');
@@ -98,7 +99,7 @@ export async function documentRoutes(app: FastifyInstance) {
   });
 
   // ------------------------------------------------------------ documents
-  app.get('/', { schema: { querystring: GetRootQuery }, config: { feature: ['core.documents'] } }, async (req) => {
+  app.get('/', { schema: { response: { 200: R.GetDocuments200 }, querystring: GetRootQuery }, config: { feature: ['core.documents'] } }, async (req) => {
     const a = tenantActor(req);
     const q = GetRootQuery.parse(req.query);
     return a.tx(async (db) => {

@@ -1,4 +1,5 @@
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
+import * as R from '../../core/http/responses.js';
 import { z } from 'zod';
 import { only } from '../../core/features/routes.js';
 import { tenantActor, requireFeature, readDevice, type TenantActor } from '../../core/http/context.js';
@@ -185,7 +186,7 @@ export async function reportRoutes(app: FastifyInstance) {
   });
 
   /** Scheduled reports sent to me (kept 90 days). */
-  only(app, 'reports.advanced').get('/snapshots', { schema: {}, config: { feature: [ADV] } }, async (req) => {
+  only(app, 'reports.advanced').get('/snapshots', { schema: { response: { 200: R.GetReportsSnapshots200 },}, config: { feature: [ADV] } }, async (req) => {
     const a = tenantActor(req);
     return a.tx(async (db) => {
       await requireFeature(db, a.tenantId, ADV);
@@ -220,7 +221,7 @@ export async function reportRoutes(app: FastifyInstance) {
     if (!REPORT_MAP.get(s.report_key)?.l4 || !s.columns.some((c) => c.key === 'gross' || c.key === 'payroll_gross')) return Promise.resolve();
     return a.tx((db) => auditL4(db, readContext(req, a), kind, `reports.snapshot.${s.report_key}`, (s.subjects ?? []).map((employeeId) => ({ employeeId, fields: ['pay'] }))));
   };
-  only(app, 'reports.advanced').get('/snapshots/:id', { schema: { params: IdParams } }, async (req) => {
+  only(app, 'reports.advanced').get('/snapshots/:id', { schema: { response: { 200: R.GetReportsSnapshotsById200 }, params: IdParams } }, async (req) => {
     const a = tenantActor(req);
     const { id } = IdParams.parse(req.params);
     const s = await loadSnapshot(a, id);

@@ -139,7 +139,8 @@ async function build(mode: Mode, env: Record<string, string> = {}): Promise<Worl
 
 const mayL4 = (v: Persona, s: Persona, perm: boolean | undefined) => v.key === s.key || (!!perm && v.level > s.level);
 const pdfAmount = (n: number) => new Intl.NumberFormat('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 }).format(n);
-const leaks = (body: string, s: Subject) => body.includes(s.figure) || body.includes(s.account) || body.includes(s.uan);
+/** A problem's `instance` is a random reference: its digits can spell anything, and are not the subject's. */
+const leaks = (raw: string, s: Subject) => { const body = raw.replace(/urn:uuid:[0-9a-f-]+/g, ''); return body.includes(s.figure) || body.includes(s.account) || body.includes(s.uan); };
 
 for (const mode of ['single', 'single_hr', 'multi'] as const) {
   describe(`permission matrix: ${mode}`, () => {

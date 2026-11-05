@@ -1,4 +1,5 @@
 import type { FastifyInstance } from 'fastify';
+import * as R from '../../core/http/responses.js';
 import { only } from '../../core/features/routes.js';
 import { createHash } from 'node:crypto';
 import { z } from 'zod';
@@ -86,7 +87,7 @@ export async function attendanceRoutes(app: FastifyInstance) {
     idempotencyKey: z.string().min(8).max(100), latitude: z.number().min(-90).max(90).optional(), longitude: z.number().min(-180).max(180).optional(),
     selfieId: Uuid.optional(),
   });
-  only(app, 'attendance.web', 'attendance.mobile').post('/punch', { schema: { body: PunchBody }, config: { perm: ['attendance.self'], rateLimit: { max: 12, timeWindow: '1 minute' } } }, async (req) => {
+  only(app, 'attendance.web', 'attendance.mobile').post('/punch', { schema: { response: { 200: R.PostAttendancePunch200 }, body: PunchBody }, config: { perm: ['attendance.self'], rateLimit: { max: 12, timeWindow: '1 minute' } } }, async (req) => {
     const a = tenantActor(req, 'attendance.self');
     const body = PunchBody.parse(req.body);
     const employeeId = a.user.employeeId;
@@ -140,7 +141,7 @@ export async function attendanceRoutes(app: FastifyInstance) {
   // ------------------------------------------------------------ check-in selfie (feature attendance.selfie)
   const MAX_SELFIE_BYTES = 5 * 1024 * 1024;
   /** multipart/form-data, one image from the camera. Returns the id to send with the clock-in. Unused ones go at the next retention run. */
-  only(app, 'attendance.selfie').post('/selfies', { schema: { consumes: ['multipart/form-data'] }, config: { perm: ['attendance.self'], feature: ['attendance.selfie'], rateLimit: { max: 12, timeWindow: '1 minute' } } }, async (req, reply) => {
+  only(app, 'attendance.selfie').post('/selfies', { schema: { response: { 201: R.PostAttendanceSelfies201 }, consumes: ['multipart/form-data'] }, config: { perm: ['attendance.self'], feature: ['attendance.selfie'], rateLimit: { max: 12, timeWindow: '1 minute' } } }, async (req, reply) => {
     const a = tenantActor(req, 'attendance.self');
     const employeeId = a.user.employeeId;
     if (!employeeId) throw badRequest('Your account is not linked to an employee record');
@@ -218,14 +219,14 @@ export async function attendanceRoutes(app: FastifyInstance) {
   });
 
   // ------------------------------------------------------------ views
-  app.get('/me', { schema: { querystring: Range }, config: { perm: ['attendance.self'] } }, async (req) => {
+  app.get('/me', { schema: { response: { 200: R.GetAttendanceMe200 }, querystring: Range }, config: { perm: ['attendance.self'] } }, async (req) => {
     const a = tenantActor(req, 'attendance.self');
     const q = Range.parse(req.query);
     if (!a.user.employeeId) throw badRequest('Your account is not linked to an employee record');
     return a.tx((db) => employeeAttendance(db, a.tenantId, a.user.employeeId!, q.from, q.to));
   });
 
-  app.get('/me/today', { schema: {}, config: { perm: ['attendance.self'] } }, async (req) => {
+  app.get('/me/today', { schema: { response: { 200: R.GetAttendanceMeToday200 },}, config: { perm: ['attendance.self'] } }, async (req) => {
     const a = tenantActor(req, 'attendance.self');
     if (!a.user.employeeId) return { linked: false };
     return a.tx(async (db) => {
@@ -257,6 +258,8 @@ export async function attendanceRoutes(app: FastifyInstance) {
     const a = tenantActorAny(req, 'attendance.read', 'attendance.team.read');
     const q = DailyQuery.parse(req.query);
     return a.tx(async (db) => {
+      // Who may list a person's day here may open their selfie: the same read of the same people (assertCanViewEmployee). With the feature off, the field does not exist.
+      const selfieOn = (await evaluateFeatures(db, a.tenantId)).get('attendance.selfie')?.usable === true;
       let scope: string[] | null = null;
       if (!a.has('attendance.read')) scope = a.user.employeeId ? await teamEmployeeIds(db, a.tenantId, a.user.employeeId) : [];
       const params = [a.tenantId, q.date, q.branchId ?? null, q.status ?? null, scope, q.exceptionsOnly ?? false];
@@ -272,7 +275,9 @@ export async function attendanceRoutes(app: FastifyInstance) {
         AND ($5::uuid[] IS NULL OR e.id = ANY($5)) AND ($4::text IS NULL OR true) AND ($6 OR true) GROUP BY 1`, params)).rows;
       const rows = await db.query(`SELECT e.id AS employee_id, e.employee_code, trim(e.first_name||' '||coalesce(e.last_name,'')) AS name, b.name AS branch_name,
           coalesce(d.status,'not_calculated') AS status, d.first_in, d.last_out, d.worked_minutes, d.late_minutes, d.early_exit_minutes, d.overtime_minutes,
-          d.exceptions, d.locked, s.code AS shift_code
+          d.exceptions, d.locked, s.code AS shift_code${selfieOn ? `,
+          (SELECT sf.id FROM attendance_selfies sf JOIN attendance_events ev ON ev.tenant_id=sf.tenant_id AND ev.id=sf.event_id
+            WHERE sf.tenant_id=e.tenant_id AND sf.employee_id=e.id AND sf.erased_at IS NULL AND ev.event_time = d.first_in LIMIT 1) AS selfie_id` : ''}
         ${from} WHERE ${where} ORDER BY e.first_name, e.employee_code LIMIT $7 OFFSET $8`, [...params, q.pageSize, offsetOf(q)]);
       return { ...paged(rows.rows, total, q), summary };
     });

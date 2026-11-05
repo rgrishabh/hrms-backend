@@ -1,4 +1,5 @@
 import type { FastifyInstance } from 'fastify';
+import * as R from '../../core/http/responses.js';
 import { z } from 'zod';
 import { l3RowFilter, maskFields, policyViewer } from '../../core/policy/salary.js';
 import { Decimal } from 'decimal.js';
@@ -155,7 +156,7 @@ export async function leaveRoutes(app: FastifyInstance) {
   gateFeatures(app, 'leave');
 
   // ------------------------------------------------------------ types
-  app.get('/types', { schema: { querystring: TypesQuery }, config: { permAny: ['leave.self', 'leave.manage', 'leave.read'], feature: ['leave'] } }, async (req) => {
+  app.get('/types', { schema: { response: { 200: R.GetLeaveTypes200 }, querystring: TypesQuery }, config: { permAny: ['leave.self', 'leave.manage', 'leave.read'], feature: ['leave'] } }, async (req) => {
     const a = tenantActorAny(req, 'leave.self', 'leave.manage', 'leave.read');
     const q = TypesQuery.parse(req.query);
     return a.tx(async (db) => {
@@ -199,7 +200,7 @@ export async function leaveRoutes(app: FastifyInstance) {
   });
 
   // ------------------------------------------------------------ balances
-  app.get('/balances', { schema: { querystring: BalancesQuery }, config: { permAny: ['leave.self', 'leave.read', 'leave.team.read', 'leave.manage'], feature: ['leave'] } }, async (req) => {
+  app.get('/balances', { schema: { response: { 200: R.GetLeaveBalances200 }, querystring: BalancesQuery }, config: { permAny: ['leave.self', 'leave.read', 'leave.team.read', 'leave.manage'], feature: ['leave'] } }, async (req) => {
     const a = tenantActorAny(req, 'leave.self', 'leave.read', 'leave.team.read', 'leave.manage');
     const q = BalancesQuery.parse(req.query);
     return a.tx(async (db) => {
@@ -238,7 +239,7 @@ export async function leaveRoutes(app: FastifyInstance) {
   });
 
   // ------------------------------------------------------------ requests
-  app.post('/requests/preview', { schema: { body: RequestBody }, config: { permAny: ['leave.self', 'leave.manage'], feature: ['leave'] } }, async (req) => {
+  app.post('/requests/preview', { schema: { response: { 200: R.PostLeaveRequestsPreview200 }, body: RequestBody }, config: { permAny: ['leave.self', 'leave.manage'], feature: ['leave'] } }, async (req) => {
     const a = tenantActorAny(req, 'leave.self', 'leave.manage');
     const body = RequestBody.parse(req.body);
     return a.tx(async (db) => {
@@ -249,7 +250,7 @@ export async function leaveRoutes(app: FastifyInstance) {
     });
   });
 
-  app.post('/requests', { schema: { body: RequestBody }, config: { permAny: ['leave.self', 'leave.manage'], feature: ['leave'] } }, async (req, reply) => {
+  app.post('/requests', { schema: { response: { 201: R.PostLeaveRequests201 }, body: RequestBody }, config: { permAny: ['leave.self', 'leave.manage'], feature: ['leave'] } }, async (req, reply) => {
     const a = tenantActorAny(req, 'leave.self', 'leave.manage');
     const body = RequestBody.parse(req.body);
     if (!body.reason) throw badRequest('Please give a reason');
@@ -274,7 +275,7 @@ export async function leaveRoutes(app: FastifyInstance) {
     });
   });
 
-  app.get('/requests', { schema: { querystring: RequestsQuery }, config: { permAny: ['leave.self', 'leave.read', 'leave.team.read', 'leave.manage'], feature: ['leave'] } }, async (req) => {
+  app.get('/requests', { schema: { response: { 200: R.GetLeaveRequests200 }, querystring: RequestsQuery }, config: { permAny: ['leave.self', 'leave.read', 'leave.team.read', 'leave.manage'], feature: ['leave'] } }, async (req) => {
     const a = tenantActorAny(req, 'leave.self', 'leave.read', 'leave.team.read', 'leave.manage');
     const q = RequestsQuery.parse(req.query);
     return a.tx(async (db) => {
@@ -304,7 +305,7 @@ export async function leaveRoutes(app: FastifyInstance) {
    * leave starts, or leave.manage at any time — the consumed days are reversed in the
    * ledger. Never for dates locked for payroll.
    */
-  app.post('/requests/:id/cancel', { schema: { params: IdParams, body: RequestsCancelBody }, config: { permAny: ['leave.self', 'leave.manage'] } }, async (req) => {
+  app.post('/requests/:id/cancel', { schema: { response: { 200: R.PostLeaveRequestsByIdCancel200 }, params: IdParams, body: RequestsCancelBody }, config: { permAny: ['leave.self', 'leave.manage'] } }, async (req) => {
     const a = tenantActorAny(req, 'leave.self', 'leave.manage');
     const { id } = IdParams.parse(req.params);
     const body = RequestsCancelBody.parse(req.body ?? {});
@@ -333,7 +334,7 @@ export async function leaveRoutes(app: FastifyInstance) {
   });
 
   // ------------------------------------------------------------ calendar
-  app.get('/calendar', { schema: { querystring: CalendarQuery }, config: { permAny: ['leave.read', 'leave.team.read', 'leave.manage'], feature: ['leave'] } }, async (req) => {
+  app.get('/calendar', { schema: { response: { 200: R.GetLeaveCalendar200 }, querystring: CalendarQuery }, config: { permAny: ['leave.read', 'leave.team.read', 'leave.manage'], feature: ['leave'] } }, async (req) => {
     const a = tenantActorAny(req, 'leave.read', 'leave.team.read', 'leave.manage');
     const q = CalendarQuery.parse(req.query);
     return a.tx(async (db) => {

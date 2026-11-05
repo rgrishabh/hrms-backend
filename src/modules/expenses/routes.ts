@@ -1,4 +1,5 @@
 import type { FastifyInstance } from 'fastify';
+import * as R from '../../core/http/responses.js';
 import { z } from 'zod';
 import { auditL4, l4RowFilter, policyViewer, readContext, refuseHigherLevel } from '../../core/policy/salary.js';
 import { createHash } from 'node:crypto';
@@ -139,7 +140,7 @@ export async function expenseRoutes(app: FastifyInstance) {
     });
   });
 
-  app.get('/claims', { schema: { querystring: ClaimsQuery }, config: { feature: ['expenses'] } }, async (req) => {
+  app.get('/claims', { schema: { response: { 200: R.GetExpensesClaims200 }, querystring: ClaimsQuery }, config: { feature: ['expenses'] } }, async (req) => {
     const a = tenantActor(req);
     const q = ClaimsQuery.parse(req.query);
     return a.tx(async (db) => {
@@ -161,7 +162,7 @@ export async function expenseRoutes(app: FastifyInstance) {
     });
   });
 
-  app.get('/claims/:id', { schema: { params: IdParams }, config: { feature: ['expenses'] } }, async (req) => {
+  app.get('/claims/:id', { schema: { response: { 200: R.GetExpensesClaimsById200 }, params: IdParams }, config: { feature: ['expenses'] } }, async (req) => {
     const a = tenantActor(req);
     const { id } = IdParams.parse(req.params);
     return a.tx(async (db) => {

@@ -1,4 +1,5 @@
 import type { FastifyInstance } from 'fastify';
+import * as R from '../../core/http/responses.js';
 import { z } from 'zod';
 import { addTitle, assertKnownTitle, titleToAdd, type TitleKind } from '../org/masters.js';
 import { tenantActor, tenantActorAny } from '../../core/http/context.js';
@@ -86,13 +87,13 @@ export async function employeeRoutes(app: FastifyInstance) {
     });
   });
 
-  app.get('/me', { schema: {} }, async (req) => {
+  app.get('/me', { schema: { response: { 200: R.GetEmployeesMe200 },} }, async (req) => {
     const a = tenantActor(req);
     if (!a.user.employeeId) throw notFound('Your user account is not linked to an employee record');
     return a.tx(async (db) => (await db.query(`SELECT ${fullSelect()} ${FROM_JOINS} WHERE e.tenant_id=$1 AND e.id=$2`, [a.tenantId, a.user.employeeId])).rows[0]);
   });
 
-  app.get('/:id', { schema: { params: IdParams }, config: { permAny: ['employees.read', 'employees.directory'] } }, async (req) => {
+  app.get('/:id', { schema: { response: { 200: R.GetEmployeesById200 }, params: IdParams }, config: { permAny: ['employees.read', 'employees.directory'] } }, async (req) => {
     const a = tenantActorAny(req, 'employees.read', 'employees.directory');
     const { id } = IdParams.parse(req.params);
     const full = a.has('employees.read') || a.user.employeeId === id;
@@ -244,7 +245,7 @@ export async function employeeRoutes(app: FastifyInstance) {
   });
 
   // ------------------------------------------------------------ restricted: bank details
-  app.get('/:id/bank-account', { schema: { params: IdParams }, config: { permAny: ['employees.bank.read', 'attendance.self'] } }, async (req) => {
+  app.get('/:id/bank-account', { schema: { response: { 200: R.GetEmployeesByIdBankAccount200 }, params: IdParams }, config: { permAny: ['employees.bank.read', 'attendance.self'] } }, async (req) => {
     const a = tenantActorAny(req, 'employees.bank.read', 'attendance.self');
     const { id } = IdParams.parse(req.params);
     if (!a.has('employees.bank.read') && a.user.employeeId !== id) throw forbidden();
@@ -290,7 +291,7 @@ export async function employeeRoutes(app: FastifyInstance) {
     });
   });
 
-  app.get('/:id/bank-account/pending', { schema: { params: IdParams }, config: { permAny: ['employees.bank.read', 'employees.bank.approve'] } }, async (req) => {
+  app.get('/:id/bank-account/pending', { schema: { response: { 200: R.GetEmployeesByIdBankAccountPending200 }, params: IdParams }, config: { permAny: ['employees.bank.read', 'employees.bank.approve'] } }, async (req) => {
     const a = tenantActorAny(req, 'employees.bank.read', 'employees.bank.approve');
     const { id } = IdParams.parse(req.params);
     return a.tx(async (db) => {

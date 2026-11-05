@@ -1,7 +1,9 @@
+import type { FastifyInstance } from 'fastify';
 import type { SwaggerTransform } from '@fastify/swagger';
 import { z, type ZodType } from 'zod';
 import { FEATURE_MAP } from '../features/registry.js';
 import type { FeatureRoute } from '../features/routes.js';
+import { AppError } from './errors.js';
 import { PROBLEM_CONTENT_TYPE } from './problem.js';
 
 /** Fields of the RFC 7807 answer, for the document. */
@@ -86,3 +88,15 @@ export const OPENAPI_INFO = {
   info: { title: 'HRMS API', version: 'v1', description: 'Generated from the code. `x-feature`: the switches this route needs, every group with one on; a route whose switch is off answers 404. `x-permissions`: all of these. `x-permissions-any`: any of these. Errors are RFC 7807.' },
   components: { securitySchemes: { session: { type: 'apiKey' as const, in: 'cookie' as const, name: 'hrms_sid' } } },
 };
+
+/** Tests only: what a route answers must be what its response schema says, so a schema cannot drift from the code while the suite passes. */
+export function registerResponseCheck(app: FastifyInstance) {
+  app.addHook('preSerialization', async (req, reply, payload) => {
+    const declared = (req.routeOptions.schema?.response as Record<string, unknown> | undefined)?.[String(reply.statusCode)];
+    if (!isZod(declared)) return payload;
+    // Dates and such are compared as the client gets them.
+    const r = declared.safeParse(JSON.parse(JSON.stringify(payload)));
+    if (r.success) return payload;
+    throw new AppError(500, 'response_schema_mismatch', `${req.method} ${req.routeOptions.url} ${reply.statusCode}: ${r.error.issues.slice(0, 5).map((i) => `${i.path.join('.')}: ${i.message}`).join('; ')}`);
+  });
+}

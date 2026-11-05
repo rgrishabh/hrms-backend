@@ -352,3 +352,29 @@ So drawing the largest report allowed costs under a second of CPU, and yielding 
 
 **Reason.** Functions would be a second way of writing the rules that the service and tests already hold, for a role that already has DELETE on most personal tables. Rows can go by app bug where they could not before. Punches stay protected, except for the two columns.
 
+## D57 — `/metrics` needs a token, on the main port
+
+**Context.** Metrics should need no login, yet not be public. `hrms-deployment`'s ingress does not route `/metrics`, and the Compose Caddyfile does not either, but a routing rule is one edit away from exposing it.
+
+**Options.** A second listener bound to an internal address; an unauthenticated route relying on routing; a bearer token.
+
+**Decision.** `METRICS_TOKEN`. Unset, the route does not exist. Set, it answers Prometheus text to `Authorization: Bearer <token>` and 404 to anyone else. No client library: counters and histograms by route pattern are about 60 lines, and labels hold patterns and methods only. The worker has no HTTP listener and exposes no metrics.
+
+**Reason.** One port keeps the deployment unchanged, and a mistake in routing then exposes a 404. A scraper needs one secret, which Kubernetes and Prometheus handle natively.
+
+## D58 — OpenTelemetry without an SDK
+
+**Context.** Tracing should be possible, with no heavy default dependencies. The Node SDK with auto-instrumentation adds tens of packages to every image.
+
+**Decision.** With `OTEL_EXPORTER_OTLP_ENDPOINT`, `src/core/telemetry.ts` sends one span per request as OTLP/HTTP JSON using `fetch`, following an incoming `traceparent`. Attributes are method, route pattern and status. Spans are dropped when the collector is away. Unset, nothing is created.
+
+**Reason.** It answers "which route, how long, which trace" at no cost to anyone not using it. It is not full instrumentation: database calls have no spans. Someone who needs those can load the SDK with `NODE_OPTIONS=--import` in their own image.
+
+## D59 — Response schemas are generated once, then checked by every test
+
+**Context.** Responses are raw SQL rows, so a hand-written schema is a guess, and a wrong one is worse than none.
+
+**Decision.** Generated from what the whole test suite saw for L4 paths, sign-in, public config and core self-service, then committed to `src/core/http/responses.ts` as strict objects. Every test app has `verifyResponses` on: an answer its schema does not describe becomes a 500 and fails that test. They are never used to remove a field.
+
+**Reason.** The check holds for the paths tests reach, and only those: a branch no test takes is not proved. A field only ever seen as null is `unknown`. Remaining routes have no response schema, and `npm run openapi` prints the count.
+

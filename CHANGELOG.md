@@ -4,11 +4,15 @@
 
 ### Changed (breaking)
 
+* `POST /loans/requests/:id/defer` refuses your own loan, like disburse and repayment.
+* `GET /notifications/unread-count` no longer counts as activity for idle sign-out.
 * Errors are RFC 7807 `application/problem+json` from one handler: `type`, `title`, `status`, `detail`, `instance`, `code`, `errors[]`. Removed: `{ error: { code, message, details } }`, with no compatibility shape. Object `details` are now top-level members (`duplicates`, `confirmable`, `problems`, `hiddenSubjects`).
 * Removed from error answers: database constraint names, and framework messages, which could quote the request body.
 
 ### Added
 
+* `GET /metrics` (Prometheus text) with `METRICS_TOKEN`. `OTEL_EXPORTER_OTLP_ENDPOINT` for traces. `x-request-id` on every response. Probes are not rate limited, and readiness answers within two seconds.
+* `GET /approvals/stuck` for `users.manage`. `POST /travel/requests/:id/resubmit`. `released_count` on payroll runs and `hold_released_at` on their items. `selfie_id` on `GET /attendance/daily` with the selfie feature on.
 * Company details (Layer 3): `GET` and `PUT /tenant/company`, signature and stamp under `/tenant/company/images/:kind`, permission `company.manage`. GSTIN (with its check digit), PAN, TAN, CIN, IFSC and bank account formats are checked. PAN and the bank account number are sealed. `loadCompanyProfile` reads them.
 * Grades and designations: `POST` and `PUT /org/grades`, `/org/designations`, listed in `GET /org`, seeded from values in use. Once a list has entries, a new value must be on it. An import adds what is new and says so.
 * Data rights (`docs/DATA_RIGHTS.md`): `GET /tenant/data-rights/employees/:id/export`, `/candidates/:id/export`, `/retention`, and `/erasure-requests` with `execute` and `reject`. Permissions `data_rights.manage`, `data_rights.execute`.

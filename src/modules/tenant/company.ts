@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto';
+import * as R from '../../core/http/responses.js';
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import { audit } from '../../core/audit/audit.js';
@@ -48,7 +49,7 @@ async function ensureRow(db: Db, tenantId: string) {
 
 /** Layer 3: legal name, tax and registration numbers, payroll bank details, authorised signatory, and the signature and stamp images. See D53. */
 export async function companyRoutes(app: FastifyInstance) {
-  app.get('/company', { schema: {}, config: { permAny: ['settings.read', ...L4_READERS] } }, async (req) => {
+  app.get('/company', { schema: { response: { 200: R.GetTenantCompany200 },}, config: { permAny: ['settings.read', ...L4_READERS] } }, async (req) => {
     const a = tenantActorAny(req, 'settings.read', ...L4_READERS);
     const mayReadL4 = L4_READERS.some((p) => a.has(p));
     if (a.reveal && !a.has('company.manage')) throw forbidden();

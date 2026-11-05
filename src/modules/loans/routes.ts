@@ -1,4 +1,5 @@
 import type { FastifyInstance } from 'fastify';
+import * as R from '../../core/http/responses.js';
 import { z } from 'zod';
 import { Decimal } from 'decimal.js';
 import { tenantActor, tenantActorAny, gateFeatures, requireFeature, type TenantActor } from '../../core/http/context.js';
@@ -129,7 +130,7 @@ export async function loanRoutes(app: FastifyInstance) {
     });
   });
 
-  app.get('/requests', { schema: { querystring: RequestsQuery }, config: { permAny: ['loans.self', 'loans.team.read'] } }, async (req) => {
+  app.get('/requests', { schema: { response: { 200: R.GetLoansRequests200 }, querystring: RequestsQuery }, config: { permAny: ['loans.self', 'loans.team.read'] } }, async (req) => {
     const a = tenantActorAny(req, 'loans.self', 'loans.team.read', ...READ_ALL);
     const q = RequestsQuery.parse(req.query);
     return a.tx(async (db) => {
@@ -152,7 +153,7 @@ export async function loanRoutes(app: FastifyInstance) {
     });
   });
 
-  app.get('/requests/:id', { schema: { params: IdParams } }, async (req) => {
+  app.get('/requests/:id', { schema: { response: { 200: R.GetLoansRequestsById200 }, params: IdParams } }, async (req) => {
     const a = tenantActor(req);
     const { id } = IdParams.parse(req.params);
     return a.tx(async (db) => {
@@ -241,6 +242,7 @@ export async function loanRoutes(app: FastifyInstance) {
     const b = RequestsDeferBody.parse(req.body);
     return a.tx(async (db) => {
       const l = await loadLoan(db, a, id, true);
+      if (l.employee_id === a.user.employeeId && !(isCollapsedMode() && a.user.roles.some(isOwnerRole))) throw forbidden('You cannot defer your own recovery');
       if (!['approved', 'disbursed'].includes(l.status)) throw conflict(`The ${KIND_LABEL[l.kind]!.toLowerCase()} is ${l.status}`);
       if (l.skip_periods.includes(b.period)) throw conflict(`${b.period} is already deferred`);
       if (b.period < (await orgToday(db, a.tenantId)).slice(0, 7)) throw badRequest('A past month cannot be deferred');

@@ -369,6 +369,28 @@ export async function inbox(db: Db, tenantId: string, actor: Actor, today?: stri
   });
 }
 
+/**
+ * Pending requests nobody can decide: every person the active step reaches is disabled, blocked as requester or earlier decider, or does not exist.
+ * A page of them, oldest first. Read from `stepRecipients` and `blockedUsers`, the rules the inbox and the decision itself follow.
+ */
+export async function stuckRequests(db: Db, tenantId: string, page: { page: number; pageSize: number }) {
+  const today = await orgToday(db, tenantId);
+  const rows = (await db.query<ActiveStep & { id: string; entity_type: string; entity_id: string; summary: string; created_at: Date; requester_name: string }>(
+    `SELECT r.id, r.entity_type, r.entity_id, r.summary, r.created_at, u.display_name AS requester_name,
+       s.id AS step_id, s.step_index, s.approver_kind, s.approver_user_id, s.approver_permission, s.escalated_to, s.escalated_permission
+     FROM approval_requests r JOIN approval_steps s ON s.tenant_id=r.tenant_id AND s.request_id=r.id AND s.status='active' JOIN users u ON u.id=r.requester_id
+     WHERE r.tenant_id=$1 AND r.status='pending' AND NOT (r.entity_type = ANY($2)) ORDER BY r.created_at`, [tenantId, offEntityTypes()])).rows;
+  const stuck: { id: string; entity_type: string; entity_id: string; summary: string; created_at: Date; requester_name: string }[] = [];
+  for (const row of rows) {
+    const { direct, delegates } = await stepRecipients(db, tenantId, row, today);
+    const blocked = await blockedUsers(db, tenantId, row.id);
+    const candidates = [...direct, ...delegates.keys()].filter((u) => !blocked.has(u));
+    const active = candidates.length ? (await db.query(`SELECT 1 FROM users WHERE tenant_id=$1 AND id = ANY($2) AND status='active' LIMIT 1`, [tenantId, candidates])).rowCount : 0;
+    if (!active) stuck.push({ id: row.id, entity_type: row.entity_type, entity_id: row.entity_id, summary: row.summary, created_at: row.created_at, requester_name: row.requester_name });
+  }
+  return { items: stuck.slice((page.page - 1) * page.pageSize, page.page * page.pageSize), page: page.page, pageSize: page.pageSize, total: stuck.length };
+}
+
 /** Whether this person covers today for someone who holds the HR step. */
 async function coveringHrStep(db: Db, tenantId: string, userId: string, today: string) {
   const d = await db.query<{ delegator_id: string }>(`SELECT delegator_id FROM approval_delegations WHERE tenant_id=$1 AND delegate_id=$2 AND revoked_at IS NULL AND $3::date BETWEEN starts_on AND ends_on`, [tenantId, userId, today]);

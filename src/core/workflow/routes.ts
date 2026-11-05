@@ -1,8 +1,9 @@
 import type { FastifyInstance } from 'fastify';
+import * as R from '../http/responses.js';
 import { z } from 'zod';
 import { tenantActor, tenantActorAny } from '../http/context.js';
-import { Uuid } from '../http/pagination.js';
-import { actOnRequest, cancelRequest, inbox, reassignRequest, requestHistory, ESCALATION_PERMISSION, offEntityTypes } from './engine.js';
+import { PageQuery, Uuid } from '../http/pagination.js';
+import { actOnRequest, cancelRequest, inbox, reassignRequest, requestHistory, stuckRequests, ESCALATION_PERMISSION, offEntityTypes } from './engine.js';
 import { notFound, forbidden } from '../http/errors.js';
 import { delegationRoutes } from './delegations.js';
 
@@ -12,18 +13,25 @@ const ActBody = z.object({ action: z.enum(['approve', 'reject', 'return']), comm
 export async function approvalRoutes(app: FastifyInstance) {
   await delegationRoutes(app);
 
-  app.get('/inbox', { schema: {} }, async (req) => {
+  app.get('/inbox', { schema: { response: { 200: R.GetApprovalsInbox200 },} }, async (req) => {
     const a = tenantActor(req);
     return a.tx(async (db) => ({ items: await inbox(db, a.tenantId, { userId: a.user.userId, permissions: a.user.permissions }) }));
   });
 
-  app.get('/mine', { schema: {} }, async (req) => {
+  app.get('/mine', { schema: { response: { 200: R.GetApprovalsMine200 },} }, async (req) => {
     const a = tenantActor(req);
     return a.tx(async (db) => ({ items: (await db.query(`SELECT id, entity_type, entity_id, summary, status, created_at, decided_at
       FROM approval_requests WHERE tenant_id=$1 AND requester_id=$2 AND NOT (entity_type = ANY($3)) ORDER BY created_at DESC LIMIT 100`, [a.tenantId, a.user.userId, offEntityTypes()])).rows }));
   });
 
-  app.get('/:id', { schema: { params: IdParams } }, async (req) => {
+  /** For whoever can sort it out: reassigning a request nobody can decide is theirs already (POST /:id/reassign). */
+  app.get('/stuck', { schema: { querystring: PageQuery }, config: { perm: ['users.manage'] } }, async (req) => {
+    const a = tenantActor(req, 'users.manage');
+    const q = PageQuery.parse(req.query);
+    return a.tx((db) => stuckRequests(db, a.tenantId, q));
+  });
+
+  app.get('/:id', { schema: { response: { 200: R.GetApprovalsById200 }, params: IdParams } }, async (req) => {
     const a = tenantActor(req);
     const { id } = IdParams.parse(req.params);
     return a.tx(async (db) => {
@@ -50,7 +58,7 @@ export async function approvalRoutes(app: FastifyInstance) {
     });
   });
 
-  app.post('/:id/act', { schema: { params: IdParams, body: ActBody } }, async (req) => {
+  app.post('/:id/act', { schema: { response: { 200: R.PostApprovalsByIdAct200 }, params: IdParams, body: ActBody } }, async (req) => {
     const a = tenantActor(req);
     const { id } = IdParams.parse(req.params);
     const body = ActBody.parse(req.body);

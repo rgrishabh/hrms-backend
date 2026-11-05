@@ -1,4 +1,5 @@
 import type { FastifyInstance } from 'fastify';
+import * as R from '../../core/http/responses.js';
 import { Decimal } from 'decimal.js';
 import { tenantActor, type TenantActor } from '../../core/http/context.js';
 import { evaluateFeatures } from '../../core/features/state.js';
@@ -242,7 +243,7 @@ export async function dashboardSummary(db: Db, a: TenantActor) {
 }
 
 export async function dashboardRoutes(app: FastifyInstance) {
-  app.get('/', { schema: {} }, async (req) => {
+  app.get('/', { schema: { response: { 200: R.GetDashboard200 },} }, async (req) => {
     const a = tenantActor(req);
     return a.tx((db) => dashboardSummary(db, a));
   });

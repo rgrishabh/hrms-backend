@@ -1,4 +1,5 @@
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
+import * as R from '../core/http/responses.js';
 import { z } from 'zod';
 import { withPlatformBypass, withTenant, type Db } from '../db/tx.js';
 import { hashPassword, randomToken, verifyPassword, needsRehash, sha256 } from '../core/crypto/index.js';
@@ -54,7 +55,7 @@ export async function authRoutes(app: FastifyInstance, opts: { publicConfig: Pub
    * Runtime configuration for the web app: brand, feature flags, mode and MFA from deployment configuration.
    * Public and non-sensitive by construction (see config/installation.ts). Lets one image serve any customer.
    */
-  app.get('/config/public', { schema: {} }, async (req, reply) => {
+  app.get('/config/public', { schema: { response: { 200: R.GetConfigPublic200 },} }, async (req, reply) => {
     requireTenantHost(req);
     reply.header('cache-control', 'no-cache');
     return publicConfig;
@@ -69,7 +70,7 @@ export async function authRoutes(app: FastifyInstance, opts: { publicConfig: Pub
     const r = await accountLimit(req);
     if (!r.isAllowed && r.isExceeded) throw new AppError(429, 'rate_limited', 'Too many requests. Please slow down.');
   };
-  app.post('/auth/login', { schema: { body: LoginBody }, config: { rateLimit: { max: env.AUTH_RATE_LIMIT_PER_MINUTE, timeWindow: '1 minute' } } }, async (req, reply) => {
+  app.post('/auth/login', { schema: { response: { 200: R.PostAuthLogin200 }, body: LoginBody }, config: { rateLimit: { max: env.AUTH_RATE_LIMIT_PER_MINUTE, timeWindow: '1 minute' } } }, async (req, reply) => {
     const body = LoginBody.parse(req.body);
     const tenant = requireTenantHost(req);
     const tenantId = tenant.id;
@@ -126,7 +127,7 @@ export async function authRoutes(app: FastifyInstance, opts: { publicConfig: Pub
       mfaDelivery: result.delivery };
   });
 
-  app.post('/auth/logout', { schema: {} }, async (req, reply) => {
+  app.post('/auth/logout', { schema: { response: { 200: R.PostAuthLogout200 },} }, async (req, reply) => {
     const u = req.ctx.user;
     if (u) {
       await withPlatformBypass(pool, async (db) => {
@@ -138,7 +139,7 @@ export async function authRoutes(app: FastifyInstance, opts: { publicConfig: Pub
     return { ok: true };
   });
 
-  app.get('/auth/me', { schema: {} }, async (req) => {
+  app.get('/auth/me', { schema: { response: { 200: R.GetAuthMe200 },} }, async (req) => {
     const u = req.ctx.user;
     if (!u || !u.tenantId) throw unauthorized();
     const host = requireTenantHost(req);
@@ -173,7 +174,7 @@ export async function authRoutes(app: FastifyInstance, opts: { publicConfig: Pub
   });
 
   const PasswordBody = z.object({ currentPassword: z.string().min(1), newPassword: z.string().min(1).max(256) });
-  app.post('/auth/password', { schema: { body: PasswordBody }, config: { rateLimit: { max: Math.min(5, env.AUTH_RATE_LIMIT_PER_MINUTE), timeWindow: '1 minute' } }, preHandler: perUserLimit(app, 'password', 5) }, async (req, reply) => {
+  app.post('/auth/password', { schema: { response: { 200: R.PostAuthPassword200 }, body: PasswordBody }, config: { rateLimit: { max: Math.min(5, env.AUTH_RATE_LIMIT_PER_MINUTE), timeWindow: '1 minute' } }, preHandler: perUserLimit(app, 'password', 5) }, async (req, reply) => {
     const u = req.ctx.user;
     if (!u || !u.tenantId) throw unauthorized();
     const body = PasswordBody.parse(req.body);
@@ -196,7 +197,7 @@ export async function authRoutes(app: FastifyInstance, opts: { publicConfig: Pub
     return { ok: true, csrfToken: rotated.csrf };
   });
 
-  app.put('/auth/preferences', { schema: { body: AuthPreferencesBody } }, async (req) => {
+  app.put('/auth/preferences', { schema: { response: { 200: R.PutAuthPreferences200 }, body: AuthPreferencesBody } }, async (req) => {
     const u = req.ctx.user;
     if (!u || !u.tenantId) throw unauthorized();
     const body = AuthPreferencesBody.parse(req.body);
@@ -241,17 +242,17 @@ export async function authRoutes(app: FastifyInstance, opts: { publicConfig: Pub
   const linkLimit = { rateLimit: { max: Math.min(10, env.AUTH_RATE_LIMIT_PER_MINUTE), timeWindow: '1 minute' } };
 
   /** A one-time setup link from the bootstrap command, or an invitation. */
-  app.post('/auth/setup', { schema: { body: LinkBody }, config: linkLimit }, async (req) => finishLink(req, LinkBody.parse(req.body), ['setup', 'invite'],
+  app.post('/auth/setup', { schema: { response: { 200: R.PostAuthSetup200 }, body: LinkBody }, config: linkLimit }, async (req) => finishLink(req, LinkBody.parse(req.body), ['setup', 'invite'],
     new AppError(400, 'setup_link_invalid', 'This setup link is invalid, already used or expired. Ask for a new one.')));
 
-  app.post('/auth/password/reset', { schema: { body: LinkBody }, config: linkLimit }, async (req) => finishLink(req, LinkBody.parse(req.body), ['reset'],
+  app.post('/auth/password/reset', { schema: { response: { 200: R.PostAuthPasswordReset200 }, body: LinkBody }, config: linkLimit }, async (req) => finishLink(req, LinkBody.parse(req.body), ['reset'],
     new AppError(400, 'reset_link_invalid', 'This link is invalid, already used or expired. Ask for a new one.')));
 
   /**
    * Always the same answer in about the same time, whether or not the address has an account: the response is held to a fixed minimum, which covers
    * the work of queueing a mail. Sends nothing to a disabled account, past the hourly limit, or without a mail transport, and says nothing about that either.
    */
-  app.post('/auth/password/forgot', { schema: { body: AuthPasswordForgotBody }, config: { rateLimit: { max: Math.min(5, env.AUTH_RATE_LIMIT_PER_MINUTE), timeWindow: '1 minute' } } }, async (req) => {
+  app.post('/auth/password/forgot', { schema: { response: { 200: R.PostAuthPasswordForgot200 }, body: AuthPasswordForgotBody }, config: { rateLimit: { max: Math.min(5, env.AUTH_RATE_LIMIT_PER_MINUTE), timeWindow: '1 minute' } } }, async (req) => {
     const started = performance.now();
     const { email } = AuthPasswordForgotBody.parse(req.body);
     const tenant = requireTenantHost(req);
@@ -268,7 +269,7 @@ export async function authRoutes(app: FastifyInstance, opts: { publicConfig: Pub
   });
 
   /** This user's active sessions, newest first. */
-  app.get('/auth/sessions', { schema: {} }, async (req) => {
+  app.get('/auth/sessions', { schema: { response: { 200: R.GetAuthSessions200 },} }, async (req) => {
     const u = req.ctx.user;
     if (!u) throw unauthorized();
     return withPlatformBypass(pool, async (db) => ({ items: (await db.query(`SELECT id, ip, user_agent, created_at, last_seen_at, expires_at, id = $2 AS current, mfa_verified_at IS NOT NULL AS mfa_verified
@@ -276,7 +277,7 @@ export async function authRoutes(app: FastifyInstance, opts: { publicConfig: Pub
   });
 
   /** End one of this user's sessions. Someone else's does not exist. */
-  app.delete('/auth/sessions/:id', { schema: { params: IdParams } }, async (req, reply) => {
+  app.delete('/auth/sessions/:id', { schema: { response: { 200: R.DeleteAuthSessionsById200 }, params: IdParams } }, async (req, reply) => {
     const u = req.ctx.user;
     if (!u) throw unauthorized();
     const { id } = IdParams.parse(req.params);
@@ -290,7 +291,7 @@ export async function authRoutes(app: FastifyInstance, opts: { publicConfig: Pub
   });
 
   /** Log out everywhere, this browser included. */
-  app.post('/auth/sessions/revoke-all', { schema: {} }, async (req, reply) => {
+  app.post('/auth/sessions/revoke-all', { schema: { response: { 200: R.PostAuthSessionsRevokeAll200 },} }, async (req, reply) => {
     const u = req.ctx.user;
     if (!u) throw unauthorized();
     await withPlatformBypass(pool, async (db) => {

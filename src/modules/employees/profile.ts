@@ -1,4 +1,5 @@
 import type { FastifyInstance } from 'fastify';
+import * as R from '../../core/http/responses.js';
 import { z } from 'zod';
 import { l3RowFilter, policyViewer, subjectVisible } from '../../core/policy/salary.js';
 import type { Db } from '../../db/tx.js';
@@ -159,7 +160,7 @@ const ProfileChangesParams = z.object({ changeId: Uuid });
 export async function profileRoutes(app: FastifyInstance) {
 
   /** Everything in the personal record, what is awaiting approval, and what is still missing. */
-  app.get('/:id/profile', { schema: { params: IdParams }, config: { permAny: ['profile.self', 'employees.read'] } }, async (req) => {
+  app.get('/:id/profile', { schema: { response: { 200: R.GetEmployeesByIdProfile200 }, params: IdParams }, config: { permAny: ['profile.self', 'employees.read'] } }, async (req) => {
     const a = tenantActorAny(req, 'profile.self', 'employees.read');
     const { id } = IdParams.parse(req.params);
     return a.tx(async (db) => {
