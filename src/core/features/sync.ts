@@ -10,8 +10,18 @@ export async function syncFeatureDefinitions(client: pg.Client | pg.PoolClient):
        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10, now())
        ON CONFLICT (key) DO UPDATE SET name=$2, description=$3, category=$4, default_enabled=$5,
          dependencies=$6, platform_supported=$7, requires_entitlement=$8, core=$9, configuration_schema=$10, synced_at=now()`,
-      [d.key, d.name, d.description, d.category, d.defaultEnabled, d.dependencies,
-       d.availability !== 'planned', false, d.core,
-       JSON.stringify({ requiredSettings: d.requiredSettings ?? [] })]);
+      [
+        d.key,
+        d.name,
+        d.description,
+        d.category,
+        d.defaultEnabled,
+        d.dependencies,
+        d.availability !== 'planned',
+        false,
+        d.core,
+        JSON.stringify({ requiredSettings: d.requiredSettings ?? [] }),
+      ],
+    );
   }
 }

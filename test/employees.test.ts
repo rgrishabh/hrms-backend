@@ -1,17 +1,26 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import type { FastifyInstance } from 'fastify';
-import { makeApp, createTenant, Client, ownerQuery, type TenantFixture } from './helpers.js';
+import { problem, makeApp, createTenant, Client, ownerQuery, type TenantFixture } from './helpers.js';
 
-let app: FastifyInstance; let T: TenantFixture; let hr: Client;
-beforeAll(async () => { app = await makeApp(); T = await createTenant(); hr = await Client.login(app, T.host, T.users.hr!.email); });
-afterAll(async () => { await app.close(); });
+let app: FastifyInstance;
+let T: TenantFixture;
+let hr: Client;
+beforeAll(async () => {
+  app = await makeApp();
+  T = await createTenant();
+  hr = await Client.login(app, T.host, T.users.hr!.email);
+});
+afterAll(async () => {
+  await app.close();
+});
 
 const base = () => ({ legalEntityId: T.legalEntityId, branchId: T.branchId, departmentId: T.deptId, dateOfJoining: '2025-06-01' });
 
 describe('employee master', () => {
   it('creates an employee, audits it, and validates business rules', async () => {
-    const r = await hr.post('/api/v1/employees', { employee: { ...base(), employeeCode: 'NEW1', firstName: 'Asha', lastName: 'Kulkarni',
-      workEmail: 'Asha.K@lab.test', dateOfBirth: '1995-02-01', designation: 'Chemist' } });
+    const r = await hr.post('/api/v1/employees', {
+      employee: { ...base(), employeeCode: 'NEW1', firstName: 'Asha', lastName: 'Kulkarni', workEmail: 'Asha.K@lab.test', dateOfBirth: '1995-02-01', designation: 'Chemist' },
+    });
     expect(r.statusCode).toBe(201);
     const e = (await hr.get(`/api/v1/employees/${r.json().id}`)).json();
     expect(e).toMatchObject({ employee_code: 'NEW1', work_email: 'asha.k@lab.test', view: 'full' });
@@ -19,7 +28,7 @@ describe('employee master', () => {
 
     const bad = await hr.post('/api/v1/employees', { employee: { ...base(), employeeCode: 'BAD1', firstName: 'X', employmentType: 'contract', dateOfBirth: '2020-01-01' } });
     expect(bad.statusCode).toBe(400);
-    const paths = bad.json().error.details.map((d: { path: string }) => d.path);
+    const paths = problem(bad).errors.map((d: { path: string }) => d.path);
     expect(paths).toEqual(expect.arrayContaining(['employee.dateOfBirth', 'employee.contractEndDate']));
   });
 
@@ -28,7 +37,7 @@ describe('employee master', () => {
     expect((await hr.post('/api/v1/employees', { employee: { ...emp, employeeCode: 'DUP1' } })).statusCode).toBe(201);
     const dup = await hr.post('/api/v1/employees', { employee: { ...emp, employeeCode: 'DUP2' } });
     expect(dup.statusCode).toBe(409);
-    expect(dup.json().error.details.duplicates[0].reason).toBe('Same name and date of birth');
+    expect(problem(dup).duplicates[0].reason).toBe('Same name and date of birth');
     expect((await hr.post('/api/v1/employees', { employee: { ...emp, employeeCode: 'DUP2' }, confirmDuplicate: true })).statusCode).toBe(201);
     expect((await hr.post('/api/v1/employees', { employee: { ...emp, employeeCode: 'DUP1', firstName: 'Other' } })).statusCode).toBe(409);
   });
@@ -45,11 +54,12 @@ describe('employee master', () => {
   });
 
   it('prevents circular reporting lines', async () => {
-    const mgr = T.users.manager!.employeeId!; const emp = T.users.employee!.employeeId!;
+    const mgr = T.users.manager!.employeeId!;
+    const emp = T.users.employee!.employeeId!;
     const m = (await hr.get(`/api/v1/employees/${mgr}`)).json();
     const r = await hr.patch(`/api/v1/employees/${mgr}`, { changes: { reportingManagerId: emp }, expectedVersion: m.version });
     expect(r.statusCode).toBe(400);
-    expect(r.json().error.message).toMatch(/circular/);
+    expect(problem(r).detail).toMatch(/circular/);
   });
 
   it('employees see only directory fields of colleagues but full data for themselves', async () => {
@@ -67,10 +77,19 @@ describe('employee master', () => {
 describe('restricted bank details', () => {
   it('encrypts at rest, returns only a masked number, and audits every view', async () => {
     const id = T.users.employee!.employeeId!;
-    expect((await hr.put(`/api/v1/employees/${id}/bank-account`, { accountHolder: 'Emp N2', accountNumber: '123456789012', ifsc: 'SBIN0001234' })).statusCode).toBe(200);
+    const change = await hr.put(`/api/v1/employees/${id}/bank-account`, { accountHolder: 'Emp N2', accountNumber: '123456789012', ifsc: 'SBIN0001234' });
+    expect(change.statusCode).toBe(202); // a second person approves it: test/bank-change.test.ts
+    const finEmail = `fin-bank@${T.host}`;
+    const [finUser] = await ownerQuery<{ id: string }>(
+      `INSERT INTO users (tenant_id, email, display_name, password_hash) SELECT tenant_id, $2, 'fin', password_hash FROM users WHERE id=$1 RETURNING id`,
+      [T.users.hr!.id, finEmail],
+    );
+    await ownerQuery(`INSERT INTO user_roles (user_id, tenant_id, role_key) VALUES ($1,$2,'finance_manager')`, [finUser!.id, T.id]);
+    const fin = await Client.login(app, T.host, finEmail);
+    expect((await fin.post(`/api/v1/approvals/${change.json().approvalRequestId}/act`, { action: 'approve' })).statusCode).toBe(200);
     const [row] = await ownerQuery<{ account_number_enc: string }>(`SELECT account_number_enc FROM employee_bank_accounts WHERE employee_id=$1`, [id]);
     expect(row!.account_number_enc).not.toContain('123456789012');
-    expect(row!.account_number_enc.startsWith('v1.')).toBe(true);
+    expect(row!.account_number_enc.startsWith('v2.')).toBe(true);
 
     const payroll = await Client.login(app, T.host, T.users.payroll!.email);
     const view = (await payroll.get(`/api/v1/employees/${id}/bank-account`)).json();
@@ -83,14 +102,15 @@ describe('restricted bank details', () => {
 
   it('segregation of duties: tenant admin and colleagues cannot view, payroll cannot edit, employee sees own', async () => {
     const id = T.users.employee!.employeeId!;
+    // The Super-admin is above the employee in the salary hierarchy, so it can read this on an explicit reveal; masked otherwise.
     const admin = await Client.login(app, T.host, T.users.admin!.email);
-    expect((await admin.get(`/api/v1/employees/${id}/bank-account`)).statusCode).toBe(403);
+    expect((await admin.get(`/api/v1/employees/${id}/bank-account`)).json().accountNumber).toBeNull();
     const other = await Client.login(app, T.host, T.users.other!.email);
-    expect((await other.get(`/api/v1/employees/${id}/bank-account`)).statusCode).toBe(403);
+    expect((await other.get(`/api/v1/employees/${id}/bank-account?reveal=1`)).statusCode).toBe(403);
     const payroll = await Client.login(app, T.host, T.users.payroll!.email);
     expect((await payroll.put(`/api/v1/employees/${id}/bank-account`, { accountHolder: 'X Y', accountNumber: '999999999', ifsc: 'SBIN0001234' })).statusCode).toBe(403);
     const self = await Client.login(app, T.host, T.users.employee!.email);
-    expect((await self.get(`/api/v1/employees/${id}/bank-account`)).json().accountNumberMasked).toBe('XXXXXX9012');
+    expect((await self.get(`/api/v1/employees/${id}/bank-account?reveal=1`)).json().accountNumberMasked).toBe('XXXXXX9012');
   });
 
   it('validates IFSC format', async () => {
@@ -99,10 +119,23 @@ describe('restricted bank details', () => {
 });
 
 describe('bulk import', () => {
-  const row = (code: string, extra: Record<string, string> = {}) => ({ employeeCode: code, firstName: 'Imp', lastName: code, branchCode: 'HQ', departmentCode: 'LAB', dateOfJoining: '2025-01-15', ...extra });
+  const row = (code: string, extra: Record<string, string> = {}) => ({
+    employeeCode: code,
+    firstName: 'Imp',
+    lastName: code,
+    branchCode: 'HQ',
+    departmentCode: 'LAB',
+    dateOfJoining: '2025-01-15',
+    ...extra,
+  });
 
   it('dry-run reports every row error without writing anything', async () => {
-    const r = (await hr.post('/api/v1/employees/import', { dryRun: true, rows: [row('I1'), row('I1'), row('I3', { branchCode: 'NOPE' }), row('E1'), row('I5', { reportingManagerCode: 'ZZZ' })] })).json();
+    const r = (
+      await hr.post('/api/v1/employees/import', {
+        dryRun: true,
+        rows: [row('I1'), row('I1'), row('I3', { branchCode: 'NOPE' }), row('E1'), row('I5', { reportingManagerCode: 'ZZZ' })],
+      })
+    ).json();
     expect(r.committed).toBe(false);
     expect(r.summary).toMatchObject({ total: 5, errors: 4 });
     const msgs = r.report.flatMap((x: { errors: string[] }) => x.errors).join('|');
@@ -116,10 +149,40 @@ describe('bulk import', () => {
   it('commits all-or-nothing and resolves managers within the same file', async () => {
     const r = (await hr.post('/api/v1/employees/import', { dryRun: false, rows: [row('M10'), row('M11', { reportingManagerCode: 'M10' })] })).json();
     expect(r.committed).toBe(true);
-    const [m11] = await ownerQuery<{ mgr: string }>(`SELECT m.employee_code AS mgr FROM employees e JOIN employees m ON m.id=e.reporting_manager_id WHERE e.tenant_id=$1 AND e.employee_code='M11'`, [T.id]);
+    const [m11] = await ownerQuery<{ mgr: string }>(
+      `SELECT m.employee_code AS mgr FROM employees e JOIN employees m ON m.id=e.reporting_manager_id WHERE e.tenant_id=$1 AND e.employee_code='M11'`,
+      [T.id],
+    );
     expect(m11!.mgr).toBe('M10');
     const fail = (await hr.post('/api/v1/employees/import', { dryRun: false, rows: [row('M20'), row('M10')] })).json();
     expect(fail.committed).toBe(false);
     expect((await ownerQuery(`SELECT 1 FROM employees WHERE tenant_id=$1 AND employee_code='M20'`, [T.id])).length).toBe(0);
+  });
+});
+
+describe('PATCH status guard (AUDIT 4.2)', () => {
+  const load = async (id: string) => (await hr.get(`/api/v1/employees/${id}`)).json();
+  it('exit through PATCH needs a date, which stops pay and ends the login', async () => {
+    const id = T.users.other!.employeeId!;
+    const version = (await load(id)).version as number;
+    const none = await hr.patch(`/api/v1/employees/${id}`, { changes: { status: 'exited' }, expectedVersion: version });
+    expect(none.statusCode).toBe(400);
+    expect(problem(none).detail).toMatch(/exit date/i);
+    const before = await hr.patch(`/api/v1/employees/${id}`, { changes: { status: 'exited' }, exitDate: '2000-01-01', expectedVersion: version });
+    expect(before.statusCode).toBe(400);
+    const c = await Client.login(app, T.host, T.users.other!.email);
+    const ok = await hr.patch(`/api/v1/employees/${id}`, { changes: { status: 'exited' }, exitDate: '2026-01-31', expectedVersion: version });
+    expect(ok.statusCode, ok.body).toBe(200);
+    const [row] = await ownerQuery<{ exit_date: string; status: string }>(`SELECT exit_date::text, status FROM employees WHERE id=$1`, [id]);
+    expect(row).toEqual({ exit_date: '2026-01-31', status: 'exited' });
+    const [u] = await ownerQuery<{ status: string }>(`SELECT status FROM users WHERE id=$1`, [T.users.other!.id]);
+    expect(u!.status).toBe('disabled');
+    expect((await c.get('/api/v1/auth/me')).statusCode).toBe(401);
+  });
+
+  it('an exit date cannot be set without the exit', async () => {
+    const id = T.users.manager!.employeeId!;
+    const version = (await load(id)).version as number;
+    expect((await hr.patch(`/api/v1/employees/${id}`, { changes: { designation: 'Lead' }, exitDate: '2026-01-31', expectedVersion: version })).statusCode).toBe(400);
   });
 });

@@ -1,6 +1,6 @@
 # Documents and file storage
 
-Module `core.documents` (in `ENABLED_MODULES=default`). It's usable once storage is configured. Code: `apps/api/src/core/storage/`, `modules/documents/`. Tests: `test/documents.test.ts`.
+Module `core.documents`, flag `FEATURE_DOCUMENTS` (on by default). It's usable once storage is configured. Code: `apps/api/src/core/storage/`, `modules/documents/`. Tests: `test/documents.test.ts`.
 
 ## Storage (deployment-level, one per installation)
 
@@ -20,7 +20,8 @@ Code and name; scope `employee` or `company`; visible to the employee (own docum
 
 | Who | Sees |
 |---|---|
-| `documents.read` (HR Admin, HR Executive, Payroll, Auditor) | All documents except restricted categories |
+| `documents.read` (HR Admin, HR Executive) | All documents except restricted categories |
+| `documents.payroll` (Payroll, Auditor) | Employee documents in categories marked payroll-related, except restricted ones (D43) |
 | `documents.restricted` (HR Admin) | Restricted categories too |
 | Every employee | Their own documents in employee-visible categories, and company documents in employee-visible categories |
 | Managers | No implicit access to their team's documents |

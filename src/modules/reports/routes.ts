@@ -1,26 +1,32 @@
-import type { FastifyInstance, FastifyReply } from 'fastify';
+import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
+import * as R from '../../core/http/responses.js';
 import { z } from 'zod';
-import { tenantActor, requireFeature, type TenantActor } from '../../core/http/context.js';
+import { only } from '../../core/features/routes.js';
+import { tenantActor, requireFeature, readDevice, type TenantActor } from '../../core/http/context.js';
+import { openJson } from '../../core/crypto/index.js';
+import { auditL4, readContext, wantsReveal } from '../../core/policy/salary.js';
 import { audit } from '../../core/audit/audit.js';
 import { badRequest, conflict, notFound } from '../../core/http/errors.js';
 import { csv } from '../../core/http/csv.js';
-import { xlsx, XLSX_TYPE } from '../../core/http/xlsx.js';
+import { xlsxAsync, XLSX_TYPE } from '../../core/http/xlsx.js';
 import { Uuid } from '../../core/http/pagination.js';
-import { evaluateFeatures } from '../../core/features/state.js';
+import { loadPdfContext, loadPdfIdentity, pdfHeaders } from '../../core/pdf/writer.js';
+import { ReportTable, type TableInput } from '../../core/pdf/table.js';
+import { allOff, evaluateFeatures } from '../../core/features/state.js';
 import { orgToday } from '../competency/service.js';
 import { REPORTS, REPORT_MAP, type Column, type Row } from './registry.js';
-import { runReport, scopeOf, viewerOf, nextRun, type Viewer } from './service.js';
+import { runReport, scopeOf, snapshotForReader, viewerOf, nextRun, type Viewer } from './service.js';
 import type { Db } from '../../db/tx.js';
 
 /** Permissions that can open at least one report (the UI shows the Reports menu for these). */
 export const REPORT_PERMISSIONS = [...new Set(REPORTS.flatMap((r) => [...r.access.all, ...(r.access.team ?? [])]))];
 
-const viewer = (a: TenantActor): Viewer => ({ userId: a.user.userId, employeeId: a.user.employeeId, has: a.has });
+const viewer = (a: TenantActor): Viewer => ({ userId: a.user.userId, employeeId: a.user.employeeId, level: a.user.salaryLevel, has: a.has });
 const ADV = 'reports.advanced';
 
 /** The same report as an Excel workbook: typed columns (money, dates, percentages), bold header and totals. */
-function sendXlsx(reply: FastifyReply, name: string, title: string, columns: Column[], rows: Row[], totals: Row | null) {
-  const body = xlsx([{ name: title, columns: columns.map((c) => ({ label: c.label, type: c.type })), rows: rows.map((r) => columns.map((c) => r[c.key])),
+async function sendXlsx(reply: FastifyReply, name: string, title: string, columns: Column[], rows: Row[], totals: Row | null) {
+  const body = await xlsxAsync([{ name: title, columns: columns.map((c) => ({ label: c.label, type: c.type })), rows: rows.map((r) => columns.map((c) => r[c.key])),
     totals: totals ? columns.map((c, i) => (i === 0 ? 'Total' : totals[c.key])) : null }]);
   return reply.header('content-type', XLSX_TYPE).header('content-disposition', `attachment; filename="${name}.xlsx"`).header('cache-control', 'private, no-store').send(body);
 }
@@ -31,6 +37,18 @@ function sendCsv(reply: FastifyReply, name: string, columns: Column[], rows: Row
   if (totals) lines.push(columns.map((c, i) => (i === 0 ? 'Total' : cell(c.type, totals[c.key]))));
   return reply.header('content-type', 'text/csv; charset=utf-8').header('content-disposition', `attachment; filename="${name}.csv"`)
     .header('cache-control', 'private, no-store').send('﻿' + csv(lines));
+}
+
+/**
+ * The report as a PDF, as a stream: the first page is drawn before the answer starts, so a mistake there is still an error answer. After that a failure
+ * can only break the download, which a reader notices, and is logged. Nothing here holds a database connection.
+ */
+async function sendPdf(req: FastifyRequest, reply: FastifyReply, a: TenantActor, name: string, input: TableInput) {
+  const identity = await a.tx((db) => loadPdfIdentity(db, a.tenantId));
+  const table = new ReportTable(await loadPdfContext(req.server, identity), input);
+  table.start();
+  table.finish().catch((err: unknown) => { req.log.error({ err }, 'report pdf failed while drawing'); table.w.doc.destroy(err instanceof Error ? err : new Error('report pdf failed')); });
+  return pdfHeaders(reply, `${name}.pdf`).send(table.w.doc);
 }
 
 const SavedBody = z.object({ reportKey: z.string().max(60), name: z.string().trim().min(2).max(100), params: z.record(z.string(), z.union([z.string(), z.number()])).default({}) });
@@ -47,8 +65,14 @@ async function ownSaved(db: Db, a: TenantActor, id: string) {
   return s;
 }
 
+const offReportKeys = () => REPORTS.filter((r) => allOff(r.feature)).map((r) => r.key);
+
+const IdParams = z.object({ id: Uuid });
+const ReportKeyParams = z.object({ key: z.string().max(60) });
+/** Each report declares its own parameters in the registry, and GET /reports lists them; runReport parses them with that report's schema. */
+const ReportParams = z.object({}).loose();
 export async function reportRoutes(app: FastifyInstance) {
-  app.get('/', async (req) => {
+  app.get('/', { schema: { response: { 200: R.GetReports200 } } }, async (req) => {
     const a = tenantActor(req);
     return a.tx(async (db) => {
       const features = await evaluateFeatures(db, a.tenantId);
@@ -66,7 +90,7 @@ export async function reportRoutes(app: FastifyInstance) {
   });
 
   // ------------------------------------------------------------ advanced: saved reports, schedules, snapshots
-  app.get('/saved', async (req) => {
+  only(app, 'reports.advanced').get('/saved', { schema: { response: { 200: R.GetReportsSaved200 } }, config: { feature: [ADV] } }, async (req) => {
     const a = tenantActor(req);
     return a.tx(async (db) => {
       await requireFeature(db, a.tenantId, ADV);
@@ -74,12 +98,12 @@ export async function reportRoutes(app: FastifyInstance) {
           (SELECT json_build_object('id', s.id, 'frequency', s.frequency, 'weekday', s.weekday, 'dayOfMonth', s.day_of_month, 'period', s.period, 'recipientIds', s.recipient_ids,
              'enabled', s.enabled, 'nextRunOn', s.next_run_on::text, 'lastRunAt', s.last_run_at, 'lastResult', s.last_result)
             FROM report_schedules s WHERE s.tenant_id=r.tenant_id AND s.saved_report_id=r.id LIMIT 1) AS schedule
-        FROM saved_reports r WHERE r.tenant_id=$1 AND r.owner_id=$2 ORDER BY r.name`, [a.tenantId, a.user.userId])).rows;
+        FROM saved_reports r WHERE r.tenant_id=$1 AND r.owner_id=$2 AND NOT (r.report_key = ANY($3)) ORDER BY r.name`, [a.tenantId, a.user.userId, offReportKeys()])).rows;
       return { items: items.filter((i) => REPORT_MAP.has(i.report_key)).map((i) => ({ ...i, reportName: REPORT_MAP.get(i.report_key)!.name })) };
     });
   });
 
-  app.post('/saved', async (req, reply) => {
+  only(app, 'reports.advanced').post('/saved', { schema: { response: { 201: R.PostReportsSaved201 },  body: SavedBody }, config: { feature: [ADV] } }, async (req, reply) => {
     const a = tenantActor(req);
     const b = SavedBody.parse(req.body);
     const def = REPORT_MAP.get(b.reportKey);
@@ -94,9 +118,9 @@ export async function reportRoutes(app: FastifyInstance) {
     });
   });
 
-  app.delete('/saved/:id', async (req) => {
+  only(app, 'reports.advanced').delete('/saved/:id', { schema: { response: { 200: R.DeleteReportsSavedById200 },  params: IdParams } }, async (req) => {
     const a = tenantActor(req);
-    const { id } = z.object({ id: Uuid }).parse(req.params);
+    const { id } = IdParams.parse(req.params);
     return a.tx(async (db) => {
       await ownSaved(db, a, id);
       await db.query(`DELETE FROM saved_reports WHERE tenant_id=$1 AND id=$2`, [a.tenantId, id]);
@@ -105,9 +129,9 @@ export async function reportRoutes(app: FastifyInstance) {
   });
 
   /** Schedule a saved report (one schedule per saved report). Recipients need organization-wide access themselves. */
-  app.put('/saved/:id/schedule', async (req) => {
+  only(app, 'reports.advanced').put('/saved/:id/schedule', { schema: { response: { 200: R.PutReportsSavedByIdSchedule200 },  params: IdParams, body: ScheduleBody }, config: { feature: [ADV] } }, async (req) => {
     const a = tenantActor(req);
-    const { id } = z.object({ id: Uuid }).parse(req.params);
+    const { id } = IdParams.parse(req.params);
     const b = ScheduleBody.parse(req.body);
     if (b.frequency === 'weekly' && b.weekday === undefined) throw badRequest('Choose the day of the week');
     if (b.frequency === 'monthly' && b.dayOfMonth === undefined) throw badRequest('Choose the day of the month (1–28)');
@@ -135,9 +159,9 @@ export async function reportRoutes(app: FastifyInstance) {
   });
 
   /** People who may receive this saved report: active users who can see it for the whole organization. */
-  app.get('/saved/:id/recipients', async (req) => {
+  only(app, 'reports.advanced').get('/saved/:id/recipients', { schema: { response: { 200: R.GetReportsSavedByIdRecipients200 },  params: IdParams }, config: { feature: [ADV] } }, async (req) => {
     const a = tenantActor(req);
-    const { id } = z.object({ id: Uuid }).parse(req.params);
+    const { id } = IdParams.parse(req.params);
     return a.tx(async (db) => {
       await requireFeature(db, a.tenantId, ADV);
       const s = await ownSaved(db, a, id);
@@ -151,9 +175,9 @@ export async function reportRoutes(app: FastifyInstance) {
     });
   });
 
-  app.delete('/saved/:id/schedule', async (req) => {
+  only(app, 'reports.advanced').delete('/saved/:id/schedule', { schema: { response: { 200: R.DeleteReportsSavedByIdSchedule200 },  params: IdParams } }, async (req) => {
     const a = tenantActor(req);
-    const { id } = z.object({ id: Uuid }).parse(req.params);
+    const { id } = IdParams.parse(req.params);
     return a.tx(async (db) => {
       await ownSaved(db, a, id);
       await db.query(`DELETE FROM report_schedules WHERE tenant_id=$1 AND saved_report_id=$2`, [a.tenantId, id]);
@@ -162,13 +186,13 @@ export async function reportRoutes(app: FastifyInstance) {
   });
 
   /** Scheduled reports sent to me (kept 90 days). */
-  app.get('/snapshots', async (req) => {
+  only(app, 'reports.advanced').get('/snapshots', { schema: { response: { 200: R.GetReportsSnapshots200 },}, config: { feature: [ADV] } }, async (req) => {
     const a = tenantActor(req);
     return a.tx(async (db) => {
       await requireFeature(db, a.tenantId, ADV);
       return { items: (await db.query(`SELECT s.id, s.name, s.report_key, s.params, s.scope, s.row_count, s.generated_at, s.expires_at, u.display_name AS owner
-        FROM report_snapshots s JOIN users u ON u.id=s.owner_id WHERE s.tenant_id=$1 AND $2 = ANY(s.recipient_ids) AND s.expires_at > now() ORDER BY s.generated_at DESC LIMIT 100`,
-        [a.tenantId, a.user.userId])).rows };
+        FROM report_snapshots s JOIN users u ON u.id=s.owner_id WHERE s.tenant_id=$1 AND $2 = ANY(s.recipient_ids) AND s.expires_at > now() AND NOT (s.report_key = ANY($3)) ORDER BY s.generated_at DESC LIMIT 100`,
+        [a.tenantId, a.user.userId, offReportKeys()])).rows };
     });
   });
 
@@ -176,45 +200,73 @@ export async function reportRoutes(app: FastifyInstance) {
   async function loadSnapshot(a: TenantActor, id: string) {
     return a.tx(async (db) => {
       await requireFeature(db, a.tenantId, ADV);
-      const s = (await db.query<{ id: string; name: string; report_key: string; scope: string; owner_id: string; columns: Column[]; rows: Row[]; totals: Row | null; notes: string[]; params: unknown; generated_at: Date }>(
-        `SELECT id, name, report_key, scope, owner_id, columns, rows, totals, notes, params, generated_at FROM report_snapshots
+      const stored = (await db.query<{ id: string; name: string; report_key: string; scope: string; owner_id: string; columns: Column[]; data_enc: string; notes: string[]; params: unknown; generated_at: Date; viewer_level: number | null }>(
+        `SELECT id, name, report_key, scope, owner_id, columns, data_enc, notes, params, generated_at, viewer_level FROM report_snapshots
           WHERE tenant_id=$1 AND id=$2 AND $3 = ANY(recipient_ids) AND expires_at > now()`, [a.tenantId, id, a.user.userId])).rows[0];
-      const def = s && REPORT_MAP.get(s.report_key);
-      if (!s || !def) throw notFound('Report not found');
+      const def = stored && REPORT_MAP.get(stored.report_key);
+      if (!stored || !def) throw notFound('Report not found');
+      // Sealed for one reader at one level. Someone whose level has since dropped no longer gets it.
+      if (stored.viewer_level !== null && stored.viewer_level > a.user.salaryLevel) throw notFound('Report not found');
+      const { data_enc, ...meta } = stored;
+      const s = { ...meta, ...openJson<{ rows: Row[]; totals: Row | null; subjects?: string[] }>(data_enc) };
       const mine = scopeOf(def, viewer(a));
       if (!mine || (s.scope === 'all' && mine !== 'all')) throw notFound('Report not found');
-      return s;
+      if (def.feature) await requireFeature(db, a.tenantId, def.feature);
+      const features = await evaluateFeatures(db, a.tenantId);
+      return snapshotForReader(def, s, a.has, (f) => !!features.get(f)?.usable);
     });
   }
-  app.get('/snapshots/:id', async (req) => {
+  /** Whose pay this reader has just received. A reader who has since lost the pay columns received none. */
+  const auditSnapshot = (req: FastifyRequest, a: TenantActor, s: { report_key: string; columns: Column[]; subjects?: string[] }, kind: 'read' | 'export') => {
+    if (!REPORT_MAP.get(s.report_key)?.l4 || !s.columns.some((c) => c.key === 'gross' || c.key === 'payroll_gross')) return Promise.resolve();
+    return a.tx((db) => auditL4(db, readContext(req, a), kind, `reports.snapshot.${s.report_key}`, (s.subjects ?? []).map((employeeId) => ({ employeeId, fields: ['pay'] }))));
+  };
+  only(app, 'reports.advanced').get('/snapshots/:id', { schema: { response: { 200: R.GetReportsSnapshotsById200 }, params: IdParams } }, async (req) => {
     const a = tenantActor(req);
-    const { id } = z.object({ id: Uuid }).parse(req.params);
+    const { id } = IdParams.parse(req.params);
     const s = await loadSnapshot(a, id);
+    await auditSnapshot(req, a, s, 'read');
     return { id: s.id, key: s.report_key, name: s.name, params: s.params, scope: s.scope, columns: s.columns, rows: s.rows, totals: s.totals, notes: s.notes, generatedAt: s.generated_at };
   });
-  for (const format of ['csv', 'xlsx'] as const) app.get(`/snapshots/:id/export.${format}`, async (req, reply) => {
+  for (const format of ['csv', 'xlsx', 'pdf'] as const) app.get(`/snapshots/:id/export.${format}`, { schema: { params: IdParams } }, async (req, reply) => {
     const a = tenantActor(req);
-    const { id } = z.object({ id: Uuid }).parse(req.params);
+    const { id } = IdParams.parse(req.params);
     const s = await loadSnapshot(a, id);
     await a.tx((db) => audit(db, { ...a.auditBase, action: 'reports.exported', category: 'access', targetType: 'report_snapshot', targetId: id, metadata: { report: s.report_key, rows: s.rows.length, format } }));
-    const name = `${s.report_key}-${new Date(s.generated_at).toISOString().slice(0, 10)}`;
+    await auditSnapshot(req, a, s, 'export');
+    const generated = new Date(s.generated_at).toISOString().slice(0, 10);
+    const name = `${s.report_key}-${generated}`;
+    if (format === 'pdf') return sendPdf(req, reply, a, name, { title: s.name, subtitle: [`Generated ${generated}`], notes: s.notes, columns: s.columns, rows: s.rows, totals: s.totals });
     return format === 'csv' ? sendCsv(reply, name, s.columns, s.rows, s.totals) : sendXlsx(reply, name, s.name, s.columns, s.rows, s.totals);
   });
 
   // ------------------------------------------------------------ run a report
-  app.get('/:key', async (req) => {
+  /** A report that is not available is a 404 before anything else, so this route does not change what `/saved` answers while it is off. */
+  const reportKey = (req: FastifyRequest) => {
+    const { key } = ReportKeyParams.parse(req.params);
+    const def = REPORT_MAP.get(key);
+    if (!def || allOff(def.feature)) throw notFound('Report not found');
+    return key;
+  };
+
+  app.get('/:key', { schema: { response: { 200: R.GetReportsByKey200 },  params: ReportKeyParams, querystring: ReportParams } }, async (req) => {
+    const key = reportKey(req);
     const a = tenantActor(req);
-    const { key } = z.object({ key: z.string().max(60) }).parse(req.params);
-    const { def, ...r } = await a.tx((db) => runReport(db, a.tenantId, key, req.query, viewer(a)));
+    const reveal = wantsReveal(req);
+    const { def, subjects, ...r } = await a.read((db) => runReport(db, a.tenantId, key, req.query, viewer(a), { reveal }));
+    if (def.l4 && reveal) await a.tx((db) => auditL4(db, readContext(req, a), 'reveal', `reports.${def.key}`, (subjects ?? []).map((employeeId) => ({ employeeId, fields: ['pay'] }))));
     return { key: def.key, name: def.name, generatedAt: new Date().toISOString(), ...r };
   });
 
-  /** CSV or Excel export: audited (who exported which report with which parameters, in which format). */
-  for (const format of ['csv', 'xlsx'] as const) app.get(`/:key/export.${format}`, async (req, reply) => {
+  /** CSV, Excel or PDF export: audited (who exported which report with which parameters, in which format). */
+  for (const format of ['csv', 'xlsx', 'pdf'] as const) app.get(`/:key/export.${format}`, { schema: { params: ReportKeyParams, querystring: ReportParams } }, async (req, reply) => {
+    const key = reportKey(req);
     const a = tenantActor(req);
-    const { key } = z.object({ key: z.string().max(60) }).parse(req.params);
-    const { def, params, today, columns, rows, totals, scope } = await a.tx((db) => runReport(db, a.tenantId, key, req.query, viewer(a)));
-    await a.tx((db) => audit(db, { ...a.auditBase, action: 'reports.exported', category: 'access', targetType: 'report', targetId: def.key, metadata: { params, scope, rows: rows.length, format } }));
+    const { def, params, today, columns, rows, totals, scope, excluded, subjects, notes } = await a.read((db) => runReport(db, a.tenantId, key, req.query, viewer(a), { reveal: true }));
+    if (def.l4) await a.tx((db) => auditL4(db, readContext(req, a), 'export', `reports.${def.key}`, (subjects ?? []).map((employeeId) => ({ employeeId, fields: ['pay'] }))));
+    await a.tx((db) => audit(db, { ...a.auditBase, userAgent: readDevice(req).userAgent, action: 'reports.exported', category: 'access', targetType: 'report', targetId: def.key, metadata: { params, scope, rows: rows.length, format, excluded: excluded ?? 0 } }));
+    reply.header('x-excluded-subjects', String(excluded ?? 0));
+    if (format === 'pdf') return sendPdf(req, reply, a, `${def.key}-${today}`, { title: def.name, subtitle: [`Generated ${today}`, Object.entries(params).map(([k, v]) => `${k}: ${v}`).join('  ·  ')].filter(Boolean), notes, columns, rows, totals });
     return format === 'csv' ? sendCsv(reply, `${def.key}-${today}`, columns, rows, totals) : sendXlsx(reply, `${def.key}-${today}`, def.name, columns, rows, totals);
   });
 }

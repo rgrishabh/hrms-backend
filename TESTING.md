@@ -14,12 +14,13 @@ terraform -chdir=infra/modules/hrms-stack test    # Terraform, offline (mock pro
 scripts/smoke.sh                                  # end-to-end against a running installation
 ```
 
-## Latest results (2026-11-03, local: macOS, Node 26.5, PostgreSQL 17.11, Terraform 1.16.6, Docker Compose CLI 5.7.0)
+The latest test run is batch G, below, and the counts in the table of suites are from it.
+
+## Infrastructure checks (2026-11-03, local: macOS, Node 26.5, PostgreSQL 17.11, Terraform 1.16.6, Docker Compose CLI 5.7.0)
 
 | Check | Result |
 |---|---|
 | `npm run typecheck` (API + web) | exit 0 |
-| `npm test` | **295 passed, 0 failed** (34 files) |
 | `npm run build` (API + web) | exit 0 |
 | `npm audit --omit=dev` | 0 vulnerabilities |
 | `scripts/smoke.sh` (dev installation via Vite proxy) | **16 passed** (incl. leave balances and preview) |
@@ -34,26 +35,33 @@ scripts/smoke.sh                                  # end-to-end against a running
 
 | Suite | Tests | Covers |
 |---|---|---|
-| `config.test.ts` | 8 | Safe defaults for non-sensitive settings only; missing DB URL / weak key fail; every invalid field listed without echoing secrets; asset references (https or `/branding/`, needs `BRANDING_DIR`, no traversal or `javascript:`); production rules (https, Secure cookies, explicit DB TLS); domain derivation; public config without secrets; Compose empty values treated as unset |
-| `installation.test.ts` | 18 | Not ready before bootstrap. Setup link: hashed storage, single use, weak password rejected, reuse and expiry rejected, rejection audited (survives rollback). Idempotent re-run; never a second admin or organization. `--reset-admin` recovery. Password mode forces a change and blocks other APIs. CLI refuses password flags. Runtime config contents; only configured hosts. `index.html` title/theme rendered and escaped. Branding files sandboxed, images only. External logo origin in CSP; missing branding file fails startup. **Two installations: separate branding, users, sessions and domains.** Pending migration → not ready; a newer schema (after rollback) stays ready |
-| `features-settings.test.ts` | 17 | `ENABLED_MODULES` expansion and validation (unknown, unbuilt, missing dependency); app refuses invalid sets. Supported/enabled/configured/usable; disabled module rejected by API and hidden via capabilities, data kept; biometric becomes usable once configured; no admin override; disabled module rejects valid device keys. Settings: defaults and sources, deployment default layer, persistence and audit, branch precedence and reset, validation, deployment ceiling, optimistic concurrency, per-setting permissions |
-| `tenancy-security.test.ts` | 19 | Unknown, unverified and malformed hosts; cross-organization isolation inside one DB (defence in depth); no endpoints for domains, branding or modules; suspended organization; CSRF; lockout and audit; logout and disable revoke sessions; unknown roles and last-admin protection; no secrets in listings; security headers; an IT administrator cannot grant roles beyond their own or change more privileged accounts; admin-created accounts must change their password |
-| `employees.test.ts` | 10 | Validation, duplicates, optimistic locking, history, circular managers, directory vs full views, encrypted and masked bank details with segregation of duties, all-or-nothing import |
-| `attendance-calc.test.ts` | 23 | Pure calculation rules (see docs/ATTENDANCE.md), incl. v2 leave rules: full-day `on_leave`, half-day thresholds, leave on off days, v1 unchanged without leave; the clock-in card shows only today's punches (plus an overnight shift's open "in") |
+| `config.test.ts` | 18 | Required brand values named when missing; bad values listed without echoing secrets; asset references (https or `/brand/`); every flag of the contract with its default and dependencies; typos, bad values, unmet dependencies and removed variables refused; `SMTP_SECURE`; public config shape. |
+| `installation.test.ts` | 20 | Not ready before bootstrap. Setup link: hashed storage, single use, weak password rejected, reuse and expiry rejected, rejection audited (survives rollback). Idempotent re-run; never a second admin or organization. `--reset-admin` recovery. Password mode forces a change and blocks other APIs. CLI refuses password flags. Runtime config contents; only configured hosts. `index.html` title/theme rendered and escaped. Branding files sandboxed, images only. External logo origin in CSP; missing branding file fails startup. **Two installations: separate branding, users, sessions and domains.** Pending migration → not ready; a newer schema (after rollback) stays ready |
+| `features-settings.test.ts` | 15 | App refuses invalid flags. Supported/enabled/configured/usable; disabled module rejected by API and hidden via capabilities, data kept; biometric becomes usable once configured; no admin override; disabled module rejects valid device keys. Settings: defaults and sources, deployment default layer, persistence and audit, branch precedence and reset, validation, deployment ceiling, optimistic concurrency, per-setting permissions |
+| `tenancy-security.test.ts` | 18 | Unknown, unverified and malformed hosts; cross-organization isolation inside one DB (defence in depth); no endpoints for domains, branding or modules; suspended organization; CSRF; lockout and audit; logout and disable revoke sessions; unknown roles and last-admin protection; no secrets in listings; security headers; an IT administrator cannot grant roles beyond their own or change more privileged accounts; admin-created accounts must change their password |
+| `employees.test.ts` | 12 | Validation, duplicates, optimistic locking, history, circular managers, directory vs full views, encrypted and masked bank details with segregation of duties, all-or-nothing import |
+| `attendance-calc.test.ts` | 34 | Pure calculation rules (see docs/ATTENDANCE.md), incl. v2 leave rules: full-day `on_leave`, half-day thresholds, leave on off days, v1 unchanged without leave; the clock-in card shows only today's punches (plus an overnight shift's open "in") |
 | `leave.test.ts` | 18 | Type validation and permissions; annual/monthly accruals, idempotency, pro-rating for joiners; day counting (weekly off, holiday, sandwich, half days); no-working-day, balance, notice and overlap rules; unpaid leave without balance; no applying for colleagues; pending reservation, manager routing, self-approval blocked, ledger consumption, team calendar, visibility; cancellation with reversal and approval closure; attendance `on_leave` and half-day `present`; payroll-locked dates; year-end blocked by pending, carry/lapse, idempotent; adjustments audited; module disabled → 403 |
 | `attendance-flows.test.ts` | 12 | Punch idempotency, location policy, device ingestion (drift, dedupe, unmapped queue), regularization workflow, team visibility, payroll lock, shift assignment |
-| `rate-limit.test.ts` | 1 | Login 429 after the per-IP limit |
-| `notifications.test.ts` | 8 | Approver notified in-app and by branded email (correct link, sender, colour; requester excluded); decision notifies requester with comment; permission steps reach every holder; inbox read/read-all scoped to the user; opt-out respected while in-app kept; send failure → backoff → single delivery; no email when the module is off; reminders once per day even with manual re-runs |
+| `rate-limit.test.ts` | 11 | Login 429 after the per-IP limit; proxy trust; limits per account and per user |
+| `notifications.test.ts` | 9 | Approver notified in-app and by branded email (correct link, sender, colour; requester excluded); decision notifies requester with comment; permission steps reach every holder; inbox read/read-all scoped to the user; opt-out respected while in-app kept; send failure → backoff → single delivery; no email when the module is off; reminders once per day even with manual re-runs |
 | `documents.test.ts` | 14 | Content-based type detection (renamed/executable/scripted PDF rejected); storage keys never from input; upload stored under generated key; own download as attachment, audited; colleagues and managers get 404; restricted vs read permissions, HR-only categories; employee upload rules; type/size/expiry/scope validation; company documents visible to all; tamper detection; archive (file retained); expiry reminders; module not configured → 403; only users cleared for restricted documents change a restricted category |
-| `mfa.test.ts` | 8 | RFC 4226/6238 vectors and drift window; privileged users must enrol first, employees not forced; secret encrypted, recovery codes hashed; new sign-in needs a code and reveals nothing before it; replay rejected; recovery codes single-use with notice; 5 failures end the session; privileged cannot disable; admin reset revokes sessions and forces re-enrolment; employee enable/disable with password + code; organization can tighten but not relax the installation minimum |
+| `mfa.test.ts` | 40 | RFC 4226/6238 vectors and drift; `MFA_AVAILABLE=false` removes everything and keeps enrolments; optional per user with the L4 suggestion; enforced at next sign-in; TOTP and email codes hashed, single use, expired; replay; recovery codes; rotation; brute force within and across sessions; no mail transport |
+| `passwords.test.ts` | 18 | Argon2id, upgrade from scrypt, dummy cost, policy, bundled list with no network |
+| `sessions.test.ts` | 20 | Cookie flags, CSRF, idle and absolute limits, list and revoke, rotation; back-off cannot be turned on a known email; credential stuffing; known browsers; no password work when blocked |
+| `links-and-notices.test.ts` | 27 | Reset and invitations: reuse, concurrent use, expiry, hashed at rest, nothing readable in the outbox, policy, no enumeration including timing shape; security email ignores the opt-out |
+| `uploads.test.ts` | 34 | clamd INSTREAM against a fake server: EICAR, errors, timeouts, fail closed; startup refusal; magic bytes; metadata stripped from JPEG, PNG, WebP |
+| `role-grants.test.ts` | 10 | No grant reaches the actor's level, by effective level; nobody changes someone at or above them; last owner protected |
+| `l3-reasons.test.ts` | 10 | Overtime and field-duty reasons: self, HR above, who decides while pending |
+| `audit-chain-concurrency.test.ts` | 5 | Opposite lock orders, 40 concurrent writers, a long transaction holds nobody up, rollback leaves no gap |
 | `expenses.test.ts` | 8 | Receipts required per category, per-item limit, claim window, GST pairing, decimal totals; same GST invoice refused twice, likely duplicates flagged; manager → finance approval, colleagues get 404; payment batch needs a second approver (maker-checker), paid once; bank export full vs masked account numbers by permission, audited; returned claim editable and resubmittable, cancelling closes its approval; ageing report; a manager who is also a finance approver approves only one step |
-| `competency.test.ts` | 9 | Course validity sets record expiry; future dates rejected; employees read only their own records; prerequisites block a request; one pending per person/method/activity; requester never approves; quality approval sets review date and history; `/check` in force and scoped; nobody assesses, requests or grants their own competence (rolled back); not-competent, stale and contradicted assessments refused; revoked training takes an authorization out of force (matrix + check); suspend/reinstate with prerequisite check and audit; renewal stays pending without interrupting, then supersedes; overdue review expires via the job; training reminders sent once; module off → 403; nobody records their own training |
+| `competency.test.ts` | 10 | Course validity sets record expiry; future dates rejected; employees read only their own records; prerequisites block a request; one pending per person/method/activity; requester never approves; quality approval sets review date and history; `/check` in force and scoped; nobody assesses, requests or grants their own competence (rolled back); not-competent, stale and contradicted assessments refused; revoked training takes an authorization out of force (matrix + check); suspend/reinstate with prerequisite check and audit; renewal stays pending without interrupting, then supersedes; overdue review expires via the job; training reminders sent once; module off → 403; nobody records their own training |
 | `policies.test.ts` | 7 | Drafts need text or PDF, non-PDF refused, one draft at a time, drafts hidden from staff; author cannot publish, another publisher can, audience notified; acknowledgement bound to the content hash, idempotent, reported and exported (audited); acknowledgements immutable for the app role; new version supersedes and needs a fresh acknowledgement, stale page refused, old version readable only by those who acknowledged it; branch/department audience; weekly overdue reminder once; retire removes from staff lists; module off → 403 |
-| `health.test.ts` | 1 | `/health` and `/ready` aliases: unauthenticated, host-agnostic, strict CSP, same result as `/health/live` / `/health/ready` |
+| `health.test.ts` | 2 | `/health` and `/ready` aliases: unauthenticated, host-agnostic, strict CSP, same result as `/health/live` / `/health/ready`; `/health` carries the running version in the form the deployment reads |
 | `recruitment.test.ts` | 9 | Requisition by manager, budget only with compensation access and redacted otherwise, HR approval, visibility; candidate needs consent and a contact, content-checked resume, duplicate email refused / shared phone confirmable, expected CTC restricted, retention date; stage rules incl. no direct hire, reason for rejection, optimistic locking, history; interview panel notified, feedback only after start, blind until own submission, once only, completion; panel sees resume (audited) but not history/offers; offer needs compensation access, above-budget flag, one live offer, second approver, no CTC in approval summary; sent → accepted → hire creates pre-joining employee with manager and probation, closes the full requisition, once only; retention anonymizes and deletes the resume file, keeps hired; erasure on request; module off; a hiring approver (management) approves requisitions and offers an HR administrator drafted and sees pay, but cannot add candidates, applications or change offers |
 | `lifecycle.test.ts` | 9 | Onboarding template required; tasks dated from joining and routed by owner (my tasks per group, notifications); only the owner group completes, skip needs HR + note, checklist closes and reopens; joining confirmed only on/after the date; probation review opened by the job, manager recommends, HR approves (confirm → confirmation date + permanent; extend → new end date; no self-approval); resignation with notice shortfall, manager → HR, LWD change before approval, clearance checklist on approval; exit interview HR-only; completion needs LWD + all clearance, then exited + login disabled + sessions revoked; HR-initiated separations need a second HR; job ends access after LWD; module off |
 | `response-after-commit.test.ts` | 1 | No handler sends a response inside a transaction |
-| `payroll-calc.test.ts` | 6 | Fixed/percent components, deductions, PF with ceilings and EPS split, employer cost; proration with half-up rounding; ESI threshold and round-up, PT month override, TDS projection with slabs/rebate/cess; missing rules are never guessed (warnings), PF exclusion, no PT state; adjustments and negative net; progressive slabs |
+| `payroll-calc.test.ts` | 16 | Fixed/percent components, deductions, PF with ceilings and EPS split, employer cost; proration with half-up rounding; ESI threshold and round-up, PT month override, TDS projection with slabs/rebate/cess; missing rules are never guessed (warnings), PF exclusion, no PT state; adjustments and negative net; progressive slabs |
 | `payroll.test.ts` | 8 | Components (percent only of fixed); salary maker-checker without figures in approvals; statutory params validated, scope rules, verification by a second person, active rules locked; PAN encrypted/masked; run from attendance LOP (absent, half day), only salaried employees, one regular run per month, warnings block submission until acknowledged; adjustments force recompute and correct LOP; different approver; finalize needs locked attendance; finalized items immutable (trigger), no backdated salary into a closed month; own payslip only; bank export full vs masked, PF file with UAN, register; exports audited; paid; F&F needs a separation; module off |
 | `cases.test.ts` | 7 | POSH needs an IC with one presiding officer; admins maintain it but cannot read complaints; no anonymous POSH; late filing needs a reason; notifications/audit carry no narrative; description encrypted at rest; HR/admin/respondent get 404; IC workflow with allowed moves, report due 10 days after inquiry, outcome required to close; complainant sees shared updates only, attributed to the IC; annual counts; party to a case excluded; anonymous grievance with SLA, assignment rules, complainant comment/reopen/withdraw, version conflicts; deadline reminders; module off; complainant actions audited without identity or IP; no self-addition to the committee, changes audited and announced |
 | `performance-assets.test.ts` | 6 | Cycle activation creates reviews, drafts hidden; weighted goals ≤ 100%, employee proposes / manager agrees; self → manager → HR final with ratings hidden from the employee until final, acknowledgement, close blocked while open; asset register, unique tags, calibration-expired instruments cannot be issued, one holder at a time, employee acknowledgement, calibration reminders; unreturned assets block exit completion until received; HR does not see their own pending rating in the all-staff list; the reviewing manager cannot finalize |
@@ -74,6 +82,107 @@ Earlier phases: see git history of this file (bootstrap uuid/text parameter, FOR
 
 ## Not yet covered
 
-- Browser E2E (Playwright). The UI is type-checked, built and exercised over HTTP, but not driven in a real browser.
-- Performance at 1,000+ employees; backup restore on RDS; running the Compose stack on a real Docker engine (CI job added).
-- Payroll, leave, document and email branding tests: those features don't exist yet.
+- Backup restore on RDS; a sized production load test (`QA_REPORT.md` has the laptop's numbers, and says what they do not show).
+
+Flags: `feature-routes.test.ts` is generated from the registry and from the routes an app really registers: for every flag, off means 404 signed in or not, and on means not 404. `feature-off.test.ts` covers everything else that follows the flags. To run something outside a request as an app would, use `inApp(app, fn)`.
+
+Redis: `test/cache-redis.test.ts` runs against a real server when `TEST_REDIS_URL` is set, and is skipped only when it is not. The rest of the suite runs without Redis.
+
+## Batch F: abuse, contract, coverage, mutation
+
+Run: 2026-11-05, macOS, Node 26.5, PostgreSQL 17.11, with a private Redis so that nothing is skipped, and other agents using the machine. `npm run test:coverage`, three times running:
+
+| Run | Tests | Files | Duration | Exit |
+|---|---|---|---|---|
+| 1 | 1785 passed (1785) | 98 passed (98) | 496.11 s | 0 |
+| 2 | 1785 passed (1785) | 98 passed (98) | 396.64 s | 0 |
+| 3 | 1785 passed (1785) | 98 passed (98) | 472.77 s | 0 |
+
+Without `TEST_REDIS_URL` the 6 Redis tests are skipped and the rest are the same.
+
+| Measure | Result | Threshold |
+|---|---|---|
+| Lines, all of `src` | 93.4% | 85% |
+| Branches, all of `src` | 83.68% | none |
+| Branches of each business rule file | 100% | 100%, and the CI job now fails below it |
+
+**Mutation score** (Stryker, `npm run test:mutation`):
+
+| File | Score | Killed | Survived | No coverage |
+|---|---|---|---|---|
+| `payroll/calc.ts` | 99.31% | 287 | 2 | 0 |
+| `leave/service.ts` | 88.19% | 127 | 3 | 14 |
+
+`calc.ts` was 67.47%. `test/payroll-calc-exact.test.ts` asserts the exact words and boundaries the report showed nobody checked. The 2 survivors are equivalent: `upper.gt(lower)` is always true when reached, since a slab at or past the income has already broken out; and the default `warnings = []` of `componentAmounts`, which the one caller without it never reads. The 14 with no coverage in `leave/service.ts` are functions these pure suites do not reach, and the integration suites do.
+
+**New suites.**
+
+| Suite | Tests | Covers |
+|---|---|---|
+| `security/privilege-abuse` | 30 | Staff past their level: F-101 to F-118, reading a peer's pay by each path |
+| `security/session-csrf` | | Forged and tampered tokens, replay, CSRF on every unsafe route, CORS |
+| `security/brute-force` | | Sign-in and code guessing on real limits, spelling tricks, enumeration |
+| `security/files-exports` | | Upload type and size, traversal, formula injection, SSRF, XSS |
+| `security/injection` | | Hostile values in every field of the document with real ids: no crash, no database text |
+| `security/isolation` | | Another organization's ids on every route; a plain employee over every id there is |
+| `security/flags-headers` | | Off modules by API, report, job and role; headers; no-store |
+| `security/shared-address` | 8 | People behind one address, with what batch G added |
+| `contract/openapi-drift` | 3 | The committed file against the code and the running app |
+| `contract/live-responses` | 1 | Every GET per persona, masked and revealed, against its declared response |
+| `contract/mode-flags` | 36 | Each mode with flags on, default and off |
+| `contract/route-permissions` | 3 | Every route without a session; every declared permission tried both ways |
+
+`test/security` uses `test/security/wire.ts`, the test client over a real socket.
+
+**Flaky tests fixed.** Three compared two separate timing samples, and failed when the machine got busy between them: the reset and sign-in timing tests of `links-and-notices`, and the dummy hash of `passwords`. They now measure in pairs and compare medians of the pairs. `pdf`'s longest stall is judged against the render's own length, with the old 400 ms as a floor. New tests of mine picked a random leave date that could be a weekend; they pick a weekday.
+
+**OpenAPI.** Committed. `npm run openapi` regenerates it, and a test and CI fail on a difference. Counted again in batch G.
+
+**Replication.** The replica test is a second connection to the same database. Real replication lag was not tested.
+
+## Batch G: response schemas, reported bugs, the sign-in limit
+
+Run: 2026-11-05, macOS, Node 26.5, PostgreSQL 17.11, with a private Redis so that nothing is skipped. `npm run test:coverage` on the code as committed:
+
+| Tests | Files | Duration | Exit |
+|---|---|---|---|
+| 1831 passed (1831) | 101 passed (101) | 402.97 s | 0 |
+
+A second run on the same commit, for the counts per suite: 1831 passed, 0 failed, exit 0. Without `TEST_REDIS_URL` the 6 Redis tests are skipped and the rest are the same.
+
+| Measure | Result | Threshold |
+|---|---|---|
+| Lines, all of `src` | 94.97% | 85% |
+| Branches, all of `src` | 84.49% | none |
+| Branches of each business rule file | 100% | 100% |
+
+The Stryker scores of batch F were not run again: `payroll/calc.ts` and `leave/service.ts` did not change.
+
+**OpenAPI.** `npm run openapi`: 385 routes, 358 with response schemas, 27 file responses, 0 with none. A test fails on a route with neither. Every test app refuses an answer its schema does not describe: renaming one field in one schema failed that module's suite. The check holds for the paths tests reach, and only those: D67.
+
+**New suites.**
+
+| Suite | Tests | Covers |
+|---|---|---|
+| `contract/remaining-routes` | 20 | The routes no other suite took to a success, and lists that only ever came back empty, so that their schemas are proved |
+| `public-url` | 17 | `PUBLIC_URL` accepted and refused; reset, invitation and every other mail keep the port; what the demo prints |
+| `rate-limit-abort` | 4 | A client hanging up over a real socket: no error logged, counted against its address; no address shares one budget; IPv6 by network |
+
+## Batch H: closing the revamp
+
+Run: 2026-11-05, macOS, Node 26.5, PostgreSQL 17.11, with a private Redis so that nothing is skipped. `npm run test:coverage` at b93865b; the commits after it are documentation:
+
+| Tests | Files | Duration | Exit |
+|---|---|---|---|
+| 1838 passed (1838) | 101 passed (101) | 409.57 s | 0 |
+
+| Measure | Result | Threshold |
+|---|---|---|
+| Statements, all of `src` | 91.73% | none |
+| Lines, all of `src` | 94.96% | 85% |
+| Branches, all of `src` | 84.48% | none |
+
+`npm run lint`: clean. `npm run openapi`: 386 routes, 359 with response schemas, 27 file responses, 0 with none.
+
+No suite was added: H-1 and H-2 extend `lifecycle`, `recruitment` and `security/privilege-abuse`.
+

@@ -8,14 +8,27 @@ const fmtCache = new Map<string, Intl.DateTimeFormat>();
 function fmt(tz: string) {
   let f = fmtCache.get(tz);
   if (!f) {
-    f = new Intl.DateTimeFormat('en-US', { timeZone: tz, hourCycle: 'h23', year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', second: '2-digit' });
+    f = new Intl.DateTimeFormat('en-US', {
+      timeZone: tz,
+      hourCycle: 'h23',
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit',
+      hour: '2-digit',
+      minute: '2-digit',
+      second: '2-digit',
+    });
     fmtCache.set(tz, f);
   }
   return f;
 }
 
 function parts(instant: Date, tz: string) {
-  const p = Object.fromEntries(fmt(tz).formatToParts(instant).map((x) => [x.type, x.value]));
+  const p = Object.fromEntries(
+    fmt(tz)
+      .formatToParts(instant)
+      .map((x) => [x.type, x.value]),
+  );
   return { y: Number(p.year), m: Number(p.month), d: Number(p.day), h: Number(p.hour), mi: Number(p.minute), s: Number(p.second) };
 }
 

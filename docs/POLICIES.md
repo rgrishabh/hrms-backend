@@ -1,6 +1,6 @@
 # Policy management and acknowledgements
 
-Module key: `core.policies` (not in `default`; add it to `ENABLED_MODULES` / `enabled_modules`). Policy text works without file storage. Attaching a PDF needs storage (`STORAGE_DRIVER`).
+Module key: `core.policies`, flag `FEATURE_POLICIES` (off by default). Policy text works without file storage. Attaching a PDF needs storage (`STORAGE_DRIVER`).
 
 ## Flow
 

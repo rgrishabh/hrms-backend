@@ -1,0 +1,13 @@
+{
+  "name": "hrms-backend-lint",
+  "private": true,
+  "description": "ESLint and Prettier, apart from the app: typescript-eslint needs the TypeScript 5 JavaScript API, and the app builds with TypeScript 7, which has none.",
+  "type": "module",
+  "devDependencies": {
+    "@eslint/js": "^9",
+    "eslint": "^9",
+    "prettier": "^3",
+    "typescript": "~5.9",
+    "typescript-eslint": "^8"
+  }
+}

@@ -1,0 +1,13 @@
+{
+  "$schema": "../node_modules/@stryker-mutator/core/schema/stryker-schema.json",
+  "testRunner": "vitest",
+  "vitest": { "configFile": "tools/vitest.mutation.config.ts" },
+  "mutate": ["src/modules/payroll/calc.ts", "src/modules/leave/service.ts"],
+  "reporters": ["clear-text", "json", "progress"],
+  "jsonReporter": { "fileName": "reports/mutation/mutation.json" },
+  "tempDirName": ".stryker-tmp",
+  "tsconfigFile": "tools/no-tsconfig-rewrite.json",
+  "concurrency": 1,
+  "timeoutMS": 60000,
+  "coverageAnalysis": "perTest"
+}

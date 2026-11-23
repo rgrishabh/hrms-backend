@@ -1,0 +1,11 @@
+#!/bin/sh
+# Installed by `npm install` (the prepare script sets core.hooksPath). Skip once with `git commit --no-verify`.
+# Checks only what is staged, so it stays quick. CI runs everything.
+set -eu
+files=$(git diff --cached --name-only --diff-filter=ACMR -- '*.ts' | grep -v 'breached-list.data' || true)
+[ -z "$files" ] && exit 0
+[ -d tools/lint/node_modules ] || npm --prefix tools/lint ci --no-audit --no-fund
+# shellcheck disable=SC2086
+tools/lint/node_modules/.bin/prettier --check $files
+# shellcheck disable=SC2086
+tools/lint/node_modules/.bin/eslint -c tools/lint/eslint.config.mjs --max-warnings 0 $files

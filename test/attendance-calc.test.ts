@@ -3,14 +3,33 @@ import { calculateDay, type ShiftPolicy, type Punch, type DayInput } from '../sr
 import { zonedToInstant, localDate, tzOffsetMinutes, todaysPunches } from '../src/modules/attendance/time.js';
 
 const TZ = 'Asia/Kolkata';
-const GEN: ShiftPolicy = { id: 'gen', code: 'GEN', startTime: '09:30', endTime: '18:00', breakMinutes: 30, graceMinutes: 10,
-  earlyExitGraceMinutes: 10, halfDayMinMinutes: 240, fullDayMinMinutes: 450, overtimeAfterMinutes: 540 };
+const GEN: ShiftPolicy = {
+  id: 'gen',
+  code: 'GEN',
+  startTime: '09:30',
+  endTime: '18:00',
+  breakMinutes: 30,
+  graceMinutes: 10,
+  earlyExitGraceMinutes: 10,
+  halfDayMinMinutes: 240,
+  fullDayMinMinutes: 450,
+  overtimeAfterMinutes: 540,
+};
 const NIGHT: ShiftPolicy = { ...GEN, id: 'night', code: 'NIGHT', startTime: '22:00', endTime: '06:00', fullDayMinMinutes: 420, overtimeAfterMinutes: 480 };
 
 let seq = 0;
 const p = (date: string, time: string, direction: Punch['direction'] = 'unknown'): Punch => ({ id: `p${++seq}`, time: zonedToInstant(date, time, TZ), direction });
-const day = (over: Partial<DayInput>): DayInput => ({ workDate: '2026-03-10', timezone: TZ, shift: GEN, dayType: 'working',
-  employment: { joiningDate: '2024-01-01', exitDate: null }, punches: [], minGapSeconds: 60, overtimeEnabled: false, ...over });
+const day = (over: Partial<DayInput>): DayInput => ({
+  workDate: '2026-03-10',
+  timezone: TZ,
+  shift: GEN,
+  dayType: 'working',
+  employment: { joiningDate: '2024-01-01', exitDate: null },
+  punches: [],
+  minGapSeconds: 60,
+  overtimeEnabled: false,
+  ...over,
+});
 
 describe('timezone helpers', () => {
   it('converts IST wall-clock to UTC instants', () => {
@@ -186,5 +205,60 @@ describe('calculateDay — field duty (v3)', () => {
   it('field duty on a weekly off does not change the day; work there is overtime as usual', () => {
     const r = calculateDay(day({ dayType: 'weekly_off', duty: { fraction: 1 }, overtimeEnabled: true, punches: [p('2026-03-10', '09:00'), p('2026-03-10', '13:00')] }));
     expect(r).toMatchObject({ status: 'weekly_off', overtimeMinutes: 240 - 30 });
+  });
+});
+
+describe('F-8 approved corrections replace what they correct', () => {
+  const wd = '2026-03-10';
+  const at = (hm: string) => new Date(`${wd}T${hm}:00+05:30`);
+  const p = (id: string, hm: string, direction: Punch['direction'], source?: 'regularization', seq?: number): Punch => ({
+    id,
+    time: at(hm),
+    direction,
+    ...(source ? { source, seq } : {}),
+  });
+  const run = (punches: Punch[]) =>
+    calculateDay({
+      workDate: wd,
+      timezone: 'Asia/Kolkata',
+      shift: null,
+      dayType: 'working',
+      employment: { joiningDate: '2020-01-01', exitDate: null },
+      punches,
+      minGapSeconds: 60,
+      overtimeEnabled: false,
+    });
+
+  it('a corrected in replaces the first in', () => {
+    const r = run([p('a', '09:30', 'in'), p('b', '18:00', 'out'), p('c', '09:00', 'in', 'regularization', 1)]);
+    expect(r.status).toBe('present');
+    expect(r.firstIn).toEqual(at('09:00'));
+    expect(r.workedMinutes).toBe(540);
+  });
+  it('a corrected out replaces the last out, earlier or later', () => {
+    const later = run([p('a', '09:30', 'in'), p('b', '13:00', 'out'), p('c', '18:00', 'out', 'regularization', 1)]);
+    expect(later.status).toBe('present');
+    expect(later.lastOut).toEqual(at('18:00'));
+    const earlier = run([p('a', '09:30', 'in'), p('b', '18:00', 'out'), p('c', '17:00', 'out', 'regularization', 1)]);
+    expect(earlier.workedMinutes).toBe(450);
+  });
+  it('a correction filling a gap removes nothing', () => {
+    const r = run([p('a', '09:30', 'in'), p('b', '13:00', 'out'), p('c', '14:00', 'in'), p('d', '18:30', 'out', 'regularization', 1)]);
+    expect(r.status).toBe('present');
+    expect(r.workedMinutes).toBe(210 + 270);
+    expect(run([p('b', '18:00', 'out'), p('c', '09:00', 'in', 'regularization', 1)]).status).toBe('present');
+  });
+  it('works with direction-less device punches', () => {
+    expect(run([p('a', '09:30', 'unknown'), p('b', '18:00', 'unknown'), p('c', '09:00', 'in', 'regularization', 1)]).workedMinutes).toBe(540);
+    expect(run([p('a', '09:30', 'unknown'), p('b', '13:00', 'unknown'), p('c', '18:00', 'out', 'regularization', 1)]).workedMinutes).toBe(510);
+    expect(run([p('a', '09:30', 'unknown'), p('c', '18:00', 'out', 'regularization', 1)]).workedMinutes).toBe(510);
+  });
+  it('the latest approved correction wins', () => {
+    const r = run([p('a', '09:30', 'in'), p('b', '18:00', 'out'), p('c', '09:00', 'in', 'regularization', 1), p('d', '09:15', 'in', 'regularization', 2)]);
+    expect(r.firstIn).toEqual(at('09:15'));
+    expect(r.status).toBe('present');
+  });
+  it('without corrections, pairing is unchanged', () => {
+    expect(run([p('a', '09:30', 'in'), p('b', '09:45', 'in'), p('c', '18:00', 'out')]).status).toBe('missing_punch');
   });
 });

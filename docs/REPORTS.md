@@ -1,6 +1,6 @@
 # Reports
 
-Read-only reports over the HR data, each run on demand from **Reports** in the web app and downloadable as CSV or Excel (.xlsx).
+Read-only reports over the HR data, each run on demand from **Reports** in the web app and downloadable as CSV, Excel (.xlsx) or PDF.
 Defined in `src/modules/reports/registry.ts`: every report declares who may run it, the module it needs, its
 parameters (the web form is generated from them) and one SQL query. Grouping expressions are fixed in code and
 chosen from a list; no user text reaches SQL.
@@ -37,6 +37,7 @@ chosen from a list; no user text reaches SQL.
 - Downloads are `Cache-Control: no-store` and audited as `reports.exported` with the report key, parameters, scope, row count and format. On-screen views are not audited.
 - **CSV** neutralizes spreadsheet formulas (`=`, `+`, `-`, `@` …) with a leading apostrophe.
 - **Excel** (`/export.xlsx`) is written by HRMS itself (`src/core/http/xlsx.ts`, no third-party library): one sheet named after the report, a bold frozen header with a filter, money as `#,##0.00`, percentages, dates as real dates, and a bold totals row. Text cells are always plain text, never formulas, so nothing in the data can run when the file is opened, and codes keep their leading zeros.
+- **PDF** (`/export.pdf`, and `/snapshots/:id/export.pdf`): the same access, audit rows and `x-excluded-subjects` as the others. Landscape A4 with the brand, one line per row, the header on every page and the report's notes. A number is never cut, it is drawn smaller; long text is cut with `...` and a note, and CSV and Excel hold it whole. The file streams, and drawing yields to the event loop: 5,000 rows by 15 columns take under a second with the longest stall under 20 ms (`scripts/perf-report-pdf.ts`, D52). Characters outside Windows-1252 print as `?`, with a note.
 
 ## Advanced reporting (module `reports.advanced`)
 

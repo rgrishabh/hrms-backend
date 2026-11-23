@@ -1,11 +1,11 @@
 # Recruitment
 
-Module key: `recruitment` (not in `default`; add it to `ENABLED_MODULES`). Resumes use the installation's file storage.
+Module key: `recruitment`, flag `FEATURE_RECRUITMENT` (off by default). Resumes use the installation's file storage.
 
 ## Flow
 
 1. **Requisition.** A manager (`recruitment.requisition`) requests headcount: title, legal entity, branch, department, designation, employment type, positions, justification, hiring manager and target date. HR (`recruitment.compensation`) can set a per-position annual CTC budget. On **submit**, the request goes to holders of `recruitment.approve` through the approval inbox; the requester can never approve their own. A requisition is `approved` (open), `on_hold`, `closed` (automatically when every position is filled) or `cancelled`.
-2. **Candidate.** HR records contact details, experience, qualification and source (referral, job portal, agency, campus, …), plus an optional resume. Resumes are checked by content: PDF, DOCX or images; executables and scripted PDFs are refused.
+2. **Candidate.** HR records contact details, experience, qualification and source (referral, job portal, agency, campus, …), plus an optional resume, which HR can add or replace later (`PUT /candidates/:id/resume`; the replaced file is deleted from storage). Resumes are checked by content: PDF, DOCX or images; executables and scripted PDFs are refused.
    - **Consent is mandatory**, and so is a note saying how it was obtained.
    - **Retention:** a date is set when the candidate is added (setting `recruitment.retention_months`, default 12).
    - **Duplicates:** the same email is always refused (409, with the existing candidate). A shared phone number can be confirmed as a different person.

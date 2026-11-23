@@ -7,10 +7,11 @@ import path from 'node:path';
  * response immediately, before COMMIT, so a client can read stale data right after a 201 (or be
  * told "created" when the commit then fails). Inside a.tx(), set the status and RETURN the body.
  */
-const files = (dir: string): string[] => readdirSync(dir).flatMap((f) => {
-  const p = path.join(dir, f);
-  return statSync(p).isDirectory() ? files(p) : p.endsWith('.ts') ? [p] : [];
-});
+const files = (dir: string): string[] =>
+  readdirSync(dir).flatMap((f) => {
+    const p = path.join(dir, f);
+    return statSync(p).isDirectory() ? files(p) : p.endsWith('.ts') ? [p] : [];
+  });
 
 describe('responses are sent after the transaction commits', () => {
   it('no reply.code(201).send(...) anywhere in the handlers', () => {

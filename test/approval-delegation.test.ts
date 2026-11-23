@@ -2,35 +2,59 @@ import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import pg from 'pg';
 import { randomUUID } from 'node:crypto';
 import type { FastifyInstance } from 'fastify';
-import { makeApp, createTenant, Client, ownerQuery, type TenantFixture } from './helpers.js';
+import { problem, makeApp, createTenant, Client, ownerQuery, type TenantFixture, flags } from './helpers.js';
 import { TEST_OWNER_URL } from './env.js';
 import { createApprovalRequest, registerApprovalHandler, type StepSpec } from '../src/core/workflow/engine.js';
 import type { Db } from '../src/db/tx.js';
 
 // Delegation (an approver away hands their approvals to a colleague) and escalation (a step unanswered for too long).
-let app: FastifyInstance; let T: TenantFixture; let c: pg.Client;
-let admin: Client; let hr: Client; let mgr: Client; let emp: Client; let other: Client;
+let app: FastifyInstance;
+let T: TenantFixture;
+let c: pg.Client;
+let admin: Client;
+let hr: Client;
+let mgr: Client;
+let emp: Client;
+let other: Client;
 let today = '';
-const day = (n: number) => { const d = new Date(`${today}T00:00:00Z`); d.setUTCDate(d.getUTCDate() + n); return d.toISOString().slice(0, 10); };
-const create = (requester: string, steps: StepSpec[], summary = 'Delegation test') => createApprovalRequest(c as unknown as Db, T.id, {
-  entityType: 'delegation_test', entityId: randomUUID(), requesterId: T.users[requester]!.id, summary, steps });
+const day = (n: number) => {
+  const d = new Date(`${today}T00:00:00Z`);
+  d.setUTCDate(d.getUTCDate() + n);
+  return d.toISOString().slice(0, 10);
+};
+const create = (requester: string, steps: StepSpec[], summary = 'Delegation test') =>
+  createApprovalRequest(c as unknown as Db, T.id, {
+    entityType: 'delegation_test',
+    entityId: randomUUID(),
+    requesterId: T.users[requester]!.id,
+    summary,
+    steps,
+  });
 const inboxItem = async (cl: Client, id: string) => (await cl.get('/api/v1/approvals/inbox')).json().items.find((x: { id: string }) => x.id === id);
 const delegate = (cl: Client, delegateKey: string, startsOn = today, endsOn = day(3), extra: Record<string, unknown> = {}) =>
   cl.post('/api/v1/approvals/delegations', { delegateId: T.users[delegateKey]!.id, startsOn, endsOn, ...extra });
 const revokeAll = () => ownerQuery(`UPDATE approval_delegations SET revoked_at=now() WHERE tenant_id=$1 AND revoked_at IS NULL`, [T.id]);
-const notes = (key: string, kind: string) => ownerQuery<{ title: string }>(`SELECT title FROM notifications WHERE tenant_id=$1 AND user_id=$2 AND kind=$3 ORDER BY created_at`, [T.id, T.users[key]!.id, kind]);
+const notes = (key: string, kind: string) =>
+  ownerQuery<{ title: string }>(`SELECT title FROM notifications WHERE tenant_id=$1 AND user_id=$2 AND kind=$3 ORDER BY created_at`, [T.id, T.users[key]!.id, kind]);
 
 beforeAll(async () => {
-  app = await makeApp({ ENABLED_MODULES: 'default,leave' });
+  app = await makeApp({ ...flags('default,leave') });
   registerApprovalHandler('delegation_test', { label: 'Test request', onApproved: async () => {}, onRejected: async () => {} });
   T = await createTenant();
   c = new pg.Client({ connectionString: TEST_OWNER_URL });
   await c.connect();
   const login = (k: string) => Client.login(app, T.host, T.users[k]!.email);
-  admin = await login('admin'); hr = await login('hr'); mgr = await login('manager'); emp = await login('employee'); other = await login('other');
+  admin = await login('admin');
+  hr = await login('hr');
+  mgr = await login('manager');
+  emp = await login('employee');
+  other = await login('other');
   today = (await mgr.get('/api/v1/approvals/delegations')).json().today;
 });
-afterAll(async () => { await c.end(); await app.close(); });
+afterAll(async () => {
+  await c.end();
+  await app.close();
+});
 
 describe('delegation', () => {
   it("a delegate sees and decides the manager's requests, recorded as on the manager's behalf", async () => {
@@ -42,7 +66,7 @@ describe('delegation', () => {
 
     const item = await inboxItem(other, id);
     expect(item).toMatchObject({ via: 'delegation', on_behalf_of: 'manager' });
-    expect(await inboxItem(mgr, id)).toMatchObject({ via: null });          // the manager can still decide it
+    expect(await inboxItem(mgr, id)).toMatchObject({ via: null }); // the manager can still decide it
     expect((await other.post(`/api/v1/approvals/${id}/act`, { action: 'approve' })).json().status).toBe('approved');
     const hist = (await mgr.get(`/api/v1/approvals/${id}`)).json();
     expect(hist.steps[0]).toMatchObject({ acted_by_name: 'other', acted_for_name: 'manager', acted_via: 'delegation' });
@@ -55,13 +79,13 @@ describe('delegation', () => {
   it('refuses overlapping, chained, back-dated and too-long delegations', async () => {
     let r = await delegate(mgr, 'hr', day(2), day(5));
     expect(r.statusCode).toBe(409);
-    expect(r.json().error.message).toMatch(/already handed to other/);
+    expect(problem(r).detail).toMatch(/already handed to other/);
     r = await delegate(hr, 'manager', day(1), day(2));
     expect(r.statusCode).toBe(409);
-    expect(r.json().error.message).toMatch(/manager is handing over their own approvals/);
-    expect((await delegate(hr, 'other', day(-1), day(2))).json().error.message).toMatch(/cannot start in the past/);
-    expect((await delegate(hr, 'other', today, day(90))).json().error.message).toMatch(/at most 90 days/);
-    expect((await delegate(hr, 'hr')).json().error.message).toMatch(/someone else/);
+    expect(problem(r).detail).toMatch(/manager is handing over their own approvals/);
+    expect(problem(await delegate(hr, 'other', day(-1), day(2))).detail).toMatch(/cannot start in the past/);
+    expect(problem(await delegate(hr, 'other', today, day(90))).detail).toMatch(/at most 90 days/);
+    expect(problem(await delegate(hr, 'hr')).detail).toMatch(/someone else/);
     // Only HR sets one up for someone else.
     r = await emp.post('/api/v1/approvals/delegations', { delegateId: T.users.other!.id, startsOn: today, endsOn: today, delegatorId: T.users.hr!.id });
     expect(r.statusCode).toBe(403);
@@ -81,7 +105,7 @@ describe('delegation', () => {
     const id = await create('employee', [{ kind: 'user', userId: T.users.manager!.id }]);
     expect(await inboxItem(other, id)).toBeDefined();
     const d = (await mgr.get('/api/v1/approvals/delegations')).json().given[0];
-    expect((await other.post(`/api/v1/approvals/delegations/${d.id}/revoke`)).statusCode).toBe(200);   // declined by the delegate
+    expect((await other.post(`/api/v1/approvals/delegations/${d.id}/revoke`)).statusCode).toBe(200); // declined by the delegate
     expect((await notes('manager', 'approval.delegated')).at(-1)!.title).toBe('other can no longer approve for you');
     expect(await inboxItem(other, id)).toBeUndefined();
     expect((await other.post(`/api/v1/approvals/${id}/act`, { action: 'approve' })).statusCode).toBe(403);
@@ -93,12 +117,15 @@ describe('delegation', () => {
     const r = await hr.post('/api/v1/approvals/delegations', { delegateId: T.users.other!.id, startsOn: today, endsOn: day(1), delegatorId: T.users.hr!.id });
     expect(r.statusCode).toBe(201);
     // HR decides step 1 as a leave approver; step 2 is addressed to HR personally — the delegate covering for HR may not take it.
-    const id = await create('employee', [{ kind: 'permission', permission: 'leave.approve' }, { kind: 'user', userId: T.users.hr!.id }]);
+    const id = await create('employee', [
+      { kind: 'permission', permission: 'leave.approve' },
+      { kind: 'user', userId: T.users.hr!.id },
+    ]);
     expect((await hr.post(`/api/v1/approvals/${id}/act`, { action: 'approve' })).statusCode).toBe(200);
     expect(await inboxItem(other, id)).toBeUndefined();
     const x = await other.post(`/api/v1/approvals/${id}/act`, { action: 'approve' });
     expect(x.statusCode).toBe(403);
-    expect(x.json().error.message).toMatch(/covering for decided an earlier step/);
+    expect(problem(x).detail).toMatch(/covering for decided an earlier step/);
 
     await revokeAll();
     const onBehalf = await hr.post('/api/v1/approvals/delegations', { delegateId: T.users.other!.id, startsOn: today, endsOn: today, delegatorId: T.users.manager!.id });
@@ -110,10 +137,12 @@ describe('delegation', () => {
 });
 
 describe('escalation', () => {
-  const run = async () => (await admin.post('/api/v1/tenant/jobs/approvals.escalation/run')).json();
-  const age = (id: string, days: number) => ownerQuery(`UPDATE approval_steps SET activated_at = now() - make_interval(days => $2) WHERE request_id=$1 AND status='active'`, [id, days]);
+  const run = async () => (await admin.runJob('approvals.escalation')).json();
+  const age = (id: string, days: number) =>
+    ownerQuery(`UPDATE approval_steps SET activated_at = now() - make_interval(days => $2) WHERE request_id=$1 AND status='active'`, [id, days]);
 
-  it('is off by default', async () => {
+  it('can be turned off', async () => {
+    expect((await admin.put('/api/v1/tenant/settings/approvals.escalate_after_days', { value: 0 })).statusCode).toBe(200);
     const id = await create('other', [{ kind: 'user', userId: T.users.employee!.id }]);
     await age(id, 10);
     expect((await run()).result).toMatchObject({ skipped: 'escalation turned off' });
@@ -131,7 +160,7 @@ describe('escalation', () => {
     expect(await inboxItem(emp, id)).toMatchObject({ via: null });
     expect((await notes('manager', 'approval.escalated')).at(-1)!.title).toMatch(/Escalated to you: test request from other/);
     expect((await notes('employee', 'approval.escalated')).at(-1)!.title).toMatch(/escalated to manager after 2 day/);
-    expect((await run()).result).toMatchObject({ escalated: 0 });         // once per step
+    expect((await run()).result).toMatchObject({ escalated: 0 }); // once per step
 
     expect((await mgr.post(`/api/v1/approvals/${id}/act`, { action: 'approve' })).json().status).toBe('approved');
     const hist = (await other.get(`/api/v1/approvals/${id}`)).json();
@@ -141,7 +170,8 @@ describe('escalation', () => {
   it('goes to HR when the approver has no manager; group steps are left to reminders', async () => {
     const id = await create('employee', [{ kind: 'user', userId: T.users.manager!.id }]);
     const grp = await create('other', [{ kind: 'permission', permission: 'leave.approve' }]);
-    await age(id, 5); await age(grp, 5);
+    await age(id, 5);
+    await age(grp, 5);
     expect((await run()).result).toMatchObject({ escalated: 1, toGroup: 1 });
     expect(await inboxItem(hr, id)).toMatchObject({ via: 'escalation', on_behalf_of: 'manager' });
     expect(await inboxItem(other, id)).toBeUndefined();
