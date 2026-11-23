@@ -921,6 +921,26 @@ describe('letters', () => {
       expect((await write(c.admin!, 'noc', emp('employee'), { purpose: 'x' })).statusCode).toBe(403);
     });
 
+    it('without a CTC on record, salary letters give the gross of a full month as payroll works it out', async () => {
+      const id = emp('manager');
+      await ownerQuery(`INSERT INTO pay_components (tenant_id, code, name, kind, calc, position) VALUES ($1,'BASIC','Basic','earning','fixed',1) ON CONFLICT DO NOTHING`, [T.id]);
+      await ownerQuery(
+        `INSERT INTO pay_components (tenant_id, code, name, kind, calc, base_codes, position) VALUES ($1,'HRA','HRA','earning','percent','{BASIC}',2) ON CONFLICT DO NOTHING`,
+        [T.id],
+      );
+      await ownerQuery(
+        `INSERT INTO employee_salaries (tenant_id, employee_id, effective_from, amounts_enc, reason, status, created_by, approved_at) VALUES ($1,$2,'2025-01-01',$3,'letters','active',$4,now())`,
+        [T.id, id, seal({ BASIC: 40000, HRA: 50 }), T.users.payroll!.id],
+      );
+      const cert = await write(c.hr!, 'salary-certificate', id);
+      expect(cert.statusCode, cert.body.slice(0, 200)).toBe(200);
+      expect((await pdfText(cert.rawPayload)).replace(/\s+/g, ' ')).toContain('gross monthly salary on record is INR 60,000.00');
+      const a = await c.hr!.get(letter('appointment', id, '?includePay=1'));
+      expect(a.headers['x-pay-included']).toBe('1');
+      expect(await pdfText(a.rawPayload)).toContain('INR 60,000.00');
+      expect((await auditRows('l4.export', id)).at(-1)!.change_metadata.fields).toEqual(['amounts']);
+    });
+
     it('salary letters need the right to see that salary; the list says so', async () => {
       const exec = await Client.login(app, T.host, `exec@${T.host}`);
       await set(`status='active', employment_type='permanent'`);

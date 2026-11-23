@@ -11,14 +11,16 @@ import { letterPdf } from '../../core/pdf/letter.js';
 import { loadPdfContext, loadPdfIdentity, pdfHeaders, type PdfContext, type PdfWriter } from '../../core/pdf/writer.js';
 import { auditL4, l3RowFilter, policyViewer, readContext, subjectVisible } from '../../core/policy/salary.js';
 import type { Db } from '../../db/tx.js';
+import { calculate, type Component } from '../payroll/calc.js';
+import { openAmounts } from '../payroll/sealed.js';
 import { orgToday } from '../competency/service.js';
-import { FIELD_MAX, LETTER_KIND_KEYS, LETTER_KINDS, roleOf, type LetterFacts, type LetterKind, type LetterPay } from './letter-kinds.js';
+import { FIELD_MAX, LETTER_KIND_KEYS, LETTER_KINDS, payFigure, roleOf, type LetterFacts, type LetterKind, type LetterPay } from './letter-kinds.js';
 import { featureOn } from './service.js';
 
 const ON = 'core.onboarding';
 const OFF = 'core.offboarding';
 const IdParams = z.object({ id: Uuid });
-/** `?includePay=1` asks for the annual CTC on an appointment letter. It prints only if this reader may see it, and then it is an L4 export. */
+/** `?includePay=1` asks for the salary on an appointment letter: the annual CTC, or the month's gross without one. It prints only if this reader may see it, and then it is an L4 export. */
 const AppointmentQuery = z.object({ includePay: z.literal('1').optional() });
 
 const KindParams = z.object({ id: Uuid, kind: z.enum(LETTER_KIND_KEYS) });
@@ -126,7 +128,7 @@ export function letterRoutes(app: FastifyInstance) {
         if (why) throw conflict(why);
         const pay = kind.pay ? await payOf(db, a, p.id, kind.key === 'salary-certificate' ? subject.today : null) : null;
         if (kind.pay && !pay) throw conflict('No approved salary is on record');
-        await issued(db, req, a, p.id, kind.key, !!pay);
+        await issued(db, req, a, p.id, kind.key, pay);
         return { subject, pay, identity: await loadPdfIdentity(db, a.tenantId) };
       });
       const ctx = await loadPdfContext(app, r.identity);
@@ -152,9 +154,9 @@ export function letterRoutes(app: FastifyInstance) {
         await requireFeature(db, a.tenantId, ON);
         if (!(await hrAbove(db, a, id))) throw notFound('Employee not found');
         const subject = (await subjectOf(db, a.tenantId, id))!;
-        const ctc = q.includePay ? ((await payOf(db, a, id))?.ctc ?? null) : null;
-        await issued(db, req, a, id, 'appointment', ctc !== null);
-        return { subject, ctc, today: subject.today, identity: await loadPdfIdentity(db, a.tenantId) };
+        const pay = q.includePay ? await payOf(db, a, id) : null;
+        await issued(db, req, a, id, 'appointment', pay);
+        return { subject, pay, today: subject.today, identity: await loadPdfIdentity(db, a.tenantId) };
       });
       const ctx = await loadPdfContext(app, r.identity);
       const s = r.subject;
@@ -168,12 +170,12 @@ export function letterRoutes(app: FastifyInstance) {
           `We are pleased to confirm your appointment with ${ctx.legalName}${roleOf(s) ? ` as ${roleOf(s)}` : ''}, at our ${s.branch} location, with effect from ${w.date(s.date_of_joining)}.`,
           ...(kind ? [`The nature of your employment is ${kind}.`] : []),
           ...(s.probation_end_date ? [`Your probation runs until ${w.date(s.probation_end_date)}.`] : []),
-          ...(r.ctc !== null ? [`Your annual cost to company is ${w.money(r.ctc)}.`] : []),
+          ...(r.pay ? [`Your ${payFigure(w, r.pay).what} is ${payFigure(w, r.pay).amount}.`] : []),
           'Your employment is subject to the terms of your contract and the policies of the organization as they apply from time to time.',
         ],
       });
       return pdfHeaders(reply, 'appointment-letter.pdf')
-        .header('x-pay-included', r.ctc !== null ? '1' : '0')
+        .header('x-pay-included', r.pay ? '1' : '0')
         .send(doc);
     },
   );
@@ -236,15 +238,35 @@ async function mayPrintPay(db: Db, a: TenantActor, id: string): Promise<boolean>
 async function payOf(db: Db, a: TenantActor, id: string, asOf: string | null = null): Promise<LetterPay | null> {
   if (!(await mayPrintPay(db, a, id))) return null;
   const row = (
-    await db.query<{ annual_ctc_enc: string | null; effective_from: string }>(
-      `SELECT annual_ctc_enc, effective_from::text FROM employee_salaries WHERE tenant_id=$1 AND employee_id=$2 AND status='active' AND ($3::date IS NULL OR effective_from <= $3::date) ORDER BY effective_from DESC LIMIT 1`,
+    await db.query<{ amounts_enc: string; annual_ctc_enc: string | null; effective_from: string }>(
+      `SELECT amounts_enc, annual_ctc_enc, effective_from::text FROM employee_salaries WHERE tenant_id=$1 AND employee_id=$2 AND status='active'
+      AND ($3::date IS NULL OR effective_from <= $3::date) ORDER BY effective_from DESC LIMIT 1`,
       [a.tenantId, id, asOf],
     )
   ).rows[0];
-  return row?.annual_ctc_enc ? { ctc: Number(openJson<number>(row.annual_ctc_enc)), effectiveFrom: row.effective_from } : null;
+  if (!row) return null;
+  const components = (
+    await db.query<Component>(
+      `SELECT code, name, kind, calc, base_codes, prorate, taxable, pf_wage, esi_wage, position FROM pay_components WHERE tenant_id=$1 AND status='active' ORDER BY position, code`,
+      [a.tenantId],
+    )
+  ).rows;
+  // A full month with no rules: only the earnings are read, so no deduction and no statutory rule matters.
+  const { gross } = calculate({
+    month: 1,
+    daysInPeriod: 30,
+    paidDays: 30,
+    components,
+    amounts: openAmounts(row.amounts_enc),
+    adjustments: [],
+    statutory: { pfExcluded: true, regime: 'new', ptState: null },
+    rules: {},
+    expect: [],
+  });
+  return { ctc: row.annual_ctc_enc ? Number(openJson<number>(row.annual_ctc_enc)) : null, monthlyGross: gross, effectiveFrom: row.effective_from };
 }
 
-async function issued(db: Db, req: FastifyRequest, a: TenantActor, id: string, letterKind: string, salary: boolean) {
+async function issued(db: Db, req: FastifyRequest, a: TenantActor, id: string, letterKind: string, pay: LetterPay | null) {
   await audit(db, {
     ...a.auditBase,
     userAgent: readDevice(req).userAgent,
@@ -252,9 +274,9 @@ async function issued(db: Db, req: FastifyRequest, a: TenantActor, id: string, l
     category: 'access',
     targetType: 'employee',
     targetId: id,
-    metadata: { letter: letterKind, l4: salary },
+    metadata: { letter: letterKind, l4: !!pay },
   });
-  if (salary) await auditL4(db, readContext(req, a), 'export', `lifecycle.letter.${letterKind}`, [{ employeeId: id, fields: ['annual_ctc'] }]);
+  if (pay) await auditL4(db, readContext(req, a), 'export', `lifecycle.letter.${letterKind}`, [{ employeeId: id, fields: [pay.ctc !== null ? 'annual_ctc' : 'amounts'] }]);
 }
 
 /** Why an exit letter is not due yet, from the record. */
@@ -277,7 +299,7 @@ async function exitLetterData(req: FastifyRequest, a: TenantActor, id: string, k
     const subject = (await subjectOf(db, a.tenantId, id))!;
     const why = exitUnavailable(subject, kind);
     if (why) throw conflict(why);
-    await issued(db, req, a, id, kind, false);
+    await issued(db, req, a, id, kind, null);
     return { subject, lwd: subject.separation!.lwd, today: subject.today, identity: await loadPdfIdentity(db, a.tenantId) };
   });
 }

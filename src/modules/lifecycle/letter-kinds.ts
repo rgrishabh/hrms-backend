@@ -23,7 +23,10 @@ export interface LetterFacts {
 }
 /** What an authorised reader may print about pay. Absent from every other letter. */
 export interface LetterPay {
-  ctc: number;
+  /** Recorded with the salary only if payroll entered it. */
+  ctc: number | null;
+  /** What the salary components come to for a full month, by payroll's own calculation. */
+  monthlyGross: number;
   effectiveFrom: string;
 }
 export interface LetterField {
@@ -39,7 +42,7 @@ export interface LetterKind {
   group: LetterGroup;
   /** Off with this feature. Without one, the letter is there whenever the module is. */
   feature?: 'core.onboarding' | 'core.offboarding';
-  /** Prints the annual CTC: only for someone who passes the L4 rule for this person. */
+  /** Prints the annual CTC, or the month's gross without one: only for someone who passes the L4 rule for this person. */
   pay?: true;
   fields: readonly LetterField[];
   /** Why it cannot be written for this person now, from the record. A letter says nothing the record does not support. */
@@ -56,6 +59,9 @@ const employed = (f: LetterFacts) => (['active', 'on_notice'].includes(f.status)
 const started = (f: LetterFacts) => (f.status === 'pre_joining' ? 'This person has not joined yet' : null);
 const separated = (f: LetterFacts) => (f.separation ? null : 'This letter needs an approved separation');
 const internshipEnd = (f: LetterFacts) => f.separation?.lwd ?? f.exit_date ?? f.contract_end_date;
+/** The figure a letter gives: the annual CTC when there is one, otherwise the month's gross. */
+export const payFigure = (w: PdfWriter, p: LetterPay) =>
+  p.ctc !== null ? { what: 'annual cost to company', amount: w.money(p.ctc) } : { what: 'gross monthly salary', amount: w.money(p.monthlyGross) };
 const about = (f: LetterFacts) => `${f.name} (employee code ${f.employee_code})`;
 
 /** The letters written through `POST /lifecycle/employees/:id/letters/:kind`. Appointment, experience and relieving letters have their own routes. */
@@ -146,10 +152,13 @@ export const LETTER_KINDS: readonly LetterKind[] = [
     fields: [],
     unavailable: (f) => employed(f) ?? (f.salary_records > 1 ? null : 'No revision of salary is on record'),
     heading: 'Revision of salary',
-    paragraphs: (w, f, x) => [
-      `We are pleased to inform you that your annual cost to company${roleOf(f) ? `, ${roleOf(f)},` : ''} has been revised to ${w.money(x.pay!.ctc)} with effect from ${w.date(x.pay!.effectiveFrom)}.`,
-      'The other terms of your employment remain unchanged. Please treat this letter as confidential.',
-    ],
+    paragraphs: (w, f, x) => {
+      const p = payFigure(w, x.pay!);
+      return [
+        `We are pleased to inform you that your ${p.what}${roleOf(f) ? `, ${roleOf(f)},` : ''} has been revised to ${p.amount} with effect from ${w.date(x.pay!.effectiveFrom)}.`,
+        'The other terms of your employment remain unchanged. Please treat this letter as confidential.',
+      ];
+    },
   },
   {
     key: 'salary-certificate',
@@ -161,7 +170,7 @@ export const LETTER_KINDS: readonly LetterKind[] = [
     heading: 'Salary certificate',
     paragraphs: (w, f, x) => [
       `This is to certify that ${about(f)} has been employed with ${x.legalName} since ${w.date(f.date_of_joining)}${roleOf(f) ? `, currently${as(f)}` : ''}.`,
-      `The annual cost to company on record is ${w.money(x.pay!.ctc)}, effective from ${w.date(x.pay!.effectiveFrom)}.`,
+      `The ${payFigure(w, x.pay!).what} on record is ${payFigure(w, x.pay!).amount}, effective from ${w.date(x.pay!.effectiveFrom)}.`,
       `This certificate is issued on request${x.fields['purpose'] ? ` for the purpose of: ${x.fields['purpose']}` : ''}.`,
     ],
   },
