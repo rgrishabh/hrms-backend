@@ -153,6 +153,19 @@ Each is a security fix or a correction to what the document said. No route or fi
 * `GET /api/v1/tenant/settings` no longer has `featureEnabled`; off settings are not listed. `/tenant/installation` lists only what is on.
 * `POST /api/v1/tenant/jobs/:key/run` answers 202 with `{ runId, status: "queued" }`; the worker runs it.
 
+## [2.0.0](https://github.com/rgrishabh/hrms-backend/compare/v1.1.0...v2.0.0) (2026-11-23)
+
+
+### ⚠ BREAKING CHANGES
+
+* HRMS revamp: layered API, configuration model, data security, QA ([#36](https://github.com/rgrishabh/hrms-backend/issues/36))
+
+### Features
+
+* HRMS revamp: layered API, configuration model, data security, QA ([#36](https://github.com/rgrishabh/hrms-backend/issues/36)) ([cb2ece4](https://github.com/rgrishabh/hrms-backend/commit/cb2ece4f04fc46ab79863e5c2d1085f36f5812dd))
+* **letters:** offer letter from an employee's record ([#42](https://github.com/rgrishabh/hrms-backend/issues/42)) ([7bd00ca](https://github.com/rgrishabh/hrms-backend/commit/7bd00ca652b808800385b6a159e7e5ee5c3e358b))
+* owner access and HR letters ([#41](https://github.com/rgrishabh/hrms-backend/issues/41)) ([2b0b326](https://github.com/rgrishabh/hrms-backend/commit/2b0b3269935d045c960c5f7d9553ed41918bcc19))
+
 ## [1.1.0](https://github.com/rgrishabh/hrms-backend/compare/v1.0.0...v1.1.0) (2026-11-04)
 
 
