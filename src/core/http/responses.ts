@@ -3265,6 +3265,23 @@ export const PostLifecycleChecklists201 = z.strictObject({ id: z.string() });
 
 export const PostLifecycleChecklistsByIdCancel200 = z.strictObject({ ok: z.boolean() });
 
+export const GetLifecycleEmployeesByIdLetters200 = z.strictObject({
+  items: z.array(
+    z.strictObject({
+      key: z.string(),
+      label: z.string(),
+      group: z.enum(['employment', 'pay', 'conduct', 'exit', 'other']),
+      fields: z.array(z.strictObject({ key: z.string(), label: z.string(), type: z.enum(['text', 'long', 'date']), required: z.boolean(), maxLength: z.number() })),
+      unavailable: z.string().nullable(),
+    }),
+  ),
+  exit: z.strictObject({ experience: z.string().nullable(), relieving: z.string().nullable() }),
+});
+
+export const GetPayrollEmployeesByIdPayslips200 = z.strictObject({
+  items: z.array(z.strictObject({ id: z.string(), period: z.string(), kind: z.string(), status: z.string() })),
+});
+
 export const PostLifecycleEmployeesByIdJoined200 = z.strictObject({ ok: z.boolean() });
 
 export const PostLifecycleProbationByIdSubmit200 = z.strictObject({ ok: z.boolean() });

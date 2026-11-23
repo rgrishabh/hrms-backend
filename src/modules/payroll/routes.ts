@@ -22,7 +22,18 @@ import { AppError } from '../../core/http/errors.js';
 import { getSettingValue } from '../../core/settings/service.js';
 import { isOwnerRole } from '../../core/auth/permissions.js';
 import { isCollapsedMode } from '../../core/policy/mode.js';
-import { assertMayChangeSubject, auditL4, l4RowFilter, maskFields, policyViewer, readContext, refuseHigherLevel, subjectVisible, wantsReveal } from '../../core/policy/salary.js';
+import {
+  assertMayChangeSubject,
+  auditL4,
+  l4RowFilter,
+  maskFields,
+  policyViewer,
+  readContext,
+  refuseHigherLevel,
+  assertSubjectVisible,
+  subjectVisible,
+  wantsReveal,
+} from '../../core/policy/salary.js';
 import { loadPdfContext, loadPdfIdentity, pdfHeaders } from '../../core/pdf/writer.js';
 import { payslipPdf, type PayslipData } from './payslip-pdf.js';
 import { ITEM_FIELDS, itemFields, openAdjustment, openAmounts, openItem, openTotals, sealAdjustment, sealSalary, visibleRunTotals } from './sealed.js';
@@ -1288,6 +1299,28 @@ export async function payrollRoutes(app: FastifyInstance) {
             return reveal ? row : maskFields(row, fields);
           }),
         };
+      });
+    },
+  );
+  /** Which payslips someone has, without figures: who may open one is decided again when it is opened. Pay on hold is listed, for payroll's readers only. */
+  only(app, 'payroll.payslips').get(
+    '/employees/:id/payslips',
+    {
+      schema: { response: { 200: R.GetPayrollEmployeesByIdPayslips200 }, params: IdParams },
+      config: { permAny: ['payroll.read', 'payroll.manage'], feature: ['payroll.payslips'] },
+    },
+    async (req) => {
+      const a = tenantActorAny(req, 'payroll.read', 'payroll.manage');
+      const { id } = IdParams.parse(req.params);
+      return a.tx(async (db) => {
+        await requireFeature(db, a.tenantId, 'payroll.payslips');
+        await assertSubjectVisible(db, a.tenantId, await policyViewer(db, a.tenantId, a.user), id, 'Employee not found');
+        const r = await db.query<{ id: string; period: string; kind: string; status: string }>(
+          `SELECT i.id, r.period, r.kind, r.status FROM payroll_items i JOIN payroll_runs r ON r.tenant_id=i.tenant_id AND r.id=i.run_id
+          WHERE i.tenant_id=$1 AND i.employee_id=$2 AND r.status IN ('finalized','paid') ORDER BY r.period DESC, r.kind, i.id LIMIT 120`,
+          [a.tenantId, id],
+        );
+        return { items: r.rows };
       });
     },
   );

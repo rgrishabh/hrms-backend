@@ -501,3 +501,25 @@ So drawing the largest report allowed costs under a second of CPU, and yielding 
 **Decision.** Refuse, in the API (409), and the screen disables the button and says why. Nothing on file: anyone allowed may record. `exit_interview_recorded` is sent to HR and the person, not the manager, who has no use for it.
 
 **Reason.** The rule belongs in the API, as a disabled button protects nobody calling the route. The cost is that a leaver cannot amend their own answers after saving and has to ask HR. Existence is all it discloses, and only to those who could already post.
+
+## D72 — The Owner holds every permission, in `multi` too
+
+**Context.** In `multi` the Owner resolved to Super-admin, so nobody could open every screen, and the product owner could not issue a letter or see recruitment. They have asked that the Owner see and change everything.
+
+**Options.** Add HR and payroll roles to the Owner's account: works, but needs doing on every installation, and each role brings its own level limits. Widen Super-admin: gives the same to every administrator, who may be IT. Let `owner` resolve to every permission, as it already does in `single` and `single_hr`.
+
+**Decision.** The last. Super-admin is unchanged. An Owner is still appointed by bootstrap only, never in the app.
+
+**What does not change.** Permissions decide what may be done, not who has to agree: in `multi` nobody approves what they prepared, the Owner included, and nobody changes their own pay or issues their own letter. Level still decides whose L4 data is seen; the Owner is at the top of it. POSH complaints stay with the Internal Committee, whose membership is not a permission, because the POSH Act makes them confidential. Every reveal and export stays on the audit log.
+
+**Consequence.** One stolen Owner password opens everything. MFA for the Owner is strongly advised, and `MFA_ENFORCED=true` requires it. The Owner is also among the holders of every approval step, so they are notified of each.
+
+## D73 — Letters are written from the record, and refused when it does not support them
+
+**Context.** Only appointment, experience and relieving letters existed. The product owner asked for every letter an employer needs.
+
+**Decision.** One catalogue (`lifecycle/letter-kinds.ts`) behind `GET /lifecycle/employees/:id/letters` and `POST .../letters/:kind`. Facts (dates, role, separation, confirmation, salary) come from the record only; a letter whose facts are missing is refused with the reason, and the list says so beforehand. Opinion (recommendation, warning, appreciation) is typed by whoever issues it and never generated. The same standing as the existing letters: `employees.manage` and above the person. Salary on a letter needs L4 on top, and is an audited export. The offer letter is a recruitment route, from approval onwards, for holders of `recruitment.compensation`.
+
+**POST, though nothing is stored.** A warning's text in a query string would be in every proxy's log. The copy is not kept: whoever issues it can upload the signed one to Documents.
+
+**Not included.** Form 16 and Form 12BA come from TRACES. Termination and show cause letters are a layout, not legal advice.

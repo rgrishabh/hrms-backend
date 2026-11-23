@@ -781,6 +781,186 @@ describe('letters', () => {
     }
   });
 
+  describe('the rest of the letters', () => {
+    const write = (u: Client, kind: string, id: string, fields: Record<string, string> = {}) => u.post(`/api/v1/lifecycle/employees/${id}/letters/${kind}`, { fields });
+    const list = async (u: Client, id: string) => {
+      const r = await u.get(`/api/v1/lifecycle/employees/${id}/letters`);
+      expect(r.statusCode, r.body).toBe(200);
+      return r.json() as { items: { key: string; fields: { key: string; type: string; required: boolean }[]; unavailable: string | null }[]; exit: Record<string, string | null> };
+    };
+    const set = (sql: string) => ownerQuery(`UPDATE employees SET ${sql} WHERE id=$1`, [emp('employee')]);
+    const review = (recommendation: string) =>
+      ownerQuery(`INSERT INTO probation_reviews (tenant_id, employee_id, probation_end, status, recommendation, extend_months) VALUES ($1,$2,'2026-06-30','approved',$3,3)`, [
+        T.id,
+        emp('employee'),
+        recommendation,
+      ]);
+    afterAll(async () => {
+      await set(`confirmation_date=NULL, probation_end_date=NULL, employment_type='permanent', status='active', contract_end_date=NULL`);
+      await ownerQuery(`DELETE FROM probation_reviews WHERE tenant_id=$1`, [T.id]);
+      await ownerQuery(`DELETE FROM separations WHERE tenant_id=$1`, [T.id]);
+      await ownerQuery(`DELETE FROM employee_salaries WHERE tenant_id=$1 AND reason='letters'`, [T.id]);
+    });
+
+    /** Each letter: what the record must say first, what is typed, and what it must print. */
+    const CASES: [string, (() => Promise<unknown>) | null, Record<string, string>, string[]][] = [
+      ['confirmation', () => set(`confirmation_date='2024-07-01'`), {}, ['Confirmation of employment', '01/07/2024', 'Senior Analyst']],
+      [
+        'probation-extension',
+        async () => {
+          await set(`confirmation_date=NULL, probation_end_date='2026-09-30'`);
+          await review('extend');
+        },
+        { note: 'Improve sample turnaround.' },
+        ['Extension of probation', '30/09/2026', 'Improve sample turnaround.'],
+      ],
+      ['promotion', null, { effectiveDate: '2026-04-01', previousDesignation: 'Analyst' }, ['promoted from Analyst', 'Senior Analyst', '01/04/2026']],
+      ['transfer', null, { effectiveDate: '2026-05-01', previousLocation: 'Pune' }, ['transferred from Pune', '01/05/2026']],
+      ['employment-certificate', null, { purpose: 'Visa application' }, ['To whom it may concern', '01/01/2024', 'Visa application']],
+      ['noc', null, { purpose: 'Part-time study' }, ['No objection certificate', 'Part-time study']],
+      ['salary-certificate', null, {}, ['Salary certificate', 'INR 8,53,332.00']],
+      [
+        'salary-revision',
+        () =>
+          ownerQuery(
+            `INSERT INTO employee_salaries (tenant_id, employee_id, effective_from, amounts_enc, annual_ctc_enc, reason, status, created_by, approved_at) VALUES ($1,$2,'2024-01-01',$3,$4,'letters','superseded',$5,now())`,
+            [T.id, emp('employee'), seal({ BASIC: 50000 }), seal(600000), T.users.payroll!.id],
+          ),
+        {},
+        ['Revision of salary', 'INR 8,53,332.00', '01/01/2025'],
+      ],
+      ['appreciation', null, { body: 'Outstanding audit work.\nThank you again.' }, ['Letter of appreciation', 'Outstanding audit work.', 'Thank you again.']],
+      ['show-cause', null, { subject: 'Attendance', body: 'Absent on three days.', respondBy: '2026-12-01' }, ['Show cause notice', 'Subject: Attendance', '01/12/2026']],
+      ['warning', null, { subject: 'Safety', body: 'No gloves in the lab.' }, ['Warning letter', 'No gloves in the lab.']],
+      ['recommendation', null, { body: 'A careful and dependable analyst.' }, ['Letter of recommendation', 'has worked with', 'A careful and dependable analyst.']],
+      ['general', null, { heading: 'Address confirmation', body: 'Lives in Navi Mumbai.' }, ['Address confirmation', 'Lives in Navi Mumbai.']],
+      [
+        'internship-certificate',
+        () => set(`employment_type='intern', contract_end_date='2026-01-31'`),
+        { body: 'Water testing.' },
+        ['Internship certificate', '31/01/2026', 'Water testing.'],
+      ],
+      ['resignation-acceptance', () => separate(emp('employee'), 'approved', '2026-02-28'), {}, ['Acceptance of resignation', '28/02/2026']],
+      [
+        'termination',
+        () => separate(emp('employee'), 'approved', '2026-03-31', 'termination'),
+        { body: 'Position closed.' },
+        ['Termination of employment', '31/03/2026', 'Position closed.'],
+      ],
+      [
+        'settlement',
+        () => ownerQuery(`UPDATE separations SET fnf_status='settled' WHERE tenant_id=$1 AND employee_id=$2`, [T.id, emp('employee')]),
+        {},
+        ['Full and final settlement', 'has been completed'],
+      ],
+    ];
+    it.each(CASES)('%s: printed from the record, on the letterhead, audited, and never with the reason for leaving', async (kind, prepare, fields, wants) => {
+      await prepare?.();
+      const r = await write(c.hr!, kind, emp('employee'), fields);
+      expect(r.statusCode, r.body.slice(0, 300)).toBe(200);
+      expect(r.headers['content-disposition']).toBe(`attachment; filename="${kind}-letter.pdf"`);
+      expect(r.headers['cache-control']).toBe('private, no-store');
+      const text = await pdfText(r.rawPayload);
+      for (const w of ['Northwind Assays Private Limited', 'Asha Verma', ...wants]) expect(text.replace(/\s+/g, ' '), kind).toContain(w);
+      expect(text).not.toContain('A private reason');
+      const pay = kind.startsWith('salary-');
+      if (!pay) expect(text).not.toContain('8,53,332');
+      expect((await auditRows('lifecycle.letter_issued', emp('employee'))).at(-1)!.change_metadata).toMatchObject({ letter: kind, l4: pay });
+      expect((await list(c.hr!, emp('employee'))).items.find((k) => k.key === kind)!.unavailable).toBeNull();
+    });
+    it('every kind has a case above', async () => {
+      expect((await list(c.hr!, emp('employee'))).items.map((k) => k.key).sort()).toEqual(CASES.map((x) => x[0]).sort());
+    });
+
+    it('a letter the record does not support is refused, with the reason the list gives', async () => {
+      const id = emp('other');
+      await ownerQuery(`DELETE FROM separations WHERE tenant_id=$1 AND employee_id=$2`, [T.id, id]);
+      const shown = await list(c.hr!, id);
+      for (const k of [
+        'confirmation',
+        'probation-extension',
+        'salary-revision',
+        'salary-certificate',
+        'resignation-acceptance',
+        'termination',
+        'settlement',
+        'internship-certificate',
+      ]) {
+        const why = shown.items.find((x) => x.key === k)!.unavailable;
+        expect(why, k).toBeTruthy();
+        const r = await write(c.hr!, k, id);
+        expect(r.statusCode, k).toBe(409);
+        expect(problem(r).detail, k).toBe(why);
+      }
+      expect(shown.exit).toEqual({ experience: expect.any(String), relieving: expect.any(String) });
+    });
+
+    it('what is typed is checked: required, dates, length, unknown fields, unknown letters', async () => {
+      const id = emp('other');
+      for (const [kind, fields] of [
+        ['noc', {}],
+        ['noc', { purpose: '   ' }],
+        ['promotion', { effectiveDate: 'soon' }],
+        ['promotion', { effectiveDate: '2026-02-31' }],
+        ['employment-certificate', { purpose: 'x'.repeat(201) }],
+        ['noc', { purpose: 'x', extra: 'y' }],
+        ['offer', {}],
+      ] as const) {
+        if (kind === 'promotion') await ownerQuery(`UPDATE employees SET designation='Analyst' WHERE id=$1`, [id]);
+        expect((await write(c.hr!, kind, id, fields)).statusCode, `${kind} ${JSON.stringify(fields).slice(0, 60)}`).toBe(400);
+      }
+    });
+
+    it('HR above them only: 403 without the permission, 404 for yourself and for someone out of reach', async () => {
+      for (const u of [c.employee!, c.manager!]) {
+        expect((await write(u, 'noc', emp('employee'), { purpose: 'x' })).statusCode).toBe(403);
+        expect((await u.get(`/api/v1/lifecycle/employees/${emp('employee')}/letters`)).statusCode).toBe(403);
+      }
+      expect((await write(c.hr!, 'noc', emp('hr'), { purpose: 'x' })).statusCode).toBe(404);
+      expect((await c.hr!.get(`/api/v1/lifecycle/employees/${emp('hr')}/letters`)).statusCode).toBe(404);
+      expect((await write(c.admin!, 'noc', emp('employee'), { purpose: 'x' })).statusCode).toBe(403);
+    });
+
+    it('salary letters need the right to see that salary; the list says so', async () => {
+      const exec = await Client.login(app, T.host, `exec@${T.host}`);
+      await set(`status='active', employment_type='permanent'`);
+      for (const k of ['salary-certificate', 'salary-revision']) {
+        expect((await write(exec, k, emp('employee'))).statusCode, k).toBe(403);
+        expect((await list(exec, emp('employee'))).items.find((x) => x.key === k)!.unavailable, k).toContain('salary');
+      }
+    });
+
+    it('a POST needs a CSRF token', async () => {
+      const bare = new Client(app, T.host);
+      bare.cookie = c.hr!.cookie;
+      bare.device = c.hr!.device;
+      expect((await write(bare, 'noc', emp('employee'), { purpose: 'x' })).statusCode).toBe(403);
+    });
+
+    it('the owner: every letter for anyone below, in multi', async () => {
+      const [u] = await ownerQuery<{ id: string }>(
+        `INSERT INTO users (tenant_id, email, display_name, password_hash) SELECT tenant_id, $2, 'Owner', password_hash FROM users WHERE id=$1 RETURNING id`,
+        [T.users.hr!.id, `owner@${T.host}`],
+      );
+      await ownerQuery(`INSERT INTO user_roles (user_id, tenant_id, role_key) VALUES ($1,$2,'owner')`, [u!.id, T.id]);
+      const owner = await Client.login(app, T.host, `owner@${T.host}`);
+      for (const who of ['employee', 'manager', 'hr', 'payroll', 'admin'].filter((k) => T.users[k]!.employeeId))
+        expect((await owner.get(letter('appointment', emp(who)))).statusCode, who).toBe(200);
+      expect((await write(owner, 'salary-certificate', emp('employee'))).statusCode).toBe(200);
+      const slips = await owner.get(`/api/v1/payroll/employees/${emp('employee')}/payslips`);
+      expect(slips.statusCode, slips.body).toBe(200);
+      expect((slips.json() as { items: { id: string }[] }).items.map((x) => x.id)).toContain(paid());
+      expect((await owner.get(slip())).statusCode).toBe(200);
+    });
+    it('payslips of one person: no figures in the list, 403 for the person route without payroll, 404 out of reach', async () => {
+      const r = await c.hr!.get(`/api/v1/payroll/employees/${emp('employee')}/payslips`);
+      expect(Object.keys((r.json() as { items: object[] }).items[0]!).sort()).toEqual(['id', 'kind', 'period', 'status']);
+      expect((await c.manager!.get(`/api/v1/payroll/employees/${emp('employee')}/payslips`)).statusCode).toBe(403);
+      const admin = T.users.admin!.employeeId;
+      if (admin) expect((await c.hr!.get(`/api/v1/payroll/employees/${admin}/payslips`)).statusCode).toBe(404);
+    });
+  });
+
   it('a GET needs no CSRF token', async () => {
     const bare = new Client(app, T.host);
     bare.cookie = c.hr!.cookie;

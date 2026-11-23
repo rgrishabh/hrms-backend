@@ -13,7 +13,17 @@ import { audit } from '../../core/audit/audit.js';
 import { AppError, badRequest, conflict, forbidden, notFound } from '../../core/http/errors.js';
 import { PageQuery, offsetOf, paged, Uuid, ListQuery, pageOf } from '../../core/http/pagination.js';
 import type { PublicConfig } from '../../config/installation.js';
-import { SYSTEM_ROLES, SYSTEM_ROLE_MAP, PERMISSIONS, permissionFeature, roleGroup, assignableRoles, isOwnerRole, OWNER_ROLE_KEYS } from '../../core/auth/permissions.js';
+import {
+  ALL_PERMISSIONS,
+  SYSTEM_ROLES,
+  SYSTEM_ROLE_MAP,
+  PERMISSIONS,
+  permissionFeature,
+  roleGroup,
+  assignableRoles,
+  isOwnerRole,
+  OWNER_ROLE_KEYS,
+} from '../../core/auth/permissions.js';
 import { currentMode, isCollapsedMode } from '../../core/policy/mode.js';
 import { outranks } from '../../core/policy/salary.js';
 import { anotherActiveOwner, effectiveLevel, roleFloor, SALARY_LEVEL_MAX } from '../../core/policy/levels.js';
@@ -235,7 +245,7 @@ export async function tenantAdminRoutes(app: FastifyInstance, opts: { publicConf
           key: r.key,
           name: r.name,
           group: roleGroup(r.key),
-          permissions: visible(r.key === 'owner' ? SYSTEM_ROLE_MAP.get('tenant_admin')!.permissions : r.permissions),
+          permissions: visible(r.key === 'owner' ? ALL_PERMISSIONS : r.permissions),
           grantable: grantable(r.key, r.permissions),
           users: counts.get(r.key) ?? 0,
         })),

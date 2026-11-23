@@ -4,7 +4,7 @@ import { Client, createTenant, flags, inApp, makeApp, ownerQuery, type TenantFix
 import { escalateOverdue, reassignStranded } from '../src/core/workflow/engine.js';
 import { withTenant } from '../src/db/tx.js';
 import { effectiveLevel } from '../src/core/policy/levels.js';
-import { resolveRolePermissions, roleGroup, SYSTEM_ROLES } from '../src/core/auth/permissions.js';
+import { ALL_PERMISSIONS, resolveRolePermissions, roleGroup, SYSTEM_ROLES } from '../src/core/auth/permissions.js';
 
 const FLAGS = flags('default,overtime,comp_off,expenses,payroll,payroll.payslips,loans,salary_advance');
 const LEAVE = (d: string) => ({ leaveTypeId: '', startDate: d, endDate: d, reason: 'Family function' });
@@ -27,11 +27,13 @@ const stepsOf = (requestId: string) =>
   );
 
 describe('roles', () => {
-  it('the thirteen existing roles keep their keys and go by the six names; owner resolves to Super-admin in multi', () => {
+  it('the thirteen existing roles keep their keys and go by the six names; the owner holds every permission in every mode', () => {
     const groups = new Set(SYSTEM_ROLES.filter((r) => r.key !== 'owner').map((r) => roleGroup(r.key)));
     expect(groups).toEqual(new Set(['Super-admin', 'Admin', 'HR', 'Payroll', 'Manager', 'Employee']));
     expect(SYSTEM_ROLES.filter((r) => r.key !== 'owner').length).toBe(13);
-    expect([...resolveRolePermissions('owner', 'multi')].sort()).toEqual([...resolveRolePermissions('tenant_admin', 'multi')].sort());
+    for (const mode of ['single', 'single_hr', 'multi'] as const) expect([...resolveRolePermissions('owner', mode)].sort(), mode).toEqual([...ALL_PERMISSIONS].sort());
+    // Super-admin stays as it was: the owner is the one who can do everything.
+    expect(resolveRolePermissions('tenant_admin', 'multi')).not.toContain('employees.manage');
     expect(resolveRolePermissions('owner', 'single')).toContain('payroll.manage');
     expect(resolveRolePermissions('reporting_manager', 'single')).not.toContain('leave.team.read');
     expect(resolveRolePermissions('hr_admin', 'single_hr')).not.toContain('payroll.read');
