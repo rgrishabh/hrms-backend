@@ -117,8 +117,9 @@ export async function assetRoutes(app: FastifyInstance) {
   app.get('/:id/history', { schema: { response: { 200: R.GetAssetsByIdHistory200 }, params: IdParams }, config: { perm: ['assets.manage'] } }, async (req) => {
     const a = tenantActor(req, 'assets.manage');
     const { id } = IdParams.parse(req.params);
-    return a.tx(async (db) => ({
-      items: (
+    return a.tx(async (db) => {
+      if (!(await db.query('SELECT 1 FROM assets WHERE tenant_id=$1 AND id=$2', [a.tenantId, id])).rowCount) throw notFound('Asset not found');
+      const items = (
         await db.query(
           `SELECT s.id, trim(e.first_name||' '||coalesce(e.last_name,'')) AS employee_name, e.employee_code, s.issued_at::text, s.condition_out, s.due_back::text,
         s.returned_at::text, s.condition_in, s.outcome, s.acknowledged_at, iu.display_name AS issued_by_name, ru.display_name AS received_by_name
@@ -126,8 +127,9 @@ export async function assetRoutes(app: FastifyInstance) {
       WHERE s.tenant_id=$1 AND s.asset_id=$2 ORDER BY s.issued_at DESC`,
           [a.tenantId, id],
         )
-      ).rows,
-    }));
+      ).rows;
+      return { items };
+    });
   });
 
   app.post(

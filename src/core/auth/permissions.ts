@@ -172,7 +172,7 @@ export const SYSTEM_ROLES: readonly RoleDefinition[] = [
       'loans.read',
     ),
   },
-  // Resolves to the Administrator's permissions in `multi`; see resolveRolePermissions for the other modes.
+  // Every permission, in every mode: see resolveRolePermissions.
   { key: 'owner', name: 'Owner', scope: 'tenant', permissions: [] },
   {
     key: 'hr_admin',
@@ -477,7 +477,8 @@ const SINGLE_HR_PERMISSIONS = P(
 
 /** What a role means in this mode. Stored assignments never change with the mode, so moving up needs no data migration. */
 export function resolveRolePermissions(key: string, mode: ManagementMode): readonly Permission[] {
-  if (mode === 'multi') return SYSTEM_ROLE_MAP.get(key === 'owner' ? 'tenant_admin' : key)?.permissions ?? [];
+  if (key === 'owner') return ALL_PERMISSIONS; // D72
+  if (mode === 'multi') return SYSTEM_ROLE_MAP.get(key)?.permissions ?? [];
   if (isOwnerRole(key)) return ALL_PERMISSIONS;
   if (mode === 'single_hr' && (key === 'hr_admin' || key === 'hr_executive')) return SINGLE_HR_PERMISSIONS;
   return SYSTEM_ROLE_MAP.has(key) ? SELF : [];

@@ -3,6 +3,7 @@ import { existsSync, mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import type { FastifyInstance } from 'fastify';
+import { pdfText } from './pdf-text.js';
 import { problem, makeApp, createTenant, Client, ownerQuery, multipart, PASSWORD, type TenantFixture, flags } from './helpers.js';
 import { LocalStore, setStore } from '../src/core/storage/index.js';
 import { hashPassword } from '../src/core/crypto/index.js';
@@ -215,6 +216,7 @@ describe('offers and hire', () => {
     const saved = (await hr.get(`/api/v1/recruitment/applications/${appId}?reveal=1`)).json().offers[0];
     expect(saved).toMatchObject({ legal_entity_id: T.legalEntityId, branch_id: T.branchId, department_id: T.deptId, contract_end_date: null });
     expect((await hr.post(`/api/v1/recruitment/applications/${appId}/offers`, body)).statusCode).toBe(409); // one live offer
+    expect((await hr.get(`/api/v1/recruitment/offers/${offerId}/offer-letter.pdf`)).statusCode).toBe(409); // a draft is not an offer yet
     expect((await hr.post(`/api/v1/recruitment/offers/${offerId}/submit`)).statusCode).toBe(200);
     const inbox = (await hrHead.get('/api/v1/approvals/inbox')).json().items.find((x: { entity_id: string }) => x.entity_id === offerId);
     expect(inbox.summary).toMatch(/above budget/);
@@ -224,6 +226,13 @@ describe('offers and hire', () => {
     expect((await hrExec.get(`/api/v1/recruitment/applications/${appId}?reveal=1`)).json().offers[0].annual_ctc).toBeNull();
     expect((await hr.post(`/api/v1/recruitment/offers/${offerId}/hire`, { employeeCode: 'EMP-REC1' })).statusCode).toBe(409); // not accepted yet
     expect((await hr.post(`/api/v1/recruitment/offers/${offerId}/accepted`, {})).statusCode).toBe(409); // must be sent first
+    const pdf = await hr.get(`/api/v1/recruitment/offers/${offerId}/offer-letter.pdf`);
+    expect(pdf.statusCode, pdf.body.slice(0, 200)).toBe(200);
+    expect(pdf.headers['content-disposition']).toBe('attachment; filename="offer-letter.pdf"');
+    const letterText = (await pdfText(pdf.rawPayload)).replace(/\s+/g, ' ');
+    for (const want of ['Letter of offer', body.designation, 'I accept this offer', 'INR ']) expect(letterText).toContain(want);
+    expect((await hrExec.get(`/api/v1/recruitment/offers/${offerId}/offer-letter.pdf`)).statusCode).toBe(403); // it shows the pay
+    expect((await ownerQuery(`SELECT 1 FROM audit_logs WHERE action='l4.export' AND target_id=$1`, [offerId])).length).toBe(1);
     expect((await hr.post(`/api/v1/recruitment/offers/${offerId}/sent`, {})).statusCode).toBe(200);
     expect((await hr.post(`/api/v1/recruitment/offers/${offerId}/accepted`, { note: 'Signed copy received' })).statusCode).toBe(200);
   });
@@ -295,7 +304,10 @@ describe('replacing a resume on an existing candidate', () => {
     const seen = (await hr.get(`/api/v1/recruitment/candidates/${id}`)).json();
     expect(seen).toMatchObject({ has_resume: true, resume_name: 'updated.pdf' });
     expect((await hr.get(`/api/v1/recruitment/candidates/${id}/resume`)).rawPayload.equals(PDF)).toBe(true);
-    const [a] = await ownerQuery<{ change_metadata: { replaced: boolean } }>(`SELECT change_metadata FROM audit_logs WHERE tenant_id=$1 AND action='recruitment.resume_replaced' AND target_id=$2`, [T.id, id]);
+    const [a] = await ownerQuery<{ change_metadata: { replaced: boolean } }>(
+      `SELECT change_metadata FROM audit_logs WHERE tenant_id=$1 AND action='recruitment.resume_replaced' AND target_id=$2`,
+      [T.id, id],
+    );
     expect(a!.change_metadata.replaced).toBe(false);
   });
   it('replaces one: the new file downloads, and the old file is gone from storage', async () => {
@@ -306,7 +318,10 @@ describe('replacing a resume on an existing candidate', () => {
     expect((await put(hr, id, PDF2)).statusCode).toBe(200);
     expect(existsSync(oldFile)).toBe(false);
     expect((await hr.get(`/api/v1/recruitment/candidates/${id}/resume`)).rawPayload.equals(PDF2)).toBe(true);
-    const [a] = await ownerQuery<{ change_metadata: { replaced: boolean } }>(`SELECT change_metadata FROM audit_logs WHERE tenant_id=$1 AND action='recruitment.resume_replaced' AND target_id=$2`, [T.id, id]);
+    const [a] = await ownerQuery<{ change_metadata: { replaced: boolean } }>(
+      `SELECT change_metadata FROM audit_logs WHERE tenant_id=$1 AND action='recruitment.resume_replaced' AND target_id=$2`,
+      [T.id, id],
+    );
     expect(a!.change_metadata.replaced).toBe(true);
   });
   it('a refused file leaves the current resume in place', async () => {

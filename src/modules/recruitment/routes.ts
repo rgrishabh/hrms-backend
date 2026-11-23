@@ -16,9 +16,19 @@ import { getSettingValue } from '../../core/settings/service.js';
 import { insertEmployee, EmployeeInput, EMPLOYMENT_TYPES } from '../employees/service.js';
 import { orgToday } from '../competency/service.js';
 import { createChecklist, featureOn } from '../lifecycle/service.js';
+import { letterPdf } from '../../core/pdf/letter.js';
+import { loadPdfContext, loadPdfIdentity, pdfHeaders } from '../../core/pdf/writer.js';
 import type { Db } from '../../db/tx.js';
 
 const FEATURE = 'recruitment';
+const OFFER_EMPLOYMENT: Readonly<Record<string, string>> = {
+  permanent: 'permanent',
+  probation: 'probationary',
+  contract: 'contract',
+  trainee: 'trainee',
+  intern: 'internship',
+  consultant: 'consultancy',
+};
 const STAGES = ['applied', 'screening', 'interview', 'offer', 'hired', 'rejected', 'withdrawn'] as const;
 type Stage = (typeof STAGES)[number];
 /** Allowed manual moves. "hired" happens only through an accepted offer (POST /offers/:id/hire). */
@@ -726,7 +736,9 @@ export async function recruitmentRoutes(app: FastifyInstance) {
       try {
         await a.tx(async (db) => {
           await requireFeature(db, a.tenantId, FEATURE);
-          const c = (await db.query<{ resume_key: string | null; status: string }>('SELECT resume_key, status FROM candidates WHERE tenant_id=$1 AND id=$2 FOR UPDATE', [a.tenantId, id])).rows[0];
+          const c = (
+            await db.query<{ resume_key: string | null; status: string }>('SELECT resume_key, status FROM candidates WHERE tenant_id=$1 AND id=$2 FOR UPDATE', [a.tenantId, id])
+          ).rows[0];
           if (!c) throw notFound('Candidate not found');
           if (c.status !== 'active') throw conflict('This candidate has been anonymized');
           previous = c.resume_key;
@@ -738,7 +750,14 @@ export async function recruitmentRoutes(app: FastifyInstance) {
             upload.contentType,
             createHash('sha256').update(upload.bytes).digest('hex'),
           ]);
-          await audit(db, { ...a.auditBase, action: 'recruitment.resume_replaced', category: 'data', targetType: 'candidate', targetId: id, metadata: { replaced: previous !== null } });
+          await audit(db, {
+            ...a.auditBase,
+            action: 'recruitment.resume_replaced',
+            category: 'data',
+            targetType: 'candidate',
+            targetId: id,
+            metadata: { replaced: previous !== null },
+          });
         });
       } catch (e) {
         await store.delete(key).catch((err: unknown) => req.log.warn({ err, key }, 'could not remove an unused resume upload'));
@@ -1168,6 +1187,73 @@ export async function recruitmentRoutes(app: FastifyInstance) {
     if (ap.access !== 'full') throw notFound('Offer not found');
     return { o, ap };
   }
+
+  /** The offer as a letter, once it is approved. It shows the CTC, so it is for whoever may see offered pay, and every copy is an audited export. */
+  app.get(
+    '/offers/:id/offer-letter.pdf',
+    { schema: { response: { 200: R.file('application/pdf') }, params: IdParams }, config: { perm: ['recruitment.manage', 'recruitment.compensation'], feature: [FEATURE] } },
+    async (req, reply) => {
+      const a = tenantActor(req, 'recruitment.manage', 'recruitment.compensation');
+      const { id } = IdParams.parse(req.params);
+      const r = await a.tx(async (db) => {
+        await requireFeature(db, a.tenantId, FEATURE);
+        const { o, ap } = await loadOffer(db, a, id);
+        if (!['approved', 'sent', 'accepted'].includes(o.status)) throw conflict('An offer letter is available once the offer is approved');
+        const offer = (
+          await db.query<{
+            name: string;
+            email: string | null;
+            designation: string;
+            department: string | null;
+            branch: string;
+            employment_type: string;
+            annual_ctc: string;
+            joining_date: string;
+            probation_months: number | null;
+            contract_end_date: string | null;
+          }>(
+            `SELECT trim(c.first_name||' '||coalesce(c.last_name,'')) AS name, c.email, f.designation, d.name AS department, b.name AS branch, f.employment_type, f.annual_ctc,
+            f.joining_date::text, f.probation_months, f.contract_end_date::text
+          FROM job_offers f JOIN candidates c ON c.tenant_id=f.tenant_id AND c.id=$3 JOIN branches b ON b.tenant_id=f.tenant_id AND b.id=f.branch_id
+          LEFT JOIN departments d ON d.tenant_id=f.tenant_id AND d.id=f.department_id WHERE f.tenant_id=$1 AND f.id=$2`,
+            [a.tenantId, id, ap.candidate_id],
+          )
+        ).rows[0]!;
+        await audit(db, { ...a.auditBase, userAgent: a.userAgent, action: 'recruitment.offer_letter_issued', category: 'access', targetType: 'job_offer', targetId: id });
+        await audit(db, {
+          ...a.auditBase,
+          userAgent: a.userAgent,
+          action: 'l4.export',
+          category: 'access',
+          targetType: 'recruitment',
+          targetId: id,
+          metadata: { path: 'recruitment.offer_letter', fields: ['annual_ctc'] },
+        });
+        return { offer, today: await orgToday(db, a.tenantId), identity: await loadPdfIdentity(db, a.tenantId) };
+      });
+      const ctx = await loadPdfContext(app, r.identity);
+      const f = r.offer;
+      const kind = OFFER_EMPLOYMENT[f.employment_type];
+      const doc = letterPdf(ctx, {
+        title: 'Offer letter',
+        today: r.today,
+        to: [f.name, ...(f.email ? [f.email] : [])],
+        heading: 'Letter of offer',
+        acceptance: 'I accept this offer on the terms stated above.',
+        paragraphs: (w) => [
+          `Dear ${f.name},`,
+          `We are pleased to offer you the position of ${f.designation}${f.department ? ` in the ${f.department} department` : ''} with ${ctx.legalName}, at our ${f.branch} location.`,
+          `Your date of joining will be ${w.date(f.joining_date)}.${kind ? ` The nature of your employment will be ${kind}.` : ''}`,
+          ...(f.probation_months ? [`You will be on probation for ${f.probation_months} ${f.probation_months === 1 ? 'month' : 'months'} from your date of joining.`] : []),
+          ...(f.contract_end_date ? [`Your contract will run until ${w.date(f.contract_end_date)}.`] : []),
+          `Your annual cost to company will be ${w.money(f.annual_ctc)}, subject to deductions required by law.`,
+          'This offer is subject to verification of your documents. The full terms will be set out in your letter of appointment and the policies of the organization.',
+          'Please sign and return a copy of this letter to accept the offer.',
+        ],
+      });
+      return pdfHeaders(reply, 'offer-letter.pdf').send(doc);
+    },
+  );
 
   app.put(
     '/offers/:id',

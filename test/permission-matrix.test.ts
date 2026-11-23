@@ -63,7 +63,7 @@ const PEOPLE: Record<Mode, Persona[]> = {
     { key: 'nologin', roles: [], level: 0, login: false },
   ],
   multi: [
-    { key: 'owner', roles: ['owner', 'employee'], level: 100, payroll: true, bank: true, loans: true, hrL3: false, employeesRead: true, auditRead: true, chain: true },
+    { key: 'owner', roles: ['owner', 'employee'], level: 100, ...OWNER },
     { key: 'super', roles: ['tenant_admin', 'employee'], level: 90, payroll: true, bank: true, loans: true, employeesRead: true, auditRead: true, chain: true },
     {
       key: 'seniorPayroll',

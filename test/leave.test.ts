@@ -5,10 +5,10 @@ import { addDays, localDate, weekday } from '../src/modules/attendance/time.js';
 import { CALC_VERSION } from '../src/modules/attendance/calc.js';
 
 const today = () => localDate(new Date(), 'Asia/Kolkata');
-/** A Monday at least `minAhead` days ahead whose whole week (Mon–Sun) is in one calendar year. */
-function futureMonday(minAhead: number) {
+/** A Monday at least `minAhead` days ahead whose whole week (Mon–Sun), or `days` after it, is in one calendar year. */
+function futureMonday(minAhead: number, days = 6) {
   let d = addDays(today(), minAhead);
-  while (weekday(d) !== 1 || d.slice(0, 4) !== addDays(d, 6).slice(0, 4)) d = addDays(d, 1);
+  while (weekday(d) !== 1 || d.slice(0, 4) !== addDays(d, days).slice(0, 4)) d = addDays(d, 1);
   return d;
 }
 /** Most recent past Mon–Sat (default weekly off is Sunday) at least `minAgo` days ago, same calendar year as today if possible. */
@@ -43,6 +43,7 @@ const balance = async (c: Client, code: string, year?: number, employeeId?: stri
   (await c.get(`/api/v1/leave/balances?${employeeId ? `employeeId=${employeeId}&` : ''}${year ? `year=${year}` : ''}`)).json().items.find((i: { code: string }) => i.code === code);
 
 const MON = futureMonday(21);
+const LONG = futureMonday(21, 20);
 const YEAR = Number(MON.slice(0, 4));
 
 beforeAll(async () => {
@@ -124,9 +125,9 @@ describe('requests: day counting and validation', () => {
     expect(problem(await emp.post('/api/v1/leave/requests/preview', { leaveTypeId: types.CL, startDate: addDays(MON, 2), endDate: addDays(MON, 2) })).detail).toMatch(
       /no working days/,
     );
-    const p = (await emp.post('/api/v1/leave/requests/preview', { leaveTypeId: types.CL, startDate: MON, endDate: addDays(MON, 20) })).json();
+    const p = (await emp.post('/api/v1/leave/requests/preview', { leaveTypeId: types.CL, startDate: LONG, endDate: addDays(LONG, 20) })).json();
     expect(p.sufficient).toBe(false);
-    const r = await emp.post('/api/v1/leave/requests', { leaveTypeId: types.CL, startDate: MON, endDate: addDays(MON, 20), reason: 'Long trip' });
+    const r = await emp.post('/api/v1/leave/requests', { leaveTypeId: types.CL, startDate: LONG, endDate: addDays(LONG, 20), reason: 'Long trip' });
     expect(r.statusCode).toBe(409);
     const soon = addDays(today(), 2);
     const n = await emp.post('/api/v1/leave/requests', { leaveTypeId: types.EL, startDate: soon, endDate: soon, reason: 'Short notice' });
