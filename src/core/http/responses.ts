@@ -3271,7 +3271,9 @@ export const GetLifecycleEmployeesByIdLetters200 = z.strictObject({
       key: z.string(),
       label: z.string(),
       group: z.enum(['employment', 'pay', 'conduct', 'exit', 'other']),
-      fields: z.array(z.strictObject({ key: z.string(), label: z.string(), type: z.enum(['text', 'long', 'date']), required: z.boolean(), maxLength: z.number() })),
+      fields: z.array(
+        z.strictObject({ key: z.string(), label: z.string(), type: z.enum(['text', 'long', 'date', 'money']), required: z.boolean(), maxLength: z.number(), value: z.string() }),
+      ),
       unavailable: z.string().nullable(),
     }),
   ),

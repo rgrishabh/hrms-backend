@@ -1,3 +1,4 @@
+import { offerParagraphs, offerRecordParagraphs, OFFER_ACCEPTANCE, type OfferTerms } from '../../core/pdf/offer.js';
 import type { PdfWriter } from '../../core/pdf/writer.js';
 
 /** What the record says about a person, for a letter. Reasons for leaving and the like (L3) are not in it, so no letter can print them. */
@@ -18,6 +19,8 @@ export interface LetterFacts {
   legal_entity: string;
   probation_extended: boolean;
   salary_records: number;
+  /** Hired from an accepted offer in recruitment. */
+  hired_from_offer: boolean;
   separation: { status: string; kind: string; lwd: string; settled: boolean } | null;
   today: string;
 }
@@ -32,8 +35,14 @@ export interface LetterPay {
 export interface LetterField {
   key: string;
   label: string;
-  type: 'text' | 'long' | 'date';
+  type: 'text' | 'long' | 'date' | 'money';
   required: boolean;
+  /** What the form starts with, from the record. Never a salary. */
+  value: string;
+}
+/** The offer someone was hired from, as it was sent. */
+export interface HiredOffer extends OfferTerms {
+  offeredOn: string;
 }
 export type LetterGroup = 'employment' | 'pay' | 'conduct' | 'exit' | 'other';
 export interface LetterKind {
@@ -42,17 +51,26 @@ export interface LetterKind {
   group: LetterGroup;
   /** Off with this feature. Without one, the letter is there whenever the module is. */
   feature?: 'core.onboarding' | 'core.offboarding';
-  /** Prints the annual CTC, or the month's gross without one: only for someone who passes the L4 rule for this person. */
-  pay?: true;
-  fields: readonly LetterField[];
+  /** Only for someone who passes the L4 rule for this person. `record` prints the annual CTC, or the month's gross without one; `offer` the offered CTC. */
+  pay?: 'record' | 'offer';
+  fields: readonly LetterField[] | ((f: LetterFacts) => readonly LetterField[]);
+  /** What is wrong with what was typed, beyond each field by itself. */
+  check?: (f: LetterFacts, fields: Readonly<Record<string, string>>) => string | null;
   /** Why it cannot be written for this person now, from the record. A letter says nothing the record does not support. */
   unavailable?: (f: LetterFacts) => string | null;
   heading: string | ((fields: Readonly<Record<string, string>>) => string);
-  paragraphs: (w: PdfWriter, f: LetterFacts, x: { legalName: string; fields: Readonly<Record<string, string>>; pay: LetterPay | null }) => readonly string[];
+  paragraphs: (
+    w: PdfWriter,
+    f: LetterFacts,
+    x: { legalName: string; fields: Readonly<Record<string, string>>; pay: LetterPay | null; offer: HiredOffer | null },
+  ) => readonly string[];
+  /** A line to sign under the letter. */
+  acceptance?: (f: LetterFacts, fields: Readonly<Record<string, string>>) => string | undefined;
 }
 
-export const FIELD_MAX: Readonly<Record<LetterField['type'], number>> = { text: 200, long: 4000, date: 10 };
-const field = (key: string, label: string, type: LetterField['type'], required = true): LetterField => ({ key, label, type, required });
+export const FIELD_MAX: Readonly<Record<LetterField['type'], number>> = { text: 200, long: 4000, date: 10, money: 16 };
+const field = (key: string, label: string, type: LetterField['type'], required = true, value = ''): LetterField => ({ key, label, type, required, value });
+export const fieldsOf = (k: LetterKind, f: LetterFacts) => (typeof k.fields === 'function' ? k.fields(f) : k.fields);
 export const roleOf = (s: Pick<LetterFacts, 'designation' | 'department'>) => [s.designation, s.department && `in the ${s.department} department`].filter(Boolean).join(' ');
 const as = (f: LetterFacts) => (roleOf(f) ? ` as ${roleOf(f)}` : '');
 const employed = (f: LetterFacts) => (['active', 'on_notice'].includes(f.status) ? null : 'This letter is for someone currently employed');
@@ -62,10 +80,51 @@ const internshipEnd = (f: LetterFacts) => f.separation?.lwd ?? f.exit_date ?? f.
 /** The figure a letter gives: the annual CTC when there is one, otherwise the month's gross. */
 export const payFigure = (w: PdfWriter, p: LetterPay) =>
   p.ctc !== null ? { what: 'annual cost to company', amount: w.money(p.ctc) } : { what: 'gross monthly salary', amount: w.money(p.monthlyGross) };
+/** Letters carry the day they are written, so only an offer made that day, to someone yet to join, is written as an offer. Any other is the record of one. */
+const madeToday = (f: LetterFacts, fields: Readonly<Record<string, string>>) => f.status === 'pre_joining' && !f.hired_from_offer && fields['offeredOn'] === f.today;
 const about = (f: LetterFacts) => `${f.name} (employee code ${f.employee_code})`;
 
 /** The letters written through `POST /lifecycle/employees/:id/letters/:kind`. Appointment, experience and relieving letters have their own routes. */
 export const LETTER_KINDS: readonly LetterKind[] = [
+  {
+    key: 'offer',
+    label: 'Offer letter',
+    group: 'employment',
+    pay: 'offer',
+    // Someone hired through recruitment has the offer on record. For anyone else the record says what they are now, not what they were offered.
+    fields: (f) =>
+      f.hired_from_offer
+        ? []
+        : [
+            field('offeredOn', 'Date of the offer', 'date', true, f.status === 'pre_joining' ? f.today : ''),
+            field('designation', 'Position offered', 'text', true, f.designation ?? ''),
+            field('location', 'Location offered', 'text', false, f.branch),
+            field('joiningDate', 'Date of joining offered', 'date', true, f.date_of_joining),
+            field('annualCtc', 'Annual salary offered (cost to company)', 'money'),
+          ],
+    check: (f, x) => {
+      if (f.hired_from_offer) return null;
+      if (x['offeredOn']! > f.today) return 'The date of the offer cannot be in the future';
+      return x['offeredOn']! > x['joiningDate']! ? 'The date of the offer cannot be after the date of joining' : null;
+    },
+    heading: 'Letter of offer',
+    paragraphs: (w, f, x) => {
+      const t: HiredOffer = x.offer ?? {
+        name: f.name,
+        designation: x.fields['designation']!,
+        department: null,
+        location: x.fields['location'] ?? null,
+        employmentType: null,
+        annualCtc: x.fields['annualCtc']!,
+        joiningDate: x.fields['joiningDate']!,
+        probationMonths: null,
+        contractEndDate: null,
+        offeredOn: x.fields['offeredOn']!,
+      };
+      return madeToday(f, x.fields) ? offerParagraphs(w, t, x.legalName) : offerRecordParagraphs(w, t, x.legalName, t.offeredOn, f.today);
+    },
+    acceptance: (f, fields) => (madeToday(f, fields) ? OFFER_ACCEPTANCE : undefined),
+  },
   {
     key: 'confirmation',
     label: 'Confirmation letter',
@@ -148,7 +207,7 @@ export const LETTER_KINDS: readonly LetterKind[] = [
     key: 'salary-revision',
     label: 'Salary revision letter',
     group: 'pay',
-    pay: true,
+    pay: 'record',
     fields: [],
     unavailable: (f) => employed(f) ?? (f.salary_records > 1 ? null : 'No revision of salary is on record'),
     heading: 'Revision of salary',
@@ -164,7 +223,7 @@ export const LETTER_KINDS: readonly LetterKind[] = [
     key: 'salary-certificate',
     label: 'Salary certificate',
     group: 'pay',
-    pay: true,
+    pay: 'record',
     fields: [field('purpose', 'Purpose (for example, a loan or a visa)', 'text', false)],
     unavailable: (f) => employed(f) ?? (f.salary_records > 0 ? null : 'No approved salary is on record'),
     heading: 'Salary certificate',

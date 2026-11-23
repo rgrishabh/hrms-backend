@@ -45345,7 +45345,8 @@
                                   "enum": [
                                     "text",
                                     "long",
-                                    "date"
+                                    "date",
+                                    "money"
                                   ]
                                 },
                                 "required": {
@@ -45353,6 +45354,9 @@
                                 },
                                 "maxLength": {
                                   "type": "number"
+                                },
+                                "value": {
+                                  "type": "string"
                                 }
                               },
                               "required": [
@@ -45360,7 +45364,8 @@
                                 "label",
                                 "type",
                                 "required",
-                                "maxLength"
+                                "maxLength",
+                                "value"
                               ],
                               "additionalProperties": false
                             }
@@ -45524,6 +45529,7 @@
             "schema": {
               "type": "string",
               "enum": [
+                "offer",
                 "confirmation",
                 "probation-extension",
                 "promotion",

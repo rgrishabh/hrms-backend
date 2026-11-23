@@ -17,18 +17,11 @@ import { insertEmployee, EmployeeInput, EMPLOYMENT_TYPES } from '../employees/se
 import { orgToday } from '../competency/service.js';
 import { createChecklist, featureOn } from '../lifecycle/service.js';
 import { letterPdf } from '../../core/pdf/letter.js';
+import { OFFER_ACCEPTANCE, offerParagraphs } from '../../core/pdf/offer.js';
 import { loadPdfContext, loadPdfIdentity, pdfHeaders } from '../../core/pdf/writer.js';
 import type { Db } from '../../db/tx.js';
 
 const FEATURE = 'recruitment';
-const OFFER_EMPLOYMENT: Readonly<Record<string, string>> = {
-  permanent: 'permanent',
-  probation: 'probationary',
-  contract: 'contract',
-  trainee: 'trainee',
-  intern: 'internship',
-  consultant: 'consultancy',
-};
 const STAGES = ['applied', 'screening', 'interview', 'offer', 'hired', 'rejected', 'withdrawn'] as const;
 type Stage = (typeof STAGES)[number];
 /** Allowed manual moves. "hired" happens only through an accepted offer (POST /offers/:id/hire). */
@@ -1233,23 +1226,28 @@ export async function recruitmentRoutes(app: FastifyInstance) {
       });
       const ctx = await loadPdfContext(app, r.identity);
       const f = r.offer;
-      const kind = OFFER_EMPLOYMENT[f.employment_type];
       const doc = letterPdf(ctx, {
         title: 'Offer letter',
         today: r.today,
         to: [f.name, ...(f.email ? [f.email] : [])],
         heading: 'Letter of offer',
-        acceptance: 'I accept this offer on the terms stated above.',
-        paragraphs: (w) => [
-          `Dear ${f.name},`,
-          `We are pleased to offer you the position of ${f.designation}${f.department ? ` in the ${f.department} department` : ''} with ${ctx.legalName}, at our ${f.branch} location.`,
-          `Your date of joining will be ${w.date(f.joining_date)}.${kind ? ` The nature of your employment will be ${kind}.` : ''}`,
-          ...(f.probation_months ? [`You will be on probation for ${f.probation_months} ${f.probation_months === 1 ? 'month' : 'months'} from your date of joining.`] : []),
-          ...(f.contract_end_date ? [`Your contract will run until ${w.date(f.contract_end_date)}.`] : []),
-          `Your annual cost to company will be ${w.money(f.annual_ctc)}, subject to deductions required by law.`,
-          'This offer is subject to verification of your documents. The full terms will be set out in your letter of appointment and the policies of the organization.',
-          'Please sign and return a copy of this letter to accept the offer.',
-        ],
+        acceptance: OFFER_ACCEPTANCE,
+        paragraphs: (w) =>
+          offerParagraphs(
+            w,
+            {
+              name: f.name,
+              designation: f.designation,
+              department: f.department,
+              location: f.branch,
+              employmentType: f.employment_type,
+              annualCtc: f.annual_ctc,
+              joiningDate: f.joining_date,
+              probationMonths: f.probation_months,
+              contractEndDate: f.contract_end_date,
+            },
+            ctx.legalName,
+          ),
       });
       return pdfHeaders(reply, 'offer-letter.pdf').send(doc);
     },

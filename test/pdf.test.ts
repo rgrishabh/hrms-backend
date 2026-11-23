@@ -786,7 +786,10 @@ describe('letters', () => {
     const list = async (u: Client, id: string) => {
       const r = await u.get(`/api/v1/lifecycle/employees/${id}/letters`);
       expect(r.statusCode, r.body).toBe(200);
-      return r.json() as { items: { key: string; fields: { key: string; type: string; required: boolean }[]; unavailable: string | null }[]; exit: Record<string, string | null> };
+      return r.json() as {
+        items: { key: string; fields: { key: string; type: string; required: boolean; value: string }[]; unavailable: string | null }[];
+        exit: Record<string, string | null>;
+      };
     };
     const set = (sql: string) => ownerQuery(`UPDATE employees SET ${sql} WHERE id=$1`, [emp('employee')]);
     const review = (recommendation: string) =>
@@ -804,6 +807,12 @@ describe('letters', () => {
 
     /** Each letter: what the record must say first, what is typed, and what it must print. */
     const CASES: [string, (() => Promise<unknown>) | null, Record<string, string>, string[]][] = [
+      [
+        'offer',
+        null,
+        { offeredOn: '2023-11-15', designation: 'Analyst', location: 'Pune', joiningDate: '2024-01-01', annualCtc: '4,20,000' },
+        ['Letter of offer', 'made to you on 15/11/2023', 'position of Analyst', 'our Pune location', '01/01/2024', 'INR 4,20,000.00'],
+      ],
       ['confirmation', () => set(`confirmation_date='2024-07-01'`), {}, ['Confirmation of employment', '01/07/2024', 'Senior Analyst']],
       [
         'probation-extension',
@@ -868,6 +877,93 @@ describe('letters', () => {
       expect((await auditRows('lifecycle.letter_issued', emp('employee'))).at(-1)!.change_metadata).toMatchObject({ letter: kind, l4: pay });
       expect((await list(c.hr!, emp('employee'))).items.find((k) => k.key === kind)!.unavailable).toBeNull();
     });
+    describe('the offer letter', () => {
+      const typed = { offeredOn: '2023-11-15', designation: 'Analyst', joiningDate: '2024-01-01', annualCtc: '420000' };
+      const flat = async (r: { rawPayload: Buffer }) => (await pdfText(r.rawPayload)).replace(/\s+/g, ' ');
+      const item = async (u: Client, id: string) => (await list(u, id)).items.find((x) => x.key === 'offer')!;
+
+      it('starts from the record, but never with a salary', async () => {
+        const fields = Object.fromEntries((await item(c.hr!, emp('employee'))).fields.map((f) => [f.key, f]));
+        expect(fields['designation']!.value).toBe('Senior Analyst');
+        expect(fields['joiningDate']!.value).toBe('2024-01-01');
+        expect(fields['offeredOn']!.value).toBe('');
+        expect(fields['annualCtc']).toMatchObject({ type: 'money', required: true, value: '' });
+      });
+      it('for someone who has joined it says it is the record of an offer, dated today, with nothing to sign', async () => {
+        const text = await flat(await write(c.hr!, 'offer', emp('employee'), typed));
+        expect(text).toContain('records the offer of employment made to you on 15/11/2023');
+        expect(text).not.toContain('We are pleased to offer you');
+        expect(text).not.toContain('I accept this offer');
+      });
+      it('an offer made today to someone yet to join is an offer to sign', async () => {
+        await set(`status='pre_joining', date_of_joining='2099-01-01'`);
+        try {
+          const it = await item(c.hr!, emp('employee'));
+          const today = it.fields.find((f) => f.key === 'offeredOn')!.value;
+          expect(today).toMatch(/^\d{4}-\d{2}-\d{2}$/);
+          const text = await flat(await write(c.hr!, 'offer', emp('employee'), { ...typed, offeredOn: today, joiningDate: '2099-01-01' }));
+          expect(text).toContain('We are pleased to offer you the position of Analyst');
+          expect(text).toContain('I accept this offer');
+          expect(await flat(await write(c.hr!, 'offer', emp('employee'), { ...typed, joiningDate: '2099-01-01' }))).toContain('records the offer');
+        } finally {
+          await set(`status='active', date_of_joining='2024-01-01'`);
+        }
+      });
+      it.each([
+        ['no salary', { ...typed, annualCtc: '' }],
+        ['a salary that is not an amount', { ...typed, annualCtc: 'four lakh' }],
+        ['a salary of nothing', { ...typed, annualCtc: '0' }],
+        ['a negative salary', { ...typed, annualCtc: '-5' }],
+        ['an offer in the future', { ...typed, offeredOn: '2099-01-01', joiningDate: '2099-02-01' }],
+        ['an offer after joining', { ...typed, offeredOn: '2024-02-01' }],
+      ])('refused: %s', async (_what, fields) => {
+        expect((await write(c.hr!, 'offer', emp('employee'), fields)).statusCode).toBe(400);
+      });
+      it('needs the right to see that salary, and is not for yourself', async () => {
+        const exec = await Client.login(app, T.host, `exec@${T.host}`);
+        expect((await write(exec, 'offer', emp('employee'), typed)).statusCode).toBe(403);
+        expect((await item(exec, emp('employee'))).unavailable).toContain('salary');
+        expect((await write(c.hr!, 'offer', emp('hr'), typed)).statusCode).toBe(404);
+      });
+      it('someone hired from an offer gets the terms of that offer, nothing typed, as an L4 export', async () => {
+        const id = emp('employee');
+        const [org] = await ownerQuery<{ legal_entity_id: string; branch_id: string }>('SELECT legal_entity_id, branch_id FROM employees WHERE id=$1', [id]);
+        const by = T.users.hr!.id;
+        const [rq] = await ownerQuery<{ id: string }>(
+          `INSERT INTO job_requisitions (tenant_id, number, title, legal_entity_id, branch_id, employment_type, positions, justification, status, created_by)
+          VALUES ($1,9901,'Analyst',$2,$3,'permanent',1,'Letters','closed',$4) RETURNING id`,
+          [T.id, org!.legal_entity_id, org!.branch_id, by],
+        );
+        const [cand] = await ownerQuery<{ id: string }>(
+          `INSERT INTO candidates (tenant_id, first_name, email, source, consent_at, consent_note, retain_until, created_by) VALUES ($1,'Asha','asha.offer@example.test','other',now(),'In person','2099-01-01',$2) RETURNING id`,
+          [T.id, by],
+        );
+        const [ap] = await ownerQuery<{ id: string }>(
+          `INSERT INTO job_applications (tenant_id, requisition_id, candidate_id, stage, created_by) VALUES ($1,$2,$3,'hired',$4) RETURNING id`,
+          [T.id, rq!.id, cand!.id, by],
+        );
+        await ownerQuery(
+          `INSERT INTO job_offers (tenant_id, application_id, designation, legal_entity_id, branch_id, employment_type, annual_ctc, joining_date, probation_months, status, created_by, sent_at, employee_id)
+          VALUES ($1,$2,'Trainee Chemist',$3,$4,'permanent',365000,'2024-01-01',6,'accepted',$5,'2023-12-01T06:00:00Z',$6)`,
+          [T.id, ap!.id, org!.legal_entity_id, org!.branch_id, by, id],
+        );
+        try {
+          expect((await item(c.hr!, id)).fields).toEqual([]);
+          expect((await write(c.hr!, 'offer', id, typed)).statusCode).toBe(400);
+          const r = await write(c.hr!, 'offer', id);
+          expect(r.statusCode, r.body.slice(0, 300)).toBe(200);
+          const text = await flat(r);
+          for (const x of ['made to you on 01/12/2023', 'position of Trainee Chemist', 'INR 3,65,000.00', 'probation of 6 months']) expect(text).toContain(x);
+          expect((await auditRows('lifecycle.letter_issued', id)).at(-1)!.change_metadata).toMatchObject({ letter: 'offer', l4: true });
+          expect((await auditRows('l4.export', id)).at(-1)!.change_metadata.fields).toEqual(['annual_ctc']);
+        } finally {
+          await ownerQuery('DELETE FROM job_offers WHERE tenant_id=$1', [T.id]);
+          await ownerQuery('DELETE FROM job_applications WHERE tenant_id=$1', [T.id]);
+          await ownerQuery('DELETE FROM candidates WHERE tenant_id=$1', [T.id]);
+          await ownerQuery('DELETE FROM job_requisitions WHERE tenant_id=$1', [T.id]);
+        }
+      });
+    });
     it('every kind has a case above', async () => {
       expect((await list(c.hr!, emp('employee'))).items.map((k) => k.key).sort()).toEqual(CASES.map((x) => x[0]).sort());
     });
@@ -904,7 +1000,7 @@ describe('letters', () => {
         ['promotion', { effectiveDate: '2026-02-31' }],
         ['employment-certificate', { purpose: 'x'.repeat(201) }],
         ['noc', { purpose: 'x', extra: 'y' }],
-        ['offer', {}],
+        ['unheard-of', {}],
       ] as const) {
         if (kind === 'promotion') await ownerQuery(`UPDATE employees SET designation='Analyst' WHERE id=$1`, [id]);
         expect((await write(c.hr!, kind, id, fields)).statusCode, `${kind} ${JSON.stringify(fields).slice(0, 60)}`).toBe(400);
