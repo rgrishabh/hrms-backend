@@ -41,7 +41,7 @@ describe('F-8 regularization through approval', () => {
   it.each([
     [
       'in',
-      3,
+      2,
       { requestedIn: '09:00' },
       [
         ['09:30', 'in'],
@@ -50,7 +50,7 @@ describe('F-8 regularization through approval', () => {
     ],
     [
       'out',
-      4,
+      5, // never next to the day above: a day's view runs to noon of the next, for night shifts
       { requestedOut: '18:00' },
       [
         ['09:30', 'in'],

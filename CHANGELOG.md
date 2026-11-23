@@ -7,6 +7,7 @@
 * **The Owner holds every permission in `multi` too** (D72). Super-admin is unchanged. Nobody approves what they prepared, the Owner included, and POSH complaints stay with the Internal Committee.
 * `GET /api/v1/lifecycle/employees/{id}/letters` and `POST /api/v1/lifecycle/employees/{id}/letters/{kind}` (`employees.manage`): confirmation, probation extension, promotion, transfer, employment certificate, no objection, salary revision, salary certificate, appreciation, show cause, warning, resignation acceptance, termination, full and final settlement, internship certificate, recommendation, and a letter of your own (D73).
 * `GET /api/v1/recruitment/offers/{id}/offer-letter.pdf` (`recruitment.manage` and `recruitment.compensation`): from approval onwards.
+* `GET /api/v1/assets/{id}/history`: 404 for an unknown asset, where it answered an empty list.
 * `GET /api/v1/payroll/employees/{id}/payslips` (`payroll.read` or `payroll.manage`): which payslips someone has, without figures.
 
 ### Added after batch G
