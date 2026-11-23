@@ -14,7 +14,7 @@ import type { Db } from '../../db/tx.js';
 import { calculate, type Component } from '../payroll/calc.js';
 import { openAmounts } from '../payroll/sealed.js';
 import { orgToday } from '../competency/service.js';
-import { FIELD_MAX, LETTER_KIND_KEYS, LETTER_KINDS, payFigure, roleOf, type LetterFacts, type LetterKind, type LetterPay } from './letter-kinds.js';
+import { FIELD_MAX, fieldsOf, LETTER_KIND_KEYS, LETTER_KINDS, payFigure, roleOf, type HiredOffer, type LetterFacts, type LetterField, type LetterPay } from './letter-kinds.js';
 import { featureOn } from './service.js';
 
 const ON = 'core.onboarding';
@@ -36,6 +36,7 @@ async function subjectOf(db: Db, tenantId: string, id: string): Promise<Subject 
     d.name AS department, b.name AS branch, le.name AS legal_entity,
     EXISTS (SELECT 1 FROM probation_reviews p WHERE p.tenant_id=e.tenant_id AND p.employee_id=e.id AND p.status='approved' AND p.recommendation='extend') AS probation_extended,
     (SELECT count(*)::int FROM employee_salaries s WHERE s.tenant_id=e.tenant_id AND s.employee_id=e.id AND s.status IN ('active','superseded')) AS salary_records,
+    EXISTS (SELECT 1 FROM job_offers o WHERE o.tenant_id=e.tenant_id AND o.employee_id=e.id AND o.status='accepted') AS hired_from_offer,
     sep.status AS sep_status, sep.kind AS sep_kind, sep.lwd AS sep_lwd, sep.settled AS sep_settled
   FROM employees e JOIN branches b ON b.tenant_id=e.tenant_id AND b.id=e.branch_id JOIN legal_entities le ON le.tenant_id=e.tenant_id AND le.id=e.legal_entity_id
   LEFT JOIN departments d ON d.tenant_id=e.tenant_id AND d.id=e.department_id
@@ -56,8 +57,10 @@ async function hrAbove(db: Db, a: TenantActor, id: string) {
   return subjectVisible(db, a.tenantId, await policyViewer(db, a.tenantId, a.user), id, l3RowFilter);
 }
 
-const letter = (ctx: PdfContext, o: { title: string; today: string; subject: Subject; heading: string; paragraphs: (w: PdfWriter) => readonly string[] }) =>
-  letterPdf(ctx, { ...o, to: [o.subject.name, `Employee code: ${o.subject.employee_code}`] });
+const letter = (
+  ctx: PdfContext,
+  o: { title: string; today: string; subject: Subject; heading: string; paragraphs: (w: PdfWriter) => readonly string[]; acceptance?: string | undefined },
+) => letterPdf(ctx, { ...o, to: [o.subject.name, `Employee code: ${o.subject.employee_code}`] });
 
 const EMPLOYMENT: Record<string, string> = {
   permanent: 'permanent',
@@ -68,17 +71,20 @@ const EMPLOYMENT: Record<string, string> = {
   consultant: 'consultancy',
 };
 
+const MONEY = /^\d{1,10}(\.\d{1,2})?$/;
 const NO_PAY = "Only someone who may see this person's salary can produce this letter";
 
 /** What was typed, trimmed and checked against what the letter asks for. */
-function checkFields(kind: LetterKind, given: Readonly<Record<string, string>>): Record<string, string> {
+function checkFields(wanted: readonly LetterField[], given: Readonly<Record<string, string>>): Record<string, string> {
   const out: Record<string, string> = {};
-  for (const k of Object.keys(given)) if (!kind.fields.some((f) => f.key === k)) throw badRequest(`This letter has no field "${k}"`);
-  for (const f of kind.fields) {
-    const v = (given[f.key] ?? '').trim();
+  for (const k of Object.keys(given)) if (!wanted.some((f) => f.key === k)) throw badRequest(`This letter has no field "${k}"`);
+  for (const f of wanted) {
+    const typed = (given[f.key] ?? '').trim();
+    const v = f.type === 'money' ? typed.replaceAll(',', '') : typed;
     if (!v && f.required) throw badRequest(`${f.label} is required`);
     if (v.length > FIELD_MAX[f.type]) throw badRequest(`${f.label} is too long (at most ${FIELD_MAX[f.type]} characters)`);
     if (v && f.type === 'date' && !IsoDate.safeParse(v).success) throw badRequest(`${f.label} is not a date`);
+    if (v && f.type === 'money' && !(MONEY.test(v) && Number(v) > 0)) throw badRequest(`${f.label} is not an amount`);
     if (v) out[f.key] = v;
   }
   return out;
@@ -101,7 +107,7 @@ export function letterRoutes(app: FastifyInstance) {
           key: k.key,
           label: k.label,
           group: k.group,
-          fields: k.fields.map((x) => ({ ...x, maxLength: FIELD_MAX[x.type] })),
+          fields: fieldsOf(k, s).map((x) => ({ ...x, maxLength: FIELD_MAX[x.type] })),
           unavailable: k.pay && !pay ? NO_PAY : (k.unavailable?.(s) ?? null),
         }));
         const due = (['experience', 'relieving'] as const).map((k) => [k, on[OFF] ? exitUnavailable(s, k) : 'Offboarding is switched off'] as const);
@@ -118,7 +124,7 @@ export function letterRoutes(app: FastifyInstance) {
       const a = tenantActor(req, 'employees.manage');
       const p = KindParams.parse(req.params);
       const kind = LETTER_KINDS.find((k) => k.key === p.kind)!;
-      const fields = checkFields(kind, LetterBody.parse(req.body ?? {}).fields);
+      const given = LetterBody.parse(req.body ?? {}).fields;
       const r = await a.tx(async (db) => {
         if (kind.feature) await requireFeature(db, a.tenantId, kind.feature);
         if (!(await hrAbove(db, a, p.id))) throw notFound('Employee not found');
@@ -126,18 +132,23 @@ export function letterRoutes(app: FastifyInstance) {
         if (kind.pay && !(await mayPrintPay(db, a, p.id))) throw forbidden(NO_PAY);
         const why = kind.unavailable?.(subject);
         if (why) throw conflict(why);
-        const pay = kind.pay ? await payOf(db, a, p.id, kind.key === 'salary-certificate' ? subject.today : null) : null;
-        if (kind.pay && !pay) throw conflict('No approved salary is on record');
-        await issued(db, req, a, p.id, kind.key, pay);
-        return { subject, pay, identity: await loadPdfIdentity(db, a.tenantId) };
+        const fields = checkFields(fieldsOf(kind, subject), given);
+        const wrong = kind.check?.(subject, fields);
+        if (wrong) throw badRequest(wrong);
+        const offer = kind.pay === 'offer' && subject.hired_from_offer ? await hiredOffer(db, a.tenantId, p.id) : null;
+        const pay = kind.pay === 'record' ? await payOf(db, a, p.id, kind.key === 'salary-certificate' ? subject.today : null) : null;
+        if (kind.pay === 'record' && !pay) throw conflict('No approved salary is on record');
+        await issued(db, req, a, p.id, kind.key, offer ? 'annual_ctc' : l4Field(pay));
+        return { subject, pay, offer, fields, identity: await loadPdfIdentity(db, a.tenantId) };
       });
       const ctx = await loadPdfContext(app, r.identity);
       const doc = letter(ctx, {
         title: kind.label,
         today: r.subject.today,
         subject: r.subject,
-        heading: typeof kind.heading === 'string' ? kind.heading : kind.heading(fields),
-        paragraphs: (w) => kind.paragraphs(w, r.subject, { legalName: ctx.legalName, fields, pay: r.pay }),
+        heading: typeof kind.heading === 'string' ? kind.heading : kind.heading(r.fields),
+        paragraphs: (w) => kind.paragraphs(w, r.subject, { legalName: ctx.legalName, fields: r.fields, pay: r.pay, offer: r.offer }),
+        acceptance: kind.acceptance?.(r.subject, r.fields),
       });
       return pdfHeaders(reply, `${kind.key}-letter.pdf`).send(doc);
     },
@@ -155,7 +166,7 @@ export function letterRoutes(app: FastifyInstance) {
         if (!(await hrAbove(db, a, id))) throw notFound('Employee not found');
         const subject = (await subjectOf(db, a.tenantId, id))!;
         const pay = q.includePay ? await payOf(db, a, id) : null;
-        await issued(db, req, a, id, 'appointment', pay);
+        await issued(db, req, a, id, 'appointment', l4Field(pay));
         return { subject, pay, today: subject.today, identity: await loadPdfIdentity(db, a.tenantId) };
       });
       const ctx = await loadPdfContext(app, r.identity);
@@ -266,7 +277,24 @@ async function payOf(db: Db, a: TenantActor, id: string, asOf: string | null = n
   return { ctc: row.annual_ctc_enc ? Number(openJson<number>(row.annual_ctc_enc)) : null, monthlyGross: gross, effectiveFrom: row.effective_from };
 }
 
-async function issued(db: Db, req: FastifyRequest, a: TenantActor, id: string, letterKind: string, pay: LetterPay | null) {
+/** The offer this person was hired from. Only with the L4 right to this person: it carries the CTC. */
+async function hiredOffer(db: Db, tenantId: string, id: string): Promise<HiredOffer> {
+  return (
+    await db.query<HiredOffer>(
+      `SELECT trim(e.first_name||' '||coalesce(e.last_name,'')) AS name, o.designation, d.name AS department, b.name AS location, o.employment_type AS "employmentType",
+        o.annual_ctc AS "annualCtc", o.joining_date::text AS "joiningDate", o.probation_months AS "probationMonths", o.contract_end_date::text AS "contractEndDate",
+        (coalesce(o.sent_at, o.approved_at, o.created_at) AT TIME ZONE t.timezone)::date::text AS "offeredOn"
+      FROM job_offers o JOIN employees e ON e.tenant_id=o.tenant_id AND e.id=o.employee_id JOIN tenants t ON t.id=o.tenant_id
+      JOIN branches b ON b.tenant_id=o.tenant_id AND b.id=o.branch_id LEFT JOIN departments d ON d.tenant_id=o.tenant_id AND d.id=o.department_id
+      WHERE o.tenant_id=$1 AND o.employee_id=$2 AND o.status='accepted' ORDER BY o.created_at DESC LIMIT 1`,
+      [tenantId, id],
+    )
+  ).rows[0]!;
+}
+
+type L4Field = 'annual_ctc' | 'amounts';
+const l4Field = (pay: LetterPay | null): L4Field | null => (pay ? (pay.ctc !== null ? 'annual_ctc' : 'amounts') : null);
+async function issued(db: Db, req: FastifyRequest, a: TenantActor, id: string, letterKind: string, l4: L4Field | null) {
   await audit(db, {
     ...a.auditBase,
     userAgent: readDevice(req).userAgent,
@@ -274,9 +302,9 @@ async function issued(db: Db, req: FastifyRequest, a: TenantActor, id: string, l
     category: 'access',
     targetType: 'employee',
     targetId: id,
-    metadata: { letter: letterKind, l4: !!pay },
+    metadata: { letter: letterKind, l4: !!l4 },
   });
-  if (pay) await auditL4(db, readContext(req, a), 'export', `lifecycle.letter.${letterKind}`, [{ employeeId: id, fields: [pay.ctc !== null ? 'annual_ctc' : 'amounts'] }]);
+  if (l4) await auditL4(db, readContext(req, a), 'export', `lifecycle.letter.${letterKind}`, [{ employeeId: id, fields: [l4] }]);
 }
 
 /** Why an exit letter is not due yet, from the record. */

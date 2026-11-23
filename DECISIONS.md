@@ -523,3 +523,9 @@ So drawing the largest report allowed costs under a second of CPU, and yielding 
 **POST, though nothing is stored.** A warning's text in a query string would be in every proxy's log. The copy is not kept: whoever issues it can upload the signed one to Documents.
 
 **Not included.** Form 16 and Form 12BA come from TRACES. Termination and show cause letters are a layout, not legal advice.
+
+## D74 — An offer letter from a profile, marked as a record
+
+**Context.** The offer letter existed only on an approved recruitment offer. Most people were hired before, or outside, recruitment.
+
+**Decision.** `offer` is a letter kind. Someone hired from an accepted offer gets that offer's own terms, and nothing can be typed over them. For anyone else the record says what they are now, not what they were offered, so position, location, dates and CTC are typed, starting from the record. A salary is never pre-filled. The letter carries the day it is written. It is worded as an offer to sign only when the offer is made that day to someone yet to join; otherwise it says it records an offer made on the date given, and has no acceptance line. It needs the L4 right to the person, and printing a recorded offer is an L4 export.
